@@ -1,0 +1,5 @@
+models/
+*.bin
+*h5
+*gguf
+.cache/
