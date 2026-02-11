@@ -609,3 +609,18 @@
     }
   }
 }
+{
+  "nameShort": "Sudo Studio",
+  "nameLong": "Sudo Studio",
+  "applicationName": "sudostudio",
+  "extensionsGallery": {
+    "serviceUrl": "https://open-vsx.org/vscode/gallery",
+    "itemUrl": "https://open-vsx.org/vscode/item"
+  },
+  "aiFeatures": {
+    "enabled": false,
+    "chat.enabled": false,
+    "inlineSuggest.enabled": false,
+    "intelliCode.enabled": false
+  }
+}
