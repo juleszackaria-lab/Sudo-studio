@@ -1,0 +1,21 @@
+{
+  "name": "sudo-studio-ui",
+  "displayName": "Sudo Studio UI",
+  "publisher": "local",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "activationEvents": [
+    "onCommand:sudo-studio.openUI"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "sudo-studio.openUI",
+        "title": "Sudo Studio: Open UI"
+      }
+    ]
+  }
+}

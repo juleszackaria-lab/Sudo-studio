@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+backend/node_modules/
+.venv/
+backend/runtime/.venv/
+*.egg-info/
+__pycache__/
+
+# Models & cache
+backend/ai/models/
+backend/ai/models.json
+*.bin
+*.pt
+*.pth
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build outputs
+dist/
+build/
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Runtime logs
+backend/ai/*.err.log
+backend/ai/*.out.log

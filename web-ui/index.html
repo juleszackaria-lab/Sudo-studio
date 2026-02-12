@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sudo-studio — UI</title>
+  <link rel="stylesheet" href="/ui/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Sudo-studio — Chat & Models</h1>
+    </header>
+
+    <main>
+      <section class="left">
+        <h2>Terminal</h2>
+        <div id="terminal-top" class="terminal">Terminal principal (logs)</div>
+        <div id="terminal-bottom" class="terminal">Emulateur (envoyer commandes)</div>
+        <input id="cmd-input" placeholder="Tapez une commande (ex: list-models, download:modelName|url)" />
+        <button id="cmd-send">Envoyer</button>
+      </section>
+
+      <section class="right">
+        <h2>Chat IA</h2>
+        <div id="chat-window"></div>
+        <div class="chat-controls">
+          <input id="model-name" placeholder="Nom du modèle (optionnel)" />
+          <input id="prompt" placeholder="Tapez votre message..." />
+          <button id="send-prompt">Envoyer</button>
+        </div>
+
+        <h3>Gestion des modèles</h3>
+        <div>
+          <input id="model-to-download" placeholder="nom|url (ex: gpt2|https://...)" />
+          <button id="download-model">Télécharger modèle</button>
+        </div>
+        <div>
+          <button id="list-models">Lister modèles</button>
+          <ul id="models-list"></ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

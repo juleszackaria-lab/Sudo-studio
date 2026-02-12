@@ -46,12 +46,7 @@
   "extensionAllowedBadgeProvidersRegex": [
     "^https:\\/\\/github\\.com\\/[^/]+\\/[^/]+\\/(actions\\/)?workflows\\/.*badge\\.svg"
   ],
-  "extensionsEnabledWithApiProposalVersion": [
-    "GitHub.copilot-chat",
-    "ms-vscode.vscode-commander",
-    "ms-vscode.vscode-copilot-vision",
-    "GitHub.vscode-pull-request-github"
-  ],
+  "extensionsEnabledWithApiProposalVersion": [],
   "extensionEnabledApiProposals": {
     "mrleemurray.theme-2026": [
       "css"
