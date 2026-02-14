@@ -1,0 +1,44 @@
+name: 04 - Final Assembly
+
+on:
+  workflow_dispatch:
+
+jobs:
+  assemble:
+    runs-on: windows-latest
+
+    steps:
+      - name: Download backend
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-exe
+          path: final/backend
+
+      - name: Download runtime
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-exe
+          path: final/runtime
+
+      - name: Download vscode
+        uses: actions/download-artifact@v4
+        with:
+          name: vscode-build
+          path: final/vscode
+
+      - name: Inject executables
+        run: |
+          mkdir final/vscode/backend
+          mkdir final/vscode/runtime
+          copy final/backend/backend.exe final/vscode/backend/
+          copy final/runtime/server.exe final/vscode/runtime/
+
+      - name: Zip final product
+        run: |
+          powershell Compress-Archive -Path final/vscode/* -DestinationPath SudoStudio-Windows.zip
+
+      - name: Upload final package
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-product
+          path: SudoStudio-Windows.zip
