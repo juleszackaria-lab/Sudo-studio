@@ -1,0 +1,36 @@
+name: 03 - Build VSCodium
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-vscode:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: vscode
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      - name: Install Yarn
+        run: npm install -g yarn
+
+      - name: Install dependencies
+        run: yarn
+
+      - name: Build Windows version
+        run: yarn gulp vscode-win32-x64
+
+      - name: Upload VSCodium artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-build
+          path: vscode/.build/win32-x64
