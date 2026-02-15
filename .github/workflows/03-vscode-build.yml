@@ -6,9 +6,9 @@ on:
 jobs:
   build-vscode:
     runs-on: windows-latest
-
     defaults:
       run:
+        shell: cmd
         working-directory: vscode
 
     steps:
@@ -28,9 +28,3 @@ jobs:
 
       - name: Build Windows version
         run: yarn gulp vscode-win32-x64
-
-      - name: Upload VSCodium artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: vscode-build
-          path: vscode/.build/win32-x64
