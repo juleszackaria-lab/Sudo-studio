@@ -1,37 +1,55 @@
-name: 03 - Build VSCodium
+name: 03 - Build VSCodium (Windows)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-vscode:
-    runs-on: windows-latest
-
-    defaults:
-      run:
-        shell: cmd
-        working-directory: vscodium
+  build-vscodium:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            python3 \
+            python3-pip \
+            git \
+            jq \
+            curl \
+            wget \
+            libx11-dev \
+            libxkbfile-dev \
+            libsecret-1-dev \
+            libkrb5-dev
+
+      - name: Install Node
         uses: actions/setup-node@v4
         with:
           node-version: 18
 
-      - name: Install Yarn
-        run: npm install -g yarn
+      - name: Make scripts executable
+        run: chmod +x *.sh
 
-      - name: Install dependencies
-        run: yarn
+      - name: Prepare VSCodium source
+        run: ./prepare_vscode.sh
+
+      - name: Prepare source patches
+        run: ./prepare_src.sh
 
       - name: Build Windows version
-        run: yarn gulp vscode-win32-x64
+        run: ./build.sh
 
-      - name: Upload VSCodium artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: vscode-build
-          path: vscodium/.build/win32-x64
+          name: vscodium-build
+          path: |
+            VSCode-*
+            *.exe
+            *.msi
