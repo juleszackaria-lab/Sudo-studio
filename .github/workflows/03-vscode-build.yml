@@ -1,55 +1,55 @@
-name: 03 - Build VSCodium (Windows)
+name: 03 - Package Sudo Studio (Windows Portable)
 
 on:
   workflow_dispatch:
 
 jobs:
-  build-vscodium:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+  package:
+    runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y \
-            build-essential \
-            python3 \
-            python3-pip \
-            git \
-            jq \
-            curl \
-            wget \
-            libx11-dev \
-            libxkbfile-dev \
-            libsecret-1-dev \
-            libkrb5-dev
-
-      - name: Install Node
-        uses: actions/setup-node@v4
+      # 1️⃣ Télécharger backend.exe
+      - name: Download backend artifact
+        uses: actions/download-artifact@v4
         with:
-          node-version: 18
+          name: backend-exe
+          path: build-assets/backend
 
-      - name: Make scripts executable
-        run: chmod +x *.sh
+      # 2️⃣ Télécharger runtime.exe
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-exe
+          path: build-assets/runtime
 
-      - name: Prepare VSCodium source
-        run: ./prepare_vscode.sh
+      # 3️⃣ Télécharger VSCodium officiel Windows
+      - name: Download VSCodium Windows
+        run: |
+          curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
-      - name: Prepare source patches
-        run: ./prepare_src.sh
+      # 4️⃣ Extraire VSCodium
+      - name: Extract VSCodium
+        run: |
+          powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      - name: Build Windows version
-        run: ./build.sh
+      # 5️⃣ Injecter backend et runtime
+      - name: Inject backend and runtime
+        run: |
+          mkdir vscodium\SudoStudio
+          copy build-assets\backend\backend.exe vscodium\SudoStudio\
+          copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
 
-      - name: Upload build artifacts
+      # 6️⃣ Repack final
+      - name: Create final package
+        run: |
+          powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip
+
+      # 7️⃣ Upload artefact final
+      - name: Upload final build
         uses: actions/upload-artifact@v4
         with:
-          name: vscodium-build
-          path: |
-            VSCode-*
-            *.exe
-            *.msi
+          name: SudoStudio-Windows
+          path: SudoStudio-Windows.zip
