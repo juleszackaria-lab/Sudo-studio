@@ -3,57 +3,44 @@ name: 03 - Package Sudo Studio (Windows Portable)
 on:
   workflow_dispatch:
     inputs:
-      source_run_id:
-        description: 'ID de la run du workflow source (ex. build)'
-        required: false
+      backend_run_id:
+        description: 'ID run Backend (ex: 1234567890)'
+        required: true
+        type: string
+      runtime_run_id:
+        description: 'ID run Runtime (ex: 1234567891)'
+        required: true
         type: string
 
 jobs:
   package:
     runs-on: windows-latest
     permissions:
-      actions: read  # Nécessaire pour l'API des runs [web:28]
+      actions: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Récupérer l'ID de run si pas fourni (dernière run réussie d'un workflow spécifique, adapte "build-workflow")
-      - name: Get latest successful run ID
-        id: get_run_id
-        if: github.event.inputs.source_run_id == ''
-        run: |
-          RUN_ID=$(gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/actions/workflows?per_page=1" \
-            | jq -r '.workflows[] | select(.name == "nom-du-workflow-build") | .id' \
-            | xargs -I {} gh api \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${{ github.repository }}/actions/workflows/{}/runs?status=success&per_page=1&sort=timestamp&direction=desc" \
-            | jq -r '.[0].id')
-          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # 1️⃣ Télécharger backend.exe (utilise dawidd6/action-download-artifact pour cross-workflow)
+      # 1️⃣ Backend depuis SON run ID
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
           name: backend-exe
           path: build-assets/backend
-          run_id: ${{ github.event.inputs.source_run_id || steps.get_run_id.outputs.run_id }}
+          run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2️⃣ Télécharger runtime.exe
+      # 2️⃣ Runtime depuis SON run ID  
       - name: Download runtime artifact
         uses: dawidd6/action-download-artifact@v5
         with:
           name: runtime-exe
           path: build-assets/runtime
-          run_id: ${{ github.event.inputs.source_run_id || steps.get_run_id.outputs.run_id }}
+          run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Reste inchangé...
+      # Le reste identique...
       - name: Download VSCodium Windows
         run: |
           curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
