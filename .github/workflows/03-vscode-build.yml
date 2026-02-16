@@ -2,52 +2,76 @@ name: 03 - Package Sudo Studio (Windows Portable)
 
 on:
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'ID de la run du workflow source (ex. build)'
+        required: false
+        type: string
 
 jobs:
   package:
     runs-on: windows-latest
+    permissions:
+      actions: read  # Nécessaire pour l'API des runs [web:28]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1️⃣ Télécharger backend.exe
+      # Récupérer l'ID de run si pas fourni (dernière run réussie d'un workflow spécifique, adapte "build-workflow")
+      - name: Get latest successful run ID
+        id: get_run_id
+        if: github.event.inputs.source_run_id == ''
+        run: |
+          RUN_ID=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/workflows?per_page=1" \
+            | jq -r '.workflows[] | select(.name == "nom-du-workflow-build") | .id' \
+            | xargs -I {} gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${{ github.repository }}/actions/workflows/{}/runs?status=success&per_page=1&sort=timestamp&direction=desc" \
+            | jq -r '.[0].id')
+          echo "run_id=$RUN_ID" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 1️⃣ Télécharger backend.exe (utilise dawidd6/action-download-artifact pour cross-workflow)
       - name: Download backend artifact
-        uses: actions/download-artifact@v4
+        uses: dawidd6/action-download-artifact@v5
         with:
           name: backend-exe
           path: build-assets/backend
+          run_id: ${{ github.event.inputs.source_run_id || steps.get_run_id.outputs.run_id }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
       # 2️⃣ Télécharger runtime.exe
       - name: Download runtime artifact
-        uses: actions/download-artifact@v4
+        uses: dawidd6/action-download-artifact@v5
         with:
           name: runtime-exe
           path: build-assets/runtime
+          run_id: ${{ github.event.inputs.source_run_id || steps.get_run_id.outputs.run_id }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3️⃣ Télécharger VSCodium officiel Windows
+      # Reste inchangé...
       - name: Download VSCodium Windows
         run: |
           curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
-      # 4️⃣ Extraire VSCodium
       - name: Extract VSCodium
         run: |
           powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      # 5️⃣ Injecter backend et runtime
       - name: Inject backend and runtime
         run: |
           mkdir vscodium\SudoStudio
           copy build-assets\backend\backend.exe vscodium\SudoStudio\
           copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
 
-      # 6️⃣ Repack final
       - name: Create final package
         run: |
           powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip
 
-      # 7️⃣ Upload artefact final
       - name: Upload final build
         uses: actions/upload-artifact@v4
         with:
