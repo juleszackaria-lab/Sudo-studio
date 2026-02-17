@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       backend_run_id:
-        description: 'ID run Backend (ex: 1234567890)'
+        description: 'ID run Backend'
         required: true
         type: string
       runtime_run_id:
-        description: 'ID run Runtime (ex: 1234567891)'
+        description: 'ID run Runtime'
         required: true
         type: string
 
@@ -22,7 +22,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1️⃣ Backend
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -31,7 +30,6 @@ jobs:
           run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2️⃣ Runtime  
       - name: Download runtime artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -40,7 +38,6 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3️⃣ VSCodium
       - name: Download VSCodium Windows
         run: |
           curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
@@ -49,8 +46,7 @@ jobs:
         run: |
           powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      # 🔥 INJECTION COMPLÈTE (TOUT EN 1)
-      - name: Inject ALL assets
+      - name: Inject ALL assets + AUTO-START Backend
         run: |
           mkdir vscodium\SudoStudio
           copy build-assets\backend\backend.exe vscodium\SudoStudio\
@@ -58,12 +54,30 @@ jobs:
           xcopy /E /I web-ui vscodium\SudoStudio\web-ui\
           copy product.json vscodium\SudoStudio\product.json
 
+      - name: Create auto-start script
+        run: |
+          echo @echo off > vscodium\SudoStudio\start.bat
+          echo cd /d "%%~dp0" >> vscodium\SudoStudio\start.bat
+          echo start backend.exe >> vscodium\SudoStudio\start.bat
+          echo start runtime.exe >> vscodium\SudoStudio\start.bat
+          echo timeout /t 3 >> vscodium\SudoStudio\start.bat
+          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio >> vscodium\SudoStudio\start.bat
+
+      - name: Create SudoStudio launcher
+        run: |
+          echo @echo off > SudoStudio.cmd
+          echo cd /d "%%~dp0vscodium\SudoStudio" >> SudoStudio.cmd
+          echo call start.bat >> SudoStudio.cmd
+
       - name: Create final package
         run: |
-          powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip
+          powershell Compress-Archive -Path vscodium\* SudoStudio-Windows.zip
+          powershell Compress-Archive -Path SudoStudio.cmd -DestinationPath SudoStudio-Launcher.zip
 
       - name: Upload final build
         uses: actions/upload-artifact@v4
         with:
           name: SudoStudio-Windows
-          path: SudoStudio-Windows.zip
+          path: |
+            SudoStudio-Windows.zip
+            SudoStudio-Launcher.zip
