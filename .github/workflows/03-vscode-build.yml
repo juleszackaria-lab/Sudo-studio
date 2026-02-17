@@ -22,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1️⃣ Backend depuis SON run ID
+      # 1️⃣ Backend
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -31,7 +31,7 @@ jobs:
           run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2️⃣ Runtime depuis SON run ID  
+      # 2️⃣ Runtime  
       - name: Download runtime artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -49,15 +49,14 @@ jobs:
         run: |
           powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-       # INJECTION COMPLÈTE (SEUL changement = vscodium/product.json)
+      # 🔥 INJECTION COMPLÈTE (TOUT EN 1)
       - name: Inject ALL assets
         run: |
           mkdir vscodium\SudoStudio
           copy build-assets\backend\backend.exe vscodium\SudoStudio\
           copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
           xcopy /E /I web-ui vscodium\SudoStudio\web-ui\
-          copy vscodium\product.json vscodium\SudoStudio\product.json
-
+          copy product.json vscodium\SudoStudio\product.json
 
       - name: Create final package
         run: |
