@@ -1,14 +1,14 @@
-name: 03 - Package Sudo Studio (Windows Portable)
+name: 03 - Build Final Sudo Studio (Windows)
 
 on:
   workflow_dispatch:
     inputs:
       backend_run_id:
-        description: 'ID run Backend (ex: 1234567890)'
+        description: 'Backend Run ID'
         required: true
         type: string
       runtime_run_id:
-        description: 'ID run Runtime (ex: 1234567891)'
+        description: 'Runtime Run ID'
         required: true
         type: string
 
@@ -22,7 +22,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1️⃣ Backend depuis SON run ID
+      # ===============================
+      # 1️⃣ Download backend artifact
+      # ===============================
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -31,7 +33,9 @@ jobs:
           run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2️⃣ Runtime depuis SON run ID  
+      # ===============================
+      # 2️⃣ Download runtime artifact
+      # ===============================
       - name: Download runtime artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -40,25 +44,53 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Le reste identique...
+      # ===============================
+      # 3️⃣ Download official VSCodium
+      # ===============================
       - name: Download VSCodium Windows
         run: |
-          curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
+          curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64.zip
 
+      # ===============================
+      # 4️⃣ Extract VSCodium
+      # ===============================
       - name: Extract VSCodium
         run: |
           powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
+      # ===============================
+      # 5️⃣ Replace product.json
+      # ===============================
+      - name: Replace product.json
+        run: |
+          copy vscodium\product.json vscodium\resources\app\product.json
+
+      # ===============================
+      # 6️⃣ Inject custom UI
+      # ===============================
+      - name: Inject custom UI
+        run: |
+          xcopy web-ui vscodium\resources\app\ /E /I /Y
+
+      # ===============================
+      # 7️⃣ Inject backend & runtime
+      # ===============================
       - name: Inject backend and runtime
         run: |
           mkdir vscodium\SudoStudio
           copy build-assets\backend\backend.exe vscodium\SudoStudio\
           copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
 
+      # ===============================
+      # 8️⃣ Create final ZIP
+      # ===============================
       - name: Create final package
         run: |
           powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip
 
+      # ===============================
+      # 9️⃣ Upload final artifact
+      # ===============================
       - name: Upload final build
         uses: actions/upload-artifact@v4
         with:
