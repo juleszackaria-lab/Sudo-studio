@@ -49,14 +49,15 @@ jobs:
         run: |
           powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      # 🔥 INJECTION COMPLÈTE (backend + runtime + web-ui + product.json)
+       # INJECTION COMPLÈTE (SEUL changement = vscodium/product.json)
       - name: Inject ALL assets
         run: |
           mkdir vscodium\SudoStudio
           copy build-assets\backend\backend.exe vscodium\SudoStudio\
           copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
           xcopy /E /I web-ui vscodium\SudoStudio\web-ui\
-          copy product.json vscodium\SudoStudio\product.json
+          copy vscodium\product.json vscodium\SudoStudio\product.json
+
 
       - name: Create final package
         run: |
