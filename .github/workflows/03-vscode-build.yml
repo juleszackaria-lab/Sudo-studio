@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       backend_run_id:
-        description: 'ID run Backend (ex: 1234567890)'
+        description: 'ID run Backend'
         required: true
         type: string
       runtime_run_id:
-        description: 'ID run Runtime (ex: 1234567891)'
+        description: 'ID run Runtime'  
         required: true
         type: string
 
@@ -22,8 +22,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 1️⃣ Backend
-      - name: Download backend artifact
+      # 1️⃣ Backend & Runtime
+      - name: Download artifacts
         uses: dawidd6/action-download-artifact@v5
         with:
           name: backend-exe
@@ -31,8 +31,7 @@ jobs:
           run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 2️⃣ Runtime
-      - name: Download runtime artifact
+      - name: Download runtime artifact  
         uses: dawidd6/action-download-artifact@v5
         with:
           name: runtime-exe
@@ -40,41 +39,61 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3️⃣ Download + Extract VSCodium → dossier "vscodium"
+      # 2️⃣ VSCodium → utilise chemin ABSOLU
       - name: Setup VSCodium
+        shell: powershell
         run: |
-          curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
-          if (Test-Path vscodium) { Remove-Item -Recurse -Force vscodium }
-          powershell Expand-Archive vscodium.zip -DestinationPath . -Force
+          # Download
+          Invoke-WebRequest -Uri "https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip" -OutFile "vscodium.zip"
+          
+          # Clean + Extract à la RACINE
+          if (Test-Path "vscodium") { Remove-Item -Recurse -Force "vscodium" }
+          Expand-Archive "vscodium.zip" -DestinationPath "${PWD}" -Force
+          
+          # VÉRIFIE ton product.json
+          if (Test-Path "${PWD}\vscodium\product.json") {
+            Write-Output "✅ product.json trouvé : vscodium/product.json"
+          } else {
+            Write-Error "❌ product.json NON trouvé dans vscodium/"
+            exit 1
+          }
 
-      # 4️⃣ Copy web-ui (même niveau que vscodium)
+      # 3️⃣ Copy web-ui (même niveau)
       - name: Copy web-ui
+        shell: cmd
         run: |
           xcopy /E /I /Y web-ui vscodium\
 
-      # 5️⃣ Clean + Copy TON product.json (vscodium/product.json → SudoStudio)
-      - name: Setup SudoStudio + product.json
+      # 4️⃣ TON product.json → SudoStudio (chemins absolus)
+      - name: Copy product.json + Setup SudoStudio
+        shell: powershell
         run: |
           # Clean complet
-          if (Test-Path vscodium\SudoStudio) { Remove-Item -Recurse -Force vscodium\SudoStudio }
-          mkdir vscodium\SudoStudio
+          $sudoStudioPath = "${PWD}\vscodium\SudoStudio"
+          if (Test-Path $sudoStudioPath) { 
+            Remove-Item -Recurse -Force $sudoStudioPath 
+          }
+          New-Item -ItemType Directory -Path $sudoStudioPath -Force | Out-Null
 
           # ✅ EXACT : vscodium/product.json → vscodium/SudoStudio/product.json
-          copy vscodium\product.json vscodium\SudoStudio\product.json
+          Copy-Item "${PWD}\vscodium\product.json" "${sudoStudioPath}\product.json" -Force
+          Write-Output "✅ Copié : vscodium/product.json → vscodium/SudoStudio/product.json"
 
-      # 6️⃣ Backend + Runtime
-      - name: Inject backend and runtime
+      # 5️⃣ Backend + Runtime
+      - name: Inject binaries
+        shell: cmd
         run: |
           copy /Y build-assets\backend\backend.exe vscodium\SudoStudio\
           copy /Y build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
 
-      # 7️⃣ Final ZIP (TOUT le dossier vscodium)
-      - name: Create final package
+      # 6️⃣ ZIP FINAL
+      - name: Create package
+        shell: powershell
         run: |
-          if (Test-Path SudoStudio-Windows.zip) { Remove-Item -Force SudoStudio-Windows.zip }
-          powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip -Force
+          if (Test-Path "SudoStudio-Windows.zip") { Remove-Item -Force "SudoStudio-Windows.zip" }
+          Compress-Archive -Path "${PWD}\vscodium\*" -DestinationPath "SudoStudio-Windows.zip" -Force
 
-      - name: Upload final build
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: SudoStudio-Windows
