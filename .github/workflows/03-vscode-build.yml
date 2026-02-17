@@ -55,41 +55,55 @@ jobs:
       # 4️⃣ Extract VSCodium
       # ===============================
       - name: Extract VSCodium
+        shell: powershell
         run: |
-          powershell Expand-Archive vscodium.zip -DestinationPath vscodium
+          Expand-Archive vscodium.zip -DestinationPath vscodium
 
       # ===============================
-      # 5️⃣ Replace product.json
+      # 5️⃣ Detect extracted folder dynamically
+      # ===============================
+      - name: Detect extracted folder
+        shell: powershell
+        run: |
+          $folder = Get-ChildItem vscodium | Where-Object { $_.PSIsContainer } | Select-Object -First 1
+          echo "FOLDER_NAME=$($folder.Name)" >> $env:GITHUB_ENV
+
+      # ===============================
+      # 6️⃣ Replace product.json
       # ===============================
       - name: Replace product.json
+        shell: powershell
         run: |
-          copy vscodium\product.json vscodium\resources\app\product.json
+          Copy-Item vscodium\product.json "vscodium\$env:FOLDER_NAME\resources\app\product.json" -Force
 
       # ===============================
-      # 6️⃣ Inject custom UI
+      # 7️⃣ Inject custom UI
       # ===============================
       - name: Inject custom UI
+        shell: powershell
         run: |
-          xcopy web-ui vscodium\resources\app\ /E /I /Y
+          xcopy web-ui "vscodium\$env:FOLDER_NAME\resources\app\" /E /I /Y
 
       # ===============================
-      # 7️⃣ Inject backend & runtime
+      # 8️⃣ Inject backend & runtime
       # ===============================
       - name: Inject backend and runtime
+        shell: powershell
         run: |
-          mkdir vscodium\SudoStudio
-          copy build-assets\backend\backend.exe vscodium\SudoStudio\
-          copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
+          New-Item -ItemType Directory -Force -Path "vscodium\$env:FOLDER_NAME\SudoStudio"
+          Copy-Item build-assets\backend\backend.exe "vscodium\$env:FOLDER_NAME\SudoStudio\" -Force
+          Copy-Item build-assets\runtime\server.exe "vscodium\$env:FOLDER_NAME\SudoStudio\runtime.exe" -Force
 
       # ===============================
-      # 8️⃣ Create final ZIP
+      # 9️⃣ Create final ZIP
       # ===============================
       - name: Create final package
+        shell: powershell
         run: |
-          powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip
+          Compress-Archive -Path "vscodium\$env:FOLDER_NAME\*" -DestinationPath SudoStudio-Windows.zip
 
       # ===============================
-      # 9️⃣ Upload final artifact
+      # 🔟 Upload final artifact
       # ===============================
       - name: Upload final build
         uses: actions/upload-artifact@v4
