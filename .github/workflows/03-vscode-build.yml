@@ -22,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 🚨 1️⃣ Backend
+      # 1️⃣ Backend
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -31,7 +31,7 @@ jobs:
           run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 🚨 2️⃣ Runtime  
+      # 2️⃣ Runtime
       - name: Download runtime artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -40,53 +40,46 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 🚨 3️⃣ Download + Extract VSCodium
-      - name: Download VSCodium Windows
+      # 3️⃣ Download + Extract VSCodium
+      - name: Setup VSCodium
         run: |
+          # Download
           curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
-
-      - name: Extract VSCodium (FORCE overwrite)
-        run: |
-          # SUPPRIME tout ce qui existe avant
+          
+          # Clean + Extract
           if (Test-Path vscodium) { Remove-Item -Recurse -Force vscodium }
-          powershell Expand-Archive vscodium.zip -DestinationPath vscodium -Force
+          powershell Expand-Archive vscodium.zip -DestinationPath . -Force
 
-      # 🚨 4️⃣ SUPPRIME SudoStudio + Prépare structure
-      - name: Prepare SudoStudio directory (FORCE clean)
+      # 4️⃣ Copy web-ui (au même niveau que VSCodium)
+      - name: Copy web-ui to root
         run: |
-          if (Test-Path vscodium\SudoStudio) { 
-            Remove-Item -Recurse -Force vscodium\SudoStudio 
-          }
-          mkdir vscodium\SudoStudio
-          mkdir vscodium\SudoStudio\web-ui
+          xcopy /E /I /Y web-ui .\VSCodium\
 
-      # 🚨 5️⃣ Copie web-ui (FORCE)
-      - name: Copy web-ui (FORCE overwrite)
+      # 5️⃣ Copy TON product.json (OBLIGATOIRE - pas de création)
+      - name: Copy YOUR product.json
         run: |
-          Remove-Item -Recurse -Force vscodium\SudoStudio\web-ui\* -ErrorAction SilentlyContinue
-          xcopy /E /I /Y web-ui vscodium\SudoStudio\web-ui\
+          # Clean SudoStudio
+          if (Test-Path VSCodium\SudoStudio) { Remove-Item -Recurse -Force VSCodium\SudoStudio }
+          mkdir VSCodium\SudoStudio
+          
+          # ✅ TON product.json EXACT (VSCodium/product.json → SudoStudio)
+          copy VSCodium\product.json VSCodium\SudoStudio\product.json
 
-      # 🚨 6️⃣ Copie product.json (FORCE)
-      - name: Copy product.json (FORCE)
+      # 6️⃣ Inject backend + runtime
+      - name: Inject backend and runtime
         run: |
-          if (Test-Path vscodium\SudoStudio\product.json) { 
-            Remove-Item -Force vscodium\SudoStudio\product.json 
-          }
-          copy vscodium\product.json vscodium\SudoStudio\product.json
+          copy /Y build-assets\backend\backend.exe VSCodium\SudoStudio\
+          copy /Y build-assets\runtime\server.exe VSCodium\SudoStudio\runtime.exe
+          
+          # Web-ui déjà copié au niveau VSCodium
+          xcopy /E /I /Y web-ui VSCodium\SudoStudio\web-ui\
 
-      # 🚨 7️⃣ Inject backend + runtime (FORCE)
-      - name: Inject backend and runtime (FORCE)
-        run: |
-          copy /Y build-assets\backend\backend.exe vscodium\SudoStudio\
-          copy /Y build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
-
-      # 🚨 8️⃣ Final ZIP (FORCE)
-      - name: Create final package (FORCE)
+      # 7️⃣ Final ZIP
+      - name: Create final package
         run: |
           if (Test-Path SudoStudio-Windows.zip) { Remove-Item -Force SudoStudio-Windows.zip }
-          powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip -Force
+          powershell Compress-Archive -Path VSCodium\* -DestinationPath SudoStudio-Windows.zip -Force
 
-      # 🚨 9️⃣ Upload
       - name: Upload final build
         uses: actions/upload-artifact@v4
         with:
