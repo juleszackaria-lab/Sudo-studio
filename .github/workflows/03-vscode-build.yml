@@ -40,45 +40,37 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3️⃣ 🆕 Copier dossier web UI du repo
-      - name: Copy web UI folder
-        run: |
-          xcopy /E /I web-ui vscodium\SudoStudio\web-ui  # Remplace "web-ui" par ton chemin exact
-
-      # 4️⃣ 🆕 Copier product.json du repo
-      - name: Copy VSCodium product.json
-        run: |
-          copy vscodium\resources\app\product.json vscodium\SudoStudio\product.json  # Ou ton chemin exact
-
-      # 5️⃣ Download VSCodium
+      # 3️⃣ Download VSCodium (AVANT extract pour product.json)
       - name: Download VSCodium Windows
         run: |
           curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
-      # 6️⃣ Extract
+      # 4️⃣ Extract VSCodium
       - name: Extract VSCodium
         run: |
           powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      # 7️⃣ Inject backend, runtime ET web UI
-      - name: Inject all assets
+      # 5️⃣ 🆕 Copier dossier web-ui (racine repo → SudoStudio)
+      - name: Copy web-ui folder
+        run: |
+          xcopy /E /I web-ui vscodium\SudoStudio\web-ui
+
+      # 6️⃣ 🆕 Copier product.json (vscodium/product.json → SudoStudio)
+      - name: Copy product.json
         run: |
           mkdir vscodium\SudoStudio
-          
-          # Backend + Runtime
+          copy vscodium\product.json vscodium\SudoStudio\product.json
+
+      # 7️⃣ Inject backend + runtime
+      - name: Inject backend and runtime
+        run: |
           copy build-assets\backend\backend.exe vscodium\SudoStudio\
           copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
-          
-          # Web UI (copié avant)
-          xcopy /E /I web-ui vscodium\SudoStudio\web-ui
-          
-          # product.json (copié avant)
-          copy product.json vscodium\SudoStudio\  # Si chemin différent, adapte
 
-      # 8️⃣ Package final
+      # 8️⃣ Final ZIP
       - name: Create final package
         run: |
-          powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip
+          powershell Compress-Archive -Path vscodium\* -DestinationPath SudoStudio-Windows.zip -Force
 
       - name: Upload final build
         uses: actions/upload-artifact@v4
