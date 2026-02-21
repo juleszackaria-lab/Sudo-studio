@@ -39,12 +39,10 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download VSCodium
-        run: |
-          curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
+        run: curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
       - name: Extract VSCodium
-        run: |
-          powershell Expand-Archive vscodium.zip -DestinationPath build
+        run: powershell Expand-Archive vscodium.zip -DestinationPath build
 
       - name: Inject SudoStudio
         run: |
@@ -55,6 +53,7 @@ jobs:
           copy product.json build\SudoStudio\product.json
 
       - name: Create start.bat
+        shell: cmd
         run: |
           echo @echo off > build\SudoStudio\start.bat
           echo cd /d "%%~dp0" >> build\SudoStudio\start.bat
@@ -65,29 +64,6 @@ jobs:
 
       - name: Install Inno Setup
         run: choco install innosetup -y
-
-      - name: Create installer script
-        shell: powershell
-        run: |
-          $content = @"
-[Setup]
-AppName=Sudo Studio
-AppVersion=1.0
-DefaultDirName={pf}\SudoStudio
-DefaultGroupName=SudoStudio
-OutputBaseFilename=SudoStudio-Setup
-Compression=lzma
-SolidCompression=yes
-
-[Files]
-Source: "build\*"; DestDir: "{app}"; Flags: recursesubdirs
-
-[Icons]
-Name: "{group}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat"
-Name: "{commondesktop}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat"
-"@
-
-          $content | Out-File -Encoding ASCII installer.iss
 
       - name: Build installer
         run: iscc installer.iss
