@@ -1,4 +1,4 @@
-name: 03 - Package Sudo Studio (Windows Portable)
+name: 03 - Package Sudo Studio (Windows Installer)
 
 on:
   workflow_dispatch:
@@ -38,46 +38,57 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download VSCodium Windows
+      - name: Download VSCodium
         run: |
           curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
       - name: Extract VSCodium
         run: |
-          powershell Expand-Archive vscodium.zip -DestinationPath vscodium
+          powershell Expand-Archive vscodium.zip -DestinationPath build
 
-      - name: Inject ALL assets + AUTO-START Backend
+      - name: Inject SudoStudio
         run: |
-          mkdir vscodium\SudoStudio
-          copy build-assets\backend\backend.exe vscodium\SudoStudio\
-          copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
-          xcopy /E /I web-ui vscodium\SudoStudio\web-ui\
-          copy product.json vscodium\SudoStudio\product.json
+          mkdir build\SudoStudio
+          copy build-assets\backend\backend.exe build\SudoStudio\
+          copy build-assets\runtime\server.exe build\SudoStudio\runtime.exe
+          xcopy /E /I web-ui build\SudoStudio\web-ui\
+          copy product.json build\SudoStudio\product.json
 
-      - name: Create auto-start script
+      - name: Create start.bat
         run: |
-          echo @echo off > vscodium\SudoStudio\start.bat
-          echo cd /d "%%~dp0" >> vscodium\SudoStudio\start.bat
-          echo start backend.exe >> vscodium\SudoStudio\start.bat
-          echo start runtime.exe >> vscodium\SudoStudio\start.bat
-          echo timeout /t 3 >> vscodium\SudoStudio\start.bat
-          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio >> vscodium\SudoStudio\start.bat
+          echo @echo off > build\SudoStudio\start.bat
+          echo cd /d "%%~dp0" >> build\SudoStudio\start.bat
+          echo start backend.exe >> build\SudoStudio\start.bat
+          echo start runtime.exe >> build\SudoStudio\start.bat
+          echo timeout /t 3 >> build\SudoStudio\start.bat
+          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio >> build\SudoStudio\start.bat
 
-      - name: Create SudoStudio launcher
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Create installer script
         run: |
-          echo @echo off > SudoStudio.cmd
-          echo cd /d "%%~dp0vscodium\SudoStudio" >> SudoStudio.cmd
-          echo call start.bat >> SudoStudio.cmd
+          echo [Setup] > installer.iss
+          echo AppName=Sudo Studio >> installer.iss
+          echo AppVersion=1.0 >> installer.iss
+          echo DefaultDirName={pf}\SudoStudio >> installer.iss
+          echo DefaultGroupName=SudoStudio >> installer.iss
+          echo OutputBaseFilename=SudoStudio-Setup >> installer.iss
+          echo Compression=lzma >> installer.iss
+          echo SolidCompression=yes >> installer.iss
+          echo >> installer.iss
+          echo [Files] >> installer.iss
+          echo Source: "build\*"; DestDir: "{app}"; Flags: recursesubdirs >> installer.iss
+          echo >> installer.iss
+          echo [Icons] >> installer.iss
+          echo Name: "{group}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat" >> installer.iss
+          echo Name: "{commondesktop}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat" >> installer.iss
 
-      - name: Create final package
-        run: |
-          powershell Compress-Archive -Path vscodium\* SudoStudio-Windows.zip
-          powershell Compress-Archive -Path SudoStudio.cmd -DestinationPath SudoStudio-Launcher.zip
+      - name: Build installer
+        run: iscc installer.iss
 
-      - name: Upload final build
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: SudoStudio-Windows
-          path: |
-            SudoStudio-Windows.zip
-            SudoStudio-Launcher.zip
+          name: SudoStudio-Installer
+          path: Output\SudoStudio-Setup.exe
