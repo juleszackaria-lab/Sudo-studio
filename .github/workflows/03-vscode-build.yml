@@ -67,22 +67,27 @@ jobs:
         run: choco install innosetup -y
 
       - name: Create installer script
+        shell: powershell
         run: |
-          echo [Setup] > installer.iss
-          echo AppName=Sudo Studio >> installer.iss
-          echo AppVersion=1.0 >> installer.iss
-          echo DefaultDirName={pf}\SudoStudio >> installer.iss
-          echo DefaultGroupName=SudoStudio >> installer.iss
-          echo OutputBaseFilename=SudoStudio-Setup >> installer.iss
-          echo Compression=lzma >> installer.iss
-          echo SolidCompression=yes >> installer.iss
-          echo >> installer.iss
-          echo [Files] >> installer.iss
-          echo Source: "build\*"; DestDir: "{app}"; Flags: recursesubdirs >> installer.iss
-          echo >> installer.iss
-          echo [Icons] >> installer.iss
-          echo Name: "{group}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat" >> installer.iss
-          echo Name: "{commondesktop}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat" >> installer.iss
+          $content = @"
+[Setup]
+AppName=Sudo Studio
+AppVersion=1.0
+DefaultDirName={pf}\SudoStudio
+DefaultGroupName=SudoStudio
+OutputBaseFilename=SudoStudio-Setup
+Compression=lzma
+SolidCompression=yes
+
+[Files]
+Source: "build\*"; DestDir: "{app}"; Flags: recursesubdirs
+
+[Icons]
+Name: "{group}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat"
+Name: "{commondesktop}\SudoStudio"; Filename: "{app}\SudoStudio\start.bat"
+"@
+
+          $content | Out-File -Encoding ASCII installer.iss
 
       - name: Build installer
         run: iscc installer.iss
