@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  backend:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - ENTERPRISE_JWT_SECRET=${ENTERPRISE_JWT_SECRET}
+      - ENTERPRISE_INIT_ADMIN=${ENTERPRISE_INIT_ADMIN}
+      - ENTERPRISE_ADMIN_USER=${ENTERPRISE_ADMIN_USER}
+      - ENTERPRISE_ADMIN_PASS=${ENTERPRISE_ADMIN_PASS}
+    restart: always
+    volumes:
+      - ./:/app:ro

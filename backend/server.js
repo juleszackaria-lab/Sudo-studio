@@ -3,6 +3,15 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const aiModelsManager = require('./ai/aiModelsManager');
+// Enterprise security & utilities
+const helmet = require('helmet');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const { initDB } = require('./models/user.model');
+const logger = require('./utils/logger');
+const adminRoutes = require('./routes/admin.routes');
+const papitoRoutes = require('./routes/papito.routes');
+const monitorRoutes = require('./routes/monitor.routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -30,6 +39,32 @@ const startServer = (port) => {
 
 app.use(express.static(path.join(__dirname, '../dist')));
 app.use(express.json()); // Middleware to parse JSON bodies
+
+// Enterprise global hardening (added, does not remove existing middleware)
+app.use(helmet());
+
+const corsOptions = {
+  origin: [
+    'http://localhost:5173',
+  ],
+};
+app.use(cors(corsOptions));
+
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+});
+app.use(limiter);
+
+// Initialize enterprise DB and logger
+initDB().catch((e) => {
+  console.error('Failed to initialize enterprise DB:', e);
+});
+
+// Mount enterprise routes (new, existing routes untouched)
+app.use('/', adminRoutes);
+app.use('/papito', papitoRoutes);
+app.use('/', monitorRoutes);
 
 // Serve simple web UI for chat and model management
 app.use('/ui', express.static(path.join(__dirname, '../web-ui')));
@@ -140,3 +175,14 @@ io.on('connection', (socket) => {
 });
 
 startServer(PORT);
+
+// Centralized error handler (added, does not modify existing handlers)
+app.use((err, req, res, next) => {
+  try {
+    logger.error(err);
+  } catch (e) {
+    console.error('Logger error:', e);
+  }
+  const status = err.status || 500;
+  res.status(status).json({ error: err.message || 'Internal Server Error' });
+});

@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0-enterprise",
+  "enterprise": true,
+  "security": [
+    "jwt-auth",
+    "role-based-access",
+    "rate-limit",
+    "helmet",
+    "winston-logging",
+    "docker-sandbox"
+  ]
+}
