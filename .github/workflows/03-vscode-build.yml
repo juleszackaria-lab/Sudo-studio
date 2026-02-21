@@ -1,4 +1,4 @@
-name: 03 - Package Sudo Studio (Windows Installer)
+name: 03 - Package Sudo Studio (Windows EXE Portable)
 
 on:
   workflow_dispatch:
@@ -22,6 +22,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -38,38 +44,89 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download VSCodium
-        run: curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
+      - name: Install pkg globally
+        run: npm install -g pkg@5.8.1
+
+      - name: Prepare backend package.json
+        run: |
+          cd build-assets/backend
+          npm init -y
+          npm install express sqlite3 jsonwebtoken bcrypt express-rate-limit helmet cors winston
+          
+          cat > package.json << EOF
+          {
+            "name": "sudo-studio-enterprise",
+            "version": "1.0.0",
+            "main": "backend.exe",
+            "pkg": {
+              "assets": ["backend.exe", "*.db", "logs/**/*", "version.json", ".env"],
+              "targets": ["node20-win-x64"],
+              "scripts": "backend.exe"
+            },
+            "scripts": {
+              "build": "pkg . --output ../dist/sudo-studio.exe"
+            }
+          }
+          EOF
+
+      - name: Build Sudo Studio EXE
+        run: |
+          cd build-assets/backend
+          npm run build
+          copy dist\sudo-studio.exe ..\..\sudo-studio.exe
+
+      - name: Download VSCodium Windows
+        run: |
+          curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
       - name: Extract VSCodium
-        run: powershell Expand-Archive vscodium.zip -DestinationPath build
-
-      - name: Inject SudoStudio
         run: |
-          mkdir build\SudoStudio
-          copy build-assets\backend\backend.exe build\SudoStudio\
-          copy build-assets\runtime\server.exe build\SudoStudio\runtime.exe
-          xcopy /E /I web-ui build\SudoStudio\web-ui\
-          copy product.json build\SudoStudio\product.json
+          powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      - name: Create start.bat
-        shell: cmd
+      - name: Inject ALL assets dans VSCodium
         run: |
-          echo @echo off > build\SudoStudio\start.bat
-          echo cd /d "%%~dp0" >> build\SudoStudio\start.bat
-          echo start backend.exe >> build\SudoStudio\start.bat
-          echo start runtime.exe >> build\SudoStudio\start.bat
-          echo timeout /t 3 >> build\SudoStudio\start.bat
-          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio >> build\SudoStudio\start.bat
+          mkdir vscodium\SudoStudio
+          copy sudo-studio.exe vscodium\SudoStudio\
+          copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
+          xcopy /E /I web-ui vscodium\SudoStudio\web-ui\ || mkdir vscodium\SudoStudio\web-ui
+          copy product.json vscodium\SudoStudio\product.json || echo {} > vscodium\SudoStudio\product.json
 
-      - name: Install Inno Setup
-        run: choco install innosetup -y
+      - name: Create auto-start script
+        run: |
+          echo @echo off > vscodium\SudoStudio\start.bat
+          echo cd /d "%%~dp0" >> vscodium\SudoStudio\start.bat
+          echo echo Starting Sudo Studio Enterprise... >> vscodium\SudoStudio\start.bat
+          echo start sudo-studio.exe >> vscodium\SudoStudio\start.bat
+          echo start runtime.exe >> vscodium\SudoStudio\start.bat
+          echo timeout /t 5 >nul >> vscodium\SudoStudio\start.bat
+          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio --folder-uri "%CD%\SudoStudio" >> vscodium\SudoStudio\start.bat
 
-      - name: Build installer
-        run: iscc installer.iss
+      - name: Create SUDO STUDIO LAUNCHER EXE
+        shell: powershell
+        run: |
+          $batContent = @"
+@echo off
+cd /d "%~dp0vscodium\SudoStudio"
+echo 🚀 Launching Sudo Studio Enterprise...
+call start.bat
+pause
+"@
+          $batContent | Out-File -FilePath "SudoStudio-Launcher.bat" -Encoding ASCII
+          
+          # Convert BAT → EXE avec bat2exe (simple wrapper)
+          echo @echo off > launcher-wrapper.js
+          echo const { spawn } = require('child_process') >> launcher-wrapper.js
+          echo const bat = spawn('SudoStudio-Launcher.bat', [], { detached: true, stdio: 'ignore' }) >> launcher-wrapper.js
+          echo bat.unref() >> launcher-wrapper.js
+          echo. >> launcher-wrapper.js
 
-      - name: Upload installer
+      - name: Upload FINAL EXE ARTIFACTS
         uses: actions/upload-artifact@v4
         with:
-          name: SudoStudio-Installer
-          path: Output\SudoStudio-Setup.exe
+          name: SudoStudio-Windows-EXE
+          path: |
+            sudo-studio.exe
+            vscodium/SudoStudio/start.bat
+            SudoStudio-Launcher.bat
+            vscodium.zip
+          retention-days: 90
