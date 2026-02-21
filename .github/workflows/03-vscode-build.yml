@@ -32,7 +32,7 @@ jobs:
         uses: dawidd6/action-download-artifact@v5
         with:
           name: backend-exe
-          path: build-assets/backend
+          path: backend
           run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -40,93 +40,102 @@ jobs:
         uses: dawidd6/action-download-artifact@v5
         with:
           name: runtime-exe
-          path: build-assets/runtime
+          path: runtime
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install pkg globally
+      - name: Install pkg
         run: npm install -g pkg@5.8.1
 
-      - name: Prepare backend package.json
+      - name: Fix backend pour pkg (CRITIQUE)
         run: |
-          cd build-assets/backend
+          cd backend
           npm init -y
-          npm install express sqlite3 jsonwebtoken bcrypt express-rate-limit helmet cors winston
           
-          cat > package.json << EOF
+          # Dependencies MINIMALES pour ton backend
+          npm install express@4 sqlite3@5 jsonwebtoken@9 bcrypt@5 express-rate-limit@7 helmet@7 cors@2 winston@3
+          
+          # package.json PKG prêt
+          cat > package.json << 'EOF'
           {
             "name": "sudo-studio-enterprise",
             "version": "1.0.0",
-            "main": "backend.exe",
+            "main": "index.js",
+            "bin": "index.js",
             "pkg": {
-              "assets": ["backend.exe", "*.db", "logs/**/*", "version.json", ".env"],
+              "assets": ["papito-core.js", "*.db", "logs/**/*", "version.json", ".env"],
               "targets": ["node20-win-x64"],
-              "scripts": "backend.exe"
+              "scripts": "index.js"
             },
             "scripts": {
-              "build": "pkg . --output ../dist/sudo-studio.exe"
+              "build": "pkg index.js --output ../SudoStudio-Backend.exe --targets node20-win-x64"
             }
           }
           EOF
 
-      - name: Build Sudo Studio EXE
+      - name: BUILD EXE BACKEND ✅
         run: |
-          cd build-assets/backend
+          cd backend
           npm run build
-          copy dist\sudo-studio.exe ..\..\sudo-studio.exe
+          dir SudoStudio-Backend.exe
 
-      - name: Download VSCodium Windows
+      - name: Download VSCodium
         run: |
           curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
       - name: Extract VSCodium
-        run: |
-          powershell Expand-Archive vscodium.zip -DestinationPath vscodium
+        run: powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      - name: Inject ALL assets dans VSCodium
-        run: |
-          mkdir vscodium\SudoStudio
-          copy sudo-studio.exe vscodium\SudoStudio\
-          copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
-          xcopy /E /I web-ui vscodium\SudoStudio\web-ui\ || mkdir vscodium\SudoStudio\web-ui
-          copy product.json vscodium\SudoStudio\product.json || echo {} > vscodium\SudoStudio\product.json
-
-      - name: Create auto-start script
-        run: |
-          echo @echo off > vscodium\SudoStudio\start.bat
-          echo cd /d "%%~dp0" >> vscodium\SudoStudio\start.bat
-          echo echo Starting Sudo Studio Enterprise... >> vscodium\SudoStudio\start.bat
-          echo start sudo-studio.exe >> vscodium\SudoStudio\start.bat
-          echo start runtime.exe >> vscodium\SudoStudio\start.bat
-          echo timeout /t 5 >nul >> vscodium\SudoStudio\start.bat
-          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio --folder-uri "%CD%\SudoStudio" >> vscodium\SudoStudio\start.bat
-
-      - name: Create SUDO STUDIO LAUNCHER EXE
+      - name: Package FINAL (Backend EXE + Runtime + UI)
         shell: powershell
         run: |
-          $batContent = @"
+          # Structure finale
+          New-Item -ItemType Directory -Force -Path "SudoStudio"
+          
+          # Backend EXE
+          Copy-Item "SudoStudio-Backend.exe" "SudoStudio\SudoStudio.exe"
+          
+          # Runtime
+          Copy-Item "runtime\server.exe" "SudoStudio\runtime.exe" -Force
+          
+          # Web UI
+          if (Test-Path "web-ui") { 
+            Copy-Item "web-ui" "SudoStudio\web-ui" -Recurse -Force 
+          } else { 
+            New-Item -ItemType Directory -Force -Path "SudoStudio\web-ui"
+          }
+          
+          # Configs
+          '@{"version":"1.0.0"}' | Out-File "SudoStudio\version.json"
+          'PORT=3000`nJWT_SECRET=supersecret' | Out-File "SudoStudio\.env"
+
+      - name: Create Launcher 1-CLIC
+        shell: powershell
+        run: |
+          $launcher = @"
 @echo off
-cd /d "%~dp0vscodium\SudoStudio"
-echo 🚀 Launching Sudo Studio Enterprise...
-call start.bat
+title Sudo Studio Enterprise
+cd /d "%~dp0SudoStudio"
+echo.
+echo 🚀 Starting Sudo Studio Enterprise...
+echo.
+start "" SudoStudio.exe
+start "" runtime.exe
+timeout /t 5 /nobreak >nul
+echo ✅ Backend + Runtime OK! Opening VSCodium...
+start "" "..\vscodium\codium.exe" --user-data-dir "." --folder-uri "%CD%"
+echo.
+echo 🎉 Sudo Studio ready! http://localhost:3000/health
 pause
 "@
-          $batContent | Out-File -FilePath "SudoStudio-Launcher.bat" -Encoding ASCII
-          
-          # Convert BAT → EXE avec bat2exe (simple wrapper)
-          echo @echo off > launcher-wrapper.js
-          echo const { spawn } = require('child_process') >> launcher-wrapper.js
-          echo const bat = spawn('SudoStudio-Launcher.bat', [], { detached: true, stdio: 'ignore' }) >> launcher-wrapper.js
-          echo bat.unref() >> launcher-wrapper.js
-          echo. >> launcher-wrapper.js
+          $launcher | Out-File "SudoStudio-Launcher.bat" -Encoding ASCII -NoNewline
 
-      - name: Upload FINAL EXE ARTIFACTS
+      - name: FINAL EXE ARTIFACT (PAS ZIP!)
         uses: actions/upload-artifact@v4
         with:
           name: SudoStudio-Windows-EXE
           path: |
-            sudo-studio.exe
-            vscodium/SudoStudio/start.bat
+            SudoStudio-Backend.exe
             SudoStudio-Launcher.bat
-            vscodium.zip
-          retention-days: 90
+            SudoStudio/
+          retention-days: 30
