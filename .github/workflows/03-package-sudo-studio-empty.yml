@@ -1,0 +1,17 @@
+name: 03 - Package Sudo Studio - EMPTY
+on:
+  workflow_dispatch:
+    inputs:
+      backend_run_id:
+        description: 'ID run Backend'
+        required: true
+        type: string
+      runtime_run_id:
+        description: 'ID run Runtime'
+        required: true
+        type: string
+jobs:
+  dummy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "This is a placeholder workflow"
