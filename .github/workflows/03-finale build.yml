@@ -1,0 +1,10 @@
+name: 03 - Package Sudo Studio
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - run: echo "Manual only"
