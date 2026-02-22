@@ -22,10 +22,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ===============================
-      # DOWNLOAD ARTIFACTS
-      # ===============================
-
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -42,31 +38,19 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ===============================
-      # DOWNLOAD & EXTRACT VSCODIUM
-      # ===============================
-
       - name: Download VSCodium
         run: curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
       - name: Extract VSCodium
         run: powershell Expand-Archive vscodium.zip -DestinationPath vscodium
 
-      # ===============================
-      # INJECT EVERYTHING
-      # ===============================
-
-      - name: Inject ALL assets
+      - name: Inject assets
         run: |
           mkdir vscodium\SudoStudio
           copy build-assets\backend\backend.exe vscodium\SudoStudio\
           copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
           xcopy /E /I web-ui vscodium\SudoStudio\web-ui\
           copy product.json vscodium\SudoStudio\product.json
-
-      # ===============================
-      # CREATE START SCRIPTS
-      # ===============================
 
       - name: Create auto-start script
         shell: cmd
@@ -84,10 +68,6 @@ jobs:
           echo @echo off > SudoStudio.cmd
           echo cd /d "%%~dp0vscodium\SudoStudio" >> SudoStudio.cmd
           echo call start.bat >> SudoStudio.cmd
-
-      # ===============================
-      # INSTALLER CREATION
-      # ===============================
 
       - name: Install Inno Setup
         run: choco install innosetup -y
@@ -119,11 +99,7 @@ Name: "{commondesktop}\SudoStudio"; Filename: "{app}\SudoStudio.cmd"
       - name: Build installer
         run: iscc installer.iss
 
-      # ===============================
-      # UPLOAD FINAL EXE
-      # ===============================
-
-      - name: Upload final installer
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: SudoStudio-Installer
