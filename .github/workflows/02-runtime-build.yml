@@ -1,141 +1,34 @@
-name: 03 - Package Sudo Studio (Windows EXE Portable)
+name: 02 - Build Runtime
 
 on:
   workflow_dispatch:
-    inputs:
-      backend_run_id:
-        description: 'ID run Backend'
-        required: true
-        type: string
-      runtime_run_id:
-        description: 'ID run Runtime'
-        required: true
-        type: string
 
 jobs:
-  package:
+  build:
     runs-on: windows-latest
-    permissions:
-      actions: read
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
+          node-version: 18
 
-      - name: Download backend artifact
-        uses: dawidd6/action-download-artifact@v5
-        with:
-          name: backend-exe
-          path: backend
-          run_id: ${{ github.event.inputs.backend_run_id }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install dependencies
+        working-directory: runtime
+        run: npm install
 
-      - name: Download runtime artifact
-        uses: dawidd6/action-download-artifact@v5
-        with:
-          name: runtime-exe
-          path: runtime
-          run_id: ${{ github.event.inputs.runtime_run_id }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install pkg
-        run: npm install -g pkg@5.8.1
-
-      - name: Fix backend pour pkg (CRITIQUE)
+      - name: Build runtime executable
+        working-directory: runtime
         run: |
-          cd backend
-          npm init -y
-          
-          # Dependencies MINIMALES pour ton backend
-          npm install express@4 sqlite3@5 jsonwebtoken@9 bcrypt@5 express-rate-limit@7 helmet@7 cors@2 winston@3
-          
-          # package.json PKG prêt
-          cat > package.json << 'EOF'
-          {
-            "name": "sudo-studio-enterprise",
-            "version": "1.0.0",
-            "main": "index.js",
-            "bin": "index.js",
-            "pkg": {
-              "assets": ["papito-core.js", "*.db", "logs/**/*", "version.json", ".env"],
-              "targets": ["node20-win-x64"],
-              "scripts": "index.js"
-            },
-            "scripts": {
-              "build": "pkg index.js --output ../SudoStudio-Backend.exe --targets node20-win-x64"
-            }
-          }
-          EOF
-
-      - name: BUILD EXE BACKEND ✅
-        run: |
-          cd backend
           npm run build
-          dir SudoStudio-Backend.exe
+          npm install -g pkg
+          pkg . --targets node18-win-x64 --output server.exe
 
-      - name: Download VSCodium
-        run: |
-          curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
-
-      - name: Extract VSCodium
-        run: powershell Expand-Archive vscodium.zip -DestinationPath vscodium
-
-      - name: Package FINAL (Backend EXE + Runtime + UI)
-        shell: powershell
-        run: |
-          # Structure finale
-          New-Item -ItemType Directory -Force -Path "SudoStudio"
-          
-          # Backend EXE
-          Copy-Item "SudoStudio-Backend.exe" "SudoStudio\SudoStudio.exe"
-          
-          # Runtime
-          Copy-Item "runtime\server.exe" "SudoStudio\runtime.exe" -Force
-          
-          # Web UI
-          if (Test-Path "web-ui") { 
-            Copy-Item "web-ui" "SudoStudio\web-ui" -Recurse -Force 
-          } else { 
-            New-Item -ItemType Directory -Force -Path "SudoStudio\web-ui"
-          }
-          
-          # Configs
-          '@{"version":"1.0.0"}' | Out-File "SudoStudio\version.json"
-          'PORT=3000`nJWT_SECRET=supersecret' | Out-File "SudoStudio\.env"
-
-      - name: Create Launcher 1-CLIC
-        shell: powershell
-        run: |
-          $launcher = @"
-@echo off
-title Sudo Studio Enterprise
-cd /d "%~dp0SudoStudio"
-echo.
-echo 🚀 Starting Sudo Studio Enterprise...
-echo.
-start "" SudoStudio.exe
-start "" runtime.exe
-timeout /t 5 /nobreak >nul
-echo ✅ Backend + Runtime OK! Opening VSCodium...
-start "" "..\vscodium\codium.exe" --user-data-dir "." --folder-uri "%CD%"
-echo.
-echo 🎉 Sudo Studio ready! http://localhost:3000/health
-pause
-"@
-          $launcher | Out-File "SudoStudio-Launcher.bat" -Encoding ASCII -NoNewline
-
-      - name: FINAL EXE ARTIFACT (PAS ZIP!)
+      - name: Upload runtime artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SudoStudio-Windows-EXE
-          path: |
-            SudoStudio-Backend.exe
-            SudoStudio-Launcher.bat
-            SudoStudio/
-          retention-days: 30
+          name: runtime-exe
+          path: runtime/server.exe
