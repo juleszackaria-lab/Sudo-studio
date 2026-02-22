@@ -12,6 +12,9 @@ on:
         description: 'ID run Runtime'
         required: true
         type: string
+  repository_dispatch:
+    types:
+      - run-package-3
 
 jobs:
   package:
@@ -31,12 +34,18 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Prepare inputs (support workflow_dispatch and repository_dispatch)
+        id: prepare_inputs
+        run: |
+          echo "BACKEND_RUN_ID=${{ github.event.inputs.backend_run_id || github.event.client_payload.backend_run_id }}" >> $GITHUB_ENV
+          echo "RUNTIME_RUN_ID=${{ github.event.inputs.runtime_run_id || github.event.client_payload.runtime_run_id }}" >> $GITHUB_ENV
+
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
           name: backend-exe
           path: build-assets/backend
-          run_id: ${{ github.event.inputs.backend_run_id }}
+          run_id: ${{ env.BACKEND_RUN_ID }}
           github_token: ${{ secrets.PAT_DOWNLOAD }}
 
       - name: Download runtime artifact
@@ -44,7 +53,7 @@ jobs:
         with:
           name: runtime-exe
           path: build-assets/runtime
-          run_id: ${{ github.event.inputs.runtime_run_id }}
+          run_id: ${{ env.RUNTIME_RUN_ID }}
           github_token: ${{ secrets.PAT_DOWNLOAD }}
 
       - name: Download VSCodium
