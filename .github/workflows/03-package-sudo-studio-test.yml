@@ -1,5 +1,6 @@
-name: 03 - Package Sudo Studio (Windows Installer)
+name: 03 - Package Sudo Studio (Windows Installer) - SAFE
 
+# ✅ Déclenchement 100% manuel
 on:
   workflow_dispatch:
     inputs:
@@ -15,12 +16,22 @@ on:
 jobs:
   package:
     runs-on: windows-latest
+
+    # 🔒 Permissions limitées pour réduire tout risque d'appel externe
     permissions:
       actions: read
+      contents: read
+      # Ne rien permettre d'autre
+      id-token: none
+      pull-requests: none
+      issues: none
+      checks: none
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1   # Limite l'historique, rien de superflu
 
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
@@ -29,6 +40,7 @@ jobs:
           path: build-assets/backend
           run_id: ${{ github.event.inputs.backend_run_id }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+        # ⚠️ Ne relance aucun workflow ici
 
       - name: Download runtime artifact
         uses: dawidd6/action-download-artifact@v5
