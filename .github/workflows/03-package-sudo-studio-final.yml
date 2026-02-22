@@ -14,9 +14,14 @@ on:
         required: true
         type: string
         default: '22039587993'
+      confirm_manual:
+        description: "Tapez I_CONFIRM_RUN pour confirmer un lancement manuel depuis l'UI"
+        required: true
+        type: string
 
 jobs:
   package:
+    if: ${{ github.event.inputs.confirm_manual == 'I_CONFIRM_RUN' }}
     runs-on: windows-latest
 
     permissions:
