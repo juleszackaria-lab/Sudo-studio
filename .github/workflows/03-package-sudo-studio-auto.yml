@@ -17,23 +17,39 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-            const targets = {
-              backend: '01 - Build Backend EXE',
-              runtime: '02 - Build Runtime'
-            };
-            const result = {};
-            const wfList = await github.rest.actions.listRepoWorkflows({ owner, repo });
-            for (const key of Object.keys(targets)) {
-              const name = targets[key];
-              const wf = wfList.data.workflows.find(w => w.name === name);
-              if (!wf) throw new Error(`Workflow not found: ${name}`);
-              const runs = await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: wf.id, status: 'success', per_page: 1 });
-              if (!runs.data.workflow_runs || runs.data.workflow_runs.length === 0) throw new Error(`No successful runs for ${name}`);
-              result[`${key}_run_id`] = String(runs.data.workflow_runs[0].id);
+            try {
+              const owner = context.repo.owner;
+              const repo = context.repo.repo;
+              const targets = {
+                backend: '01 - Build Backend EXE',
+                runtime: '02 - Build Runtime'
+              };
+              const result = {};
+              const wfList = await github.rest.actions.listRepoWorkflows({ owner, repo });
+              console.log('Found workflows count:', wfList.data.workflows.length);
+              // debug list first 20 workflow names
+              console.log('Workflows sample:', wfList.data.workflows.slice(0,20).map(w=>w.name));
+              for (const key of Object.keys(targets)) {
+                const name = targets[key];
+                const wf = wfList.data.workflows.find(w => w.name === name);
+                if (!wf) {
+                  const available = wfList.data.workflows.map(w=>w.name).slice(0,50).join(', ');
+                  throw new Error(`Workflow not found: ${name}. Available workflows (sample): ${available}`);
+                }
+                console.log(`Found workflow ${name} -> id=${wf.id}`);
+                const runs = await github.rest.actions.listWorkflowRuns({ owner, repo, workflow_id: wf.id, status: 'success', per_page: 1 });
+                console.log(`Runs for ${name}:`, runs.data.total_count);
+                if (!runs.data.workflow_runs || runs.data.workflow_runs.length === 0) {
+                  throw new Error(`No successful runs for ${name} (workflow id ${wf.id})`);
+                }
+                result[`${key}_run_id`] = String(runs.data.workflow_runs[0].id);
+              }
+              console.log('Selected run ids:', result);
+              return result;
+            } catch (e) {
+              console.error('Error finding build runs:', e.message || e);
+              throw e;
             }
-            return result;
 
   package:
     needs: prepare
