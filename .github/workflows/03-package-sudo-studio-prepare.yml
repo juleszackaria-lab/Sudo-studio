@@ -1,0 +1,95 @@
+name: 03 - Package Sudo Studio (Windows Installer) - PREPARE
+
+# Manuel uniquement — assemble les assets (backend/runtime/web-ui) en un artefact
+on:
+  workflow_dispatch:
+    inputs:
+      backend_run_id:
+        description: 'ID run Backend'
+        required: true
+        type: string
+        default: '22258331626'
+      runtime_run_id:
+        description: 'ID run Runtime'
+        required: true
+        type: string
+        default: '22039587993'
+      confirm_manual:
+        description: "Tapez I_CONFIRM_RUN pour confirmer un lancement manuel depuis l'UI"
+        required: true
+        type: string
+
+jobs:
+  prepare:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.confirm_manual == 'I_CONFIRM_RUN' }}
+    runs-on: windows-latest
+
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download backend artifact
+        uses: dawidd6/action-download-artifact@v5
+        with:
+          name: backend-exe
+          path: build-assets/backend
+          run_id: ${{ github.event.inputs.backend_run_id }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download runtime artifact
+        uses: dawidd6/action-download-artifact@v5
+        with:
+          name: runtime-exe
+          path: build-assets/runtime
+          run_id: ${{ github.event.inputs.runtime_run_id }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download VSCodium
+        run: curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
+
+      - name: Extract VSCodium
+        run: powershell Expand-Archive vscodium.zip -DestinationPath vscodium
+
+      - name: Inject assets
+        shell: cmd
+        run: |
+          mkdir vscodium\SudoStudio
+          copy build-assets\backend\backend.exe vscodium\SudoStudio\
+          copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
+          xcopy /E /I web-ui vscodium\SudoStudio\web-ui\
+          copy product.json vscodium\SudoStudio\product.json
+
+      - name: Create auto-start script
+        shell: cmd
+        run: |
+          echo @echo off > vscodium\SudoStudio\start.bat
+          echo cd /d "%%~dp0" >> vscodium\SudoStudio\start.bat
+          echo start backend.exe >> vscodium\SudoStudio\start.bat
+          echo start runtime.exe >> vscodium\SudoStudio\start.bat
+          echo timeout /t 3 >> vscodium\SudoStudio\start.bat
+          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio >> vscodium\SudoStudio\start.bat
+
+      - name: Create launcher
+        shell: cmd
+        run: |
+          echo @echo off > SudoStudio.cmd
+          echo cd /d "%%~dp0vscodium\SudoStudio" >> SudoStudio.cmd
+          echo call start.bat >> SudoStudio.cmd
+
+      - name: Package prepared vscodium
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path Output | Out-Null
+          Compress-Archive -Path vscodium\SudoStudio -DestinationPath Output\prepared-vscodium.zip -Force
+
+      - name: Upload prepared vscodium artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscodium-with-assets
+          path: Output\prepared-vscodium.zip
