@@ -1,6 +1,6 @@
 name: 03 - Package Sudo Studio (Windows Installer) - FINAL
 
-# 🔹 Déclenchement 100% manuel
+# Déclenchement 100% manuel — ne doit jamais s'exécuter sur commit
 on:
   workflow_dispatch:
     inputs:
