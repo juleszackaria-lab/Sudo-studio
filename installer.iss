@@ -8,9 +8,14 @@ Compression=lzma
 SolidCompression=yes
 
 [Files]
-Source: "vscodium\*"; DestDir: "{app}"; Flags: recursesubdirs
-Source: "SudoStudio.cmd"; DestDir: "{app}"
+; Copie tout le contenu du dossier build vers le dossier d'installation
+Source: "build\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\SudoStudio"; Filename: "{app}\SudoStudio.cmd"
-Name: "{commondesktop}\SudoStudio"; Filename: "{app}\SudoStudio.cmd"
+; IMPORTANT : start.bat est directement dans {app}
+Name: "{group}\SudoStudio"; Filename: "{app}\start.bat"
+Name: "{commondesktop}\SudoStudio"; Filename: "{app}\start.bat"
+
+[Run]
+; Lance l'application après installation (optionnel mais recommandé)
+Filename: "{app}\start.bat"; Description: "Lancer Sudo Studio"; Flags: nowait postinstall skipifsilent
