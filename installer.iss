@@ -8,8 +8,7 @@ Compression=lzma
 SolidCompression=yes
 
 [Files]
-; Copie tout le contenu du dossier build vers le dossier d'installation
-Source: "build\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
+Source: "{param:SourceFolder}\vscodium\SudoStudio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 
 [Icons]
 ; IMPORTANT : start.bat est directement dans {app}
