@@ -8,7 +8,7 @@ Compression=lzma
 SolidCompression=yes
 
 [Files]
-Source: "{param:SourceFolder}\vscodium\SudoStudio\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
+Source: "*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 ; IMPORTANT : start.bat est directement dans {app}
