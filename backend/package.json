@@ -4,22 +4,45 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "npx nodemon server.js"
+    "dev": "npx nodemon server.js",
+    "test": "jest --verbose --coverage",
+    "test:watch": "jest --watch",
+    "test:unit": "jest --testPathPattern=unit",
+    "test:integration": "jest --testPathPattern=integration"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": [
+      "**/*.js",
+      "!node_modules/**",
+      "!coverage/**",
+      "!tests/**",
+      "!jest.config.js"
+    ],
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ]
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "firebase-admin": "^11.5.0",
     "axios": "^1.4.0",
-    "helmet": "^7.0.0",
+    "bcrypt": "^5.1.0",
     "cors": "^2.8.5",
+    "express": "^4.18.2",
     "express-rate-limit": "^6.7.0",
     "express-validator": "^7.0.1",
-    "bcrypt": "^5.1.0",
+    "firebase-admin": "^11.5.0",
+    "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.0",
-    "winston": "^3.9.0",
-    "sqlite3": "^5.1.6"
+    "socket.io": "^4.8.3",
+    "sqlite3": "^5.1.6",
+    "winston": "^3.9.0"
   },
   "devDependencies": {
-    "nodemon": "^3.0.0"
+    "@types/jest": "^30.0.0",
+    "jest": "^30.3.0",
+    "nodemon": "^3.0.0",
+    "socket.io-client": "^4.8.3",
+    "supertest": "^7.2.2"
   }
 }
