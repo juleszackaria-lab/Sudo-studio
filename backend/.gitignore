@@ -1,5 +1,10 @@
-models/
+ai/models/
 *.bin
 *h5
 *gguf
 .cache/
+node_modules/
+*.log
+coverage/
+data/
+.env
