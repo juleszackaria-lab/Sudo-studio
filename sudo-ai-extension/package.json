@@ -1,0 +1,187 @@
+{
+  "name": "sudo-ai",
+  "displayName": "Sudo AI",
+  "description": "AI-powered coding assistant with multi-model support for Sudo Studio",
+  "version": "1.0.0",
+  "publisher": "sudo-studio",
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Machine Learning",
+    "Snippets",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "assistant",
+    "code-completion",
+    "ollama",
+    "local-ai",
+    "cursor",
+    "copilot-alternative"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sudo-ai",
+          "title": "Sudo AI",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sudo-ai": [
+        {
+          "id": "sudoAiChat",
+          "name": "AI Chat",
+          "icon": "resources/chat-icon.svg",
+          "contextualTitle": "Sudo AI Chat"
+        },
+        {
+          "id": "sudoAiModels",
+          "name": "AI Models",
+          "icon": "resources/models-icon.svg",
+          "contextualTitle": "Available Models"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sudo-ai.explainCode",
+        "title": "Sudo AI: Explain Code",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.fixCode",
+        "title": "Sudo AI: Fix Code",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.generateCode",
+        "title": "Sudo AI: Generate Code",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.refactorCode",
+        "title": "Sudo AI: Refactor Code",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.askQuestion",
+        "title": "Sudo AI: Ask Question",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.openChat",
+        "title": "Sudo AI: Open Chat",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.selectModel",
+        "title": "Sudo AI: Select Model",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.refreshModels",
+        "title": "Sudo AI: Refresh Models",
+        "category": "Sudo AI",
+        "icon": "$(refresh)"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "sudo-ai.explainCode",
+          "when": "editorHasSelection",
+          "group": "sudo-ai@1"
+        },
+        {
+          "command": "sudo-ai.fixCode",
+          "when": "editorHasSelection",
+          "group": "sudo-ai@2"
+        },
+        {
+          "command": "sudo-ai.refactorCode",
+          "when": "editorHasSelection",
+          "group": "sudo-ai@3"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "sudo-ai.refreshModels",
+          "when": "view == sudoAiModels",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Sudo AI",
+      "properties": {
+        "sudoAi.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:5000",
+          "description": "URL of the Sudo Studio backend server"
+        },
+        "sudoAi.defaultModel": {
+          "type": "string",
+          "default": "llama3",
+          "enum": [
+            "llama3",
+            "llama3.1",
+            "llama3.2",
+            "mistral",
+            "mixtral",
+            "gemma4",
+            "codellama",
+            "qwen-coder",
+            "qwen2.5-coder",
+            "deepseek-coder",
+            "deepseek-coder-v2"
+          ],
+          "description": "Default AI model to use"
+        },
+        "sudoAi.autoComplete": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable AI-powered auto-completion (experimental)"
+        },
+        "sudoAi.streamResponses": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stream AI responses in real-time"
+        },
+        "sudoAi.contextLines": {
+          "type": "number",
+          "default": 50,
+          "description": "Number of lines to include as context when sending code to AI"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "node ./test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "^20.x",
+    "eslint": "^8.x"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sudo-studio/sudo-ai-extension"
+  },
+  "license": "MIT"
+}
