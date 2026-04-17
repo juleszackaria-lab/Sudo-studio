@@ -18,6 +18,7 @@ const environmentRoutes = require('./routes/environment.routes');
 const projectRoutes = require('./routes/project.routes');
 const devopsRoutes = require('./routes/devops.routes');
 const aiRoutes = require('./routes/ai.routes');
+const modelsRoutes = require('./routes/models.routes'); // ULTIME: Model management
 
 const app = express();
 const server = http.createServer(app);
@@ -78,6 +79,7 @@ app.use('/', environmentRoutes); // PHASE 1: Environment management
 app.use('/', projectRoutes);     // PHASE 2: Project management & auto-fix
 app.use('/', devopsRoutes);      // PHASE 2: DevOps simulator
 app.use('/', aiRoutes);          // PHASE 3: AI Chat backend (multi-models)
+app.use('/', modelsRoutes);      // ULTIME: AI Model management (install/remove)
 
 // Serve simple web UI for chat and model management
 app.use('/ui', express.static(path.join(__dirname, '../web-ui')));
