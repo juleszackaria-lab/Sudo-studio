@@ -9,6 +9,8 @@ const axios = require('axios');
 let chatPanel = null;
 let currentModel = null;
 let conversationHistory = [];
+let authToken = null;
+let backendConnected = false;
 
 /**
  * Activation de l'extension
@@ -21,8 +23,8 @@ function activate(context) {
     const backendUrl = config.get('backendUrl', 'http://localhost:5000');
     currentModel = config.get('defaultModel', 'llama3');
 
-    // Vérifier la connexion au backend au démarrage
-    checkBackendConnection(backendUrl);
+    // Obtenir le token d'authentification et vérifier la connexion
+    await initializeConnection(backendUrl);
 
     // Enregistrer les commandes
 
@@ -181,15 +183,26 @@ function activate(context) {
 }
 
 /**
- * Vérifie la connexion au backend
+ * Initialise la connexion au backend
  */
-async function checkBackendConnection(backendUrl) {
+async function initializeConnection(backendUrl) {
     try {
-        const response = await axios.get(`${backendUrl}/api/system/status`, { timeout: 3000 });
+        // Obtenir un token de développement
+        const tokenResponse = await axios.get(`${backendUrl}/api/auth/dev-token`, { timeout: 3000 });
+        authToken = tokenResponse.data.token;
+        
+        // Vérifier la connexion au backend
+        const response = await axios.get(`${backendUrl}/api/system/status`, { 
+            timeout: 3000,
+            headers: { 'Authorization': `Bearer ${authToken}` }
+        });
+        
         if (response.data.backend) {
+            backendConnected = true;
             vscode.window.showInformationMessage('Sudo AI: Connected to backend ✓');
         }
     } catch (error) {
+        backendConnected = false;
         vscode.window.showWarningMessage(
             'Sudo AI: Cannot connect to backend. Please start the Sudo Studio server.'
         );
@@ -454,6 +467,7 @@ function getChatHtml() {
         </div>
         <script>
             const vscode = acquireVsCodeApi();
+            const chatContainer = document.getElementById('chat-container');
             
             function sendMessage() {
                 const input = document.getElementById('message-input');
@@ -468,9 +482,48 @@ function getChatHtml() {
                 vscode.postMessage({ command: 'selectModel' });
             }
             
+            function addMessage(text, isUser, metadata) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message ' + (isUser ? 'user' : 'ai');
+                
+                let content = text;
+                if (metadata && !isUser) {
+                    content += `<div style="margin-top: 8px; font-size: 0.85em; opacity: 0.7;">`;
+                    content += `Model: ${metadata.model || 'unknown'} | ${metadata.latency || 'N/A'}`;
+                    content += `</div>`;
+                }
+                
+                messageDiv.innerHTML = content;
+                chatContainer.appendChild(messageDiv);
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+            
+            // Listen for messages from extension
+            window.addEventListener('message', event => {
+                const message = event.data;
+                
+                switch (message.type) {
+                    case 'user-message':
+                        addMessage(message.text, true);
+                        break;
+                    case 'ai-message':
+                        addMessage(message.text, false, {
+                            model: message.model,
+                            latency: message.latency
+                        });
+                        break;
+                    case 'error':
+                        addMessage(message.text, false, { model: 'error' });
+                        break;
+                }
+            });
+            
             document.getElementById('message-input').addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') sendMessage();
             });
+            
+            // Welcome message
+            addMessage('Hello! I\'m Sudo AI. Ask me anything!', false);
         </script>
     </body>
     </html>`;
@@ -480,19 +533,69 @@ function getChatHtml() {
  * Gère les messages du chat
  */
 async function handleChatMessage(text) {
-    // TODO: Envoyer au backend et recevoir la réponse
-    // Pour l'instant, simplement logger
-    console.log('Chat message:', text);
+    if (!text || !text.trim()) return;
+    
+    const config = vscode.workspace.getConfiguration('sudoAi');
+    const backendUrl = config.get('backendUrl', 'http://localhost:5000');
+    
+    try {
+        // Ajouter le message utilisateur au chat
+        if (chatPanel && chatPanel.webview) {
+            chatPanel.webview.postMessage({
+                type: 'user-message',
+                text: text
+            });
+        }
+        
+        // Envoyer au backend
+        const response = await axios.post(`${backendUrl}/api/ai/chat`, {
+            message: text,
+            model: currentModel,
+            context: ''
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${getAuthToken()}`
+            },
+            timeout: 60000
+        });
+        
+        const result = response.data;
+        
+        // Ajouter la réponse au chat
+        if (chatPanel && chatPanel.webview) {
+            chatPanel.webview.postMessage({
+                type: 'ai-message',
+                text: result.reply,
+                model: result.model_used,
+                latency: result.latency
+            });
+        }
+        
+        // Ajouter à l'historique
+        conversationHistory.push({
+            user: text,
+            assistant: result.reply,
+            model: result.model_used
+        });
+        
+    } catch (error) {
+        console.error('Chat error:', error);
+        
+        if (chatPanel && chatPanel.webview) {
+            chatPanel.webview.postMessage({
+                type: 'error',
+                text: `Error: ${error.response?.data?.message || error.message}`
+            });
+        }
+    }
 }
 
 /**
  * Récupère le token d'authentification
- * TODO: Implémenter un système de login pour récupérer le token JWT
  */
 function getAuthToken() {
-    // Pour l'instant, on peut utiliser un token mock
-    // En production, il faudrait un système de login
-    return 'mock-token-for-development';
+    return authToken || 'fallback-token';
 }
 
 /**

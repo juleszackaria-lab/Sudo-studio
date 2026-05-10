@@ -13,6 +13,7 @@ const adminRoutes = require('./routes/admin.routes');
 const papitoRoutes = require('./routes/papito.routes');
 const monitorRoutes = require('./routes/monitor.routes');
 const systemRoutes = require('./routes/system.routes');
+const authRoutes = require('./routes/auth.routes');
 // God Mode - Phase 1-3 routes
 const environmentRoutes = require('./routes/environment.routes');
 const projectRoutes = require('./routes/project.routes');
@@ -68,6 +69,7 @@ initDB().catch((e) => {
 });
 
 // Mount enterprise routes (new, existing routes untouched)
+app.use('/', authRoutes);        // AUTH: Authentication routes (must be before other routes)
 app.use('/', adminRoutes);
 app.use('/papito', papitoRoutes);
 app.use('/', monitorRoutes);
