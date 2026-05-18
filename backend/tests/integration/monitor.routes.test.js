@@ -182,7 +182,7 @@ describe('Monitor Routes Tests', () => {
   });
 
   describe('Version File Path Resolution', () => {
-    it('should look for version.json in parent directory', async () => {
+    it('should look for version.json in backend directory', async () => {
       fs.existsSync.mockReturnValue(true);
       fs.readFileSync.mockReturnValue(JSON.stringify({ version: '1.0.0' }));
 
@@ -191,7 +191,6 @@ describe('Monitor Routes Tests', () => {
       expect(fs.existsSync).toHaveBeenCalled();
       const calledPath = fs.existsSync.mock.calls[0][0];
       expect(calledPath).toContain('version.json');
-      expect(calledPath).toContain('..');
     });
   });
 

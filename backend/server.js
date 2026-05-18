@@ -12,6 +12,14 @@ const logger = require('./utils/logger');
 const adminRoutes = require('./routes/admin.routes');
 const papitoRoutes = require('./routes/papito.routes');
 const monitorRoutes = require('./routes/monitor.routes');
+const systemRoutes = require('./routes/system.routes');
+const authRoutes = require('./routes/auth.routes');
+// God Mode - Phase 1-3 routes
+const environmentRoutes = require('./routes/environment.routes');
+const projectRoutes = require('./routes/project.routes');
+const devopsRoutes = require('./routes/devops.routes');
+const aiRoutes = require('./routes/ai.routes');
+const modelsRoutes = require('./routes/models.routes'); // ULTIME: Model management
 
 const app = express();
 const server = http.createServer(app);
@@ -62,9 +70,18 @@ initDB().catch((e) => {
 });
 
 // Mount enterprise routes (new, existing routes untouched)
+app.use('/', authRoutes);        // AUTH: Authentication routes (must be before other routes)
 app.use('/', adminRoutes);
 app.use('/papito', papitoRoutes);
 app.use('/', monitorRoutes);
+app.use('/', systemRoutes); // PHASE 0: System audit routes
+
+// God Mode - Mount new API routes (Phase 1-3)
+app.use('/', environmentRoutes); // PHASE 1: Environment management
+app.use('/', projectRoutes);     // PHASE 2: Project management & auto-fix
+app.use('/', devopsRoutes);      // PHASE 2: DevOps simulator
+app.use('/', aiRoutes);          // PHASE 3: AI Chat backend (multi-models)
+app.use('/', modelsRoutes);      // ULTIME: AI Model management (install/remove)
 
 // Serve simple web UI for chat and model management
 app.use('/ui', express.static(path.join(__dirname, '../web-ui')));
