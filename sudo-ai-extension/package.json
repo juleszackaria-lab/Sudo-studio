@@ -94,6 +94,22 @@
         "title": "Sudo AI: Refresh Models",
         "category": "Sudo AI",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "sudo-ai.downloadModel",
+        "title": "Sudo AI: Download Model",
+        "category": "Sudo AI",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "sudo-ai.analyzeProject",
+        "title": "Sudo AI: Analyze Project",
+        "category": "Sudo AI"
+      },
+      {
+        "command": "sudo-ai.doctor",
+        "title": "Sudo AI: Doctor (System Check)",
+        "category": "Sudo AI"
       }
     ],
     "menus": {
