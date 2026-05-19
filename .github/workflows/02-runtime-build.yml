@@ -4,41 +4,50 @@ on:
   workflow_dispatch:
 
 jobs:
- build:
+  build:
     runs-on: windows-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Python setup
+      # Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
+      # Verify folders
+      - name: Debug folders
+        run: dir
+
+      - name: Debug backend folder
+        run: dir backend
+
+      - name: Debug runtime folder
+        run: dir backend\runtime
+
       # Install dependencies
       - name: Install Python dependencies
-        working-directory: runtime
+        working-directory: backend/runtime
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # Build runtime executable
+      # Build EXE
       - name: Build runtime executable
-        working-directory: runtime
+        working-directory: backend/runtime
         run: |
           pyinstaller --onefile --name server server.py
 
-      # Verify executable exists
+      # Verify build
       - name: Verify build
-        run: |
-          dir runtime\dist
+        run: dir backend\runtime\dist
 
       # Upload artifact
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v4
         with:
           name: runtime-exe
-          path: runtime/dist/server.exe
+          path: backend/runtime/dist/server.exe
