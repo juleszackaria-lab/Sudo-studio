@@ -10,69 +10,59 @@ const { verifyToken } = require('../middleware/auth.middleware');
  * Support: Ollama, vLLM, DeepSeek, et autres modèles locaux
  */
 
-// Configuration des routes de modèles
+// Configuration des routes de modèles - Python Runtime (port 6000)
+// All models use the same Python Flask runtime with transformers
+const PYTHON_RUNTIME_URL = 'http://localhost:6000';
+const PYTHON_RUNTIME_PORT = 6000;
+
 const MODEL_ROUTES = {
-  // Ollama models (port 11434)
-  'gemma4': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
-  },
-  'mistral': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
-  },
-  'mixtral': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
-  },
-  'llama3': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
-  },
-  'llama3.1': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
-  },
-  'llama3.2': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
-  },
-  'codellama': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
+  // All models now use Python Flask runtime with HuggingFace transformers
+  'qwen2.5-coder': {
+    url: `${PYTHON_RUNTIME_URL}/infer`,
+    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
+    type: 'python-runtime',
+    port: PYTHON_RUNTIME_PORT,
+    modelId: 'Qwen/Qwen2.5-Coder-1.5B-Instruct'
   },
   'qwen-coder': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
+    url: `${PYTHON_RUNTIME_URL}/infer`,
+    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
+    type: 'python-runtime',
+    port: PYTHON_RUNTIME_PORT,
+    modelId: 'Qwen/Qwen2.5-Coder-1.5B-Instruct'
   },
-  'qwen2.5-coder': {
-    url: 'http://localhost:11434/api/generate',
-    type: 'ollama',
-    port: 11434
-  },
-  // DeepSeek / vLLM models (port 8000)
   'deepseek-coder': {
-    url: 'http://localhost:8000/v1/completions',
-    type: 'vllm',
-    port: 8000
+    url: `${PYTHON_RUNTIME_URL}/infer`,
+    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
+    type: 'python-runtime',
+    port: PYTHON_RUNTIME_PORT,
+    modelId: 'deepseek-ai/deepseek-coder-1.3b-instruct'
   },
-  'deepseek-coder-v2': {
-    url: 'http://localhost:8000/v1/completions',
-    type: 'vllm',
-    port: 8000
+  'phi-2': {
+    url: `${PYTHON_RUNTIME_URL}/infer`,
+    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
+    type: 'python-runtime',
+    port: PYTHON_RUNTIME_PORT,
+    modelId: 'microsoft/phi-2'
+  },
+  'qwen2-chat': {
+    url: `${PYTHON_RUNTIME_URL}/infer`,
+    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
+    type: 'python-runtime',
+    port: PYTHON_RUNTIME_PORT,
+    modelId: 'Qwen/Qwen2-1.5B-Instruct'
+  },
+  'default': {
+    url: `${PYTHON_RUNTIME_URL}/infer`,
+    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
+    type: 'python-runtime',
+    port: PYTHON_RUNTIME_PORT,
+    modelId: 'auto'  // Let runtime use its loaded model
   }
 };
 
 // Modèles par défaut si aucun n'est spécifié
-const DEFAULT_MODEL = 'llama3';
+const DEFAULT_MODEL = 'default';
 
 // Détecter le mode de conversation
 function detectMode(message, context = '') {
@@ -98,19 +88,43 @@ function detectMode(message, context = '') {
 // Vérifier si un modèle est disponible
 async function checkModelAvailability(modelName, modelConfig) {
   try {
-    const checkUrl = modelConfig.type === 'ollama' 
-      ? `http://localhost:${modelConfig.port}/api/tags`
-      : `http://localhost:${modelConfig.port}/health`;
+    const checkUrl = modelConfig.healthUrl || `http://localhost:${modelConfig.port}/health`;
     
-    await axios.get(checkUrl, { timeout: 2000 });
+    logger.info('Checking model availability', { 
+      model: modelName, 
+      url: checkUrl 
+    });
+    
+    const response = await axios.get(checkUrl, { 
+      timeout: 3000,
+      validateStatus: (status) => status === 200
+    });
+    
+    // For Python runtime, check if it's healthy
+    if (modelConfig.type === 'python-runtime') {
+      const isHealthy = response.data && response.data.status === 'healthy';
+      logger.info('Python runtime health check', {
+        model: modelName,
+        healthy: isHealthy,
+        loaded: response.data?.model?.loaded,
+        modelName: response.data?.model?.name
+      });
+      return isHealthy;
+    }
+    
     return true;
   } catch (error) {
+    logger.warn('Model availability check failed', {
+      model: modelName,
+      error: error.message,
+      code: error.code
+    });
     return false;
   }
 }
 
-// Fallback chain pour les modèles
-const FALLBACK_CHAIN = ['llama3', 'mistral', 'gemma4', 'codellama'];
+// Fallback chain pour les modèles - Python runtime models
+const FALLBACK_CHAIN = ['default', 'qwen2.5-coder', 'phi-2', 'qwen2-chat'];
 
 /**
  * POST /api/ai/chat
@@ -186,12 +200,15 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
       
       if (!fallbackFound) {
         return res.status(503).json({
-          error: 'No AI models available',
-          message: 'All AI models are currently unavailable. Please ensure Ollama or vLLM is running.',
-          tried_models: [model, ...FALLBACK_CHAIN],
+          error: 'Python AI Runtime not available',
+          message: 'The Python AI runtime is not responding. Please ensure runtime.exe is running.',
+          tried_models: [selectedModel, ...FALLBACK_CHAIN],
+          runtime_url: PYTHON_RUNTIME_URL,
+          runtime_port: PYTHON_RUNTIME_PORT,
           help: {
-            ollama: 'Start Ollama with: ollama serve',
-            vllm: 'Start vLLM with: python -m vllm.entrypoints.api_server'
+            windows: 'Start runtime with: runtime.exe',
+            manual: `Check if Python runtime is running on port ${PYTHON_RUNTIME_PORT}`,
+            health_check: `${PYTHON_RUNTIME_URL}/health`
           }
         });
       }
@@ -205,57 +222,77 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
         : `${message}\n\nContext: ${context}`;
     }
 
-    // Appeler le modèle IA
+    // Appeler le modèle IA via Python Runtime
     let reply, requestData, response;
     
-    if (modelConfig.type === 'ollama') {
-      // Ollama API format
+    if (modelConfig.type === 'python-runtime') {
+      // Python Flask Runtime API format
+      // The runtime expects: { input/prompt/message, max_tokens, temperature, stream }
       requestData = {
-        model: selectedModel,
-        prompt: prompt,
+        message: prompt,        // Primary field
+        prompt: prompt,         // Fallback field
+        input: prompt,          // Fallback field
+        max_tokens: 512,
+        temperature: 0.7,
         stream: false
       };
       
-      try {
-        response = await axios.post(modelConfig.url, requestData, {
-          timeout: 30000,
-          headers: { 'Content-Type': 'application/json' }
-        });
-        
-        reply = response.data.response || response.data.text || 'No response from model';
-      } catch (error) {
-        logger.error('Ollama request failed', { 
-          error: error.message,
-          model: selectedModel,
-          url: modelConfig.url
-        });
-        throw error;
-      }
-      
-    } else if (modelConfig.type === 'vllm') {
-      // vLLM / OpenAI-compatible API format
-      requestData = {
-        model: selectedModel,
-        prompt: prompt,
-        max_tokens: 1000,
-        temperature: 0.7
-      };
+      logger.info('Calling Python runtime', {
+        url: modelConfig.url,
+        promptLength: prompt.length,
+        model: selectedModel
+      });
       
       try {
         response = await axios.post(modelConfig.url, requestData, {
-          timeout: 30000,
-          headers: { 'Content-Type': 'application/json' }
+          timeout: 60000,  // 60 seconds for model inference
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          validateStatus: (status) => status >= 200 && status < 300
         });
         
-        reply = response.data.choices?.[0]?.text || 'No response from model';
+        logger.info('Python runtime response received', {
+          status: response.status,
+          hasReply: !!response.data?.reply,
+          dataKeys: Object.keys(response.data || {})
+        });
+        
+        // Python runtime returns: { reply, model, latency, tokens, ... }
+        reply = response.data.reply || response.data.text || response.data.response || 'No response from model';
+        
+        // If mock mode, add warning
+        if (response.data.mock) {
+          logger.warn('Python runtime in MOCK MODE - no model loaded', {
+            model: selectedModel
+          });
+          reply = `⚠️ AI Runtime in Mock Mode\n\n${reply}\n\nℹ️ To enable real AI responses, ensure a model is loaded in the Python runtime.`;
+        }
+        
       } catch (error) {
-        logger.error('vLLM request failed', { 
+        logger.error('Python runtime request failed', { 
           error: error.message,
+          code: error.code,
+          response: error.response?.data,
+          status: error.response?.status,
           model: selectedModel,
           url: modelConfig.url
         });
-        throw error;
+        
+        // Provide helpful error message
+        if (error.code === 'ECONNREFUSED') {
+          throw new Error(`Python runtime not running on port ${modelConfig.port}. Please start runtime.exe`);
+        } else if (error.code === 'ETIMEDOUT') {
+          throw new Error('Python runtime timeout - model inference took too long');
+        } else {
+          throw error;
+        }
       }
+      
+    } else {
+      // Fallback for unknown types
+      throw new Error(`Unsupported model type: ${modelConfig.type}`);
     }
 
     const latency = Date.now() - startTime;
@@ -297,7 +334,9 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
       error: 'AI processing failed',
       message: error.message,
       latency: `${latency}ms`,
-      suggestion: 'Check if AI model services (Ollama/vLLM) are running'
+      suggestion: 'Check if Python AI runtime (runtime.exe) is running',
+      runtime_url: PYTHON_RUNTIME_URL,
+      help: `Test runtime health at: ${PYTHON_RUNTIME_URL}/health`
     });
   }
 });
@@ -389,44 +428,51 @@ router.post('/api/ai/code/fix', verifyToken, async (req, res) => {
 
 /**
  * GET /api/ai/health
- * Vérifie la santé des services IA
+ * Vérifie la santé des services IA - Python Runtime
  */
 router.get('/api/ai/health', verifyToken, async (req, res) => {
   const health = {
     timestamp: new Date().toISOString(),
     services: {
-      ollama: {
-        port: 11434,
-        status: 'checking'
-      },
-      vllm: {
-        port: 8000,
-        status: 'checking'
+      python_runtime: {
+        url: PYTHON_RUNTIME_URL,
+        port: PYTHON_RUNTIME_PORT,
+        status: 'checking',
+        type: 'Flask + HuggingFace Transformers'
       }
     },
     models_available: 0,
-    models_total: Object.keys(MODEL_ROUTES).length
+    models_total: Object.keys(MODEL_ROUTES).length,
+    runtime_info: null
   };
 
-  // Check Ollama
+  // Check Python Runtime
   try {
-    await axios.get('http://localhost:11434/api/tags', { timeout: 2000 });
-    health.services.ollama.status = 'online';
+    const response = await axios.get(`${PYTHON_RUNTIME_URL}/health`, { timeout: 3000 });
+    health.services.python_runtime.status = 'online';
+    health.runtime_info = response.data;
+    
+    // Check if a model is loaded
+    if (response.data?.model?.loaded) {
+      health.model_loaded = true;
+      health.loaded_model = response.data.model.name;
+      health.device = response.data.model.device;
+    } else {
+      health.model_loaded = false;
+      health.warning = 'Runtime is running but no AI model is loaded (mock mode)';
+    }
+    
   } catch (error) {
-    health.services.ollama.status = 'offline';
-    health.services.ollama.error = error.message;
+    health.services.python_runtime.status = 'offline';
+    health.services.python_runtime.error = error.message;
+    health.services.python_runtime.code = error.code;
+    
+    if (error.code === 'ECONNREFUSED') {
+      health.services.python_runtime.help = 'Start runtime with: runtime.exe';
+    }
   }
 
-  // Check vLLM
-  try {
-    await axios.get('http://localhost:8000/health', { timeout: 2000 });
-    health.services.vllm.status = 'online';
-  } catch (error) {
-    health.services.vllm.status = 'offline';
-    health.services.vllm.error = error.message;
-  }
-
-  // Count available models
+  // Count available models (will be 0 if runtime is down)
   for (const [modelName, modelConfig] of Object.entries(MODEL_ROUTES)) {
     const isAvailable = await checkModelAvailability(modelName, modelConfig);
     if (isAvailable) health.models_available++;
