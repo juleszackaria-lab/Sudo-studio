@@ -1,27 +1,29 @@
 {
-  "name": "sudo-ai",
-  "displayName": "Sudo AI",
-  "description": "AI-powered coding assistant with multi-model support for Sudo Studio",
-  "version": "1.0.0",
+  "name": "sudo-studio",
+  "displayName": "Sudo Studio - Enterprise AI Platform",
+  "description": "Enterprise-grade AI development platform with local models, SDK management, system doctor, and DevOps automation",
+  "version": "2.0.0",
   "publisher": "sudo-studio",
-  "icon": "icon.png",
+  "icon": "resources/icon.png",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": [
     "Programming Languages",
     "Machine Learning",
-    "Snippets",
+    "Debuggers",
+    "Testing",
     "Other"
   ],
   "keywords": [
     "ai",
     "assistant",
-    "code-completion",
-    "ollama",
+    "enterprise",
+    "devops",
+    "sdk-manager",
+    "system-doctor",
     "local-ai",
-    "cursor",
-    "copilot-alternative"
+    "automation"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -31,153 +33,292 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "sudo-ai",
-          "title": "Sudo AI",
-          "icon": "resources/icon.svg"
+          "id": "sudo-studio",
+          "title": "Sudo Studio",
+          "icon": "$(robot)"
         }
       ]
     },
     "views": {
-      "sudo-ai": [
+      "sudo-studio": [
         {
-          "id": "sudoAiChat",
-          "name": "AI Chat",
-          "icon": "resources/chat-icon.svg",
-          "contextualTitle": "Sudo AI Chat"
+          "id": "sudoStudioDashboard",
+          "name": "Dashboard",
+          "icon": "$(dashboard)",
+          "contextualTitle": "Sudo Studio Dashboard"
         },
         {
-          "id": "sudoAiModels",
-          "name": "AI Models",
-          "icon": "resources/models-icon.svg",
-          "contextualTitle": "Available Models"
+          "id": "sudoStudioChat",
+          "name": "AI Chat",
+          "icon": "$(comment-discussion)",
+          "contextualTitle": "AI Assistant"
+        },
+        {
+          "id": "sudoStudioDoctor",
+          "name": "System Doctor",
+          "icon": "$(pulse)",
+          "contextualTitle": "System Health"
+        },
+        {
+          "id": "sudoStudioSDK",
+          "name": "SDK Manager",
+          "icon": "$(package)",
+          "contextualTitle": "Development SDKs"
+        },
+        {
+          "id": "sudoStudioDevOps",
+          "name": "DevOps",
+          "icon": "$(rocket)",
+          "contextualTitle": "DevOps Automation"
+        },
+        {
+          "id": "sudoStudioEnvironment",
+          "name": "Environment",
+          "icon": "$(server-environment)",
+          "contextualTitle": "Environment Manager"
+        },
+        {
+          "id": "sudoStudioRuntime",
+          "name": "AI Runtime",
+          "icon": "$(server-process)",
+          "contextualTitle": "Runtime Status"
         }
       ]
     },
     "commands": [
       {
-        "command": "sudo-ai.explainCode",
-        "title": "Sudo AI: Explain Code",
-        "category": "Sudo AI"
+        "command": "sudoStudio.openDashboard",
+        "title": "Open Dashboard",
+        "category": "Sudo Studio",
+        "icon": "$(dashboard)"
       },
       {
-        "command": "sudo-ai.fixCode",
-        "title": "Sudo AI: Fix Code",
-        "category": "Sudo AI"
+        "command": "sudoStudio.openChat",
+        "title": "Open AI Chat",
+        "category": "Sudo Studio",
+        "icon": "$(comment-discussion)"
       },
       {
-        "command": "sudo-ai.generateCode",
-        "title": "Sudo AI: Generate Code",
-        "category": "Sudo AI"
+        "command": "sudoStudio.runDoctor",
+        "title": "Run System Doctor",
+        "category": "Sudo Studio",
+        "icon": "$(pulse)"
       },
       {
-        "command": "sudo-ai.refactorCode",
-        "title": "Sudo AI: Refactor Code",
-        "category": "Sudo AI"
+        "command": "sudoStudio.autoFix",
+        "title": "Auto Fix Issues",
+        "category": "Sudo Studio",
+        "icon": "$(tools)"
       },
       {
-        "command": "sudo-ai.askQuestion",
-        "title": "Sudo AI: Ask Question",
-        "category": "Sudo AI"
-      },
-      {
-        "command": "sudo-ai.openChat",
-        "title": "Sudo AI: Open Chat",
-        "category": "Sudo AI"
-      },
-      {
-        "command": "sudo-ai.selectModel",
-        "title": "Sudo AI: Select Model",
-        "category": "Sudo AI"
-      },
-      {
-        "command": "sudo-ai.refreshModels",
-        "title": "Sudo AI: Refresh Models",
-        "category": "Sudo AI",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "sudo-ai.downloadModel",
-        "title": "Sudo AI: Download Model",
-        "category": "Sudo AI",
+        "command": "sudoStudio.installSDK",
+        "title": "Install SDK",
+        "category": "Sudo Studio",
         "icon": "$(cloud-download)"
       },
       {
-        "command": "sudo-ai.analyzeProject",
-        "title": "Sudo AI: Analyze Project",
-        "category": "Sudo AI"
+        "command": "sudoStudio.refreshSDKs",
+        "title": "Refresh SDKs",
+        "category": "Sudo Studio",
+        "icon": "$(refresh)"
       },
       {
-        "command": "sudo-ai.doctor",
-        "title": "Sudo AI: Doctor (System Check)",
-        "category": "Sudo AI"
+        "command": "sudoStudio.generateDocker",
+        "title": "Generate Dockerfile",
+        "category": "Sudo Studio",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "sudoStudio.generateCICD",
+        "title": "Generate CI/CD Pipeline",
+        "category": "Sudo Studio",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "sudoStudio.exportEnvironment",
+        "title": "Export Environment",
+        "category": "Sudo Studio",
+        "icon": "$(export)"
+      },
+      {
+        "command": "sudoStudio.importEnvironment",
+        "title": "Import Environment",
+        "category": "Sudo Studio",
+        "icon": "$(import)"
+      },
+      {
+        "command": "sudoStudio.analyzeProject",
+        "title": "Analyze Project",
+        "category": "Sudo Studio",
+        "icon": "$(search)"
+      },
+      {
+        "command": "sudoStudio.explainCode",
+        "title": "Explain Code",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.fixCode",
+        "title": "Fix Code",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.refactorCode",
+        "title": "Refactor Code",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.generateCode",
+        "title": "Generate Code",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.selectModel",
+        "title": "Select AI Model",
+        "category": "Sudo Studio",
+        "icon": "$(symbol-method)"
+      },
+      {
+        "command": "sudoStudio.refreshModels",
+        "title": "Refresh Models",
+        "category": "Sudo Studio",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "sudoStudio.restartRuntime",
+        "title": "Restart AI Runtime",
+        "category": "Sudo Studio",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "sudoStudio.checkHealth",
+        "title": "Check System Health",
+        "category": "Sudo Studio",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "sudoStudio.openSettings",
+        "title": "Open Settings",
+        "category": "Sudo Studio",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "sudoStudio.showOnboarding",
+        "title": "Show Onboarding",
+        "category": "Sudo Studio",
+        "icon": "$(mortar-board)"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "sudo-ai.explainCode",
+          "command": "sudoStudio.explainCode",
           "when": "editorHasSelection",
-          "group": "sudo-ai@1"
+          "group": "sudo-studio@1"
         },
         {
-          "command": "sudo-ai.fixCode",
+          "command": "sudoStudio.fixCode",
           "when": "editorHasSelection",
-          "group": "sudo-ai@2"
+          "group": "sudo-studio@2"
         },
         {
-          "command": "sudo-ai.refactorCode",
+          "command": "sudoStudio.refactorCode",
           "when": "editorHasSelection",
-          "group": "sudo-ai@3"
+          "group": "sudo-studio@3"
         }
       ],
       "view/title": [
         {
-          "command": "sudo-ai.refreshModels",
-          "when": "view == sudoAiModels",
+          "command": "sudoStudio.refreshSDKs",
+          "when": "view == sudoStudioSDK",
           "group": "navigation"
+        },
+        {
+          "command": "sudoStudio.refreshModels",
+          "when": "view == sudoStudioChat",
+          "group": "navigation"
+        },
+        {
+          "command": "sudoStudio.runDoctor",
+          "when": "view == sudoStudioDoctor",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "sudoStudio.explainCode",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "sudoStudio.fixCode",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "sudoStudio.refactorCode",
+          "when": "editorHasSelection"
         }
       ]
     },
     "configuration": {
-      "title": "Sudo AI",
+      "title": "Sudo Studio",
       "properties": {
-        "sudoAi.backendUrl": {
+        "sudoStudio.backendUrl": {
           "type": "string",
           "default": "http://localhost:5000",
           "description": "URL of the Sudo Studio backend server"
         },
-        "sudoAi.defaultModel": {
+        "sudoStudio.runtimeUrl": {
           "type": "string",
-          "default": "llama3",
+          "default": "http://localhost:6000",
+          "description": "URL of the Python AI runtime server"
+        },
+        "sudoStudio.defaultModel": {
+          "type": "string",
+          "default": "default",
           "enum": [
-            "llama3",
-            "llama3.1",
-            "llama3.2",
-            "mistral",
-            "mixtral",
-            "gemma4",
-            "codellama",
-            "qwen-coder",
+            "default",
             "qwen2.5-coder",
+            "qwen-coder",
             "deepseek-coder",
-            "deepseek-coder-v2"
+            "phi-2",
+            "qwen2-chat"
           ],
           "description": "Default AI model to use"
         },
-        "sudoAi.autoComplete": {
+        "sudoStudio.autoStartBackend": {
           "type": "boolean",
           "default": false,
-          "description": "Enable AI-powered auto-completion (experimental)"
+          "description": "Automatically start backend server on extension activation"
         },
-        "sudoAi.streamResponses": {
+        "sudoStudio.autoStartRuntime": {
           "type": "boolean",
           "default": false,
-          "description": "Stream AI responses in real-time"
+          "description": "Automatically start Python runtime on extension activation"
         },
-        "sudoAi.contextLines": {
+        "sudoStudio.enableStreaming": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable streaming responses from AI"
+        },
+        "sudoStudio.contextLines": {
           "type": "number",
           "default": 50,
-          "description": "Number of lines to include as context when sending code to AI"
+          "description": "Number of lines to include as context"
+        },
+        "sudoStudio.showOnboardingOnFirstLaunch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show onboarding wizard on first launch"
+        },
+        "sudoStudio.enableAutoFix": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable automatic issue fixing suggestions"
+        },
+        "sudoStudio.telemetryEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send anonymous usage telemetry (recommended)"
         }
       }
     }
@@ -185,19 +326,27 @@
   "scripts": {
     "lint": "eslint .",
     "pretest": "npm run lint",
-    "test": "node ./test/runTest.js"
+    "test": "node ./test/runTest.js",
+    "package": "vsce package",
+    "publish": "vsce publish"
   },
   "devDependencies": {
     "@types/vscode": "^1.80.0",
     "@types/node": "^20.x",
-    "eslint": "^8.x"
+    "eslint": "^8.x",
+    "vsce": "^2.15.0"
   },
   "dependencies": {
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "marked": "^9.0.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/sudo-studio/sudo-ai-extension"
+    "url": "https://github.com/juleszackaria-lab/Sudo-studio.git"
   },
+  "bugs": {
+    "url": "https://github.com/juleszackaria-lab/Sudo-studio/issues"
+  },
+  "homepage": "https://github.com/juleszackaria-lab/Sudo-studio#readme",
   "license": "MIT"
 }
