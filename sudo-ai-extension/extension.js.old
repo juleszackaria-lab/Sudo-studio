@@ -1,0 +1,778 @@
+/**
+ * SUDO STUDIO - ENTERPRISE AI PLATFORM
+ * Extension VSCode complète avec toutes fonctionnalités backend connectées
+ */
+
+const vscode = require('vscode');
+const { getBackendService } = require('./src/services/BackendService');
+const { getStateManager } = require('./src/services/StateManager');
+const { DashboardProvider } = require('./src/providers/DashboardProvider');
+
+// Global instances
+let backend, state, context;
+let chatPanel, dashboardPanel, doctorPanel;
+let dashboardProvider;
+
+/**
+ * Extension activation
+ */
+async function activate(ctx) {
+    context = ctx;
+    console.log('🚀 Sudo Studio activating...');
+
+    // Initialize services
+    backend = getBackendService();
+    state = getStateManager();
+
+    // Initialize backend connection
+    await initializeBackend();
+
+    // Register providers
+    registerProviders();
+
+    // Register commands
+    registerCommands();
+
+    // Show welcome message
+    vscode.window.showInformationMessage('🚀 Sudo Studio activated! AI Platform ready.');
+
+    console.log('✅ Sudo Studio activated successfully!');
+}
+
+/**
+ * Initialize backend connection
+ */
+async function initializeBackend() {
+    try {
+        const connected = await backend.initialize();
+        
+        if (connected) {
+            vscode.window.showInformationMessage('✅ Connected to Sudo Studio backend');
+            
+            // Check runtime status
+            const runtimeHealth = await backend.checkRuntimeHealth();
+            state.updateRuntimeState({
+                status: runtimeHealth.status || 'unknown',
+                modelLoaded: runtimeHealth.model_loaded || runtimeHealth.model?.loaded || false,
+                modelName: runtimeHealth.loaded_model || runtimeHealth.model?.name || null
+            });
+            
+            if (runtimeHealth.model_loaded || runtimeHealth.model?.loaded) {
+                vscode.window.showInformationMessage(
+                    `✅ AI Runtime ready with model: ${runtimeHealth.loaded_model || runtimeHealth.model.name}`
+                );
+            }
+        } else {
+            vscode.window.showWarningMessage(
+                '⚠️ Backend offline. Start backend: cd backend && node server.js'
+            );
+        }
+    } catch (error) {
+        console.error('Backend initialization error:', error);
+        vscode.window.showErrorMessage(`❌ Backend error: ${error.message}`);
+    }
+}
+
+/**
+ * Register tree view providers
+ */
+function registerProviders() {
+    // Dashboard Provider
+    dashboardProvider = new DashboardProvider();
+    vscode.window.registerTreeDataProvider('sudoStudioDashboard', dashboardProvider);
+}
+
+/**
+ * Register all commands
+ */
+function registerCommands() {
+    const commands = [
+        // Dashboard
+        ['sudoStudio.openDashboard', openDashboard],
+        
+        // AI Chat
+        ['sudoStudio.openChat', openChat],
+        ['sudoStudio.selectModel', selectModel],
+        ['sudoStudio.refreshModels', refreshModels],
+        
+        // Code actions
+        ['sudoStudio.explainCode', explainCode],
+        ['sudoStudio.fixCode', fixCode],
+        ['sudoStudio.refactorCode', refactorCode],
+        ['sudoStudio.generateCode', generateCode],
+        
+        // System Doctor
+        ['sudoStudio.runDoctor', runDoctor],
+        ['sudoStudio.autoFix', autoFix],
+        ['sudoStudio.checkHealth', checkHealth],
+        
+        // SDK Management
+        ['sudoStudio.installSDK', installSDK],
+        ['sudoStudio.refreshSDKs', refreshSDKs],
+        
+        // DevOps
+        ['sudoStudio.generateDocker', generateDocker],
+        ['sudoStudio.generateCICD', generateCICD],
+        
+        // Environment
+        ['sudoStudio.exportEnvironment', exportEnvironment],
+        ['sudoStudio.importEnvironment', importEnvironment],
+        
+        // Project
+        ['sudoStudio.analyzeProject', analyzeProject],
+        
+        // Runtime
+        ['sudoStudio.restartRuntime', restartRuntime],
+        
+        // Settings
+        ['sudoStudio.openSettings', openSettings],
+        ['sudoStudio.showOnboarding', showOnboarding]
+    ];
+
+    commands.forEach(([command, handler]) => {
+        context.subscriptions.push(
+            vscode.commands.registerCommand(command, handler)
+        );
+    });
+}
+
+// ============================================================================
+// COMMAND IMPLEMENTATIONS
+// ============================================================================
+
+/**
+ * Open Dashboard
+ */
+async function openDashboard() {
+    vscode.window.showInformationMessage('📊 Dashboard - Feature in development');
+    // TODO: Create dashboard webview
+}
+
+/**
+ * Open AI Chat
+ */
+async function openChat() {
+    if (!chatPanel) {
+        chatPanel = vscode.window.createWebviewPanel(
+            'sudoStudioChat',
+            '💬 AI Chat',
+            vscode.ViewColumn.Beside,
+            {
+                enableScripts: true,
+                retainContextWhileHidden: true
+            }
+        );
+
+        chatPanel.webview.html = getChatHTML();
+        
+        chatPanel.webview.onDidReceiveMessage(async (message) => {
+            switch (message.type) {
+                case 'sendMessage':
+                    await handleChatMessage(message.text);
+                    break;
+            }
+        });
+
+        chatPanel.onDidDispose(() => {
+            chatPanel = null;
+        });
+    }
+    chatPanel.reveal();
+}
+
+/**
+ * Handle chat message
+ */
+async function handleChatMessage(text) {
+    if (!text || !text.trim()) return;
+
+    try {
+        // Show user message
+        chatPanel.webview.postMessage({
+            type: 'userMessage',
+            text: text
+        });
+
+        // Show loading
+        chatPanel.webview.postMessage({
+            type: 'loading',
+            show: true
+        });
+
+        // Get current model
+        const currentModel = state.getChatState().currentModel || 'default';
+
+        // Send to backend
+        const response = await backend.sendChatMessage(text, currentModel);
+
+        // Hide loading
+        chatPanel.webview.postMessage({
+            type: 'loading',
+            show: false
+        });
+
+        // Show AI response
+        chatPanel.webview.postMessage({
+            type: 'aiMessage',
+            text: response.reply,
+            model: response.model_used || currentModel,
+            latency: response.latency
+        });
+
+        // Add to history
+        state.addChatMessage({
+            user: text,
+            assistant: response.reply,
+            model: response.model_used || currentModel,
+            timestamp: new Date().toISOString()
+        });
+
+    } catch (error) {
+        console.error('Chat error:', error);
+        
+        chatPanel.webview.postMessage({
+            type: 'loading',
+            show: false
+        });
+
+        chatPanel.webview.postMessage({
+            type: 'error',
+            text: `Error: ${error.message}\n\nMake sure backend and runtime are running.`
+        });
+    }
+}
+
+/**
+ * Get Chat HTML
+ */
+function getChatHTML() {
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            padding: 20px;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        #messages {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            padding: 10px;
+        }
+        .message {
+            margin-bottom: 16px;
+            padding: 12px;
+            border-radius: 8px;
+            max-width: 80%;
+        }
+        .user-message {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            margin-left: auto;
+            text-align: right;
+        }
+        .ai-message {
+            background: var(--vscode-editor-selectionBackground);
+            border: 1px solid var(--vscode-panel-border);
+        }
+        .error-message {
+            background: var(--vscode-inputValidation-errorBackground);
+            border: 1px solid var(--vscode-inputValidation-errorBorder);
+        }
+        .message-meta {
+            font-size: 0.85em;
+            opacity: 0.7;
+            margin-top: 4px;
+        }
+        #loading {
+            display: none;
+            text-align: center;
+            padding: 10px;
+            opacity: 0.7;
+        }
+        #inputContainer {
+            display: flex;
+            gap: 10px;
+            padding: 10px;
+            background: var(--vscode-input-background);
+            border-radius: 8px;
+            border: 1px solid var(--vscode-input-border);
+        }
+        #messageInput {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: var(--vscode-input-foreground);
+            padding: 8px;
+            font-size: 14px;
+            outline: none;
+        }
+        #sendButton {
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        #sendButton:hover {
+            background: var(--vscode-button-hoverBackground);
+        }
+        #sendButton:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        pre {
+            background: var(--vscode-textCodeBlock-background);
+            padding: 8px;
+            border-radius: 4px;
+            overflow-x: auto;
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="messages"></div>
+    <div id="loading">⏳ Thinking...</div>
+    <div id="inputContainer">
+        <input type="text" id="messageInput" placeholder="Ask AI anything..." />
+        <button id="sendButton">Send</button>
+    </div>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const messages = document.getElementById('messages');
+        const input = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendButton');
+        const loading = document.getElementById('loading');
+
+        function sendMessage() {
+            const text = input.value.trim();
+            if (!text) return;
+            
+            vscode.postMessage({ type: 'sendMessage', text });
+            input.value = '';
+            sendBtn.disabled = true;
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') sendMessage();
+        });
+
+        window.addEventListener('message', (event) => {
+            const message = event.data;
+            
+            switch (message.type) {
+                case 'userMessage':
+                    addMessage(message.text, 'user');
+                    break;
+                case 'aiMessage':
+                    addMessage(message.text, 'ai', message.model, message.latency);
+                    sendBtn.disabled = false;
+                    break;
+                case 'error':
+                    addMessage(message.text, 'error');
+                    sendBtn.disabled = false;
+                    break;
+                case 'loading':
+                    loading.style.display = message.show ? 'block' : 'none';
+                    break;
+            }
+        });
+
+        function addMessage(text, type, model, latency) {
+            const div = document.createElement('div');
+            div.className = \`message \${type}-message\`;
+            
+            const content = document.createElement('div');
+            content.textContent = text;
+            div.appendChild(content);
+            
+            if (type === 'ai' && (model || latency)) {
+                const meta = document.createElement('div');
+                meta.className = 'message-meta';
+                meta.textContent = \`\${model || 'AI'} • \${latency || ''}\`;
+                div.appendChild(meta);
+            }
+            
+            messages.appendChild(div);
+            messages.scrollTop = messages.scrollHeight;
+        }
+    </script>
+</body>
+</html>`;
+}
+
+/**
+ * Select AI Model
+ */
+async function selectModel() {
+    try {
+        const models = await backend.listModels();
+        const modelList = models.models || [];
+        
+        const items = modelList.map(m => ({
+            label: m.name,
+            description: m.available ? '$(check) Available' : '$(x) Offline',
+            model: m
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Select AI model'
+        });
+
+        if (selected) {
+            state.updateChatState({ currentModel: selected.label });
+            vscode.window.showInformationMessage(`✅ Model selected: ${selected.label}`);
+        }
+    } catch (error) {
+        vscode.window.showErrorMessage(`Error loading models: ${error.message}`);
+    }
+}
+
+/**
+ * Refresh models
+ */
+async function refreshModels() {
+    vscode.window.showInformationMessage('🔄 Refreshing models...');
+    await selectModel();
+}
+
+/**
+ * Explain code
+ */
+async function explainCode() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showErrorMessage('No active editor');
+        return;
+    }
+
+    const code = editor.document.getText(editor.selection);
+    if (!code) {
+        vscode.window.showWarningMessage('Please select code first');
+        return;
+    }
+
+    await openChat();
+    await handleChatMessage(`Explain this code:\n\n\`\`\`\n${code}\n\`\`\``);
+}
+
+/**
+ * Fix code
+ */
+async function fixCode() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showErrorMessage('No active editor');
+        return;
+    }
+
+    const code = editor.document.getText(editor.selection);
+    if (!code) {
+        vscode.window.showWarningMessage('Please select code first');
+        return;
+    }
+
+    await openChat();
+    await handleChatMessage(`Fix and improve this code:\n\n\`\`\`\n${code}\n\`\`\``);
+}
+
+/**
+ * Refactor code
+ */
+async function refactorCode() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+        vscode.window.showErrorMessage('No active editor');
+        return;
+    }
+
+    const code = editor.document.getText(editor.selection);
+    if (!code) {
+        vscode.window.showWarningMessage('Please select code first');
+        return;
+    }
+
+    await openChat();
+    await handleChatMessage(`Refactor this code for better readability:\n\n\`\`\`\n${code}\n\`\`\``);
+}
+
+/**
+ * Generate code
+ */
+async function generateCode() {
+    const prompt = await vscode.window.showInputBox({
+        prompt: 'What code would you like to generate?',
+        placeHolder: 'e.g., Create a REST API endpoint for user authentication'
+    });
+
+    if (prompt) {
+        await openChat();
+        await handleChatMessage(prompt);
+    }
+}
+
+/**
+ * Run System Doctor
+ */
+async function runDoctor() {
+    try {
+        vscode.window.showInformationMessage('🔍 Running system diagnostics...');
+        
+        const result = await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: 'System Doctor',
+            cancellable: false
+        }, async (progress) => {
+            progress.report({ message: 'Analyzing system...' });
+            return await backend.runDoctor();
+        });
+
+        // Show results
+        const panel = vscode.window.createWebviewPanel(
+            'doctorResults',
+            '🏥 System Doctor Results',
+            vscode.ViewColumn.One,
+            { enableScripts: true }
+        );
+
+        panel.webview.html = getDoctorHTML(result);
+
+    } catch (error) {
+        vscode.window.showErrorMessage(`Doctor failed: ${error.message}`);
+    }
+}
+
+/**
+ * Get Doctor HTML
+ */
+function getDoctorHTML(result) {
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            padding: 20px;
+            background: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+        }
+        .result-card {
+            background: var(--vscode-editor-selectionBackground);
+            border: 1px solid var(--vscode-panel-border);
+            padding: 16px;
+            margin-bottom: 16px;
+            border-radius: 8px;
+        }
+        .status-ok { color: #4caf50; }
+        .status-error { color: #f44336; }
+        .status-warning { color: #ff9800; }
+        pre {
+            background: var(--vscode-textCodeBlock-background);
+            padding: 12px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>🏥 System Doctor Results</h1>
+    <div class="result-card">
+        <h2>Diagnostic Complete</h2>
+        <pre>${JSON.stringify(result, null, 2)}</pre>
+    </div>
+</body>
+</html>`;
+}
+
+/**
+ * Auto fix
+ */
+async function autoFix() {
+    const issue = await vscode.window.showQuickPick([
+        'Port conflict',
+        'Missing dependency',
+        'Corrupted cache',
+        'Path issue'
+    ], {
+        placeHolder: 'Select issue to fix'
+    });
+
+    if (issue) {
+        try {
+            vscode.window.showInformationMessage(`🔧 Fixing: ${issue}...`);
+            const result = await backend.autoFix(issue);
+            vscode.window.showInformationMessage(`✅ Fixed: ${issue}`);
+        } catch (error) {
+            vscode.window.showErrorMessage(`Fix failed: ${error.message}`);
+        }
+    }
+}
+
+/**
+ * Check health
+ */
+async function checkHealth() {
+    try {
+        const backend = await getBackendService().checkHealth();
+        const runtime = await getBackendService().checkRuntimeHealth();
+        
+        vscode.window.showInformationMessage(
+            `Backend: ${backend.status || 'OK'} | Runtime: ${runtime.status || 'Unknown'}`
+        );
+    } catch (error) {
+        vscode.window.showErrorMessage(`Health check failed: ${error.message}`);
+    }
+}
+
+/**
+ * Install SDK
+ */
+async function installSDK() {
+    const sdk = await vscode.window.showQuickPick([
+        'Node.js', 'Python', 'Flutter', 'Java', 'Docker', 'Git'
+    ], {
+        placeHolder: 'Select SDK to install'
+    });
+
+    if (sdk) {
+        vscode.window.showInformationMessage(`📦 Installing ${sdk}...`);
+        // TODO: Implement via backend
+        vscode.window.showWarningMessage('SDK installation - Feature in development');
+    }
+}
+
+/**
+ * Refresh SDKs
+ */
+async function refreshSDKs() {
+    vscode.window.showInformationMessage('🔄 Refreshing SDK list...');
+    // TODO: Implement
+}
+
+/**
+ * Generate Docker
+ */
+async function generateDocker() {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        vscode.window.showErrorMessage('No workspace folder open');
+        return;
+    }
+
+    try {
+        vscode.window.showInformationMessage('🐳 Generating Dockerfile...');
+        const result = await backend.generateDocker(workspaceFolder.uri.fsPath);
+        vscode.window.showInformationMessage('✅ Dockerfile generated!');
+    } catch (error) {
+        vscode.window.showErrorMessage(`Docker generation failed: ${error.message}`);
+    }
+}
+
+/**
+ * Generate CI/CD
+ */
+async function generateCICD() {
+    const platform = await vscode.window.showQuickPick([
+        'GitHub Actions', 'GitLab CI', 'CircleCI'
+    ], {
+        placeHolder: 'Select CI/CD platform'
+    });
+
+    if (platform) {
+        vscode.window.showInformationMessage(`🚀 Generating ${platform} config...`);
+        // TODO: Implement
+        vscode.window.showWarningMessage('CI/CD generation - Feature in development');
+    }
+}
+
+/**
+ * Export environment
+ */
+async function exportEnvironment() {
+    try {
+        vscode.window.showInformationMessage('📦 Exporting environment...');
+        const result = await backend.exportEnvironment();
+        vscode.window.showInformationMessage(`✅ Environment exported!`);
+    } catch (error) {
+        vscode.window.showErrorMessage(`Export failed: ${error.message}`);
+    }
+}
+
+/**
+ * Import environment
+ */
+async function importEnvironment() {
+    vscode.window.showInformationMessage('📥 Import environment - Feature in development');
+}
+
+/**
+ * Analyze project
+ */
+async function analyzeProject() {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        vscode.window.showErrorMessage('No workspace folder open');
+        return;
+    }
+
+    try {
+        vscode.window.showInformationMessage('🔍 Analyzing project...');
+        const result = await backend.analyzeProject(workspaceFolder.uri.fsPath);
+        vscode.window.showInformationMessage('✅ Project analyzed!');
+        // TODO: Show results panel
+    } catch (error) {
+        vscode.window.showErrorMessage(`Analysis failed: ${error.message}`);
+    }
+}
+
+/**
+ * Restart runtime
+ */
+async function restartRuntime() {
+    vscode.window.showWarningMessage('🔄 Runtime restart - Manual action required');
+    vscode.window.showInformationMessage(
+        'Please restart Python runtime manually: python backend/runtime/server.enterprise.py --port 6000'
+    );
+}
+
+/**
+ * Open settings
+ */
+async function openSettings() {
+    vscode.commands.executeCommand('workbench.action.openSettings', 'sudoStudio');
+}
+
+/**
+ * Show onboarding
+ */
+async function showOnboarding() {
+    vscode.window.showInformationMessage(
+        '👋 Welcome to Sudo Studio! Start by opening AI Chat or running System Doctor.',
+        'Open Chat', 'Run Doctor'
+    ).then(selection => {
+        if (selection === 'Open Chat') openChat();
+        if (selection === 'Run Doctor') runDoctor();
+    });
+}
+
+/**
+ * Extension deactivation
+ */
+function deactivate() {
+    console.log('Sudo Studio deactivated');
+}
+
+module.exports = { activate, deactivate };
