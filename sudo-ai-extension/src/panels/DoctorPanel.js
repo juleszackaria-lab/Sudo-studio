@@ -1,6 +1,11 @@
+/**
+ * SUDO STUDIO - Doctor Panel
+ * Real-time system diagnostics with AutoFix buttons.
+ */
 const vscode = require('vscode');
-const { getBackendService } = require('../services/BackendService');
-const { getStateManager } = require('../services/StateManager');
+const axios  = require('axios');
+const { exec } = require('child_process');
+const os = require('os');
 
 class DoctorPanel {
     static currentPanel = undefined;
@@ -8,549 +13,366 @@ class DoctorPanel {
     constructor(panel, extensionUri) {
         this.panel = panel;
         this.extensionUri = extensionUri;
-        this.backend = getBackendService();
-        this.state = getStateManager();
         this.disposables = [];
-
         this.panel.webview.html = this.getHtmlContent();
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-        this.panel.webview.onDidReceiveMessage(
-            message => this.handleMessage(message),
-            null,
-            this.disposables
-        );
+        this.panel.webview.onDidReceiveMessage(m => this.handleMessage(m), null, this.disposables);
     }
 
     static createOrShow(extensionUri) {
-        const column = vscode.window.activeTextEditor
-            ? vscode.window.activeTextEditor.viewColumn
-            : undefined;
-
+        const column = vscode.ViewColumn.One;
         if (DoctorPanel.currentPanel) {
             DoctorPanel.currentPanel.panel.reveal(column);
             return;
         }
-
         const panel = vscode.window.createWebviewPanel(
-            'sudoStudioDoctor',
-            '🩺 System Doctor',
-            column || vscode.ViewColumn.One,
-            {
-                enableScripts: true,
-                retainContextWhenHidden: true,
-                localResourceRoots: [extensionUri]
-            }
+            'sudoDoctor', '🩺 System Doctor', column,
+            { enableScripts: true, retainContextWhenHidden: true }
         );
-
         DoctorPanel.currentPanel = new DoctorPanel(panel, extensionUri);
     }
 
-    async handleMessage(message) {
-        switch (message.type) {
-            case 'runDoctor':
-                await this.runDiagnostic();
-                break;
-            case 'autoFix':
-                await this.runAutoFix(message.issueType, message.issue);
-                break;
+    async handleMessage(msg) {
+        switch (msg.type) {
+            case 'runDiagnostic': await this.runDiagnostic(); break;
+            case 'autoFix':       await this.autoFix(msg.issue); break;
+            case 'installSDK':    await this.installSDK(msg.sdk); break;
         }
     }
 
     async runDiagnostic() {
-        try {
-            this.panel.webview.postMessage({ type: 'loading', show: true });
-
-            const result = await this.backend.runDoctor();
-
-            this.panel.webview.postMessage({
-                type: 'diagnosticComplete',
-                data: result
-            });
-
-            this.state.updateSystemState({
-                score: result.score,
-                issues: result.issues || []
-            });
-
-        } catch (error) {
-            this.panel.webview.postMessage({
-                type: 'error',
-                message: `Diagnostic failed: ${error.message}`
-            });
-        } finally {
-            this.panel.webview.postMessage({ type: 'loading', show: false });
-        }
+        this.panel.webview.postMessage({ type: 'diagStarted' });
+        const results = await this._gatherDiagnostics();
+        this.panel.webview.postMessage({ type: 'diagResults', results });
     }
 
-    async runAutoFix(issueType, issue) {
+    async _gatherDiagnostics() {
+        const checks = [];
+
+        // Helper
+        const check = (name, cmd) => new Promise(resolve => {
+            exec(cmd, { timeout: 5000 }, (err, stdout) => {
+                if (!err && stdout.trim()) {
+                    resolve({ name, status: 'ok', value: stdout.trim().split('\n')[0] });
+                } else {
+                    resolve({ name, status: 'error', value: 'Not found' });
+                }
+            });
+        });
+
+        const isWin = process.platform === 'win32';
+
+        checks.push(
+            check('Node.js',     isWin ? 'node --version' : 'node --version'),
+            check('npm',         isWin ? 'npm --version' : 'npm --version'),
+            check('Python',      isWin ? 'python --version 2>&1' : 'python3 --version'),
+            check('pip',         isWin ? 'pip --version' : 'pip3 --version'),
+            check('Git',         'git --version'),
+            check('Docker',      'docker --version')
+        );
+
+        const results = await Promise.all(checks);
+
+        // Backend check
         try {
-            this.panel.webview.postMessage({
-                type: 'fixLoading',
-                issueType: issueType,
-                show: true
-            });
-
-            const result = await this.backend.autoFix(issueType, issue);
-
-            this.panel.webview.postMessage({
-                type: 'fixComplete',
-                issueType: issueType,
-                success: result.success,
-                message: result.message
-            });
-
-            if (result.success) {
-                vscode.window.showInformationMessage(`AutoFix successful: ${result.message}`);
-                // Re-run diagnostic
-                setTimeout(() => this.runDiagnostic(), 1000);
-            }
-
-        } catch (error) {
-            this.panel.webview.postMessage({
-                type: 'fixComplete',
-                issueType: issueType,
-                success: false,
-                message: error.message
-            });
-            vscode.window.showErrorMessage(`AutoFix failed: ${error.message}`);
+            await axios.get('http://localhost:5000/api/system/health', { timeout: 2000 });
+            results.push({ name: 'Backend (port 5000)', status: 'ok', value: 'Running' });
+        } catch (_) {
+            results.push({ name: 'Backend (port 5000)', status: 'error', value: 'Not running', fix: 'startBackend' });
         }
+
+        // Runtime check
+        try {
+            const r = await axios.get('http://localhost:6000/health', { timeout: 2000 });
+            const m = r.data.model || {};
+            const label = m.loaded ? `Running · ${m.name || 'model'}` : (m.loading ? `Loading (${m.download_progress||0}%)` : 'Running (no model)');
+            results.push({ name: 'AI Runtime (port 6000)', status: m.loaded || m.loading ? 'ok' : 'warn', value: label, fix: m.loaded ? null : 'downloadModel' });
+        } catch (_) {
+            results.push({ name: 'AI Runtime (port 6000)', status: 'error', value: 'Not running', fix: 'startRuntime' });
+        }
+
+        // System info
+        results.push({ name: 'Platform', status: 'info', value: `${os.platform()} ${os.arch()}` });
+        results.push({ name: 'RAM',      status: 'info', value: `${Math.round(os.totalmem() / 1024 / 1024 / 1024)}GB total, ${Math.round(os.freemem() / 1024 / 1024 / 1024)}GB free` });
+
+        return results;
+    }
+
+    async autoFix(issue) {
+        this.panel.webview.postMessage({ type: 'fixStarted', issue });
+        
+        const isWin = process.platform === 'win32';
+        let cmd = null;
+        let msg = '';
+
+        switch (issue) {
+            case 'Node.js':
+                if (isWin) {
+                    vscode.env.openExternal(vscode.Uri.parse('https://nodejs.org/en/download/'));
+                    msg = 'Ouverture du site Node.js pour téléchargement Windows';
+                } else {
+                    cmd = 'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs';
+                    msg = 'Installation de Node.js via nodesource...';
+                }
+                break;
+            case 'Python':
+                if (isWin) {
+                    vscode.env.openExternal(vscode.Uri.parse('https://www.python.org/downloads/'));
+                    msg = 'Ouverture du site Python pour téléchargement Windows';
+                } else {
+                    cmd = 'sudo apt-get install -y python3 python3-pip';
+                    msg = 'Installation de Python3...';
+                }
+                break;
+            case 'Git':
+                if (isWin) {
+                    vscode.env.openExternal(vscode.Uri.parse('https://git-scm.com/download/win'));
+                    msg = 'Ouverture du site Git pour Windows';
+                } else {
+                    cmd = 'sudo apt-get install -y git';
+                    msg = 'Installation de Git...';
+                }
+                break;
+            case 'Docker':
+                vscode.env.openExternal(vscode.Uri.parse('https://docs.docker.com/get-docker/'));
+                msg = 'Ouverture du site Docker';
+                break;
+            case 'downloadModel':
+                try {
+                    await axios.post('http://localhost:6000/download',
+                        { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
+                    msg = '⬇ Téléchargement du modèle démarré...';
+                } catch (e) {
+                    msg = `Impossible de contacter le runtime: ${e.message}`;
+                }
+                break;
+            default:
+                msg = `Aucune correction automatique disponible pour: ${issue}`;
+        }
+
+        if (cmd) {
+            vscode.window.showInformationMessage(`AutoFix: ${msg}`);
+            const terminal = vscode.window.createTerminal('Sudo AutoFix');
+            terminal.show();
+            terminal.sendText(cmd);
+            msg += ' (voir le terminal)';
+        } else if (msg) {
+            vscode.window.showInformationMessage(`AutoFix: ${msg}`);
+        }
+
+        this.panel.webview.postMessage({ type: 'fixDone', issue, message: msg });
     }
 
     dispose() {
         DoctorPanel.currentPanel = undefined;
         this.panel.dispose();
-        while (this.disposables.length) {
-            const disposable = this.disposables.pop();
-            if (disposable) {
-                disposable.dispose();
-            }
-        }
+        this.disposables.forEach(d => d && d.dispose());
     }
 
     getHtmlContent() {
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>System Doctor</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: var(--vscode-editor-background);
-            color: var(--vscode-editor-foreground);
-            padding: 24px;
-        }
-        
-        .header {
-            margin-bottom: 32px;
-        }
-        
-        .header h1 {
-            font-size: 28px;
-            font-weight: 600;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        
-        .header p {
-            color: var(--vscode-descriptionForeground);
-            font-size: 14px;
-        }
-        
-        .action-bar {
-            display: flex;
-            gap: 12px;
-            margin-bottom: 32px;
-        }
-        
-        .btn {
-            background: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border: none;
-            padding: 10px 20px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            transition: background 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .btn:hover {
-            background: var(--vscode-button-hoverBackground);
-        }
-        
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        
-        .score-card {
-            background: var(--vscode-sideBar-background);
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 24px;
-            text-align: center;
-        }
-        
-        .score-value {
-            font-size: 64px;
-            font-weight: 700;
-            margin: 16px 0;
-        }
-        
-        .score-value.excellent {
-            color: #4caf50;
-        }
-        
-        .score-value.good {
-            color: #8bc34a;
-        }
-        
-        .score-value.warning {
-            color: #ff9800;
-        }
-        
-        .score-value.critical {
-            color: #f44336;
-        }
-        
-        .score-label {
-            font-size: 14px;
-            color: var(--vscode-descriptionForeground);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .score-description {
-            margin-top: 12px;
-            font-size: 16px;
-        }
-        
-        .issues-container {
-            display: grid;
-            gap: 16px;
-        }
-        
-        .issue-card {
-            background: var(--vscode-sideBar-background);
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 8px;
-            padding: 20px;
-            transition: transform 0.2s;
-        }
-        
-        .issue-card:hover {
-            transform: translateY(-2px);
-        }
-        
-        .issue-card.critical {
-            border-left: 4px solid #f44336;
-        }
-        
-        .issue-card.warning {
-            border-left: 4px solid #ff9800;
-        }
-        
-        .issue-card.info {
-            border-left: 4px solid #2196f3;
-        }
-        
-        .issue-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 12px;
-        }
-        
-        .issue-title {
-            font-size: 16px;
-            font-weight: 600;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .issue-severity {
-            padding: 4px 12px;
-            border-radius: 12px;
-            font-size: 12px;
-            font-weight: 500;
-            text-transform: uppercase;
-        }
-        
-        .issue-severity.critical {
-            background: rgba(244, 67, 54, 0.2);
-            color: #f44336;
-        }
-        
-        .issue-severity.warning {
-            background: rgba(255, 152, 0, 0.2);
-            color: #ff9800;
-        }
-        
-        .issue-severity.info {
-            background: rgba(33, 150, 243, 0.2);
-            color: #2196f3;
-        }
-        
-        .issue-description {
-            color: var(--vscode-descriptionForeground);
-            margin-bottom: 16px;
-            line-height: 1.6;
-        }
-        
-        .issue-actions {
-            display: flex;
-            gap: 8px;
-        }
-        
-        .btn-fix {
-            background: #4caf50;
-            color: white;
-        }
-        
-        .btn-fix:hover {
-            background: #45a049;
-        }
-        
-        .btn-small {
-            padding: 6px 12px;
-            font-size: 13px;
-        }
-        
-        .loading {
-            display: none;
-            text-align: center;
-            padding: 40px;
-        }
-        
-        .loading.show {
-            display: block;
-        }
-        
-        .spinner {
-            border: 3px solid var(--vscode-panel-border);
-            border-top: 3px solid var(--vscode-button-background);
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 16px;
-        }
-        
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: var(--vscode-descriptionForeground);
-        }
-        
-        .empty-state-icon {
-            font-size: 64px;
-            margin-bottom: 16px;
-            opacity: 0.5;
-        }
-        
-        .empty-state h3 {
-            font-size: 20px;
-            margin-bottom: 8px;
-        }
-        
-        .success-state {
-            background: var(--vscode-sideBar-background);
-            border: 1px solid #4caf50;
-            border-radius: 8px;
-            padding: 20px;
-            text-align: center;
-            margin: 20px 0;
-        }
-        
-        .success-state .icon {
-            font-size: 48px;
-            margin-bottom: 12px;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>System Doctor</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+    background:var(--vscode-editor-background);
+    color:var(--vscode-editor-foreground);
+    padding:0; min-height:100vh;
+}
+#header {
+    padding:14px 16px;
+    background:var(--vscode-sideBar-background);
+    border-bottom:1px solid var(--vscode-panel-border);
+    display:flex; justify-content:space-between; align-items:center;
+}
+#header h1 { font-size:16px; font-weight:600; }
+.score-card {
+    margin:16px; padding:16px;
+    background:var(--vscode-editorWidget-background);
+    border-radius:10px; text-align:center;
+    border:1px solid var(--vscode-panel-border);
+}
+.score-value { font-size:48px; font-weight:700; }
+.score-label { font-size:12px; opacity:.7; margin-top:4px; }
+#results { padding:0 16px 16px; display:flex; flex-direction:column; gap:8px; }
+.check-item {
+    padding:10px 14px; border-radius:8px;
+    background:var(--vscode-editorWidget-background);
+    border:1px solid var(--vscode-panel-border);
+    display:flex; justify-content:space-between; align-items:center;
+    gap:8px;
+}
+.check-left { display:flex; align-items:center; gap:10px; flex:1; min-width:0; }
+.check-icon { font-size:16px; flex-shrink:0; }
+.check-name { font-size:13px; font-weight:500; }
+.check-value { font-size:11px; opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:200px; }
+.check-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.badge {
+    font-size:10px; padding:2px 8px; border-radius:10px; font-weight:600;
+}
+.badge.ok   { background:#4caf5030; color:#4caf50; }
+.badge.error{ background:#f4433630; color:#f44336; }
+.badge.warn { background:#ff980030; color:#ff9800; }
+.badge.info { background:#2196f330; color:#2196f3; }
+.fix-btn {
+    padding:4px 10px; font-size:11px; cursor:pointer; border:none; border-radius:5px;
+    background:var(--vscode-button-background); color:var(--vscode-button-foreground);
+    font-weight:500; transition:opacity .2s;
+}
+.fix-btn:hover { opacity:.8; }
+.fix-btn:disabled { opacity:.4; cursor:not-allowed; }
+.action-bar {
+    padding:16px; display:flex; gap:8px;
+}
+.btn {
+    flex:1; padding:10px; font-size:13px; cursor:pointer; border:none; border-radius:7px;
+    font-weight:600; transition:opacity .2s;
+}
+.btn-primary { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
+.btn-secondary { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground); }
+.btn:hover { opacity:.85; }
+#status-msg {
+    margin:0 16px 12px; padding:10px 14px;
+    background:var(--vscode-editorWidget-background);
+    border-radius:8px; font-size:12px; opacity:.8;
+    display:none;
+}
+#status-msg.show { display:block; }
+.spinner { display:inline-block; animation:spin .8s linear infinite; }
+@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>
-            <span>🩺</span>
-            System Doctor
-        </h1>
-        <p>Comprehensive system diagnostics and automated fixes</p>
-    </div>
-    
-    <div class="action-bar">
-        <button class="btn" onclick="runDoctor()" id="runButton">
-            <span>▶</span>
-            Run Full Diagnostic
-        </button>
-    </div>
-    
-    <div id="loading" class="loading">
-        <div class="spinner"></div>
-        <p>Running comprehensive system diagnostic...</p>
-    </div>
-    
-    <div id="results" style="display: none;">
-        <div class="score-card">
-            <div class="score-label">System Health Score</div>
-            <div class="score-value" id="scoreValue">--</div>
-            <div class="score-description" id="scoreDescription"></div>
-        </div>
-        
-        <div id="issuesContainer">
-            <h2 style="margin-bottom: 16px; font-size: 20px;">Issues Detected</h2>
-            <div class="issues-container" id="issuesList"></div>
-        </div>
-    </div>
-    
-    <div id="emptyState" class="empty-state">
-        <div class="empty-state-icon">🩺</div>
-        <h3>Ready to diagnose your system</h3>
-        <p>Click "Run Full Diagnostic" to start a comprehensive health check</p>
-    </div>
+<div id="header">
+    <h1>🩺 System Doctor</h1>
+    <span id="lastCheck" style="font-size:11px;opacity:.6;"></span>
+</div>
 
-    <script>
-        const vscode = acquireVsCodeApi();
-        
-        function runDoctor() {
-            vscode.postMessage({ type: 'runDoctor' });
+<div class="action-bar">
+    <button class="btn btn-primary" onclick="runDiag()" id="diagBtn">▶ Run Diagnostic</button>
+    <button class="btn btn-secondary" onclick="autoFixAll()">🔧 AutoFix All</button>
+</div>
+
+<div id="status-msg"></div>
+
+<div class="score-card" id="scoreCard" style="display:none">
+    <div class="score-value" id="scoreValue">—</div>
+    <div class="score-label">Health Score</div>
+</div>
+
+<div id="results"></div>
+
+<script>
+const vscode = acquireVsCodeApi();
+let lastResults = [];
+
+function runDiag() {
+    document.getElementById('diagBtn').disabled = true;
+    document.getElementById('diagBtn').textContent = '⟳ Running...';
+    setStatus('🔍 Analyse en cours...');
+    document.getElementById('scoreCard').style.display = 'none';
+    document.getElementById('results').innerHTML = '';
+    vscode.postMessage({ type: 'runDiagnostic' });
+}
+
+function autoFixAll() {
+    const errors = lastResults.filter(r => (r.status === 'error' || r.status === 'warn') && r.fix);
+    if (errors.length === 0) {
+        setStatus('✅ Aucun problème à corriger!');
+        return;
+    }
+    errors.forEach(r => fixIssue(r.fix || r.name));
+}
+
+function fixIssue(issue) {
+    setStatus('🔧 Correction en cours: ' + issue);
+    vscode.postMessage({ type: 'autoFix', issue });
+}
+
+function setStatus(msg) {
+    const el = document.getElementById('status-msg');
+    el.textContent = msg;
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+function calcScore(results) {
+    const ok = results.filter(r => r.status === 'ok').length;
+    const total = results.filter(r => r.status !== 'info').length;
+    return total > 0 ? Math.round((ok / total) * 100) : 100;
+}
+
+function renderResults(results) {
+    lastResults = results;
+    const container = document.getElementById('results');
+    container.innerHTML = '';
+
+    const score = calcScore(results);
+    const scoreEl = document.getElementById('scoreCard');
+    const scoreVal = document.getElementById('scoreValue');
+    scoreEl.style.display = 'block';
+    scoreVal.textContent = score + '/100';
+    scoreVal.style.color = score >= 80 ? '#4caf50' : score >= 50 ? '#ff9800' : '#f44336';
+
+    results.forEach(r => {
+        const div = document.createElement('div');
+        div.className = 'check-item';
+
+        const icon = r.status === 'ok' ? '✅' : r.status === 'error' ? '❌' : r.status === 'warn' ? '⚠️' : 'ℹ️';
+
+        let fixBtn = '';
+        if (r.status === 'error' || r.status === 'warn') {
+            fixBtn = \`<button class="fix-btn" onclick="fixIssue('\${r.fix || r.name}')" id="fix-\${r.name.replace(/\s+/g,'_')}">
+                AutoFix
+            </button>\`;
         }
-        
-        function autoFix(issueType, issue) {
-            vscode.postMessage({
-                type: 'autoFix',
-                issueType: issueType,
-                issue: issue
-            });
-        }
-        
-        function getScoreClass(score) {
-            if (score >= 90) return 'excellent';
-            if (score >= 70) return 'good';
-            if (score >= 50) return 'warning';
-            return 'critical';
-        }
-        
-        function getScoreDescription(score) {
-            if (score >= 90) return 'Excellent - Your system is in great shape!';
-            if (score >= 70) return 'Good - Minor issues detected';
-            if (score >= 50) return 'Warning - Some issues need attention';
-            return 'Critical - Immediate action required';
-        }
-        
-        window.addEventListener('message', event => {
-            const message = event.data;
-            
-            switch (message.type) {
-                case 'loading':
-                    document.getElementById('loading').classList.toggle('show', message.show);
-                    document.getElementById('runButton').disabled = message.show;
-                    break;
-                    
-                case 'diagnosticComplete':
-                    displayResults(message.data);
-                    break;
-                    
-                case 'fixLoading':
-                    const fixButton = document.querySelector(\`[data-issue-type="\${message.issueType}"]\`);
-                    if (fixButton) {
-                        fixButton.disabled = message.show;
-                        fixButton.textContent = message.show ? '⏳ Fixing...' : '🔧 AutoFix';
-                    }
-                    break;
-                    
-                case 'fixComplete':
-                    if (message.success) {
-                        const card = document.querySelector(\`[data-issue-type="\${message.issueType}"]\`)?.closest('.issue-card');
-                        if (card) {
-                            card.style.opacity = '0.5';
-                            card.innerHTML += '<div class="success-state"><div class="icon">✅</div><p>Fixed successfully!</p></div>';
-                        }
-                    }
-                    break;
-                    
-                case 'error':
-                    alert('Error: ' + message.message);
-                    break;
-            }
-        });
-        
-        function displayResults(data) {
-            document.getElementById('emptyState').style.display = 'none';
-            document.getElementById('results').style.display = 'block';
-            
-            const score = data.score || 0;
-            const scoreValue = document.getElementById('scoreValue');
-            scoreValue.textContent = score;
-            scoreValue.className = 'score-value ' + getScoreClass(score);
-            
-            document.getElementById('scoreDescription').textContent = getScoreDescription(score);
-            
-            const issuesList = document.getElementById('issuesList');
-            issuesList.innerHTML = '';
-            
-            const issues = data.issues || [];
-            
-            if (issues.length === 0) {
-                issuesList.innerHTML = '<div class="success-state"><div class="icon">✅</div><h3>No issues detected!</h3><p>Your system is running smoothly</p></div>';
-            } else {
-                issues.forEach(issue => {
-                    const card = document.createElement('div');
-                    card.className = 'issue-card ' + (issue.severity || 'warning');
-                    
-                    const severity = issue.severity || 'warning';
-                    const title = issue.title || issue.type || 'Unknown Issue';
-                    const description = issue.description || issue.message || 'No details available';
-                    const fixable = issue.fixable || issue.auto_fixable || false;
-                    
-                    card.innerHTML = \`
-                        <div class="issue-header">
-                            <div class="issue-title">
-                                <span>\${getSeverityIcon(severity)}</span>
-                                <span>\${title}</span>
-                            </div>
-                            <span class="issue-severity \${severity}">\${severity}</span>
-                        </div>
-                        <div class="issue-description">\${description}</div>
-                        <div class="issue-actions">
-                            \${fixable ? \`<button class="btn btn-fix btn-small" data-issue-type="\${issue.type}" onclick="autoFix('\${issue.type}', \${JSON.stringify(issue).replace(/"/g, '&quot;')})">🔧 AutoFix</button>\` : ''}
-                            <button class="btn btn-small">📋 Details</button>
-                        </div>
-                    \`;
-                    
-                    issuesList.appendChild(card);
-                });
-            }
-        }
-        
-        function getSeverityIcon(severity) {
-            switch (severity) {
-                case 'critical': return '🔴';
-                case 'warning': return '⚠️';
-                case 'info': return 'ℹ️';
-                default: return '•';
-            }
-        }
-    </script>
+
+        div.innerHTML = \`
+            <div class="check-left">
+                <span class="check-icon">\${icon}</span>
+                <div>
+                    <div class="check-name">\${r.name}</div>
+                    <div class="check-value">\${r.value}</div>
+                </div>
+            </div>
+            <div class="check-right">
+                <span class="badge \${r.status}">\${r.status.toUpperCase()}</span>
+                \${fixBtn}
+            </div>\`;
+        container.appendChild(div);
+    });
+}
+
+window.addEventListener('message', ev => {
+    const msg = ev.data;
+    switch(msg.type) {
+        case 'diagStarted':
+            document.getElementById('results').innerHTML = '<div style="padding:16px;text-align:center;opacity:.6;"><span class="spinner">⟳</span> Analyse système...</div>';
+            break;
+        case 'diagResults':
+            document.getElementById('diagBtn').disabled = false;
+            document.getElementById('diagBtn').textContent = '▶ Run Diagnostic';
+            document.getElementById('lastCheck').textContent = 'Dernière analyse: ' + new Date().toLocaleTimeString();
+            renderResults(msg.results);
+            break;
+        case 'fixStarted':
+            setStatus('🔧 Correction: ' + msg.issue);
+            break;
+        case 'fixDone':
+            setStatus('✅ ' + msg.message);
+            setTimeout(runDiag, 2000);
+            break;
+    }
+});
+
+// Auto-run on open
+runDiag();
+</script>
 </body>
 </html>`;
     }
