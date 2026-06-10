@@ -1,29 +1,62 @@
 /**
- * SUDO STUDIO - Chat Panel
- * Webview panel with fully functional AI chat.
- * Falls back to direct runtime call (port 6000) if backend (port 5000) is unavailable.
+ * SUDO STUDIO - Chat Panel v3
+ * Full-featured AI chat with:
+ * - Immediate user message display (fixed send button)
+ * - Retry last message
+ * - Stop generation
+ * - Persistent conversation history (VSCode memento)
+ * - Markdown + syntax highlighting (highlight.js via CDN)
+ * - Intent routing: "analyse projet", "docteur", "autofix", "dockerfile" etc.
+ * - Multi-conversation (New Chat)
+ * - Dual-path AI: backend:5000 → fallback runtime:6000
+ * - Model download progress bar
  */
 const vscode = require('vscode');
 const axios  = require('axios');
+const { exec } = require('child_process');
+
+const IS_WIN = process.platform === 'win32';
 
 class ChatPanel {
     static currentPanel = undefined;
 
-    constructor(panel, extensionUri) {
+    constructor(panel, extensionUri, ctx) {
         this.panel        = panel;
         this.extensionUri = extensionUri;
+        this.ctx          = ctx;
         this.disposables  = [];
         this.authToken    = null;
+        this.abortCtrl    = null;   // for stop generation
+        this.history      = [];     // [{role, content}]
+        this.lastUserMsg  = '';
+
+        // Restore history from storage
+        if (ctx) {
+            this.history = ctx.globalState.get('sudoChat.history', []);
+        }
 
         this.panel.webview.html = this.getHtmlContent();
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
         this.panel.webview.onDidReceiveMessage(m => this.handleMessage(m), null, this.disposables);
 
-        // Try to get auth token quietly (don't block the panel opening)
+        // Send existing history to webview after a tick
+        setTimeout(() => {
+            this.history.forEach(h => {
+                if (h.role === 'user') {
+                    this.panel.webview.postMessage({ type: 'userMessage', text: h.content, noScroll: true });
+                } else {
+                    this.panel.webview.postMessage({ type: 'aiMessage', text: h.content, model: h.model || 'AI', mock: h.mock, noScroll: true });
+                }
+            });
+            this.sendStatus();
+        }, 200);
+
         this._tryLogin();
+        // Poll status every 5s
+        this._statusInterval = setInterval(() => this.sendStatus(), 5000);
     }
 
-    static createOrShow(extensionUri) {
+    static createOrShow(extensionUri, ctx) {
         const column = vscode.window.activeTextEditor
             ? vscode.window.activeTextEditor.viewColumn
             : vscode.ViewColumn.One;
@@ -38,35 +71,162 @@ class ChatPanel {
             column,
             { enableScripts: true, retainContextWhenHidden: true }
         );
-        ChatPanel.currentPanel = new ChatPanel(panel, extensionUri);
+        ChatPanel.currentPanel = new ChatPanel(panel, extensionUri, ctx);
     }
 
     async _tryLogin() {
         try {
             const r = await axios.post('http://localhost:5000/api/auth/login',
-                { username: 'admin', password: 'admin123' },
-                { timeout: 3000 });
+                { username: 'admin', password: 'admin123' }, { timeout: 3000 });
             this.authToken = r.data.token;
-        } catch (_) {
-            this.authToken = null; // Will use direct runtime call
-        }
+        } catch (_) { this.authToken = null; }
     }
 
     async handleMessage(message) {
         switch (message.type) {
-            case 'sendMessage':
-                await this.handleChat(message.text);
-                break;
-            case 'clearChat':
-                // handled by webview JS
-                break;
-            case 'checkStatus':
-                await this.sendStatus();
-                break;
-            case 'downloadModel':
-                await this.downloadModel(message.modelId);
-                break;
+            case 'sendMessage':   await this.handleChat(message.text); break;
+            case 'retryLast':     await this.retryLast(); break;
+            case 'stopGeneration': this.stopGeneration(); break;
+            case 'clearChat':     this.clearHistory(); break;
+            case 'checkStatus':   await this.sendStatus(); break;
+            case 'downloadModel': await this.downloadModel(message.modelId); break;
+            case 'runDoctor':     vscode.commands.executeCommand('sudoStudio.runDoctor'); break;
+            case 'analyzeProject': vscode.commands.executeCommand('sudoStudio.analyzeProject'); break;
+            case 'openDevOps':    vscode.commands.executeCommand('sudoStudio.openDevOpsPanel'); break;
+            case 'openSDK':       vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
+            case 'openRuntime':   vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
         }
+    }
+
+    // ── Intent routing ─────────────────────────────────────────────────────
+    _detectIntent(text) {
+        const t = text.toLowerCase();
+        if (/analys[ez]|scan|inspecte|examine|audit.*(projet|code|workspace|dossier)/.test(t))
+            return 'analyzeProject';
+        if (/doctor|docteur|diagnos|santé|health|problème.*système|système.*problème/.test(t))
+            return 'openDoctor';
+        if (/autofix|auto.?fix|corrige.*auto|répare.*auto|fix.*(all|tout|auto)/.test(t))
+            return 'autoFix';
+        if (/dockerfile|docker.?compose|docker-compose/.test(t))
+            return 'genDocker';
+        if (/github.?action|ci.?cd|pipeline|gitlab.?ci|jenkins|workflow/.test(t))
+            return 'genCICD';
+        if (/kubernetes|kubectl|k8s|helm|deployment.?yaml/.test(t))
+            return 'genKubernetes';
+        if (/install.*sdk|sdk.*install|installe.*node|installe.*python|installe.*flutter/.test(t))
+            return 'openSDK';
+        if (/runtime|modèle|model.*status|status.*model|télécharge.*model|download.*model/.test(t))
+            return 'openRuntime';
+        return null;
+    }
+
+    async handleChat(text) {
+        if (!text || !text.trim()) return;
+        this.lastUserMsg = text;
+
+        // Show user message immediately
+        this.panel.webview.postMessage({ type: 'userMessage', text });
+        this._addHistory('user', text);
+
+        // Check for intent shortcuts
+        const intent = this._detectIntent(text);
+        if (intent) {
+            await this._handleIntent(intent, text);
+            return;
+        }
+
+        // Normal AI call
+        this.panel.webview.postMessage({ type: 'generating', show: true });
+        this.abortCtrl = new AbortController();
+
+        try {
+            const reply = await this._sendToAI(text);
+            this.panel.webview.postMessage({ type: 'generating', show: false });
+            this.panel.webview.postMessage({
+                type: 'aiMessage',
+                text: reply.reply || reply.response || 'Pas de réponse.',
+                model: reply.model || 'AI',
+                latency: reply.latency_ms,
+                mock: reply.mock || false,
+                progress: reply.download_progress
+            });
+            this._addHistory('assistant', reply.reply || reply.response || '', reply.model, reply.mock);
+        } catch (e) {
+            this.panel.webview.postMessage({ type: 'generating', show: false });
+            if (e.name === 'AbortError' || e.message === 'STOPPED') {
+                this.panel.webview.postMessage({ type: 'aiMessage', text: '⏹ Génération arrêtée.', model: 'system' });
+            } else {
+                this.panel.webview.postMessage({
+                    type: 'error',
+                    text: `❌ ${e.message}\n\nVérifiez que runtime.exe est lancé (port 6000).`
+                });
+            }
+        }
+    }
+
+    async _handleIntent(intent, text) {
+        const replies = {
+            analyzeProject: '🔍 **Analyse du projet en cours...**\n\nJ\'ouvre le panneau d\'analyse. Résultats dans un instant.',
+            openDoctor:     '🩺 **Ouverture du System Doctor...**\n\nDiagnostic en cours.',
+            autoFix:        '🔧 **AutoFix lancé...**\n\nDétection et correction automatique des problèmes.',
+            genDocker:      '🐳 **Génération Dockerfile...**\n\nJ\'ouvre le panneau DevOps pour générer les fichiers Docker.',
+            genCICD:        '⚙️ **Génération CI/CD...**\n\nJ\'ouvre le panneau DevOps.',
+            genKubernetes:  '☸️ **Génération Kubernetes...**\n\nJ\'ouvre le panneau DevOps.',
+            openSDK:        '📦 **SDK Manager...**\n\nJ\'ouvre le gestionnaire de SDKs.',
+            openRuntime:    '🤖 **Runtime Manager...**\n\nJ\'ouvre le panneau de gestion du runtime IA.'
+        };
+
+        const reply = replies[intent] || '✅ Action lancée.';
+        this.panel.webview.postMessage({ type: 'aiMessage', text: reply, model: 'Sudo AI', mock: false });
+        this._addHistory('assistant', reply, 'Sudo AI');
+
+        // Execute the actual action
+        setTimeout(() => {
+            switch (intent) {
+                case 'analyzeProject': vscode.commands.executeCommand('sudoStudio.analyzeProject'); break;
+                case 'openDoctor':     vscode.commands.executeCommand('sudoStudio.runDoctor'); break;
+                case 'autoFix':        vscode.commands.executeCommand('sudoStudio.autoFix'); break;
+                case 'genDocker':
+                case 'genCICD':
+                case 'genKubernetes':  vscode.commands.executeCommand('sudoStudio.openDevOpsPanel'); break;
+                case 'openSDK':        vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
+                case 'openRuntime':    vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
+            }
+        }, 500);
+    }
+
+    async retryLast() {
+        if (!this.lastUserMsg) return;
+        // Remove last exchange from history
+        while (this.history.length && this.history[this.history.length - 1].role === 'assistant') {
+            this.history.pop();
+        }
+        if (this.history.length && this.history[this.history.length - 1].role === 'user') {
+            this.history.pop();
+        }
+        this.panel.webview.postMessage({ type: 'retryMessage' });
+        await this.handleChat(this.lastUserMsg);
+    }
+
+    stopGeneration() {
+        if (this.abortCtrl) {
+            this.abortCtrl.abort();
+            this.abortCtrl = null;
+        }
+        this.panel.webview.postMessage({ type: 'generating', show: false });
+    }
+
+    clearHistory() {
+        this.history = [];
+        if (this.ctx) this.ctx.globalState.update('sudoChat.history', []);
+        this.panel.webview.postMessage({ type: 'clearDone' });
+    }
+
+    _addHistory(role, content, model, mock) {
+        this.history.push({ role, content, model, mock, ts: Date.now() });
+        // Keep last 50 messages
+        if (this.history.length > 50) this.history = this.history.slice(-50);
+        if (this.ctx) this.ctx.globalState.update('sudoChat.history', this.history);
     }
 
     async sendStatus() {
@@ -83,47 +243,18 @@ class ChatPanel {
 
     async downloadModel(modelId) {
         try {
-            const r = await axios.post('http://localhost:6000/download',
-                { model: modelId || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' },
-                { timeout: 5000 });
-            this.panel.webview.postMessage({ type: 'downloadStarted', data: r.data });
-            vscode.window.showInformationMessage(`⬇️ Downloading model ${modelId}... Check runtime status.`);
+            await axios.post('http://localhost:6000/download',
+                { model: modelId || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
+            this.panel.webview.postMessage({ type: 'downloadStarted' });
+            vscode.window.showInformationMessage(`⬇️ Downloading ${modelId}... Check status bar.`);
         } catch (e) {
-            this.panel.webview.postMessage({ type: 'error', text: `Cannot reach runtime on port 6000: ${e.message}` });
-        }
-    }
-
-    async handleChat(text) {
-        if (!text || !text.trim()) return;
-
-        // Show user message immediately in webview
-        this.panel.webview.postMessage({ type: 'userMessage', text });
-        this.panel.webview.postMessage({ type: 'loading', show: true });
-
-        try {
-            const reply = await this._sendToAI(text);
-            this.panel.webview.postMessage({ type: 'loading', show: false });
-            this.panel.webview.postMessage({
-                type: 'aiMessage',
-                text: reply.reply || reply.response || 'No response.',
-                model: reply.model || reply.model_used || 'AI',
-                latency: reply.latency_ms || reply.latency,
-                mock: reply.mock || false,
-                progress: reply.download_progress
-            });
-        } catch (e) {
-            this.panel.webview.postMessage({ type: 'loading', show: false });
-            this.panel.webview.postMessage({
-                type: 'error',
-                text: `❌ ${e.message}\n\nAssurez-vous que:\n1. backend.exe est lancé (port 5000)\n2. runtime.exe est lancé (port 6000)`
-            });
+            this.panel.webview.postMessage({ type: 'error', text: `Cannot reach runtime port 6000: ${e.message}` });
         }
     }
 
     async _sendToAI(text) {
-        const payload = { message: text, prompt: text, input: text, max_tokens: 256, temperature: 0.7 };
+        const payload = { message: text, prompt: text, input: text, max_tokens: 512, temperature: 0.7 };
 
-        // Strategy 1: via backend (port 5000) with auth
         if (this.authToken) {
             try {
                 const r = await axios.post('http://localhost:5000/api/ai/chat',
@@ -131,347 +262,300 @@ class ChatPanel {
                     { headers: { Authorization: `Bearer ${this.authToken}` }, timeout: 90000 });
                 return r.data;
             } catch (e) {
-                if (e.code === 'ECONNREFUSED') {
-                    // Backend down, try direct
-                } else {
-                    throw e;
-                }
+                if (e.code !== 'ECONNREFUSED') throw e;
             }
         }
 
-        // Strategy 2: direct to runtime (port 6000) - bypasses backend/auth
         const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 90000 });
         return r.data;
     }
 
     dispose() {
         ChatPanel.currentPanel = undefined;
+        clearInterval(this._statusInterval);
         this.panel.dispose();
         this.disposables.forEach(d => d && d.dispose());
     }
 
     getHtmlContent() {
         return `<!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sudo AI Chat</title>
+<!-- highlight.js for syntax highlighting -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--vscode-editor-background);
     color: var(--vscode-editor-foreground);
-    height: 100vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
 }
 #header {
-    padding: 12px 16px;
-    background: var(--vscode-sideBar-background);
+    padding: 10px 14px; background: var(--vscode-sideBar-background);
     border-bottom: 1px solid var(--vscode-panel-border);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-shrink: 0;
+    display: flex; justify-content: space-between; align-items: center; flex-shrink:0;
 }
-#header h1 { font-size:16px; font-weight:600; }
+#header h1 { font-size:15px; font-weight:600; }
+.hdr-btns { display:flex; gap:6px; }
 #statusBar {
-    padding: 6px 16px;
-    font-size: 11px;
+    padding: 5px 14px; font-size:11px;
     background: var(--vscode-editorWidget-background);
     border-bottom: 1px solid var(--vscode-panel-border);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-shrink: 0;
+    display: flex; align-items: center; gap: 8px; flex-shrink:0;
 }
-.status-dot { width:8px; height:8px; border-radius:50%; background:#888; }
-.status-dot.online  { background: #4caf50; }
-.status-dot.loading { background: #ff9800; animation: pulse 1s infinite; }
-.status-dot.offline { background: #f44336; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-#modelDownloadBar {
-    display: none;
-    padding: 8px 16px;
-    background: var(--vscode-editorWidget-background);
-    border-bottom: 1px solid var(--vscode-panel-border);
-    flex-shrink: 0;
+.dot { width:8px; height:8px; border-radius:50%; background:#888; flex-shrink:0; }
+.dot.online  { background:#4caf50; }
+.dot.loading { background:#ff9800; animation:pulse 1s infinite; }
+.dot.offline { background:#f44336; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+#dlBar { display:none; padding:6px 14px; background:var(--vscode-editorWidget-background); border-bottom:1px solid var(--vscode-panel-border); flex-shrink:0; }
+#dlBar.show { display:block; }
+.dl-track { height:5px; background:var(--vscode-panel-border); border-radius:3px; overflow:hidden; }
+.dl-fill   { height:100%; background:#4caf50; transition:width .3s; width:0; }
+#chat {
+    flex:1; overflow-y:auto; padding:14px;
+    display:flex; flex-direction:column; gap:10px;
 }
-#modelDownloadBar.show { display: block; }
-.progress-bar {
-    height: 6px;
-    background: var(--vscode-progressBar-background, #0078d4);
-    border-radius: 3px;
-    transition: width 0.3s;
+.empty {
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    height:100%; gap:10px; color:var(--vscode-descriptionForeground); text-align:center;
 }
-#chatContainer {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-.empty-state {
-    display:flex; flex-direction:column; align-items:center;
-    justify-content:center; height:100%; gap:12px;
-    color:var(--vscode-descriptionForeground); text-align:center;
-}
-.empty-state-icon { font-size:40px; opacity:.6; }
-.empty-state h2 { font-size:18px; font-weight:500; }
-.empty-state p  { font-size:13px; opacity:.7; }
-.quick-prompts { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; justify-content:center; }
-.quick-prompt {
-    padding:6px 12px; border-radius:16px; font-size:12px; cursor:pointer;
-    background:var(--vscode-button-secondaryBackground);
-    color:var(--vscode-button-secondaryForeground);
-    border:1px solid var(--vscode-button-border,transparent);
-    transition: opacity .2s;
-}
-.quick-prompt:hover { opacity:.8; }
-.message { display:flex; gap:10px; animation: fadeIn .25s ease-out; }
-@keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-.message.user { flex-direction:row-reverse; }
-.avatar {
-    width:30px; height:30px; border-radius:50%;
-    display:flex; align-items:center; justify-content:center;
-    font-size:13px; font-weight:700; flex-shrink:0;
-}
-.message.user .avatar { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
-.message.ai   .avatar { background:linear-gradient(135deg,#667eea,#764ba2); color:#fff; }
-.message-content {
-    max-width:80%; background:var(--vscode-input-background);
-    border:1px solid var(--vscode-input-border);
-    border-radius:12px; padding:10px 14px; font-size:14px; line-height:1.5;
-}
-.message.user .message-content {
-    background:var(--vscode-button-background);
-    color:var(--vscode-button-foreground); border:none;
-}
-.message-meta { font-size:10px; opacity:.6; margin-top:6px; }
-.mock-badge {
-    display:inline-block; font-size:10px; padding:2px 6px;
-    background:#ff980020; color:#ff9800; border-radius:8px; margin-left:6px;
-}
-pre { background:var(--vscode-textCodeBlock-background); padding:10px; border-radius:6px; overflow-x:auto; margin:6px 0; }
-code { font-family:monospace; font-size:12px; }
-.copy-btn {
-    float:right; font-size:10px; padding:2px 6px; cursor:pointer; border:none;
+.empty-icon { font-size:44px; opacity:.5; }
+.quick-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; max-width:380px; }
+.qb {
+    padding:8px 10px; border-radius:8px; font-size:12px; cursor:pointer; text-align:left;
     background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
-    border-radius:4px; margin-top:-2px;
+    border:1px solid var(--vscode-panel-border); transition:opacity .2s;
+    display:flex; align-items:center; gap:6px;
 }
-#loadingIndicator {
-    display:none; padding:10px 16px; text-align:center;
-    color:var(--vscode-descriptionForeground); font-size:13px; flex-shrink:0;
+.qb:hover { opacity:.8; }
+.msg { display:flex; gap:8px; animation:fadeIn .2s; }
+.msg.user { flex-direction:row-reverse; }
+@keyframes fadeIn { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
+.av {
+    width:28px; height:28px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:700; flex-shrink:0;
 }
-#loadingIndicator.show { display:block; }
-.dots span { animation: blink 1.2s infinite; }
-.dots span:nth-child(2){animation-delay:.2s}
-.dots span:nth-child(3){animation-delay:.4s}
-@keyframes blink{0%,80%,100%{opacity:0}40%{opacity:1}}
+.msg.user .av { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
+.msg.ai  .av { background:linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; }
+.bubble {
+    max-width:82%; background:var(--vscode-input-background);
+    border:1px solid var(--vscode-input-border); border-radius:12px;
+    padding:10px 13px; font-size:13.5px; line-height:1.55; word-break:break-word;
+}
+.msg.user .bubble {
+    background:var(--vscode-button-background); color:var(--vscode-button-foreground); border:none;
+}
+.bubble pre { margin:8px 0; border-radius:6px; overflow:auto; }
+.bubble code:not([class]) {
+    background:var(--vscode-textCodeBlock-background); padding:1px 5px;
+    border-radius:3px; font-size:12px; font-family:monospace;
+}
+.bubble p { margin:4px 0; }
+.bubble ul,.bubble ol { margin:6px 0 6px 18px; }
+.meta { font-size:10px; opacity:.55; margin-top:5px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.badge { font-size:10px; padding:1px 6px; border-radius:8px; background:rgba(255,152,0,.2); color:#ff9800; }
+.copy-btn {
+    float:right; margin:-2px 0 0 8px; font-size:10px; padding:2px 7px; cursor:pointer; border:none;
+    background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
+    border-radius:4px;
+}
+.copy-btn:hover { opacity:.8; }
+#genWrap { display:none; padding:8px 14px; flex-shrink:0; }
+#genWrap.show { display:flex; align-items:center; gap:8px; }
+.dot-wave { display:flex; gap:3px; align-items:center; }
+.dot-wave span { width:6px; height:6px; border-radius:50%; background:var(--vscode-button-background); animation:dw 1.2s infinite; }
+.dot-wave span:nth-child(2){animation-delay:.2s}
+.dot-wave span:nth-child(3){animation-delay:.4s}
+@keyframes dw { 0%,80%,100%{opacity:.2;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
 #inputArea {
-    padding: 12px 16px;
-    background: var(--vscode-sideBar-background);
-    border-top: 1px solid var(--vscode-panel-border);
-    flex-shrink: 0;
+    padding:10px 14px; background:var(--vscode-sideBar-background);
+    border-top:1px solid var(--vscode-panel-border); flex-shrink:0;
 }
-#inputForm { display:flex; gap:8px; align-items:flex-end; }
+.input-row { display:flex; gap:6px; align-items:flex-end; }
 #msgInput {
-    flex:1; background:var(--vscode-input-background);
-    color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border);
-    border-radius:8px; padding:10px 12px; font-size:14px; font-family:inherit;
-    resize:none; min-height:40px; max-height:120px;
+    flex:1; background:var(--vscode-input-background); color:var(--vscode-input-foreground);
+    border:1px solid var(--vscode-input-border); border-radius:8px;
+    padding:9px 12px; font-size:13.5px; font-family:inherit;
+    resize:none; min-height:38px; max-height:110px;
 }
 #msgInput:focus { outline:none; border-color:var(--vscode-focusBorder); }
-#sendBtn {
-    padding:10px 18px; min-height:40px;
-    background:var(--vscode-button-background); color:var(--vscode-button-foreground);
-    border:none; border-radius:8px; cursor:pointer; font-size:14px; font-weight:500;
-    transition: opacity .2s;
+.ibtn {
+    padding:9px 15px; min-height:38px; border:none; border-radius:8px;
+    cursor:pointer; font-size:13px; font-weight:500; white-space:nowrap;
 }
+#sendBtn { background:var(--vscode-button-background); color:var(--vscode-button-foreground); transition:opacity .2s; }
 #sendBtn:hover { opacity:.85; }
-#sendBtn:disabled { opacity:.5; cursor:not-allowed; }
-.btn-small {
-    padding:4px 10px; font-size:11px; cursor:pointer; border:none; border-radius:4px;
-    background:var(--vscode-button-secondaryBackground);
-    color:var(--vscode-button-secondaryForeground); margin-left:6px;
+#sendBtn:disabled { opacity:.45; cursor:not-allowed; }
+#stopBtn { display:none; background:#c62828; color:#fff; }
+#stopBtn.show { display:block; }
+.sbtn {
+    padding:4px 9px; font-size:11px; cursor:pointer; border:none; border-radius:4px;
+    background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
 }
-.btn-small:hover { opacity:.8; }
-::-webkit-scrollbar { width:8px; }
-::-webkit-scrollbar-track { background:transparent; }
-::-webkit-scrollbar-thumb { background:var(--vscode-scrollbarSlider-background); border-radius:4px; }
+.sbtn:hover { opacity:.8; }
+::-webkit-scrollbar { width:6px; }
+::-webkit-scrollbar-thumb { background:var(--vscode-scrollbarSlider-background); border-radius:3px; }
 </style>
 </head>
 <body>
 <div id="header">
     <h1>🤖 Sudo AI Chat</h1>
-    <div>
-        <button class="btn-small" onclick="clearChat()">🗑 Clear</button>
-        <button class="btn-small" onclick="checkStatus()">⟳ Status</button>
+    <div class="hdr-btns">
+        <button class="sbtn" onclick="newChat()" title="Nouvelle conversation">✨ New</button>
+        <button class="sbtn" onclick="retryLast()" title="Réessayer">↩ Retry</button>
+        <button class="sbtn" onclick="checkStatus()">⟳ Status</button>
+        <button class="sbtn" onclick="clearChat()">🗑 Clear</button>
     </div>
 </div>
 
 <div id="statusBar">
-    <div class="status-dot" id="statusDot"></div>
-    <span id="statusText">Checking runtime...</span>
-    <button class="btn-small" id="downloadBtn" style="display:none" onclick="downloadDefaultModel()">⬇ Download Model</button>
+    <div class="dot" id="dot"></div>
+    <span id="statusTxt">Vérification runtime...</span>
+    <button class="sbtn" id="dlBtn" style="display:none" onclick="downloadModel()">⬇ Download Model</button>
 </div>
 
-<div id="modelDownloadBar">
-    <div style="font-size:11px;margin-bottom:4px;" id="downloadLabel">Downloading model...</div>
-    <div style="background:var(--vscode-progressBar-background,#333);border-radius:3px;height:6px;">
-        <div class="progress-bar" id="progressBar" style="width:0%"></div>
-    </div>
+<div id="dlBar">
+    <div style="font-size:10px;margin-bottom:3px" id="dlLabel">Téléchargement modèle...</div>
+    <div class="dl-track"><div class="dl-fill" id="dlFill"></div></div>
 </div>
 
-<div id="chatContainer">
-    <div class="empty-state" id="emptyState">
-        <div class="empty-state-icon">🤖</div>
-        <h2>Sudo AI Assistant</h2>
-        <p>Posez vos questions sur le code, les erreurs ou le développement.</p>
-        <div class="quick-prompts">
-            <button class="quick-prompt" onclick="usePrompt('Explique-moi ce code')">Expliquer du code</button>
-            <button class="quick-prompt" onclick="usePrompt('Corrige cette erreur')">Corriger une erreur</button>
-            <button class="quick-prompt" onclick="usePrompt('Génère un Dockerfile pour Node.js')">Dockerfile Node.js</button>
-            <button class="quick-prompt" onclick="usePrompt('Quel est l\\'état du système ?')">État du système</button>
+<div id="chat">
+    <div class="empty" id="emptyState">
+        <div class="empty-icon">🤖</div>
+        <div style="font-size:16px;font-weight:600">Sudo AI Assistant</div>
+        <div style="font-size:12px;opacity:.7">Posez une question ou choisissez une action rapide</div>
+        <div class="quick-grid">
+            <button class="qb" onclick="usePrompt('Analyse ce projet')">🔍 Analyser le projet</button>
+            <button class="qb" onclick="usePrompt('Diagnostique mon système')">🩺 System Doctor</button>
+            <button class="qb" onclick="usePrompt('Crée un Dockerfile')">🐳 Dockerfile</button>
+            <button class="qb" onclick="usePrompt('Génère un pipeline CI/CD GitHub Actions')">⚙️ CI/CD Pipeline</button>
+            <button class="qb" onclick="usePrompt('Corrige automatiquement les erreurs')">🔧 AutoFix</button>
+            <button class="qb" onclick="vscPost({type:'openRuntime'})">🤖 Runtime & Modèles</button>
+            <button class="qb" onclick="vscPost({type:'openSDK'})">📦 SDK Manager</button>
+            <button class="qb" onclick="vscPost({type:'openDevOps'})">🚀 DevOps Panel</button>
         </div>
     </div>
 </div>
 
-<div id="loadingIndicator">
-    <span class="dots">AI réfléchit<span>.</span><span>.</span><span>.</span></span>
+<div id="genWrap">
+    <div class="dot-wave"><span></span><span></span><span></span></div>
+    <span style="font-size:12px;opacity:.7">Sudo AI réfléchit...</span>
 </div>
 
 <div id="inputArea">
-    <form id="inputForm" onsubmit="return false;">
-        <textarea id="msgInput" placeholder="Tapez votre message... (Entrée pour envoyer, Shift+Entrée pour nouvelle ligne)" rows="1"></textarea>
-        <button type="button" id="sendBtn" onclick="sendMessage()">Envoyer</button>
-    </form>
+    <div class="input-row">
+        <textarea id="msgInput" rows="1" placeholder="Message... (Entrée = envoyer, Shift+Entrée = nouvelle ligne)"></textarea>
+        <button class="ibtn" id="sendBtn" onclick="sendMsg()">Envoyer</button>
+        <button class="ibtn" id="stopBtn" onclick="stopGen()">⏹ Stop</button>
+    </div>
 </div>
 
 <script>
 const vscode = acquireVsCodeApi();
-const chat   = document.getElementById('chatContainer');
+const chat   = document.getElementById('chat');
 const input  = document.getElementById('msgInput');
-const loading= document.getElementById('loadingIndicator');
-let sending  = false;
-let statusTimer = null;
+let generating = false;
 
-// ── Sending ──────────────────────────────────────────────────────────────────
-function sendMessage() {
-    const text = input.value.trim();
-    if (!text || sending) return;
-
-    setSending(true);
-    vscode.postMessage({ type: 'sendMessage', text });
-
-    input.value = '';
-    input.style.height = 'auto';
+function vscPost(msg) { vscode.postMessage(msg); }
+function sendMsg() {
+    const t = input.value.trim();
+    if (!t || generating) return;
+    setGenerating(true);
+    vscPost({ type: 'sendMessage', text: t });
+    input.value = ''; input.style.height = 'auto';
+}
+function retryLast() { vscPost({ type: 'retryLast' }); }
+function stopGen()   { vscPost({ type: 'stopGeneration' }); setGenerating(false); }
+function clearChat() { vscPost({ type: 'clearChat' }); }
+function checkStatus(){ vscPost({ type: 'checkStatus' }); }
+function downloadModel(){ vscPost({ type: 'downloadModel', modelId: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }); }
+function usePrompt(t){ input.value = t; input.focus(); sendMsg(); }
+function newChat() {
+    vscPost({ type: 'clearChat' });
 }
 
-function setSending(val) {
-    sending = val;
-    document.getElementById('sendBtn').disabled = val;
-    loading.classList.toggle('show', val);
+function setGenerating(v) {
+    generating = v;
+    document.getElementById('sendBtn').disabled = v;
+    document.getElementById('genWrap').classList.toggle('show', v);
+    document.getElementById('stopBtn').classList.toggle('show', v);
 }
 
-function usePrompt(text) {
-    input.value = text;
-    input.focus();
-}
-
-// ── Input events ─────────────────────────────────────────────────────────────
 input.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
 });
 input.addEventListener('input', () => {
     input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+    input.style.height = Math.min(input.scrollHeight, 110) + 'px';
 });
 
-// ── Chat rendering ───────────────────────────────────────────────────────────
-function addUserMessage(text) {
+// ── Rendering ─────────────────────────────────────────────────────────────
+function addMsg(html, isUser, meta, noScroll) {
     removeEmpty();
-    const div = createMessage(escapeHtml(text).replace(/\\n/g,'<br>'), true);
-    chat.appendChild(div);
-    scrollBottom();
-}
-
-function addAiMessage(text, model, latency, isMock, progress) {
-    removeEmpty();
-    setSending(false);
-
-    let html = formatText(text);
-    let meta = '';
-    if (model) meta += 'Modèle: ' + model;
-    if (latency) meta += (meta?' · ':'') + latency + 'ms';
-    if (isMock) meta += '<span class="mock-badge">⚠ Mode Mock</span>';
-    if (progress !== undefined && progress < 100)
-        meta += (meta?' · ':'') + 'Téléchargement: ' + progress + '%';
-
-    const div = createMessage(html, false, meta);
-    chat.appendChild(div);
-    scrollBottom();
-}
-
-function addErrorMessage(text) {
-    removeEmpty();
-    setSending(false);
-    const div = createMessage('<span style="color:var(--vscode-errorForeground)">'+escapeHtml(text).replace(/\\n/g,'<br>')+'</span>', false);
-    chat.appendChild(div);
-    scrollBottom();
-}
-
-function createMessage(html, isUser, meta='') {
     const wrap = document.createElement('div');
-    wrap.className = 'message ' + (isUser ? 'user' : 'ai');
-
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar';
-    avatar.textContent = isUser ? 'U' : 'AI';
-
-    const content = document.createElement('div');
-    content.className = 'message-content';
-    content.innerHTML = html;
-
+    wrap.className = 'msg ' + (isUser ? 'user' : 'ai');
+    const av = document.createElement('div');
+    av.className = 'av';
+    av.textContent = isUser ? 'U' : 'AI';
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    b.innerHTML = html;
     if (meta) {
         const m = document.createElement('div');
-        m.className = 'message-meta';
+        m.className = 'meta';
         m.innerHTML = meta;
-        content.appendChild(m);
+        b.appendChild(m);
     }
-
     if (!isUser) {
         const btn = document.createElement('button');
         btn.className = 'copy-btn';
         btn.textContent = 'Copy';
         btn.onclick = () => {
-            navigator.clipboard.writeText(content.innerText.replace(/Copy$/, '').trim());
-            btn.textContent = 'Copied!';
-            setTimeout(() => btn.textContent = 'Copy', 1500);
+            navigator.clipboard.writeText(b.innerText.replace(/Copy$/, '').trim());
+            btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Copy', 1500);
         };
-        content.prepend(btn);
+        b.insertBefore(btn, b.firstChild);
     }
-
-    wrap.appendChild(avatar);
-    wrap.appendChild(content);
-    return wrap;
+    wrap.appendChild(av);
+    wrap.appendChild(b);
+    chat.appendChild(wrap);
+    if (!noScroll) chat.scrollTop = chat.scrollHeight;
+    // Syntax highlight
+    b.querySelectorAll('pre code').forEach(block => {
+        if (window.hljs) window.hljs.highlightElement(block);
+    });
 }
 
-function formatText(text) {
-    return escapeHtml(text)
-        .replace(/\`\`\`([\\s\\S]*?)\`\`\`/g, '<pre><code>$1</code></pre>')
-        .replace(/\`([^\`]+)\`/g, '<code>$1</code>')
-        .replace(/\\*\\*([^\\*]+)\\*\\*/g, '<strong>$1</strong>')
-        .replace(/\\*([^\\*]+)\\*/g, '<em>$1</em>')
-        .replace(/\\n/g, '<br>');
-}
-
-function escapeHtml(t) {
-    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function renderMarkdown(text) {
+    // Escape HTML first
+    let t = text
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // Code blocks
+    t = t.replace(/\`\`\`(\w*)\n?([\s\S]*?)\`\`\`/g, (_, lang, code) =>
+        \`<pre><code class="language-\${lang || 'text'}">\${code.trim()}</code></pre>\`);
+    // Inline code
+    t = t.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
+    // Bold
+    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Italic
+    t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+    // Headers
+    t = t.replace(/^### (.+)$/gm, '<strong>$1</strong>');
+    t = t.replace(/^## (.+)$/gm, '<strong style="font-size:1.1em">$1</strong>');
+    t = t.replace(/^# (.+)$/gm, '<strong style="font-size:1.2em">$1</strong>');
+    // Lists
+    t = t.replace(/^[*-] (.+)$/gm, '• $1');
+    t = t.replace(/^\d+\. (.+)$/gm, (_, c) => '› ' + c);
+    // Line breaks
+    t = t.replace(/\n/g, '<br>');
+    return t;
 }
 
 function removeEmpty() {
@@ -479,109 +563,102 @@ function removeEmpty() {
     if (e) e.remove();
 }
 
-function scrollBottom() {
-    chat.scrollTop = chat.scrollHeight;
-}
-
-function clearChat() {
-    chat.innerHTML = '';
-    chat.appendChild(createEmptyState());
-    vscode.postMessage({ type: 'clearChat' });
-}
-
-function createEmptyState() {
-    const d = document.createElement('div');
-    d.className = 'empty-state';
-    d.id = 'emptyState';
-    d.innerHTML = \`
-        <div class="empty-state-icon">🤖</div>
-        <h2>Sudo AI Assistant</h2>
-        <p>Posez vos questions sur le code, les erreurs ou le développement.</p>
-        <div class="quick-prompts">
-            <button class="quick-prompt" onclick="usePrompt('Explique-moi ce code')">Expliquer du code</button>
-            <button class="quick-prompt" onclick="usePrompt('Corrige cette erreur')">Corriger une erreur</button>
-            <button class="quick-prompt" onclick="usePrompt('Génère un Dockerfile pour Node.js')">Dockerfile Node.js</button>
-        </div>\`;
-    return d;
-}
-
-// ── Status ────────────────────────────────────────────────────────────────────
-function checkStatus() {
-    vscode.postMessage({ type: 'checkStatus' });
-}
-
+// ── Status ─────────────────────────────────────────────────────────────────
 function updateStatus(data) {
-    const dot  = document.getElementById('statusDot');
-    const txt  = document.getElementById('statusText');
-    const dlBtn= document.getElementById('downloadBtn');
-    const dlBar= document.getElementById('modelDownloadBar');
-    const prog = document.getElementById('progressBar');
-    const lbl  = document.getElementById('downloadLabel');
+    const dot = document.getElementById('dot');
+    const txt = document.getElementById('statusTxt');
+    const dlBtn = document.getElementById('dlBtn');
+    const dlBar = document.getElementById('dlBar');
+    const dlFill = document.getElementById('dlFill');
+    const dlLabel = document.getElementById('dlLabel');
 
     if (!data || data.status === 'offline') {
-        dot.className = 'status-dot offline';
-        txt.textContent = '⚠ Runtime hors ligne (port 6000) — lancez runtime.exe';
+        dot.className = 'dot offline';
+        txt.textContent = '⚠ Runtime hors ligne — lancez runtime.exe';
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
         return;
     }
-
     const m = data.model || {};
     if (m.loading) {
-        dot.className = 'status-dot loading';
+        dot.className = 'dot loading';
         const pct = m.download_progress || 0;
-        txt.textContent = \`⬇ Téléchargement/chargement du modèle (\${pct}%)...\`;
+        txt.textContent = \`⬇ Chargement modèle \${pct}%...\`;
         dlBar.classList.add('show');
-        prog.style.width = pct + '%';
-        lbl.textContent = \`Chargement: \${m.name || 'modèle'}  \${pct}%\`;
+        dlFill.style.width = pct + '%';
+        dlLabel.textContent = \`Chargement: \${m.name || 'TinyLlama'} — \${pct}%\`;
         dlBtn.style.display = 'none';
     } else if (m.loaded) {
-        dot.className = 'status-dot online';
+        dot.className = 'dot online';
         txt.textContent = \`✅ IA prête · \${m.name || 'modèle'} · \${m.device || 'cpu'}\`;
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
     } else {
-        dot.className = 'status-dot offline';
-        txt.textContent = '⚠ Aucun modèle chargé — cliquez Download';
+        dot.className = 'dot offline';
+        txt.textContent = '⚠ Aucun modèle — cliquez Download';
         dlBtn.style.display = 'inline-block';
         dlBar.classList.remove('show');
     }
 }
 
-function downloadDefaultModel() {
-    vscode.postMessage({ type: 'downloadModel', modelId: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' });
-}
-
-// ── Messages from extension ──────────────────────────────────────────────────
+// ── Messages from extension ───────────────────────────────────────────────
 window.addEventListener('message', ev => {
     const msg = ev.data;
     switch (msg.type) {
         case 'userMessage':
-            addUserMessage(msg.text); break;
-        case 'aiMessage':
-            addAiMessage(msg.text, msg.model, msg.latency, msg.mock, msg.progress); break;
+            addMsg(msg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>'),
+                true, null, msg.noScroll);
+            break;
+        case 'aiMessage': {
+            let meta = '';
+            if (msg.model) meta += 'Modèle: ' + msg.model;
+            if (msg.latency) meta += (meta ? ' · ' : '') + msg.latency + 'ms';
+            if (msg.mock) meta += '<span class="badge">⚠ Mock</span>';
+            if (msg.progress !== undefined && msg.progress < 100) meta += (meta ? ' · ' : '') + '⬇ ' + msg.progress + '%';
+            addMsg(renderMarkdown(msg.text), false, meta, msg.noScroll);
+            setGenerating(false);
+            break;
+        }
         case 'error':
-            addErrorMessage(msg.text); break;
-        case 'loading':
-            if (!msg.show) setSending(false);
+            addMsg('<span style="color:var(--vscode-errorForeground)">' +
+                msg.text.replace(/\n/g,'<br>') + '</span>', false);
+            setGenerating(false);
+            break;
+        case 'generating':
+            if (!msg.show) setGenerating(false);
             break;
         case 'status':
-            updateStatus(msg.data); break;
+            updateStatus(msg.data);
+            break;
         case 'downloadStarted':
-            document.getElementById('downloadBtn').style.display='none';
-            document.getElementById('modelDownloadBar').classList.add('show');
+            document.getElementById('dlBtn').style.display = 'none';
+            document.getElementById('dlBar').classList.add('show');
+            break;
+        case 'clearDone':
+            chat.innerHTML = '';
+            const es = document.createElement('div');
+            es.className = 'empty'; es.id = 'emptyState';
+            es.innerHTML = \`<div class="empty-icon">🤖</div><div style="font-size:16px;font-weight:600">Nouvelle conversation</div>
+            <div class="quick-grid">
+                <button class="qb" onclick="usePrompt('Analyse ce projet')">🔍 Analyser le projet</button>
+                <button class="qb" onclick="usePrompt('Diagnostique mon système')">🩺 System Doctor</button>
+                <button class="qb" onclick="usePrompt('Crée un Dockerfile')">🐳 Dockerfile</button>
+                <button class="qb" onclick="usePrompt('Génère un pipeline CI/CD')">⚙️ CI/CD</button>
+                <button class="qb" onclick="usePrompt('Corrige automatiquement')">🔧 AutoFix</button>
+                <button class="qb" onclick="vscPost({type:'openRuntime'})">🤖 Modèles IA</button>
+            </div>\`;
+            chat.appendChild(es);
+            break;
+        case 'retryMessage':
+            // Remove last AI message from DOM
+            const msgs = chat.querySelectorAll('.msg.ai');
+            if (msgs.length) msgs[msgs.length-1].remove();
             break;
     }
 });
 
-// ── Auto-poll status ──────────────────────────────────────────────────────────
-function pollStatus() {
-    checkStatus();
-    statusTimer = setTimeout(pollStatus, 5000);
-}
-pollStatus();
-
-// Focus
+// Auto poll
+setInterval(checkStatus, 5000);
 input.focus();
 </script>
 </body>

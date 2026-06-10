@@ -76,11 +76,12 @@ class DashboardProvider {
 
     getQuickActions() {
         return [
-            this.createActionItem('Open AI Chat', 'sudoStudio.openChat', 'comment-discussion'),
-            this.createActionItem('Run System Doctor', 'sudoStudio.runDoctor', 'pulse'),
-            this.createActionItem('Install SDK', 'sudoStudio.installSDK', 'cloud-download'),
-            this.createActionItem('Generate Docker', 'sudoStudio.generateDocker', 'file-code'),
-            this.createActionItem('Analyze Project', 'sudoStudio.analyzeProject', 'search')
+            this.createActionItem('💬 Open AI Chat',         'sudoStudio.openChat',          'comment-discussion'),
+            this.createActionItem('🩺 System Doctor',        'sudoStudio.runDoctor',          'pulse'),
+            this.createActionItem('📦 SDK Manager',          'sudoStudio.openSDKPanel',       'package'),
+            this.createActionItem('🤖 Runtime & Models',     'sudoStudio.openRuntimePanel',   'server'),
+            this.createActionItem('🚀 DevOps Automation',    'sudoStudio.openDevOpsPanel',    'rocket'),
+            this.createActionItem('🔍 Analyze Project',      'sudoStudio.openAnalysisPanel',  'search'),
         ];
     }
 

@@ -17,9 +17,12 @@ const { EnvironmentProvider } = require('./src/providers/EnvironmentProvider');
 const { RuntimeProvider } = require('./src/providers/RuntimeProvider');
 
 // Panels
-const { ChatPanel } = require('./src/panels/ChatPanel');
-const { DoctorPanel } = require('./src/panels/DoctorPanel');
-const { SDKPanel } = require('./src/panels/SDKPanel');
+const { ChatPanel }            = require('./src/panels/ChatPanel');
+const { DoctorPanel }          = require('./src/panels/DoctorPanel');
+const { SDKPanel }             = require('./src/panels/SDKPanel');
+const { RuntimePanel }         = require('./src/panels/RuntimePanel');
+const { DevOpsPanel }          = require('./src/panels/DevOpsPanel');
+const { ProjectAnalysisPanel } = require('./src/panels/ProjectAnalysisPanel');
 
 // Global instances
 let backend, state, context;
@@ -222,7 +225,12 @@ function registerCommands() {
         ['sudoStudio.clearRuntimeCache', clearRuntimeCache],
         
         // Project
-        ['sudoStudio.analyzeProject', analyzeProject]
+        ['sudoStudio.analyzeProject', analyzeProject],
+
+        // New Panels (v3)
+        ['sudoStudio.openRuntimePanel',   openRuntimePanel],
+        ['sudoStudio.openDevOpsPanel',    openDevOpsPanel],
+        ['sudoStudio.openAnalysisPanel',  openAnalysisPanel],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -283,7 +291,7 @@ function refreshDashboard() {
 // ============================================================================
 
 function openChat() {
-    ChatPanel.createOrShow(context.extensionUri);
+    ChatPanel.createOrShow(context.extensionUri, context);
 }
 
 async function selectModel(modelName) {
@@ -355,7 +363,7 @@ async function explainCode() {
         });
         
         // Open chat panel with result
-        ChatPanel.createOrShow(context.extensionUri);
+        ChatPanel.createOrShow(context.extensionUri, context);
         
         vscode.window.showInformationMessage('Code explanation ready in chat');
         
@@ -388,7 +396,7 @@ async function fixCode() {
             );
         });
         
-        ChatPanel.createOrShow(context.extensionUri);
+        ChatPanel.createOrShow(context.extensionUri, context);
         vscode.window.showInformationMessage('Code fix ready in chat');
         
     } catch (error) {
@@ -420,7 +428,7 @@ async function refactorCode() {
             );
         });
         
-        ChatPanel.createOrShow(context.extensionUri);
+        ChatPanel.createOrShow(context.extensionUri, context);
         vscode.window.showInformationMessage('Refactored code ready in chat');
         
     } catch (error) {
@@ -448,7 +456,7 @@ async function generateCode() {
             );
         });
         
-        ChatPanel.createOrShow(context.extensionUri);
+        ChatPanel.createOrShow(context.extensionUri, context);
         vscode.window.showInformationMessage('Generated code ready in chat');
         
     } catch (error) {
@@ -480,7 +488,7 @@ async function generateTests() {
             );
         });
         
-        ChatPanel.createOrShow(context.extensionUri);
+        ChatPanel.createOrShow(context.extensionUri, context);
         vscode.window.showInformationMessage('Tests generated in chat');
         
     } catch (error) {
@@ -512,7 +520,7 @@ async function addComments() {
             );
         });
         
-        ChatPanel.createOrShow(context.extensionUri);
+        ChatPanel.createOrShow(context.extensionUri, context);
         vscode.window.showInformationMessage('Commented code ready in chat');
         
     } catch (error) {
@@ -903,39 +911,24 @@ async function clearRuntimeCache() {
 // ============================================================================
 
 async function analyzeProject() {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-        vscode.window.showWarningMessage('No workspace folder open');
-        return;
-    }
-    
-    try {
-        const result = await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Analyzing project...',
-            cancellable: false
-        }, async () => {
-            return await backend.analyzeProject(workspaceFolder.uri.fsPath);
-        });
-        
-        // Show analysis results
-        const message = `
-Project: ${result.project_name || 'Unknown'}
-Stack: ${result.stack || 'Unknown'}
-Files: ${result.file_count || 0}
-Quality Score: ${result.quality_score || 'N/A'}
-        `.trim();
-        
-        vscode.window.showInformationMessage(message, 'View Details').then(selection => {
-            if (selection === 'View Details') {
-                // Open detailed view
-                ChatPanel.createOrShow(context.extensionUri);
-            }
-        });
-        
-    } catch (error) {
-        vscode.window.showErrorMessage(`Failed to analyze project: ${error.message}`);
-    }
+    // Open the full Project Analysis Panel (works locally, no backend needed)
+    ProjectAnalysisPanel.createOrShow(context.extensionUri);
+}
+
+// ============================================================================
+// COMMAND HANDLERS - New Panels v3
+// ============================================================================
+
+function openRuntimePanel() {
+    RuntimePanel.createOrShow(context.extensionUri);
+}
+
+function openDevOpsPanel() {
+    DevOpsPanel.createOrShow(context.extensionUri);
+}
+
+function openAnalysisPanel() {
+    ProjectAnalysisPanel.createOrShow(context.extensionUri);
 }
 
 // ============================================================================

@@ -207,6 +207,26 @@
         "title": "Show Onboarding",
         "category": "Sudo Studio",
         "icon": "$(mortar-board)"
+      },
+      {
+        "command": "sudoStudio.openRuntimePanel",
+        "title": "Open Runtime & Models",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openDevOpsPanel",
+        "title": "Open DevOps Automation",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openAnalysisPanel",
+        "title": "Analyze Project (Full)",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openSDKPanel",
+        "title": "Open SDK Manager",
+        "category": "Sudo Studio"
       }
     ],
     "menus": {
