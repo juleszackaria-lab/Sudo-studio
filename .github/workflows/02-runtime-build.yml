@@ -39,7 +39,7 @@ jobs:
       - name: Build runtime executable
         working-directory: backend/runtime
         run: |
-          pyinstaller --onefile --name server server.py
+          pyinstaller --onefile --name server server.enterprise.py
 
       # Verify build
       - name: Verify build

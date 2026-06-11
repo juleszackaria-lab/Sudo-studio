@@ -222,6 +222,31 @@ const SDK_DEFS = [
             ? 'pip uninstall -y transformers torch'
             : 'pip3 uninstall -y transformers torch',
         url: 'https://huggingface.co/docs/transformers'
+    },
+    {
+        id: 'android-sdk',
+        name: 'Android SDK (cmdline-tools)',
+        icon: '🤖',
+        description: 'Android command-line tools & SDK manager. Required for Android app development with Flutter or React Native.',
+        detectCmd: IS_WIN
+            ? 'sdkmanager --version 2>nul'
+            : 'sdkmanager --version 2>/dev/null',
+        installCmd: IS_WIN
+            ? 'start https://developer.android.com/studio#command-tools'
+            : IS_MAC
+                ? 'brew install --cask android-commandlinetools'
+                : 'sudo apt-get install -y android-sdk && yes | sdkmanager --licenses',
+        repairCmd: IS_WIN
+            ? 'start https://developer.android.com/studio#command-tools'
+            : IS_MAC
+                ? 'brew reinstall --cask android-commandlinetools'
+                : 'sudo apt-get install --reinstall -y android-sdk',
+        uninstallCmd: IS_WIN
+            ? 'start https://developer.android.com/studio'
+            : IS_MAC
+                ? 'brew uninstall --cask android-commandlinetools'
+                : 'sudo apt-get remove -y android-sdk',
+        url: 'https://developer.android.com/studio#command-tools'
     }
 ];
 
