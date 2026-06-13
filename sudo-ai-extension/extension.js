@@ -4,6 +4,8 @@
  */
 
 const vscode = require('vscode');
+const fs   = require('fs');
+const path = require('path');
 const { getBackendService } = require('./src/services/BackendService');
 const { getStateManager } = require('./src/services/StateManager');
 
@@ -723,26 +725,71 @@ async function applyTemplate(templateType) {
 }
 
 // ============================================================================
-// COMMAND HANDLERS - Environment
+// COMMAND HANDLERS - Environment  (LOCAL implementation — no backend needed)
+// All operations write/read JSON snapshots to ~/.sudo_studio/snapshots/
 // ============================================================================
+
+/** Return the path to the snapshots directory, creating it if needed. */
+function getSnapshotsDir() {
+    const base = path.join(
+        process.env.USERPROFILE || process.env.HOME || require('os').homedir(),
+        '.sudo_studio', 'snapshots'
+    );
+    if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
+    return base;
+}
+
+/** Collect current environment data into a plain JS object. */
+function collectEnvData(label) {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || '';
+    const runtimeState = state.getRuntimeState ? state.getRuntimeState() : {};
+    const backendState = state.getBackendState ? state.getBackendState() : {};
+
+    const envVars = {};
+    ['PATH','NODE_ENV','JAVA_HOME','ANDROID_HOME','FLUTTER_ROOT',
+     'PYTHONPATH','GOPATH','CARGO_HOME'].forEach(k => {
+        if (process.env[k]) envVars[k] = process.env[k];
+    });
+
+    return {
+        label:          label || 'snapshot',
+        timestamp:      new Date().toISOString(),
+        sudoStudioVer:  '1.0.0',
+        workspace:      workspaceRoot,
+        envVars,
+        runtimeState,
+        backendState,
+        platform:       process.platform,
+        nodeVersion:    process.version,
+    };
+}
 
 async function exportEnvironment() {
     try {
-        const result = await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Exporting environment...',
-            cancellable: false
-        }, async () => {
-            return await backend.exportEnvironment();
+        const saveUri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(
+                path.join(
+                    vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath ||
+                    require('os').homedir(),
+                    `sudo-env-${Date.now()}.json`
+                )
+            ),
+            filters: { 'Environment JSON': ['json'] }
         });
-        
-        if (result.success) {
-            vscode.window.showInformationMessage(
-                `✅ Environment exported to ${result.file_path}`,
-                'Open File'
-            );
-        }
-        
+        if (!saveUri) return;
+
+        const data = collectEnvData('manual-export');
+        fs.writeFileSync(saveUri.fsPath, JSON.stringify(data, null, 2), 'utf8');
+
+        vscode.window.showInformationMessage(
+            `✅ Environment exported to ${path.basename(saveUri.fsPath)}`,
+            'Open File'
+        ).then(sel => {
+            if (sel === 'Open File') {
+                vscode.workspace.openTextDocument(saveUri.fsPath)
+                    .then(doc => vscode.window.showTextDocument(doc));
+            }
+        });
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to export environment: ${error.message}`);
     }
@@ -753,24 +800,33 @@ async function importEnvironment() {
         canSelectFiles: true,
         canSelectFolders: false,
         canSelectMany: false,
-        filters: { 'Environment Files': ['json', 'env'] }
+        filters: { 'Environment JSON': ['json'] }
     });
-    
     if (!fileUri || fileUri.length === 0) return;
-    
+
     try {
-        const result = await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Importing environment...',
-            cancellable: false
-        }, async () => {
-            return await backend.importEnvironment(fileUri[0].fsPath);
-        });
-        
-        if (result.success) {
-            vscode.window.showInformationMessage('✅ Environment imported successfully');
+        const raw  = fs.readFileSync(fileUri[0].fsPath, 'utf8');
+        const data = JSON.parse(raw);
+
+        if (!data.timestamp || !data.sudoStudioVer) {
+            vscode.window.showWarningMessage('⚠️ File does not appear to be a Sudo Studio environment snapshot.');
+            return;
         }
-        
+
+        // Apply runtime / backend state if present
+        if (data.runtimeState && Object.keys(data.runtimeState).length) {
+            state.updateRuntimeState(data.runtimeState);
+        }
+
+        const snapshotAge = Math.round(
+            (Date.now() - new Date(data.timestamp).getTime()) / 1000 / 60
+        );
+
+        vscode.window.showInformationMessage(
+            `✅ Environment imported (snapshot from ${snapshotAge} min ago, workspace: ${data.workspace || 'n/a'})`
+        );
+        providers.dashboard?.refresh();
+        providers.runtime?.refresh();
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to import environment: ${error.message}`);
     }
@@ -778,40 +834,108 @@ async function importEnvironment() {
 
 async function createSnapshot() {
     const name = await vscode.window.showInputBox({
-        prompt: 'Enter snapshot name',
-        placeHolder: 'E.g., before-major-update'
+        prompt: 'Snapshot name (letters, digits, hyphens)',
+        placeHolder: 'before-major-update',
+        validateInput: v => /^[\w\-]+$/.test(v) ? null : 'Use only letters, digits, hyphens'
     });
-    
     if (!name) return;
-    
+
     try {
-        const result = await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: 'Creating snapshot...',
-            cancellable: false
-        }, async () => {
-            return await backend.createSnapshot(name);
+        const dir  = getSnapshotsDir();
+        const ts   = new Date().toISOString().replace(/[:.]/g, '-');
+        const file = path.join(dir, `${name}_${ts}.json`);
+        const data = collectEnvData(name);
+        fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+
+        vscode.window.showInformationMessage(
+            `✅ Snapshot "${name}" saved`,
+            'View Snapshots'
+        ).then(sel => {
+            if (sel === 'View Snapshots') {
+                vscode.workspace.openTextDocument(file)
+                    .then(doc => vscode.window.showTextDocument(doc));
+            }
         });
-        
-        if (result.success) {
-            vscode.window.showInformationMessage(`✅ Snapshot "${name}" created`);
-        }
-        
+        providers.environment?.refresh();
     } catch (error) {
         vscode.window.showErrorMessage(`Failed to create snapshot: ${error.message}`);
     }
 }
 
 async function backupEnvironment() {
-    vscode.window.showInformationMessage('Backup feature coming soon');
+    // Alias: auto-named snapshot stored in ~/.sudo_studio/snapshots/
+    try {
+        const dir  = getSnapshotsDir();
+        const ts   = new Date().toISOString().replace(/[:.]/g, '-');
+        const file = path.join(dir, `backup_${ts}.json`);
+        const data = collectEnvData('auto-backup');
+        fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+        vscode.window.showInformationMessage(`✅ Backup saved: ${path.basename(file)}`);
+        providers.environment?.refresh();
+    } catch (error) {
+        vscode.window.showErrorMessage(`Backup failed: ${error.message}`);
+    }
 }
 
 async function restoreEnvironment() {
-    vscode.window.showInformationMessage('Restore feature coming soon');
+    try {
+        const dir = getSnapshotsDir();
+        const files = fs.existsSync(dir)
+            ? fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort().reverse()
+            : [];
+
+        if (files.length === 0) {
+            vscode.window.showWarningMessage('No snapshots found. Create one first with "Create Snapshot".');
+            return;
+        }
+
+        const selected = await vscode.window.showQuickPick(
+            files.map(f => ({ label: f, description: path.join(dir, f) })),
+            { placeHolder: 'Select snapshot to restore' }
+        );
+        if (!selected) return;
+
+        const raw  = fs.readFileSync(selected.description, 'utf8');
+        const data = JSON.parse(raw);
+
+        if (data.runtimeState && Object.keys(data.runtimeState).length) {
+            state.updateRuntimeState(data.runtimeState);
+        }
+
+        vscode.window.showInformationMessage(
+            `✅ Restored snapshot "${selected.label}" (created: ${data.timestamp || 'unknown'})`
+        );
+        providers.dashboard?.refresh();
+        providers.runtime?.refresh();
+        providers.environment?.refresh();
+    } catch (error) {
+        vscode.window.showErrorMessage(`Restore failed: ${error.message}`);
+    }
 }
 
 async function cloneEnvironment() {
-    vscode.window.showInformationMessage('Clone feature coming soon');
+    // Export current env to a new file, then let user choose destination
+    try {
+        const saveUri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(
+                path.join(
+                    require('os').homedir(),
+                    `sudo-env-clone-${Date.now()}.json`
+                )
+            ),
+            filters: { 'Environment JSON': ['json'] }
+        });
+        if (!saveUri) return;
+
+        const data = collectEnvData('clone');
+        fs.writeFileSync(saveUri.fsPath, JSON.stringify(data, null, 2), 'utf8');
+        vscode.window.showInformationMessage(
+            `✅ Environment cloned to ${path.basename(saveUri.fsPath)}. ` +
+            `Share this file and use Import on another machine.`
+        );
+    } catch (error) {
+        vscode.window.showErrorMessage(`Clone failed: ${error.message}`);
+    }
 }
 
 // ============================================================================

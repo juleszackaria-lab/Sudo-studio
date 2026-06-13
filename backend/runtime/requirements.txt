@@ -1,3 +1,7 @@
 flask
+flask-cors
 transformers
-torch
+# CPU-only torch: ~180MB vs ~2GB for full CUDA version
+# This is CRITICAL — do NOT remove the --index-url flag
+torch --index-url https://download.pytorch.org/whl/cpu
+psutil
