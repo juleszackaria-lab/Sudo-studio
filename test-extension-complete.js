@@ -78,7 +78,7 @@ const packageJsonPath = path.join(extPath, 'package.json');
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 test('Package name correct', packageJson.name === 'sudo-studio');
-test('Version is 2.0.0', packageJson.version === '2.0.0');
+test('Version is 2.1.0', packageJson.version === '2.1.0');
 test('Main entry point', packageJson.main === './extension.js');
 
 // Check views

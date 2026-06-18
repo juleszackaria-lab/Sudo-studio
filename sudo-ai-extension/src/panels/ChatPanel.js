@@ -253,21 +253,35 @@ class ChatPanel {
     }
 
     async _sendToAI(text) {
+        // PRIMARY PATH: Direct call to Python runtime on port 6000
+        // This is always tried first — no auth required, most reliable
         const payload = { message: text, prompt: text, input: text, max_tokens: 512, temperature: 0.7 };
 
+        try {
+            const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 120000 });
+            return r.data;
+        } catch (e) {
+            if (e.code !== 'ECONNREFUSED' && e.code !== 'ENOTFOUND') {
+                // Runtime is up but returned an error — still return what we got
+                if (e.response && e.response.data) return e.response.data;
+                throw new Error(`Runtime error: ${e.message}`);
+            }
+        }
+
+        // FALLBACK PATH: Try backend:5000 proxy if runtime is down
         if (this.authToken) {
             try {
                 const r = await axios.post('http://localhost:5000/api/ai/chat',
                     { message: text, model: 'default' },
-                    { headers: { Authorization: `Bearer ${this.authToken}` }, timeout: 90000 });
+                    { headers: { Authorization: `Bearer ${this.authToken}` }, timeout: 30000 });
                 return r.data;
-            } catch (e) {
-                if (e.code !== 'ECONNREFUSED') throw e;
-            }
+            } catch (_) { /* ignore */ }
         }
 
-        const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 90000 });
-        return r.data;
+        throw new Error(
+            'Runtime IA hors ligne (port 6000).\n' +
+            'Vérifiez que runtime.exe est lancé depuis start.bat.'
+        );
     }
 
     dispose() {

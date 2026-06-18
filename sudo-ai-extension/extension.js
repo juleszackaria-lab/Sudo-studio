@@ -4,8 +4,9 @@
  */
 
 const vscode = require('vscode');
-const fs   = require('fs');
-const path = require('path');
+const fs     = require('fs');
+const path   = require('path');
+const axios  = require('axios');
 const { getBackendService } = require('./src/services/BackendService');
 const { getStateManager } = require('./src/services/StateManager');
 
@@ -29,6 +30,8 @@ const { ProjectAnalysisPanel } = require('./src/panels/ProjectAnalysisPanel');
 // Global instances
 let backend, state, context;
 let providers = {};
+let statusBarItem = null;       // VSCode status bar for AI state
+let runtimePollTimer = null;    // Polls port 6000 every 5s
 
 /**
  * Extension activation - POINT D'ENTRÉE PRINCIPAL
@@ -54,14 +57,19 @@ async function activate(ctx) {
         // Setup event listeners
         setupEventListeners();
 
+        // Status bar for AI runtime
+        setupStatusBar(ctx);
+
+        // Auto-start runtime model download check
+        setTimeout(() => autoEnsureModelDownload(), 3000);
+
         // Show welcome message
         vscode.window.showInformationMessage(
-            '🚀 Sudo Studio Enterprise activated! All systems ready.',
-            'Open Dashboard'
+            '🚀 Sudo Studio activé ! Cliquez sur le panneau Runtime pour gérer l\'IA.',
+            'Ouvrir Chat', 'Ouvrir Runtime'
         ).then(selection => {
-            if (selection === 'Open Dashboard') {
-                vscode.commands.executeCommand('sudoStudio.openDashboard');
-            }
+            if (selection === 'Ouvrir Chat') openChat();
+            else if (selection === 'Ouvrir Runtime') openRuntimePanel();
         });
 
         console.log('✅ Sudo Studio Enterprise fully activated!');
@@ -266,6 +274,91 @@ function setupEventListeners() {
         providers.doctor?.refresh();
         providers.sdk?.refresh();
     });
+}
+
+// ============================================================================
+// STATUS BAR + AUTO MODEL DOWNLOAD
+// ============================================================================
+
+/**
+ * Creates a persistent status bar item at the bottom of VSCode showing
+ * the AI runtime state in real-time.
+ */
+function setupStatusBar(ctx) {
+    statusBarItem = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Right, 100
+    );
+    statusBarItem.command = 'sudoStudio.openRuntimePanel';
+    statusBarItem.text   = '$(loading~spin) Sudo AI...';
+    statusBarItem.tooltip = 'Sudo Studio AI Runtime — cliquez pour ouvrir';
+    statusBarItem.show();
+    ctx.subscriptions.push(statusBarItem);
+
+    // Poll runtime every 5 seconds
+    runtimePollTimer = setInterval(() => pollRuntimeStatus(), 5000);
+    pollRuntimeStatus(); // immediate first check
+}
+
+async function pollRuntimeStatus() {
+    if (!statusBarItem) return;
+    try {
+        const r = await axios.get('http://localhost:6000/health', { timeout: 2500 });
+        const d = r.data;
+        const m = d.model || {};
+        if (m.loaded) {
+            const short = (m.name || 'IA').split('/').pop().substring(0, 20);
+            statusBarItem.text    = `$(check) Sudo AI: ${short}`;
+            statusBarItem.tooltip = `IA prête · ${m.name} · ${m.device || 'cpu'}\nCliquez pour ouvrir Runtime`;
+            statusBarItem.backgroundColor = undefined;
+        } else if (m.loading) {
+            const pct = m.download_progress || 0;
+            statusBarItem.text    = `$(loading~spin) Sudo AI: chargement ${pct}%`;
+            statusBarItem.tooltip = `Téléchargement modèle ${m.name || ''} — ${pct}%\nCliquez pour ouvrir Runtime`;
+            statusBarItem.backgroundColor = undefined;
+        } else {
+            statusBarItem.text    = '$(warning) Sudo AI: aucun modèle';
+            statusBarItem.tooltip = 'Runtime actif mais aucun modèle chargé\nCliquez pour télécharger';
+            statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+        }
+        // Refresh runtime provider tree
+        providers.runtime?.refresh();
+    } catch (_) {
+        statusBarItem.text    = '$(x) Sudo AI: hors ligne';
+        statusBarItem.tooltip = 'Runtime hors ligne (port 6000)\nVérifiez que runtime.exe est lancé';
+        statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    }
+}
+
+/**
+ * On activation: if runtime is reachable but no model is loaded,
+ * automatically trigger model download with user notification.
+ */
+async function autoEnsureModelDownload() {
+    try {
+        const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+        const m = r.data.model || {};
+        if (!m.loaded && !m.loading) {
+            // Runtime is up but no model — auto-trigger download
+            await axios.post('http://localhost:6000/download',
+                { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' },
+                { timeout: 5000 }
+            );
+            vscode.window.showInformationMessage(
+                '⬇️ Sudo AI: Téléchargement de TinyLlama (~600MB) démarré automatiquement.',
+                'Voir progression'
+            ).then(sel => {
+                if (sel === 'Voir progression') openRuntimePanel();
+            });
+            // Update status bar
+            if (statusBarItem) {
+                statusBarItem.text    = '$(loading~spin) Sudo AI: téléchargement...';
+                statusBarItem.tooltip = 'Téléchargement TinyLlama 1.1B en cours...';
+                statusBarItem.backgroundColor = undefined;
+            }
+        }
+    } catch (_) {
+        // Runtime offline — not an error, start.bat may still be booting
+    }
 }
 
 // ============================================================================
@@ -1060,6 +1153,8 @@ function openAnalysisPanel() {
 // ============================================================================
 
 function deactivate() {
+    if (runtimePollTimer) { clearInterval(runtimePollTimer); runtimePollTimer = null; }
+    if (statusBarItem)    { statusBarItem.dispose(); statusBarItem = null; }
     console.log('Sudo Studio deactivated');
 }
 
