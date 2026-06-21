@@ -5,3 +5,6 @@ transformers
 # This is CRITICAL — do NOT remove the --index-url flag
 torch --index-url https://download.pytorch.org/whl/cpu
 psutil
+accelerate
+sentencepiece
+requests

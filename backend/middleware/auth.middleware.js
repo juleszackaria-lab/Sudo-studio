@@ -136,6 +136,7 @@ module.exports = {
   verifyToken,
   optionalAuth,
   requireRole,
+  requireAdmin: requireRole('admin'),  // Alias for common admin check
   generateDevToken,
   JWT_SECRET
 };

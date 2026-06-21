@@ -245,7 +245,7 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
       
       try {
         response = await axios.post(modelConfig.url, requestData, {
-          timeout: 60000,  // 60 seconds for model inference
+          timeout: 120000,  // 120 seconds for model inference (AI routes require 120s+)
           headers: { 
             'Content-Type': 'application/json',
             'Accept': 'application/json'

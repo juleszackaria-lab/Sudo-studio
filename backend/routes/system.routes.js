@@ -269,3 +269,27 @@ router.get('/api/system/routes', (req, res) => {
 });
 
 module.exports = router;
+
+/**
+ * GET /api/system/health
+ * Main health check endpoint - used by extension and start.bat polling
+ */
+router.get('/api/system/health', (req, res) => {
+  try {
+    res.json({
+      status: 'healthy',
+      service: 'sudo-studio-backend',
+      version: '2.1.0',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      platform: process.platform,
+      node: process.version,
+      memory: {
+        used_mb: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        total_mb: Math.round(process.memoryUsage().heapTotal / 1024 / 1024)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ status: 'error', error: error.message });
+  }
+});

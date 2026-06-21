@@ -164,6 +164,26 @@ class RuntimePanel {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Runtime & Models</title>
 <style>
+/* ─── SUDO STUDIO DARK THEME ─────────────────────────────────── */
+:root {
+    --ss-bg: #0d1117; --ss-card-bg: #161b22; --ss-border: #21262d;
+    --ss-btn-green: #2ea043; --ss-btn-blue: #1f6feb;
+    --ss-text: #e6edf3; --ss-text-muted: #7d8590;
+    --vscode-editor-background: #0d1117;
+    --vscode-editor-foreground: #e6edf3;
+    --vscode-sideBar-background: #161b22;
+    --vscode-panel-border: #21262d;
+    --vscode-editorWidget-background: #161b22;
+    --vscode-button-background: #2ea043;
+    --vscode-button-foreground: #ffffff;
+    --vscode-button-secondaryBackground: #21262d;
+    --vscode-button-secondaryForeground: #e6edf3;
+    --vscode-input-background: #0d1117;
+    --vscode-input-foreground: #e6edf3;
+    --vscode-input-border: #21262d;
+    --vscode-focusBorder: #1f6feb;
+    --vscode-descriptionForeground: #7d8590;
+}
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; background:var(--vscode-editor-background); color:var(--vscode-editor-foreground); padding:0; min-height:100vh; }
 #header { background:var(--vscode-sideBar-background); border-bottom:1px solid var(--vscode-panel-border); padding:14px 18px; display:flex; align-items:center; justify-content:space-between; }

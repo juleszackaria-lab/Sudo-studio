@@ -302,6 +302,31 @@ class ChatPanel {
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <style>
+/* ─── SUDO STUDIO DARK THEME OVERRIDE ─────────────────────── */
+:root {
+    --ss-bg: #0d1117; --ss-card-bg: #161b22; --ss-border: #21262d;
+    --ss-btn-green: #2ea043; --ss-btn-blue: #1f6feb;
+    --ss-text: #e6edf3; --ss-text-muted: #7d8590; --ss-radius: 8px;
+    --ss-input-bg: #0d1117; --ss-success: #3fb950; --ss-warning: #d29922;
+    --ss-error: #f85149; --ss-accent: #58a6ff;
+    /* Map vscode vars to our dark theme */
+    --vscode-editor-background: #0d1117;
+    --vscode-editor-foreground: #e6edf3;
+    --vscode-sideBar-background: #161b22;
+    --vscode-panel-border: #21262d;
+    --vscode-editorWidget-background: #161b22;
+    --vscode-button-background: #2ea043;
+    --vscode-button-foreground: #ffffff;
+    --vscode-button-secondaryBackground: #21262d;
+    --vscode-button-secondaryForeground: #e6edf3;
+    --vscode-input-background: #0d1117;
+    --vscode-input-foreground: #e6edf3;
+    --vscode-input-border: #21262d;
+    --vscode-focusBorder: #1f6feb;
+    --vscode-descriptionForeground: #7d8590;
+    --vscode-textCodeBlock-background: #161b22;
+    --vscode-scrollbarSlider-background: #21262d;
+}
 * { margin:0; padding:0; box-sizing:border-box; }
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

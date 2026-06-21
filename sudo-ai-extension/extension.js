@@ -7,6 +7,7 @@ const vscode = require('vscode');
 const fs     = require('fs');
 const path   = require('path');
 const axios  = require('axios');
+const { spawn } = require('child_process');
 const { getBackendService } = require('./src/services/BackendService');
 const { getStateManager } = require('./src/services/StateManager');
 
@@ -32,6 +33,8 @@ let backend, state, context;
 let providers = {};
 let statusBarItem = null;       // VSCode status bar for AI state
 let runtimePollTimer = null;    // Polls port 6000 every 5s
+let runtimeProcess = null;      // Child process for auto-started runtime
+let startupProcess = null;      // Child process for start.bat/start.sh
 
 /**
  * Extension activation - POINT D'ENTRÉE PRINCIPAL
@@ -59,6 +62,9 @@ async function activate(ctx) {
 
         // Status bar for AI runtime
         setupStatusBar(ctx);
+
+        // AUTO-START: Launch runtime automatically via spawn()
+        autoStartRuntime();
 
         // Auto-start runtime model download check
         setTimeout(() => autoEnsureModelDownload(), 3000);
@@ -273,6 +279,337 @@ function setupEventListeners() {
     state.on('system:update', () => {
         providers.doctor?.refresh();
         providers.sdk?.refresh();
+    });
+}
+
+// ============================================================================
+// AUTO-START RUNTIME — child_process.spawn()
+// ============================================================================
+
+/**
+ * Auto-starts the Python AI runtime (port 6000) and Node.js backend (port 5000)
+ * via start.bat (Windows) or start.sh (Linux/Mac).
+ * 
+ * Workflow:
+ * 1. Check if port 6000 already responding → skip launch if yes
+ * 2. Detect OS → select start.bat or start.sh
+ * 3. Detect extension root (where start.bat/start.sh lives)
+ * 4. Spawn the startup script
+ * 5. Poll port 6000 every 3s for up to 120s
+ * 6. Show progress in VS Code notifications + status bar
+ * 7. On timeout → show clear error with manual instructions
+ */
+async function autoStartRuntime() {
+    try {
+        // First: check if runtime already running
+        const alreadyUp = await checkPort(6000, 2000);
+        if (alreadyUp) {
+            console.log('[AutoStart] Runtime already running on port 6000 - skipping launch');
+            return;
+        }
+
+        // Find the root directory (where start.bat/start.sh lives)
+        // Extension is in: <root>/sudo-ai-extension/
+        // Start scripts are in: <root>/
+        let rootDir = null;
+        
+        // Try to find root from extension context
+        if (context && context.extensionPath) {
+            const extPath = context.extensionPath;
+            // Extension path might be <root>/sudo-ai-extension
+            const parentDir = path.dirname(extPath);
+            if (fs.existsSync(path.join(parentDir, 'start.bat')) || 
+                fs.existsSync(path.join(parentDir, 'start.sh'))) {
+                rootDir = parentDir;
+            } else if (fs.existsSync(path.join(extPath, 'start.bat')) || 
+                       fs.existsSync(path.join(extPath, 'start.sh'))) {
+                rootDir = extPath;
+            }
+        }
+        
+        // Fallback: workspace folder
+        if (!rootDir && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            const wsRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            if (fs.existsSync(path.join(wsRoot, 'start.bat')) || 
+                fs.existsSync(path.join(wsRoot, 'start.sh'))) {
+                rootDir = wsRoot;
+            }
+        }
+
+        if (!rootDir) {
+            console.warn('[AutoStart] Could not find root directory with start scripts');
+            // Fall back to launching Python runtime directly
+            await autoStartRuntimeDirect();
+            return;
+        }
+
+        const isWindows = process.platform === 'win32';
+        const isMac = process.platform === 'darwin';
+        
+        let scriptPath, cmd, args;
+        
+        if (isWindows) {
+            scriptPath = path.join(rootDir, 'start.bat');
+            if (!fs.existsSync(scriptPath)) {
+                await autoStartRuntimeDirect();
+                return;
+            }
+            cmd = 'cmd.exe';
+            args = ['/c', scriptPath];
+        } else {
+            scriptPath = path.join(rootDir, 'start.sh');
+            if (!fs.existsSync(scriptPath)) {
+                // Make start.sh executable if it exists
+                await autoStartRuntimeDirect();
+                return;
+            }
+            // Ensure executable
+            try { fs.chmodSync(scriptPath, '755'); } catch(e) {}
+            cmd = '/bin/bash';
+            args = [scriptPath];
+        }
+
+        console.log(`[AutoStart] Launching startup script: ${scriptPath}`);
+        
+        // Update status bar
+        if (statusBarItem) {
+            statusBarItem.text = '$(loading~spin) Sudo AI: démarrage...';
+            statusBarItem.tooltip = 'Démarrage automatique du runtime IA en cours...';
+        }
+
+        // Show notification
+        vscode.window.showInformationMessage(
+            '⏳ Démarrage du runtime IA Sudo Studio...',
+            'Voir les logs'
+        ).then(selection => {
+            if (selection === 'Voir les logs') {
+                const terminal = vscode.window.createTerminal('Sudo Studio Logs');
+                terminal.show();
+                if (!isWindows) {
+                    terminal.sendText(`tail -f "${rootDir}/logs/runtime.log" 2>/dev/null || echo "Logs not yet available"`);
+                }
+            }
+        });
+
+        // Spawn the startup script (detached so it survives if extension host restarts)
+        startupProcess = spawn(cmd, args, {
+            detached: false,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            cwd: rootDir,
+            windowsHide: false
+        });
+
+        startupProcess.stdout && startupProcess.stdout.on('data', (data) => {
+            console.log(`[AutoStart] ${data.toString().trim()}`);
+        });
+
+        startupProcess.stderr && startupProcess.stderr.on('data', (data) => {
+            console.warn(`[AutoStart] STDERR: ${data.toString().trim()}`);
+        });
+
+        startupProcess.on('error', (err) => {
+            console.error(`[AutoStart] Process error: ${err.message}`);
+        });
+
+        startupProcess.on('exit', (code) => {
+            console.log(`[AutoStart] Startup script exited with code: ${code}`);
+        });
+
+        // Poll port 6000 every 3 seconds for up to 120 seconds
+        await pollForRuntime(120);
+
+    } catch (error) {
+        console.error('[AutoStart] Error:', error.message);
+    }
+}
+
+/**
+ * Direct Python runtime launch (fallback when start scripts not found)
+ * Launches server.enterprise.py directly via python/python3
+ */
+async function autoStartRuntimeDirect() {
+    try {
+        // Find server.enterprise.py
+        let runtimeScript = null;
+        const possiblePaths = [
+            path.join(context.extensionPath, '..', 'backend', 'runtime', 'server.enterprise.py'),
+            path.join(context.extensionPath, 'backend', 'runtime', 'server.enterprise.py'),
+        ];
+        
+        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            const wsRoot = vscode.workspace.workspaceFolders[0].uri.fsPath;
+            possiblePaths.push(path.join(wsRoot, 'backend', 'runtime', 'server.enterprise.py'));
+        }
+        
+        for (const p of possiblePaths) {
+            if (fs.existsSync(p)) {
+                runtimeScript = p;
+                break;
+            }
+        }
+        
+        if (!runtimeScript) {
+            console.warn('[AutoStart] server.enterprise.py not found in expected locations');
+            return;
+        }
+
+        const isWindows = process.platform === 'win32';
+        const pythonCmd = isWindows ? 'python' : 'python3';
+        const runtimeDir = path.dirname(runtimeScript);
+
+        console.log(`[AutoStart] Direct launch: ${pythonCmd} ${runtimeScript}`);
+        
+        if (statusBarItem) {
+            statusBarItem.text = '$(loading~spin) Sudo AI: démarrage direct...';
+        }
+
+        runtimeProcess = spawn(pythonCmd, [runtimeScript, '--port', '6000'], {
+            detached: false,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            cwd: runtimeDir
+        });
+
+        runtimeProcess.stdout && runtimeProcess.stdout.on('data', (data) => {
+            const msg = data.toString().trim();
+            console.log(`[Runtime] ${msg}`);
+        });
+
+        runtimeProcess.stderr && runtimeProcess.stderr.on('data', (data) => {
+            const msg = data.toString().trim();
+            if (msg) console.warn(`[Runtime] ${msg}`);
+        });
+
+        runtimeProcess.on('error', (err) => {
+            console.error(`[Runtime] Process error: ${err.message}`);
+            if (err.code === 'ENOENT') {
+                vscode.window.showErrorMessage(
+                    '❌ Python non trouvé. Installez Python 3.11+ puis relancez VS Code.',
+                    'Télécharger Python'
+                ).then(sel => {
+                    if (sel === 'Télécharger Python') {
+                        vscode.env.openExternal(vscode.Uri.parse('https://python.org/downloads'));
+                    }
+                });
+            }
+        });
+
+        runtimeProcess.on('exit', (code) => {
+            console.log(`[Runtime] Process exited with code: ${code}`);
+            if (code !== 0 && statusBarItem) {
+                statusBarItem.text = '$(x) Sudo AI: hors ligne';
+                statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+            }
+        });
+
+        // Poll for runtime
+        await pollForRuntime(120);
+        
+    } catch (error) {
+        console.error('[AutoStart Direct] Error:', error.message);
+    }
+}
+
+/**
+ * Check if a port is responding (HTTP GET /health or /)
+ */
+async function checkPort(port, timeoutMs = 3000) {
+    try {
+        const urls = [`http://localhost:${port}/health`, `http://localhost:${port}/`];
+        for (const url of urls) {
+            try {
+                await axios.get(url, { timeout: timeoutMs });
+                return true;
+            } catch (e) {
+                if (e.response) return true; // Got a response (even error) = port is open
+            }
+        }
+        return false;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Poll port 6000 every 3s for up to maxSeconds
+ * Updates status bar with progress
+ */
+async function pollForRuntime(maxSeconds) {
+    const startTime = Date.now();
+    const maxMs = maxSeconds * 1000;
+    let elapsed = 0;
+
+    console.log(`[AutoStart] Polling port 6000 for up to ${maxSeconds}s...`);
+
+    while (elapsed < maxMs) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        elapsed = Date.now() - startTime;
+
+        const isUp = await checkPort(6000, 2000);
+        
+        if (isUp) {
+            console.log('[AutoStart] ✅ Runtime ready on port 6000!');
+            
+            if (statusBarItem) {
+                statusBarItem.text = '$(loading~spin) Sudo AI: chargement modèle...';
+                statusBarItem.tooltip = 'Runtime IA démarré - chargement du modèle...';
+                statusBarItem.backgroundColor = undefined;
+            }
+
+            vscode.window.showInformationMessage(
+                '✅ Sudo Studio prêt ! Le runtime IA répond sur le port 6000.',
+                'Ouvrir Chat'
+            ).then(sel => {
+                if (sel === 'Ouvrir Chat') openChat();
+            });
+
+            // Trigger model download if needed
+            setTimeout(() => autoEnsureModelDownload(), 2000);
+            return;
+        }
+
+        // Update progress
+        const elapsedSec = Math.round(elapsed / 1000);
+        const pct = Math.round((elapsed / maxMs) * 100);
+        
+        if (statusBarItem) {
+            statusBarItem.text = `$(loading~spin) Sudo AI: démarrage ${elapsedSec}s...`;
+            statusBarItem.tooltip = `Démarrage en cours... ${elapsedSec}/${maxSeconds}s écoulés`;
+        }
+
+        console.log(`[AutoStart] Still waiting... ${elapsedSec}s elapsed`);
+    }
+
+    // Timeout reached
+    console.error('[AutoStart] ❌ Timeout: runtime not responding after 120s');
+    
+    if (statusBarItem) {
+        statusBarItem.text = '$(x) Sudo AI: timeout';
+        statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+        statusBarItem.tooltip = 'Démarrage échoué - voir message d\'erreur';
+    }
+
+    const isWindows = process.platform === 'win32';
+    vscode.window.showErrorMessage(
+        '❌ Runtime IA non démarré après 120 secondes.',
+        'Lancer manuellement', 'Aide'
+    ).then(sel => {
+        if (sel === 'Lancer manuellement') {
+            const terminal = vscode.window.createTerminal('Sudo Studio Runtime');
+            terminal.show();
+            if (isWindows) {
+                terminal.sendText('cd /d "%~dp0" && start.bat');
+            } else {
+                terminal.sendText('cd "$(dirname "$0")" && ./start.sh');
+            }
+        } else if (sel === 'Aide') {
+            vscode.window.showInformationMessage(
+                'Pour démarrer manuellement:\n' +
+                '• Windows: double-cliquez sur start.bat\n' +
+                '• Linux/Mac: ./start.sh\n' +
+                '• Manuel: cd backend/runtime && python3 server.enterprise.py',
+                { modal: true }
+            );
+        }
     });
 }
 
@@ -1155,6 +1492,9 @@ function openAnalysisPanel() {
 function deactivate() {
     if (runtimePollTimer) { clearInterval(runtimePollTimer); runtimePollTimer = null; }
     if (statusBarItem)    { statusBarItem.dispose(); statusBarItem = null; }
+    // Kill auto-started processes on extension deactivation
+    if (runtimeProcess)   { try { runtimeProcess.kill(); } catch(e) {} runtimeProcess = null; }
+    if (startupProcess)   { try { startupProcess.kill(); } catch(e) {} startupProcess = null; }
     console.log('Sudo Studio deactivated');
 }
 

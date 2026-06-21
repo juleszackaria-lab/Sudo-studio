@@ -1,122 +1,144 @@
 @echo off
 setlocal enabledelayedexpansion
-
-:: ============================================================
-::  SUDO STUDIO - Main Launcher v2.1
-::  Starts backend → runtime → VSCodium in correct order
-::  Includes port-polling health checks (no blind timeouts)
-:: ============================================================
-
-set "ROOT=%~dp0"
-set "APP=%ROOT%app"
+title Sudo Studio - Demarrage
 
 echo.
-echo  ============================================================
-echo   SUDO STUDIO - Starting all services...
-echo  ============================================================
-echo.
-echo  Root    : %ROOT%
-echo  App dir : %APP%
+echo ============================================================
+echo   SUDO STUDIO v2.1 - Demarrage automatique
+echo ============================================================
 echo.
 
-:: ── Verify required files exist ─────────────────────────────
-if not exist "%APP%\backend.exe" (
-    echo  [ERROR] backend.exe not found in %APP%
-    echo  Please re-run the installer.
-    pause
-    exit /b 1
+:: ─── Variables ──────────────────────────────────────────────────────────────
+set "SCRIPT_DIR=%~dp0"
+set "BACKEND_DIR=%SCRIPT_DIR%backend"
+set "RUNTIME_DIR=%SCRIPT_DIR%backend\runtime"
+set "BACKEND_PORT=5000"
+set "RUNTIME_PORT=6000"
+
+:: ─── Etape 1: Verification Python ───────────────────────────────────────────
+echo [1/6] Verification Python...
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo     Python non trouve - installation automatique via winget...
+    winget install Python.Python.3.11 -e --silent --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo     [ERREUR] Impossible d'installer Python automatiquement.
+        echo     Veuillez installer Python 3.11+ depuis https://python.org
+        echo     Puis relancer start.bat
+        pause
+        exit /b 1
+    )
+    :: Refresh PATH after install
+    call refreshenv >nul 2>&1
+    python --version >nul 2>&1
+    if errorlevel 1 (
+        echo     [AVERTISSEMENT] Python installe mais non accessible.
+        echo     Redemarrez le terminal et relancez start.bat
+        pause
+        exit /b 1
+    )
+    echo     Python installe avec succes!
+) else (
+    for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo     %%v detecte OK
 )
 
-if not exist "%APP%\runtime.exe" (
-    echo  [ERROR] runtime.exe not found in %APP%
-    echo  Please re-run the installer.
-    pause
-    exit /b 1
+:: ─── Etape 2: Verification Node.js ──────────────────────────────────────────
+echo [2/6] Verification Node.js...
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo     Node.js non trouve - installation automatique...
+    winget install OpenJS.NodeJS.LTS -e --silent --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo     [ERREUR] Impossible d'installer Node.js.
+        echo     Veuillez installer Node.js 18+ depuis https://nodejs.org
+        pause
+        exit /b 1
+    )
+    call refreshenv >nul 2>&1
+    echo     Node.js installe!
+) else (
+    for /f "tokens=*" %%v in ('node --version 2^>^&1') do echo     Node.js %%v detecte OK
 )
 
-if not exist "%APP%\VSCodium.exe" (
-    echo  [ERROR] VSCodium.exe not found in %APP%
-    echo  Please re-run the installer.
-    pause
-    exit /b 1
+:: ─── Etape 3: Installation dependances Python IA ────────────────────────────
+echo [3/6] Installation des dependances Python IA...
+echo     (torch CPU ~180MB, transformers, flask, accelerate...)
+pip install -q -r "%RUNTIME_DIR%\requirements.txt" --no-warn-script-location
+if errorlevel 1 (
+    echo     [AVERTISSEMENT] Certaines dependances Python ont echoue.
+    echo     Tentative d'installation individuelle...
+    pip install -q flask flask-cors psutil requests accelerate sentencepiece
+    pip install -q torch --index-url https://download.pytorch.org/whl/cpu
+    pip install -q transformers
+)
+echo     Dependances Python OK
+
+:: ─── Etape 4: Installation dependances Node.js ──────────────────────────────
+echo [4/6] Installation des dependances Node.js...
+if not exist "%BACKEND_DIR%\node_modules" (
+    echo     Installation npm...
+    cd /d "%BACKEND_DIR%" && npm install --no-audit --no-fund -q
+    cd /d "%SCRIPT_DIR%"
+) else (
+    echo     node_modules deja presents
 )
 
-if not exist "%APP%\extensions\sudo-ai" (
-    echo  [WARNING] Extension folder missing: %APP%\extensions\sudo-ai
-    echo  The extension may not load. Continuing...
-)
-
-:: ── Create VSCodium data/ folder for portable isolation ──────
-:: This prevents VSCodium from writing to %APPDATA%\VSCodium
-:: and ensures complete isolation from any other VSCodium install
-if not exist "%APP%\data" (
-    mkdir "%APP%\data"
-    echo  [INFO] Created VSCodium data folder for portable mode.
-)
-
-:: ── Step 1: Start backend (port 5000) ────────────────────────
-echo  [1/3] Starting Backend (port 5000)...
-start "" "%APP%\backend.exe"
+:: ─── Etape 5: Demarrage Backend Node.js (port 5000) ─────────────────────────
+echo [5/6] Demarrage du backend Node.js (port %BACKEND_PORT%)...
+start /B "Sudo-Backend" cmd /c "cd /d "%BACKEND_DIR%" && node server.js > "%SCRIPT_DIR%logs\backend.log" 2>&1"
 
 :: Poll port 5000 — up to 30 seconds
+echo     Attente du backend...
 set BACKEND_READY=0
 for /l %%i in (1,1,30) do (
-    if !BACKEND_READY!==0 (
-        timeout /t 1 /nobreak >nul
-        curl -s -o nul -w "%%{http_code}" http://localhost:5000/api/system/health 2>nul | findstr "200 401 403" >nul 2>&1
-        if not errorlevel 1 (
-            set BACKEND_READY=1
-            echo        Backend ready after %%i second(s^).
-        )
+    if !BACKEND_READY!==0 goto :backend_done
+    timeout /t 1 /nobreak >nul
+    curl -s -o nul -w "%%{http_code}" http://localhost:%BACKEND_PORT%/api/system/health 2>nul | findstr "200 401 403" >nul 2>&1
+    if not errorlevel 1 (
+        set BACKEND_READY=1
     )
 )
-if !BACKEND_READY!==0 (
-    echo  [WARNING] Backend did not respond on port 5000 within 30s.
-    echo            Continuing anyway - it may still be starting up.
+:backend_done
+if !BACKEND_READY!==1 (
+    echo     Backend OK - port %BACKEND_PORT% repond
+) else (
+    echo     [AVERTISSEMENT] Backend lent a demarrer (continue...)
 )
 
-:: ── Step 2: Start AI runtime (port 6000) ─────────────────────
-echo  [2/3] Starting AI Runtime (port 6000)...
-echo        (TinyLlama model will auto-download ~600MB on first run)
-start "" "%APP%\runtime.exe"
+:: ─── Etape 6: Demarrage Runtime Python IA (port 6000) ───────────────────────
+echo [6/6] Demarrage du runtime Python IA (port %RUNTIME_PORT%)...
+start /B "Sudo-Runtime" cmd /c "cd /d "%RUNTIME_DIR%" && python server.enterprise.py --port %RUNTIME_PORT% > "%SCRIPT_DIR%logs\runtime.log" 2>&1"
 
-:: Poll port 6000 — up to 30 seconds
+:: Poll port 6000 — up to 60 seconds (model loading takes time)
+echo     Attente du runtime IA...
 set RUNTIME_READY=0
-for /l %%i in (1,1,30) do (
-    if !RUNTIME_READY!==0 (
-        timeout /t 1 /nobreak >nul
-        curl -s -o nul -w "%%{http_code}" http://localhost:6000/health 2>nul | findstr "200" >nul 2>&1
-        if not errorlevel 1 (
-            set RUNTIME_READY=1
-            echo        Runtime ready after %%i second(s^).
-        )
+for /l %%i in (1,1,60) do (
+    if !RUNTIME_READY!==0 goto :runtime_check_done
+    timeout /t 1 /nobreak >nul
+    curl -s -o nul -w "%%{http_code}" http://localhost:%RUNTIME_PORT%/health 2>nul | findstr "200" >nul 2>&1
+    if not errorlevel 1 (
+        set RUNTIME_READY=1
     )
 )
-if !RUNTIME_READY!==0 (
-    echo  [WARNING] Runtime did not respond on port 6000 within 30s.
-    echo            Continuing - it may still be loading the AI model.
+:runtime_check_done
+if !RUNTIME_READY!==1 (
+    echo     Runtime IA OK - port %RUNTIME_PORT% repond
+) else (
+    echo     [AVERTISSEMENT] Runtime IA lent a demarrer (telechargement modele en cours...)
 )
 
-:: ── Step 3: Launch VSCodium with bundled extension ───────────
-echo  [3/3] Launching VSCodium with Sudo AI extension...
-:: --extensions-dir : loads ONLY the bundled sudo-ai extension
-:: --user-data-dir  : stores VSCodium settings inside app\data\
-::                    (portable mode - no conflict with system VSCodium)
-start "" "%APP%\VSCodium.exe" --extensions-dir "%APP%\extensions" --user-data-dir "%APP%\data"
-echo        VSCodium launched.
-
+:: ─── Resume ─────────────────────────────────────────────────────────────────
 echo.
-echo  ============================================================
-echo   All services started!
-echo   - Backend   : http://localhost:5000
-echo   - AI Runtime: http://localhost:6000  (model loading...)
-echo   - VSCodium  : Opening now with Sudo AI extension
-echo  ============================================================
+echo ============================================================
+echo   SUDO STUDIO DEMARRE
+echo ============================================================
+echo   Backend Node.js  : http://localhost:%BACKEND_PORT%
+echo   Runtime Python IA: http://localhost:%RUNTIME_PORT%
+echo   Logs backend     : logs\backend.log
+echo   Logs runtime     : logs\runtime.log
+echo ============================================================
 echo.
-echo  The AI model downloads automatically in the background.
-echo  Check the "Runtime Status" panel in VSCodium for progress.
+echo Ouvrez VSCodium pour utiliser Sudo Studio.
+echo Appuyez sur Ctrl+C pour arreter tous les services.
 echo.
-echo  This window will close in 5 seconds.
-echo.
-timeout /t 5 /nobreak >nul
-exit /b 0
+pause
