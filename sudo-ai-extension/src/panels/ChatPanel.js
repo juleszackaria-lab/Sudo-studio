@@ -257,10 +257,20 @@ class ChatPanel {
         // This is always tried first — no auth required, most reliable
         const payload = { message: text, prompt: text, input: text, max_tokens: 512, temperature: 0.7 };
 
+        // FIX BUG: AbortController signal was never passed to axios — Stop button had no effect.
+        // Now we pass signal so axios cancels the request when abortCtrl.abort() is called.
+        const signal = this.abortCtrl ? this.abortCtrl.signal : undefined;
+
         try {
-            const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 120000 });
+            const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 120000, signal });
             return r.data;
         } catch (e) {
+            // If aborted by Stop button, rethrow as AbortError for proper UI handling
+            if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') {
+                const err = new Error('STOPPED');
+                err.name = 'AbortError';
+                throw err;
+            }
             if (e.code !== 'ECONNREFUSED' && e.code !== 'ENOTFOUND') {
                 // Runtime is up but returned an error — still return what we got
                 if (e.response && e.response.data) return e.response.data;
@@ -273,9 +283,16 @@ class ChatPanel {
             try {
                 const r = await axios.post('http://localhost:5000/api/ai/chat',
                     { message: text, model: 'default' },
-                    { headers: { Authorization: `Bearer ${this.authToken}` }, timeout: 30000 });
+                    { headers: { Authorization: `Bearer ${this.authToken}` }, timeout: 30000, signal });
                 return r.data;
-            } catch (_) { /* ignore */ }
+            } catch (e2) {
+                if (e2.name === 'CanceledError' || e2.code === 'ERR_CANCELED') {
+                    const err = new Error('STOPPED');
+                    err.name = 'AbortError';
+                    throw err;
+                }
+                /* otherwise ignore fallback error */
+            }
         }
 
         throw new Error(
@@ -298,9 +315,8 @@ class ChatPanel {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sudo AI Chat</title>
-<!-- highlight.js for syntax highlighting -->
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<!-- FIX: Removed external CDN scripts — blocked by VS Code WebView CSP.
+     Syntax highlighting is done inline with simple token coloring instead. -->
 <style>
 /* ─── SUDO STUDIO DARK THEME OVERRIDE ─────────────────────── */
 :root {
@@ -696,8 +712,10 @@ window.addEventListener('message', ev => {
     }
 });
 
-// Auto poll
-setInterval(checkStatus, 5000);
+// FIX BUG: Removed duplicate WebView-side poll (setInterval checkStatus every 5s).
+// The Extension Host already polls every 5s via this._statusInterval and pushes 
+// status updates to the WebView. Having both caused double the network requests.
+// Initial status check on open is already handled in constructor setTimeout.
 input.focus();
 </script>
 </body>

@@ -701,22 +701,22 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="section">
         <div class="section-title">🐳 Docker</div>
         <div class="gen-grid">
-            <div class="gen-card" onclick="generate('generateDockerfile')">
+            <div class="gen-card" onclick="generate('generateDockerfile', {}, this)">
                 <div class="icon">🐳</div>
                 <div class="name">Dockerfile</div>
                 <div class="desc">Image optimisée multi-stage selon votre stack</div>
             </div>
-            <div class="gen-card" onclick="generate('generateCompose')">
+            <div class="gen-card" onclick="generate('generateCompose', {}, this)">
                 <div class="icon">🔧</div>
                 <div class="name">docker-compose.yml</div>
                 <div class="desc">Services, volumes, réseaux configurés</div>
             </div>
-            <div class="gen-card" onclick="generate('generateCompose', {withDB:true})">
+            <div class="gen-card" onclick="generate('generateCompose', {withDB:true}, this)">
                 <div class="icon">🗄️</div>
                 <div class="name">compose + DB</div>
                 <div class="desc">Avec PostgreSQL + Redis inclus</div>
             </div>
-            <div class="gen-card" onclick="generate('generateNginx')">
+            <div class="gen-card" onclick="generate('generateNginx', {}, this)">
                 <div class="icon">⚡</div>
                 <div class="name">nginx.conf</div>
                 <div class="desc">Reverse proxy avec SSL, cache, headers</div>
@@ -728,12 +728,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="section">
         <div class="section-title">⚙️ CI/CD Pipelines</div>
         <div class="gen-grid">
-            <div class="gen-card" onclick="generate('generateGithubActions')">
+            <div class="gen-card" onclick="generate('generateGithubActions', {}, this)">
                 <div class="icon">🐙</div>
                 <div class="name">GitHub Actions</div>
                 <div class="desc">Test → Build → Deploy automatique</div>
             </div>
-            <div class="gen-card" onclick="generate('generateGitlabCI')">
+            <div class="gen-card" onclick="generate('generateGitlabCI', {}, this)">
                 <div class="icon">🦊</div>
                 <div class="name">GitLab CI/CD</div>
                 <div class="desc">Pipeline .gitlab-ci.yml complet</div>
@@ -745,7 +745,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div class="section">
         <div class="section-title">☸️ Kubernetes</div>
         <div class="gen-grid">
-            <div class="gen-card" onclick="generate('generateKubernetes')">
+            <div class="gen-card" onclick="generate('generateKubernetes', {}, this)">
                 <div class="icon">☸️</div>
                 <div class="name">k8s/deployment.yaml</div>
                 <div class="desc">Deployment + Service + Ingress complet</div>
@@ -771,11 +771,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 const vscode = acquireVsCodeApi();
 function vscPost(m) { vscode.postMessage(m); }
 
-function generate(type, opts) {
-    const card = event.currentTarget;
-    card.classList.add('busy');
+function generate(type, opts, el) {
+    // FIX: event.currentTarget is null in inline onclick — use passed element or event.target
+    const card = el || (typeof event !== 'undefined' && event ? (event.currentTarget || event.target) : null);
+    if (card) {
+        card.classList.add('busy');
+        setTimeout(() => card.classList.remove('busy'), 3000);
+    }
     vscPost({ type, opts: opts || {} });
-    setTimeout(() => card.classList.remove('busy'), 3000);
 }
 
 function aiGen() {

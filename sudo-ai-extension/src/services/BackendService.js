@@ -204,7 +204,7 @@ class BackendService {
      * DEVOPS - Generate Docker
      */
     async generateDocker(projectPath, config = {}) {
-        const response = await axios.post(`${this.baseUrl}/api/devops/docker/generate`, {
+        const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {
             projectPath,
             ...config
         }, {
@@ -218,9 +218,39 @@ class BackendService {
      * DEVOPS - Generate CI/CD
      */
     async generateCICD(projectPath, platform = 'github') {
-        const response = await axios.post(`${this.baseUrl}/api/devops/cicd/generate`, {
+        const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {
             projectPath,
             platform
+        }, {
+            headers: this.getHeaders(),
+            timeout: 30000
+        });
+        return response.data;
+    }
+
+    /**
+     * DEVOPS - Generate docker-compose.yml (FIX: was missing — caused crash in generateDockerCompose command)
+     */
+    async generateDockerCompose(projectPath, config = {}) {
+        const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {
+            type: 'compose',
+            projectPath,
+            ...config
+        }, {
+            headers: this.getHeaders(),
+            timeout: 30000
+        });
+        return response.data;
+    }
+
+    /**
+     * DEVOPS - Generate Kubernetes manifests (FIX: was missing — caused crash in generateKubernetes command)
+     */
+    async generateKubernetes(projectPath, k8sType = 'deployment') {
+        const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {
+            type: 'kubernetes',
+            k8sType,
+            projectPath
         }, {
             headers: this.getHeaders(),
             timeout: 30000

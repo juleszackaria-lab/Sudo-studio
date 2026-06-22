@@ -163,6 +163,29 @@ class DoctorPanel {
         this.panel.webview.postMessage({ type: 'fixDone', issue, message: msg });
     }
 
+    // FIX BUG: installSDK method was missing — handleMessage case 'installSDK' called this.installSDK()
+    // which threw TypeError: this.installSDK is not a function
+    async installSDK(sdkId) {
+        const isWin = process.platform === 'win32';
+        const isMac = process.platform === 'darwin';
+        const sdkCmds = {
+            'Node.js':  isWin ? 'winget install OpenJS.NodeJS.LTS' : isMac ? 'brew install node' : 'sudo apt-get install -y nodejs npm',
+            'Python':   isWin ? 'winget install Python.Python.3.11' : isMac ? 'brew install python@3.11' : 'sudo apt-get install -y python3 python3-pip',
+            'Git':      isWin ? 'winget install Git.Git' : isMac ? 'brew install git' : 'sudo apt-get install -y git',
+            'Docker':   'start https://www.docker.com/products/docker-desktop'
+        };
+        const cmd = sdkCmds[sdkId];
+        if (!cmd) {
+            vscode.window.showInformationMessage(`SDK not recognized: ${sdkId}`);
+            return;
+        }
+        const terminal = vscode.window.createTerminal(`Install ${sdkId}`);
+        terminal.show();
+        terminal.sendText(cmd);
+        vscode.window.showInformationMessage(`⚡ Installing ${sdkId}... Check the terminal.`);
+        this.panel.webview.postMessage({ type: 'fixDone', issue: sdkId, message: `Installing ${sdkId} via terminal` });
+    }
+
     dispose() {
         DoctorPanel.currentPanel = undefined;
         this.panel.dispose();
