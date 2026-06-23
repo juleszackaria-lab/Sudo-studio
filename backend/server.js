@@ -60,8 +60,9 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  windowMs: 1 * 60 * 1000, // 1 minute window
+  max: 500, // FIX: was 100/15min (too tight for extension usage) → 500/min
+  skip: (req) => req.path === '/health' || req.path === '/version' // never rate-limit health checks
 });
 app.use(limiter);
 

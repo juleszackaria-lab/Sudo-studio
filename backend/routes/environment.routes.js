@@ -203,15 +203,12 @@ router.post('/api/environment/install', verifyToken, async (req, res) => {
   }
 });
 
-module.exports = router;
-
 /**
  * POST /api/environment/fix
- * Fix environment issues automatically
- * 
- * Body: {
- *   issues: string[] (list of issues to fix)
- * }
+ * Fix environment issues automatically.
+ * Called by EnvironmentPanel via BackendService.fixEnvironment().
+ *
+ * Body: { issues: string[] }
  */
 router.post('/api/environment/fix', verifyToken, async (req, res) => {
   try {
@@ -260,3 +257,73 @@ router.post('/api/environment/fix', verifyToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+/**
+ * POST /api/environment/export
+ * Export current environment configuration as a portable snapshot.
+ * Called by BackendService.exportEnvironment().
+ *
+ * Body: { projectPath: string, format: 'json'|'env'|'dockerfile' }
+ */
+router.post('/api/environment/export', verifyToken, async (req, res) => {
+  try {
+    const { projectPath = process.cwd(), format = 'json' } = req.body;
+    const { exec } = require('child_process');
+    const os = require('os');
+
+    logger.info('Environment export started', {
+      user: req.user.username,
+      projectPath,
+      format
+    });
+
+    // Gather system environment snapshot
+    const nodeVersion = await new Promise(resolve => {
+      exec('node --version', { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
+    });
+    const pythonVersion = await new Promise(resolve => {
+      const cmd = process.platform === 'win32' ? 'python --version 2>&1' : 'python3 --version';
+      exec(cmd, { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
+    });
+    const npmVersion = await new Promise(resolve => {
+      exec('npm --version', { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
+    });
+    const gitVersion = await new Promise(resolve => {
+      exec('git --version', { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
+    });
+
+    const snapshot = {
+      exported_at: new Date().toISOString(),
+      project_path: projectPath,
+      format,
+      system: {
+        platform: os.platform(),
+        arch: os.arch(),
+        node: nodeVersion,
+        npm: npmVersion,
+        python: pythonVersion,
+        git: gitVersion,
+        ram_gb: Math.round(os.totalmem() / 1024 / 1024 / 1024),
+        cpu_cores: os.cpus().length
+      },
+      environment_variables: {
+        NODE_ENV: process.env.NODE_ENV || 'development',
+        PATH: process.env.PATH ? '(set)' : '(not set)'
+      },
+      recommended_setup: [
+        `Node.js ${nodeVersion}`,
+        `Python ${pythonVersion}`,
+        `npm ${npmVersion}`,
+        `Git ${gitVersion}`
+      ]
+    };
+
+    res.json({ success: true, snapshot });
+
+  } catch (error) {
+    logger.error('Environment export failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+module.exports = router;

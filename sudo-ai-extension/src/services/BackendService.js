@@ -156,9 +156,10 @@ class BackendService {
 
     /**
      * ENVIRONMENT - Get environment info
+     * FIX: /api/environment/info doesn't exist → use /api/environment/status
      */
     async getEnvironmentInfo() {
-        const response = await axios.get(`${this.baseUrl}/api/environment/info`, {
+        const response = await axios.get(`${this.baseUrl}/api/environment/status`, {
             headers: this.getHeaders(),
             timeout: 10000
         });
@@ -178,9 +179,10 @@ class BackendService {
 
     /**
      * SDK INSTALLER - List SDKs
+     * FIX: /api/environment/sdks doesn't exist → use /api/sdk/list
      */
     async listSDKs() {
-        const response = await axios.get(`${this.baseUrl}/api/environment/sdks`, {
+        const response = await axios.get(`${this.baseUrl}/api/sdk/list`, {
             headers: this.getHeaders(),
             timeout: 10000
         });
@@ -189,10 +191,27 @@ class BackendService {
 
     /**
      * SDK INSTALLER - Install SDK
+     * FIX: was posting to /api/environment/install with wrong payload schema.
+     * Route /api/sdk/install expects { sdk: <id> } where id is 'nodejs','python', etc.
+     * Normalize display names (e.g. 'Node.js') to route-accepted ids.
      */
     async installSDK(sdkName) {
-        const response = await axios.post(`${this.baseUrl}/api/environment/install`, {
-            sdk: sdkName
+        const nameToId = {
+            'Node.js': 'nodejs', 'node': 'nodejs', 'nodejs': 'nodejs',
+            'Python': 'python', 'python3': 'python',
+            'Java': 'java',
+            '.NET': 'dotnet', 'dotnet': 'dotnet',
+            'Go': 'go', 'golang': 'go',
+            'Rust': 'rust',
+            'Ruby': 'ruby',
+            'PHP': 'php',
+            'Docker': 'docker',
+            'Git': 'git',
+            'Android SDK': 'android', 'android': 'android'
+        };
+        const sdkId = nameToId[sdkName] || sdkName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const response = await axios.post(`${this.baseUrl}/api/sdk/install`, {
+            sdk: sdkId
         }, {
             headers: this.getHeaders(),
             timeout: 600000 // 10 minutes for installation
@@ -201,10 +220,12 @@ class BackendService {
     }
 
     /**
-     * DEVOPS - Generate Docker
+     * DEVOPS - Generate Dockerfile
+     * FIX: was missing 'type' field → backend returned 400 'type is required'
      */
     async generateDocker(projectPath, config = {}) {
         const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {
+            type: 'dockerfile',
             projectPath,
             ...config
         }, {
@@ -215,12 +236,15 @@ class BackendService {
     }
 
     /**
-     * DEVOPS - Generate CI/CD
+     * DEVOPS - Generate CI/CD pipeline
+     * FIX: was missing 'type' field; map platform to correct type value
      */
     async generateCICD(projectPath, platform = 'github') {
+        const typeMap = { 'github': 'github-actions', 'gitlab': 'gitlab-ci' };
+        const type = typeMap[platform] || 'github-actions';
         const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {
-            projectPath,
-            platform
+            type,
+            projectPath
         }, {
             headers: this.getHeaders(),
             timeout: 30000
@@ -229,11 +253,12 @@ class BackendService {
     }
 
     /**
-     * DEVOPS - Generate docker-compose.yml (FIX: was missing — caused crash in generateDockerCompose command)
+     * DEVOPS - Generate docker-compose.yml
+     * FIX: was 'compose' → backend switch only handles 'docker-compose'
      */
     async generateDockerCompose(projectPath, config = {}) {
         const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {
-            type: 'compose',
+            type: 'docker-compose',
             projectPath,
             ...config
         }, {

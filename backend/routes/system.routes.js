@@ -268,8 +268,6 @@ router.get('/api/system/routes', (req, res) => {
   }
 });
 
-module.exports = router;
-
 /**
  * GET /api/system/health
  * Main health check endpoint - used by extension and start.bat polling
@@ -296,8 +294,8 @@ router.get('/api/system/health', (req, res) => {
 
 /**
  * POST /api/system/doctor
- * FIX: Was missing — extension.js autoFix command called BackendService.runDoctor()
- * which POSTed to /api/system/doctor → 404 crash
+ * Runs system diagnostics: checks Node, Python, Git, Docker, AI runtime.
+ * Called by DoctorPanel via BackendService.runDoctor().
  */
 router.post('/api/system/doctor', async (req, res) => {
   const { exec } = require('child_process');
@@ -339,8 +337,8 @@ router.post('/api/system/doctor', async (req, res) => {
 
 /**
  * POST /api/system/autofix
- * FIX: Was missing — extension.js autoFix command called BackendService.autoFix()
- * which POSTed to /api/system/autofix → 404 crash
+ * Auto-fixes a specific issue by type.
+ * Called by DoctorPanel via BackendService.autoFix().
  */
 router.post('/api/system/autofix', async (req, res) => {
   const { issueType } = req.body;
@@ -372,3 +370,5 @@ router.post('/api/system/autofix', async (req, res) => {
     issueType
   });
 });
+
+module.exports = router;
