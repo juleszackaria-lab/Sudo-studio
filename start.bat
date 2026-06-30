@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 title Sudo Studio - Demarrage
 
 :: ============================================================
-::   SUDO STUDIO v2.1 — Lanceur automatique Windows
+::   SUDO STUDIO v2.2 — Lanceur automatique Windows
 ::   Ce fichier est le SEUL point d'entree.
 ::   Ne rien modifier dans backend/, runtime/, extension/
 :: ============================================================
@@ -21,7 +21,7 @@ if not exist "%LOGS_DIR%" mkdir "%LOGS_DIR%"
 
 echo.
 echo ============================================================
-echo   SUDO STUDIO v2.1 - Demarrage automatique
+echo   SUDO STUDIO v2.2 - Demarrage automatique
 echo ============================================================
 echo.
 
@@ -32,22 +32,22 @@ echo.
 ::    [0] node deja dans PATH           → OK direct
 ::    [1] node.exe trouvable sur disque → injecter PATH
 ::    [2] winget disponible             → installer LTS silencieux
-::    [3] fallback MSI PowerShell       → telecharger + verifier
-::                                         taille + /qn + ExitCode
-::    [R] MSI reussit mais ExitCode=3010 → reboot auto + reprise
-::        via HKCU\Run
+::    [3] fallback MSI PowerShell       → version LTS dynamique
+::                                         taille > 20MB + /qn +
+::                                         -PassThru + ExitCode reel
+::    [R] MSI reussit ExitCode=3010     → reboot auto + HKCU\Run
 :: ────────────────────────────────────────────────────────────
 echo [1/4] Verification Node.js...
 
-:: ── [0] Détection dans PATH ──────────────────────────────────
+:: ── [0] Detection dans PATH ──────────────────────────────────
 node --version >nul 2>&1
 if %errorlevel% equ 0 goto :node_found
 
-:: ── [1] node.exe présent sur disque mais pas dans PATH ───────
+:: ── [1] node.exe present sur disque mais pas dans PATH ───────
 if exist "%ProgramFiles%\nodejs\node.exe" (
     set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
     node --version >nul 2>&1
-    if %errorlevel% equ 0 (
+    if !errorlevel! equ 0 (
         echo       Node.js trouve dans Program Files - PATH mis a jour.
         goto :node_found
     )
@@ -55,8 +55,8 @@ if exist "%ProgramFiles%\nodejs\node.exe" (
 if exist "%ProgramW6432%\nodejs\node.exe" (
     set "PATH=%PATH%;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
     node --version >nul 2>&1
-    if %errorlevel% equ 0 (
-        echo       Node.js trouve dans Program Files (x64) - PATH mis a jour.
+    if !errorlevel! equ 0 (
+        echo       Node.js trouve dans Program Files x64 - PATH mis a jour.
         goto :node_found
     )
 )
@@ -72,16 +72,24 @@ if %errorlevel% equ 0 (
     :: winget ecrit dans le registre mais pas dans la session courante
     call :refresh_node_path
     node --version >nul 2>&1
-    if %errorlevel% equ 0 (
+    if !errorlevel! equ 0 (
         echo       Node.js installe via winget.
         goto :node_found
     )
-    :: Chercher directement même si PATH stale
+    :: Chercher directement meme si PATH stale
     if exist "%ProgramFiles%\nodejs\node.exe" (
         set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
         node --version >nul 2>&1
-        if %errorlevel% equ 0 (
+        if !errorlevel! equ 0 (
             echo       Node.js installe via winget (chemin direct).
+            goto :node_found
+        )
+    )
+    if exist "%ProgramW6432%\nodejs\node.exe" (
+        set "PATH=%PATH%;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
+        node --version >nul 2>&1
+        if !errorlevel! equ 0 (
+            echo       Node.js installe via winget (chemin x64).
             goto :node_found
         )
     )
@@ -91,19 +99,42 @@ if %errorlevel% equ 0 (
 )
 
 :: ── [3] Fallback MSI via PowerShell ──────────────────────────
-echo       [3] Telechargement Node.js v20.18.1 MSI...
+echo       [3] Preparation installation Node.js LTS via MSI...
 echo.
 
-:: Générer un script .ps1 dans %TEMP% pour éviter les problèmes
-:: d'échappement de guillemets dans -Command
+:: Generer le script .ps1 dans %TEMP% ligne par ligne
+:: (evite les problemes d'echappement de guillemets dans -Command)
 set "PS1=%TEMP%\sudo_node_install.ps1"
 
-:: Ecrire le script PowerShell ligne par ligne
+:: -- Ecriture du script PowerShell ligne par ligne --
 (echo $ErrorActionPreference = 'Stop') > "%PS1%"
-(echo $url = 'https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi') >> "%PS1%"
-(echo $out = Join-Path $env:TEMP 'sudo_nodejs_v20.18.1.msi') >> "%PS1%"
 (echo.) >> "%PS1%"
-(echo Write-Host '      Telechargement en cours (~35 MB)...') >> "%PS1%"
+(echo # ── Detection dynamique de la derniere version LTS Node.js 20.x ──) >> "%PS1%"
+(echo $fallbackVersion = 'v20.18.1') >> "%PS1%"
+(echo $nodeVersion = $fallbackVersion) >> "%PS1%"
+(echo try {) >> "%PS1%"
+(echo     Write-Host '      Detection version LTS Node.js...') >> "%PS1%"
+(echo     $page = (New-Object System.Net.WebClient^).DownloadString('https://nodejs.org/dist/latest-v20.x/'^)) >> "%PS1%"
+(echo     $match = [regex]::Match($page, 'node-(v20\.\d+\.\d+)-x64\.msi'^)) >> "%PS1%"
+(echo     if ($match.Success^) {) >> "%PS1%"
+(echo         $nodeVersion = $match.Groups[1].Value) >> "%PS1%"
+(echo         Write-Host "      Version LTS detectee : $nodeVersion") >> "%PS1%"
+(echo     } else {) >> "%PS1%"
+(echo         Write-Host "      Detection impossible - fallback $fallbackVersion") >> "%PS1%"
+(echo     }) >> "%PS1%"
+(echo } catch {) >> "%PS1%"
+(echo     Write-Host "      Reseau indisponible - fallback $fallbackVersion") >> "%PS1%"
+(echo     $nodeVersion = $fallbackVersion) >> "%PS1%"
+(echo }) >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo $msiName = "node-$nodeVersion-x64.msi") >> "%PS1%"
+(echo $url = "https://nodejs.org/dist/$nodeVersion/$msiName") >> "%PS1%"
+(echo $out = Join-Path $env:TEMP $msiName) >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo Write-Host "      Telechargement $msiName (~35 MB)...") >> "%PS1%"
+(echo Write-Host "      URL : $url") >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo # -- Telecharger le MSI --) >> "%PS1%"
 (echo try {) >> "%PS1%"
 (echo     $wc = New-Object System.Net.WebClient) >> "%PS1%"
 (echo     $wc.DownloadFile($url, $out^)) >> "%PS1%"
@@ -112,19 +143,49 @@ set "PS1=%TEMP%\sudo_node_install.ps1"
 (echo     exit 1) >> "%PS1%"
 (echo }) >> "%PS1%"
 (echo.) >> "%PS1%"
-(echo # Verifier taille minimale 20 MB) >> "%PS1%"
-(echo $file = Get-Item $out) >> "%PS1%"
-(echo if ($file.Length -lt 20MB^) {) >> "%PS1%"
-(echo     Write-Host "ERREUR : fichier trop petit ($($file.Length^) octets^) - telechargement incomplet") >> "%PS1%"
+(echo # -- Verifier taille minimale 20 MB --) >> "%PS1%"
+(echo if (-not (Test-Path $out^)^) {) >> "%PS1%"
+(echo     Write-Host 'ERREUR : fichier MSI absent apres telechargement') >> "%PS1%"
 (echo     exit 1) >> "%PS1%"
 (echo }) >> "%PS1%"
-(echo Write-Host "      Fichier OK ($([math]::Round($file.Length / 1MB^)) MB^) - installation...") >> "%PS1%"
+(echo $file = Get-Item $out) >> "%PS1%"
+(echo $sizeMB = [math]::Round($file.Length / 1MB, 1^)) >> "%PS1%"
+(echo if ($file.Length -lt 20MB^) {) >> "%PS1%"
+(echo     Write-Host "ERREUR : fichier trop petit ($sizeMB MB^) - telechargement incomplet") >> "%PS1%"
+(echo     Remove-Item $out -Force -ErrorAction SilentlyContinue) >> "%PS1%"
+(echo     exit 1) >> "%PS1%"
+(echo }) >> "%PS1%"
+(echo Write-Host "      Fichier OK ($sizeMB MB^) - lancement installation...") >> "%PS1%"
 (echo.) >> "%PS1%"
-(echo # Installer avec /qn (silencieux total^) - capturer ExitCode reel) >> "%PS1%"
+(echo # -- Installer avec /qn (silencieux total^) + -PassThru pour ExitCode reel --) >> "%PS1%"
 (echo $proc = Start-Process msiexec.exe -ArgumentList '/i', $out, '/qn', '/norestart' -Wait -PassThru) >> "%PS1%"
 (echo.) >> "%PS1%"
+(echo # -- Nettoyer le MSI telecharge --) >> "%PS1%"
+(echo Remove-Item $out -Force -ErrorAction SilentlyContinue) >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo Write-Host "      msiexec ExitCode = $($proc.ExitCode^)") >> "%PS1%"
+(echo.) >> "%PS1%"
 (echo if ($proc.ExitCode -eq 0^) {) >> "%PS1%"
-(echo     Write-Host '      Installation reussie (ExitCode=0^).') >> "%PS1%"
+(echo     # -- Rafraichir PATH depuis registre Windows dans cette session PS --) >> "%PS1%"
+(echo     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine'^)) >> "%PS1%"
+(echo     $userPath    = [Environment]::GetEnvironmentVariable('Path', 'User'^)) >> "%PS1%"
+(echo     if ($machinePath^) { $env:Path = $machinePath }) >> "%PS1%"
+(echo     if ($userPath^)    { $env:Path += ';' + $userPath }) >> "%PS1%"
+(echo     # -- Ajouter le dossier Node.js si absent du PATH refresh --) >> "%PS1%"
+(echo     $nodeDirs = @('C:\Program Files\nodejs', 'C:\Program Files (x86^)\nodejs'^)) >> "%PS1%"
+(echo     foreach ($d in $nodeDirs^) {) >> "%PS1%"
+(echo         if ((Test-Path "$d\node.exe"^) -and ($env:Path -notlike "*$d*"^)^) {) >> "%PS1%"
+(echo             $env:Path += ";$d") >> "%PS1%"
+(echo         }) >> "%PS1%"
+(echo     }) >> "%PS1%"
+(echo     # -- Verifier node dans cette session PS --) >> "%PS1%"
+(echo     try {) >> "%PS1%"
+(echo         $v = & node --version 2^>$null) >> "%PS1%"
+(echo         Write-Host "      Node.js detecte dans PS : $v") >> "%PS1%"
+(echo     } catch {) >> "%PS1%"
+(echo         Write-Host "      Note: node non detecte dans PS - sera detecte par cmd apres refresh") >> "%PS1%"
+(echo     }) >> "%PS1%"
+(echo     Write-Host 'INSTALL_OK') >> "%PS1%"
 (echo     exit 0) >> "%PS1%"
 (echo } elseif ($proc.ExitCode -eq 3010^) {) >> "%PS1%"
 (echo     # ExitCode 3010 = succes + reboot Windows requis (comportement MSI normal^)) >> "%PS1%"
@@ -132,7 +193,7 @@ set "PS1=%TEMP%\sudo_node_install.ps1"
 (echo     exit 3010) >> "%PS1%"
 (echo } else {) >> "%PS1%"
 (echo     Write-Host "ERREUR msiexec ExitCode=$($proc.ExitCode^)") >> "%PS1%"
-(echo     exit 1) >> "%PS1%"
+(echo     exit 2) >> "%PS1%"
 (echo }) >> "%PS1%"
 
 :: Lancer le script et capturer son code de sortie
@@ -141,22 +202,23 @@ set "PS_EXIT=%errorlevel%"
 del "%PS1%" >nul 2>&1
 
 :: ExitCode 3010 = MSI installe mais reboot Windows requis
-if "%PS_EXIT%"=="3010" goto :node_reboot_required
+if %PS_EXIT% equ 3010 goto :node_reboot_required
 
-:: Autre erreur
+:: Autre erreur MSI
 if %PS_EXIT% neq 0 (
     echo.
-    echo   *** ERREUR : Installation Node.js echouee (ExitCode %PS_EXIT%^) ***
+    echo   *** ERREUR : Installation Node.js echouee (code %PS_EXIT%^) ***
     echo.
     echo   Solutions manuelles :
     echo     1. Telecharger : https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi
-    echo     2. Installer normalement, relancer start.bat
+    echo     2. Installer normalement en double-cliquant
+    echo     3. Relancer start.bat
     echo.
     pause
     exit /b 1
 )
 
-:: MSI ok — rafraichir PATH depuis le registre Windows
+:: MSI ok (ExitCode 0) — rafraichir PATH depuis registre Windows
 call :refresh_node_path
 
 :: Verifier node dans PATH apres refresh
@@ -170,7 +232,7 @@ if %errorlevel% equ 0 (
 if exist "%ProgramFiles%\nodejs\node.exe" (
     set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
     node --version >nul 2>&1
-    if %errorlevel% equ 0 (
+    if !errorlevel! equ 0 (
         echo       Node.js detecte via chemin direct.
         goto :node_found
     )
@@ -178,13 +240,30 @@ if exist "%ProgramFiles%\nodejs\node.exe" (
 if exist "%ProgramW6432%\nodejs\node.exe" (
     set "PATH=%PATH%;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
     node --version >nul 2>&1
-    if %errorlevel% equ 0 (
-        echo       Node.js detecte via chemin direct (x64^).
+    if !errorlevel! equ 0 (
+        echo       Node.js detecte via chemin direct x64.
         goto :node_found
     )
 )
 
-:: MSI ok mais node toujours introuvable = reboot requis
+:: Verifier si un exe node existe dans les chemins standards
+:: avant de conclure qu un reboot est necessaire
+set "NODE_EXE_FOUND=0"
+if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_EXE_FOUND=1"
+if exist "%ProgramW6432%\nodejs\node.exe" set "NODE_EXE_FOUND=1"
+
+if "%NODE_EXE_FOUND%"=="1" (
+    echo.
+    echo   [INFO] Node.js installe mais PATH non rafraichi apres MSI.
+    echo   Tentative de relancement via chemin absolu...
+    echo.
+    :: Reessayer une derniere fois avec PATH elargi
+    call :refresh_node_path
+    node --version >nul 2>&1
+    if !errorlevel! equ 0 goto :node_found
+)
+
+:: MSI ok mais node toujours introuvable = reboot Windows requis
 goto :node_reboot_required
 
 :: ── [R] Reboot automatique avec reprise ─────────────────────
@@ -192,42 +271,48 @@ goto :node_reboot_required
 echo.
 echo   +----------------------------------------------------------+
 echo   ^|  Node.js est installe mais Windows doit redemarrer       ^|
-echo   ^|  pour finaliser l'installation (comportement normal MSI^). ^|
+echo   ^|  pour finaliser l'enregistrement du PATH.                ^|
+echo   ^|  (Comportement normal de l'installeur MSI Windows^)       ^|
 echo   ^|                                                          ^|
-echo   ^|  start.bat sera relance automatiquement au prochain      ^|
-echo   ^|  demarrage de Windows.                                   ^|
+echo   ^|  start.bat sera relance AUTOMATIQUEMENT apres reboot.    ^|
 echo   ^|                                                          ^|
 echo   ^|  Appuyez sur ENTREE pour redemarrer maintenant.          ^|
 echo   ^|  Fermez cette fenetre pour redemarrer plus tard.         ^|
 echo   +----------------------------------------------------------+
 echo.
 :: Inscrire start.bat dans HKCU\Run pour reprise automatique apres reboot
-reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" ^
-    /v "SudoStudioAutoStart" ^
-    /t REG_SZ ^
-    /d "\"%ROOT%start.bat\"" ^
-    /f >nul 2>&1
-echo   Reprise automatique enregistree dans le registre.
+:: Script PS1 externe pour eviter les problemes d echappement de guillemets
+set "RUN_PS1=%TEMP%\sudo_run_register.ps1"
+(echo $batPath = $env:SUDO_BAT_PATH) > "%RUN_PS1%"
+(echo $regPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run") >> "%RUN_PS1%"
+(echo $value = "cmd /k `"$batPath`"") >> "%RUN_PS1%"
+(echo Set-ItemProperty -Path $regPath -Name "SudoStudioAutoStart" -Value $value -Force) >> "%RUN_PS1%"
+set "SUDO_BAT_PATH=%ROOT%start.bat"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%RUN_PS1%" >nul 2>&1
+del "%RUN_PS1%" >nul 2>&1
+echo   Reprise automatique enregistree.
 echo   (HKCU\Software\Microsoft\Windows\CurrentVersion\Run^)
-echo.
 pause
-shutdown /r /t 5 /c "Sudo Studio - finalisation Node.js"
+shutdown /r /t 5 /c "Sudo Studio - finalisation Node.js (PATH)"
 exit /b 0
 
-:: ── Sous-routine : rafraichir PATH depuis registre ───────────
+:: ── Sous-routine : rafraichir PATH depuis registre Windows ───
 :refresh_node_path
-    for /f "tokens=2*" %%A in (
-        'reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul'
+    :: findstr filtre directement les lignes REG_SZ/REG_EXPAND_SZ
+    :: tokens=3* : skip type (REG_EXPAND_SZ) et capturer la valeur
+    for /f "tokens=3*" %%A in (
+        'reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul ^| findstr /i "REG_SZ REG_EXPAND_SZ"'
     ) do set "SYS_PATH=%%B"
-    for /f "tokens=2*" %%A in (
-        'reg query "HKCU\Environment" /v Path 2^>nul'
+    for /f "tokens=3*" %%A in (
+        'reg query "HKCU\Environment" /v Path 2^>nul ^| findstr /i "REG_SZ REG_EXPAND_SZ"'
     ) do set "USR_PATH=%%B"
     if defined SYS_PATH set "PATH=%SYS_PATH%"
     if defined USR_PATH set "PATH=%PATH%;%USR_PATH%"
+    :: Ajouter les chemins Node.js connus au cas ou
     set "PATH=%PATH%;%ProgramFiles%\nodejs\;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
     exit /b 0
 
-:: ── Node.js confirmé — supprimer clé Run si elle existe ─────
+:: ── Node.js confirme — supprimer cle Run si elle existe ─────
 :node_found
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "SudoStudioAutoStart" /f >nul 2>&1
 for /f "tokens=*" %%v in ('node --version 2^>^&1') do set "NODE_VER=%%v"
@@ -248,9 +333,9 @@ if exist "%ROOT%runtime.exe" (
     :: Fallback : lancer directement le script Python
     echo       runtime.exe absent - lancement via Python...
     python --version >nul 2>&1
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         python3 --version >nul 2>&1
-        if %errorlevel% neq 0 (
+        if !errorlevel! neq 0 (
             echo.
             echo   *** ERREUR : runtime.exe absent et Python introuvable ***
             echo   Placer runtime.exe a la racine du projet.
@@ -275,8 +360,8 @@ if exist "%ROOT%runtime.exe" (
     exit /b 1
 )
 
-:: Poll port 6000 — timeout 90 secondes
-echo       Attente du Runtime IA...
+:: Poll port 6000 — timeout 90 secondes (2s par iteration = 180s max)
+echo       Attente du Runtime IA (max 90 tentatives x 2s)...
 set "RUNTIME_READY=0"
 set "WAIT_COUNT=0"
 :wait_runtime
@@ -292,7 +377,7 @@ goto runtime_timeout
 if "%RUNTIME_READY%"=="1" (
     echo [2/4] Runtime IA pret sur port %RUNTIME_PORT%
 ) else (
-    echo [2/4] Runtime IA : demarrage lent (modele en cours de chargement)
+    echo [2/4] Runtime IA : demarrage lent (modele en cours de chargement^)
     echo       Le chat IA sera disponible dans quelques instants.
 )
 
@@ -307,7 +392,7 @@ if not exist "%BACKEND_DIR%\node_modules" (
     echo       Installation des dependances npm...
     cd /d "%BACKEND_DIR%"
     npm install --no-audit --no-fund --silent
-    if %errorlevel% neq 0 (
+    if !errorlevel! neq 0 (
         echo.
         echo   *** ERREUR : npm install a echoue ***
         echo   Verifiez votre connexion Internet et relancez.
@@ -331,8 +416,8 @@ if not exist "%BACKEND_DIR%\server.js" (
 :: Lancer le backend en arriere-plan avec redirection logs
 start "" /B cmd /c "cd /d "%BACKEND_DIR%" && node server.js >> "%LOGS_DIR%\backend.log" 2>&1"
 
-:: Poll port 5000 — timeout 60 secondes
-echo       Attente du Backend...
+:: Poll port 5000 — timeout 60 secondes (1s par iteration)
+echo       Attente du Backend (max 60s)...
 set "BACKEND_READY=0"
 set "WAIT_COUNT=0"
 :wait_backend
@@ -352,9 +437,9 @@ if "%BACKEND_READY%"=="1" (
     echo   *** ERREUR : Backend non demarre apres 60 secondes ***
     echo   Consultez les logs : %LOGS_DIR%\backend.log
     echo.
-    echo   Derniere ligne du log :
+    echo   Dernieres lignes du log :
     if exist "%LOGS_DIR%\backend.log" (
-        more "%LOGS_DIR%\backend.log" | find /V ""
+        powershell -NoProfile -Command "Get-Content '%LOGS_DIR%\backend.log' -Tail 5 -ErrorAction SilentlyContinue"
     )
     echo.
     echo   Appuyez sur une touche pour quitter.
@@ -372,6 +457,7 @@ echo [4/4] Ouverture de Sudo Studio dans VSCodium...
 ::   1. A la racine du projet (distribution portable)
 ::   2. Dans Program Files (installation systeme)
 ::   3. Dans AppData (installation utilisateur)
+::   4. Dans PATH (fallback where codium)
 set "VSCODIUM_EXE="
 
 if exist "%ROOT%VSCodium.exe" (
