@@ -21,92 +21,222 @@ if not exist "%LOGS_DIR%" mkdir "%LOGS_DIR%"
 
 echo.
 echo ============================================================
-echo   SUDO STUDIO v2.1 — Demarrage automatique
+echo   SUDO STUDIO v2.1 - Demarrage automatique
 echo ============================================================
 echo.
 
 :: ────────────────────────────────────────────────────────────
 ::  PHASE 1 — NODE.JS
+::
+::  Strategie en 4 couches :
+::    [0] node deja dans PATH           → OK direct
+::    [1] node.exe trouvable sur disque → injecter PATH
+::    [2] winget disponible             → installer LTS silencieux
+::    [3] fallback MSI PowerShell       → telecharger + verifier
+::                                         taille + /qn + ExitCode
+::    [R] MSI reussit mais ExitCode=3010 → reboot auto + reprise
+::        via HKCU\Run
 :: ────────────────────────────────────────────────────────────
 echo [1/4] Verification Node.js...
 
+:: ── [0] Détection dans PATH ──────────────────────────────────
 node --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo       Node.js absent — installation en cours...
-    echo.
+if %errorlevel% equ 0 goto :node_found
 
-    :: Tentative 1 : winget (disponible Windows 10 1709+ et Windows 11)
-    winget --version >nul 2>&1
-    if %errorlevel% equ 0 (
-        echo       [1/4] Tentative via winget...
-        winget install OpenJS.NodeJS.LTS ^
-            --silent ^
-            --accept-package-agreements ^
-            --accept-source-agreements
-    ) else (
-        echo       winget absent — passage au fallback PowerShell...
-    )
-
-    :: Tentative 2 : PowerShell Invoke-WebRequest (fallback universel)
+:: ── [1] node.exe présent sur disque mais pas dans PATH ───────
+if exist "%ProgramFiles%\nodejs\node.exe" (
+    set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
     node --version >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo       [1/4] Telechargement Node.js via PowerShell...
-        powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-            "$ErrorActionPreference='Stop';" ^
-            "try {" ^
-            "  $url='https://nodejs.org/dist/v20.11.0/node-v20.11.0-x64.msi';" ^
-            "  $out=[System.IO.Path]::Combine($env:TEMP,'nodejs_setup.msi');" ^
-            "  Write-Host '      Telechargement en cours (~30 MB)...';" ^
-            "  (New-Object System.Net.WebClient).DownloadFile($url,$out);" ^
-            "  Write-Host '      Installation silencieuse...';" ^
-            "  Start-Process msiexec.exe -ArgumentList '/i',$out,'/quiet','/norestart','ADDLOCAL=ALL' -Wait -NoNewWindow;" ^
-            "  Write-Host '      Node.js installe.';" ^
-            "} catch { Write-Host ('ERREUR: '+$_.Exception.Message); exit 1 }"
-        if %errorlevel% neq 0 (
-            echo.
-            echo   *** ERREUR : Impossible d'installer Node.js ***
-            echo.
-            echo   Solutions :
-            echo     1. Installer manuellement : https://nodejs.org
-            echo     2. Redemarrer ce PC puis relancer start.bat
-            echo.
-            pause
-            exit /b 1
+    if %errorlevel% equ 0 (
+        echo       Node.js trouve dans Program Files - PATH mis a jour.
+        goto :node_found
+    )
+)
+if exist "%ProgramW6432%\nodejs\node.exe" (
+    set "PATH=%PATH%;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
+    node --version >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo       Node.js trouve dans Program Files (x64) - PATH mis a jour.
+        goto :node_found
+    )
+)
+
+echo       Node.js absent - installation automatique...
+echo.
+
+:: ── [2] winget ───────────────────────────────────────────────
+winget --version >nul 2>&1
+if %errorlevel% equ 0 (
+    echo       [2] Installation via winget (Windows Package Manager)...
+    winget install OpenJS.NodeJS.LTS --silent --accept-package-agreements --accept-source-agreements
+    :: winget ecrit dans le registre mais pas dans la session courante
+    call :refresh_node_path
+    node --version >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo       Node.js installe via winget.
+        goto :node_found
+    )
+    :: Chercher directement même si PATH stale
+    if exist "%ProgramFiles%\nodejs\node.exe" (
+        set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
+        node --version >nul 2>&1
+        if %errorlevel% equ 0 (
+            echo       Node.js installe via winget (chemin direct).
+            goto :node_found
         )
     )
+    echo       winget OK mais node introuvable - fallback MSI...
+) else (
+    echo       winget absent - fallback MSI PowerShell...
+)
 
-    :: Rafraichir PATH dans la session courante sans redemarrage
-    ::   Node.js s'installe dans %ProgramFiles%\nodejs
-    ::   npm global s'installe dans %APPDATA%\npm
+:: ── [3] Fallback MSI via PowerShell ──────────────────────────
+echo       [3] Telechargement Node.js v20.18.1 MSI...
+echo.
+
+:: Générer un script .ps1 dans %TEMP% pour éviter les problèmes
+:: d'échappement de guillemets dans -Command
+set "PS1=%TEMP%\sudo_node_install.ps1"
+
+:: Ecrire le script PowerShell ligne par ligne
+(echo $ErrorActionPreference = 'Stop') > "%PS1%"
+(echo $url = 'https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi') >> "%PS1%"
+(echo $out = Join-Path $env:TEMP 'sudo_nodejs_v20.18.1.msi') >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo Write-Host '      Telechargement en cours (~35 MB)...') >> "%PS1%"
+(echo try {) >> "%PS1%"
+(echo     $wc = New-Object System.Net.WebClient) >> "%PS1%"
+(echo     $wc.DownloadFile($url, $out^)) >> "%PS1%"
+(echo } catch {) >> "%PS1%"
+(echo     Write-Host "ERREUR telechargement : $($_.Exception.Message^)") >> "%PS1%"
+(echo     exit 1) >> "%PS1%"
+(echo }) >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo # Verifier taille minimale 20 MB) >> "%PS1%"
+(echo $file = Get-Item $out) >> "%PS1%"
+(echo if ($file.Length -lt 20MB^) {) >> "%PS1%"
+(echo     Write-Host "ERREUR : fichier trop petit ($($file.Length^) octets^) - telechargement incomplet") >> "%PS1%"
+(echo     exit 1) >> "%PS1%"
+(echo }) >> "%PS1%"
+(echo Write-Host "      Fichier OK ($([math]::Round($file.Length / 1MB^)) MB^) - installation...") >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo # Installer avec /qn (silencieux total^) - capturer ExitCode reel) >> "%PS1%"
+(echo $proc = Start-Process msiexec.exe -ArgumentList '/i', $out, '/qn', '/norestart' -Wait -PassThru) >> "%PS1%"
+(echo.) >> "%PS1%"
+(echo if ($proc.ExitCode -eq 0^) {) >> "%PS1%"
+(echo     Write-Host '      Installation reussie (ExitCode=0^).') >> "%PS1%"
+(echo     exit 0) >> "%PS1%"
+(echo } elseif ($proc.ExitCode -eq 3010^) {) >> "%PS1%"
+(echo     # ExitCode 3010 = succes + reboot Windows requis (comportement MSI normal^)) >> "%PS1%"
+(echo     Write-Host 'REBOOT_REQUIRED') >> "%PS1%"
+(echo     exit 3010) >> "%PS1%"
+(echo } else {) >> "%PS1%"
+(echo     Write-Host "ERREUR msiexec ExitCode=$($proc.ExitCode^)") >> "%PS1%"
+(echo     exit 1) >> "%PS1%"
+(echo }) >> "%PS1%"
+
+:: Lancer le script et capturer son code de sortie
+powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%"
+set "PS_EXIT=%errorlevel%"
+del "%PS1%" >nul 2>&1
+
+:: ExitCode 3010 = MSI installe mais reboot Windows requis
+if "%PS_EXIT%"=="3010" goto :node_reboot_required
+
+:: Autre erreur
+if %PS_EXIT% neq 0 (
+    echo.
+    echo   *** ERREUR : Installation Node.js echouee (ExitCode %PS_EXIT%^) ***
+    echo.
+    echo   Solutions manuelles :
+    echo     1. Telecharger : https://nodejs.org/dist/v20.18.1/node-v20.18.1-x64.msi
+    echo     2. Installer normalement, relancer start.bat
+    echo.
+    pause
+    exit /b 1
+)
+
+:: MSI ok — rafraichir PATH depuis le registre Windows
+call :refresh_node_path
+
+:: Verifier node dans PATH apres refresh
+node --version >nul 2>&1
+if %errorlevel% equ 0 (
+    echo       Node.js installe et detecte.
+    goto :node_found
+)
+
+:: PATH encore stale (rare) — tester les chemins d'installation directs
+if exist "%ProgramFiles%\nodejs\node.exe" (
+    set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
+    node --version >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo       Node.js detecte via chemin direct.
+        goto :node_found
+    )
+)
+if exist "%ProgramW6432%\nodejs\node.exe" (
+    set "PATH=%PATH%;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
+    node --version >nul 2>&1
+    if %errorlevel% equ 0 (
+        echo       Node.js detecte via chemin direct (x64^).
+        goto :node_found
+    )
+)
+
+:: MSI ok mais node toujours introuvable = reboot requis
+goto :node_reboot_required
+
+:: ── [R] Reboot automatique avec reprise ─────────────────────
+:node_reboot_required
+echo.
+echo   +----------------------------------------------------------+
+echo   ^|  Node.js est installe mais Windows doit redemarrer       ^|
+echo   ^|  pour finaliser l'installation (comportement normal MSI^). ^|
+echo   ^|                                                          ^|
+echo   ^|  start.bat sera relance automatiquement au prochain      ^|
+echo   ^|  demarrage de Windows.                                   ^|
+echo   ^|                                                          ^|
+echo   ^|  Appuyez sur ENTREE pour redemarrer maintenant.          ^|
+echo   ^|  Fermez cette fenetre pour redemarrer plus tard.         ^|
+echo   +----------------------------------------------------------+
+echo.
+:: Inscrire start.bat dans HKCU\Run pour reprise automatique apres reboot
+reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" ^
+    /v "SudoStudioAutoStart" ^
+    /t REG_SZ ^
+    /d "\"%ROOT%start.bat\"" ^
+    /f >nul 2>&1
+echo   Reprise automatique enregistree dans le registre.
+echo   (HKCU\Software\Microsoft\Windows\CurrentVersion\Run^)
+echo.
+pause
+shutdown /r /t 5 /c "Sudo Studio - finalisation Node.js"
+exit /b 0
+
+:: ── Sous-routine : rafraichir PATH depuis registre ───────────
+:refresh_node_path
     for /f "tokens=2*" %%A in (
         'reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v Path 2^>nul'
     ) do set "SYS_PATH=%%B"
     for /f "tokens=2*" %%A in (
         'reg query "HKCU\Environment" /v Path 2^>nul'
     ) do set "USR_PATH=%%B"
-    set "PATH=%SYS_PATH%;%USR_PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
+    if defined SYS_PATH set "PATH=%SYS_PATH%"
+    if defined USR_PATH set "PATH=%PATH%;%USR_PATH%"
+    set "PATH=%PATH%;%ProgramFiles%\nodejs\;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
+    exit /b 0
 
-    :: Verification finale
-    node --version >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo.
-        echo   *** ERREUR : Node.js installe mais toujours introuvable ***
-        echo.
-        echo   Le PATH a ete mis a jour mais le shell doit etre reouvert.
-        echo   Fermez ce terminal, puis relancez start.bat.
-        echo.
-        pause
-        exit /b 1
-    )
-    echo       Node.js installe avec succes.
-)
-
+:: ── Node.js confirmé — supprimer clé Run si elle existe ─────
+:node_found
+reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "SudoStudioAutoStart" /f >nul 2>&1
 for /f "tokens=*" %%v in ('node --version 2^>^&1') do set "NODE_VER=%%v"
 echo [1/4] Node.js %NODE_VER% OK
 
 :: ────────────────────────────────────────────────────────────
 ::  PHASE 2 — RUNTIME IA (runtime.exe ou server.enterprise.py)
 :: ────────────────────────────────────────────────────────────
+:phase2_runtime
 echo.
 echo [2/4] Demarrage Runtime IA (port %RUNTIME_PORT%)...
 
@@ -116,7 +246,7 @@ if exist "%ROOT%runtime.exe" (
     start "" /B "%ROOT%runtime.exe"
 ) else if exist "%RUNTIME_DIR%\server.enterprise.py" (
     :: Fallback : lancer directement le script Python
-    echo       runtime.exe absent — lancement via Python...
+    echo       runtime.exe absent - lancement via Python...
     python --version >nul 2>&1
     if %errorlevel% neq 0 (
         python3 --version >nul 2>&1
@@ -189,7 +319,7 @@ if not exist "%BACKEND_DIR%\node_modules" (
     echo       Dependances npm installees.
 )
 
-:: Verifier que package.json existe bien
+:: Verifier que server.js existe bien
 if not exist "%BACKEND_DIR%\server.js" (
     echo.
     echo   *** ERREUR : %BACKEND_DIR%\server.js introuvable ***
