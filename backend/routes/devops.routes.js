@@ -334,18 +334,6 @@ router.post('/api/devops/rollback', verifyToken, requireAdmin, async (req, res) 
   }
 });
 
-module.exports = router;
-
-/**
- * POST /api/devops/generate
- * Generate DevOps configuration files (Dockerfile, CI/CD, etc.)
- * 
- * Body: {
- *   type: 'dockerfile' | 'docker-compose' | 'github-actions' | 'gitlab-ci' | 'kubernetes' | 'nginx' | 'env',
- *   stack: string (e.g., 'node', 'python', 'react'),
- *   options: object (optional)
- * }
- */
 router.post('/api/devops/generate', verifyToken, async (req, res) => {
   try {
     const { type, stack = 'node', options = {} } = req.body;
@@ -417,3 +405,6 @@ router.post('/api/devops/generate', verifyToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+
+module.exports = router;

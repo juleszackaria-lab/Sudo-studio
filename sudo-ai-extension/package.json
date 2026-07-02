@@ -16,8 +16,14 @@
     "Other"
   ],
   "keywords": [
-    "ai", "assistant", "enterprise", "devops",
-    "sdk-manager", "system-doctor", "local-ai", "automation"
+    "ai",
+    "assistant",
+    "enterprise",
+    "devops",
+    "sdk-manager",
+    "system-doctor",
+    "local-ai",
+    "automation"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -43,37 +49,37 @@
         },
         {
           "id": "sudoStudioChat",
-          "name": "💬 AI Chat",
+          "name": "\ud83d\udcac AI Chat",
           "icon": "$(comment-discussion)",
           "contextualTitle": "AI Assistant"
         },
         {
           "id": "sudoStudioRuntime",
-          "name": "🤖 AI Runtime",
+          "name": "\ud83e\udd16 AI Runtime",
           "icon": "$(server-process)",
           "contextualTitle": "Runtime & Models"
         },
         {
           "id": "sudoStudioDoctor",
-          "name": "🩺 System Doctor",
+          "name": "\ud83e\ude7a System Doctor",
           "icon": "$(pulse)",
           "contextualTitle": "System Health"
         },
         {
           "id": "sudoStudioSDK",
-          "name": "📦 SDK Manager",
+          "name": "\ud83d\udce6 SDK Manager",
           "icon": "$(package)",
           "contextualTitle": "Development SDKs"
         },
         {
           "id": "sudoStudioDevOps",
-          "name": "🚀 DevOps",
+          "name": "\ud83d\ude80 DevOps",
           "icon": "$(rocket)",
           "contextualTitle": "DevOps Automation"
         },
         {
           "id": "sudoStudioEnvironment",
-          "name": "🔒 Environment",
+          "name": "\ud83d\udd12 Environment",
           "icon": "$(server-environment)",
           "contextualTitle": "Environment Manager"
         }
@@ -283,6 +289,31 @@
         "title": "Refresh Dashboard",
         "category": "Sudo Studio",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "sudoStudio.generateDockerCompose",
+        "title": "Sudo AI: Generate Docker Compose",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.generateKubernetes",
+        "title": "Sudo AI: Generate Kubernetes Config",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.buildDocker",
+        "title": "Sudo AI: Build Docker Image",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.optimizeDocker",
+        "title": "Sudo AI: Optimize Dockerfile",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.applyTemplate",
+        "title": "Sudo AI: Apply Project Template",
+        "category": "Sudo Studio"
       }
     ],
     "menus": {

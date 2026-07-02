@@ -52,10 +52,20 @@ app.use(express.json()); // Middleware to parse JSON bodies
 // Enterprise global hardening (added, does not remove existing middleware)
 app.use(helmet());
 
+// CORS: allow localhost dev server + VS Code/VSCodium WebViews (vscode-webview://) + null origin (file://)
 const corsOptions = {
-  origin: [
-    'http://localhost:5173',
-  ],
+  origin: function(origin, callback) {
+    // Allow requests with no origin (Node.js extension process, curl, etc.)
+    if (!origin) return callback(null, true);
+    // Allow localhost dev
+    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) return callback(null, true);
+    // Allow VS Code / VSCodium WebViews
+    if (origin.startsWith('vscode-webview://') || origin.startsWith('vscode-file://')) return callback(null, true);
+    // Allow null (file:// origins, WebViews on some systems)
+    if (origin === 'null') return callback(null, true);
+    return callback(null, false);
+  },
+  credentials: true,
 };
 app.use(cors(corsOptions));
 
