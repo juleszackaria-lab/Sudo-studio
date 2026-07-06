@@ -3,12 +3,12 @@ setlocal enabledelayedexpansion
 title Sudo Studio - Demarrage
 
 :: ============================================================
-::   SUDO STUDIO v2.3 — Lanceur automatique Windows
+::   SUDO STUDIO v2.4 -- Lanceur automatique Windows
 ::   Double-cliquer pour demarrer. NE PAS MODIFIER.
-::   Version : 2.3 — Stabilisation finale production
+::   Version : 2.4 -- Stabilisation + Smart Model Detection
 :: ============================================================
 
-:: ── Variables globales ───────────────────────────────────────
+:: -- Variables globales ----------------------------------------
 set "ROOT=%~dp0"
 set "BACKEND_DIR=%ROOT%backend"
 set "RUNTIME_DIR=%ROOT%backend\runtime"
@@ -19,7 +19,7 @@ set "RUNTIME_PORT=6000"
 set "START_TIME=%TIME%"
 set "START_DATE=%DATE%"
 
-:: ── Creer le dossier logs si absent ─────────────────────────
+:: -- Creer le dossier logs si absent ---------------------------
 if not exist "%LOGS_DIR%" mkdir "%LOGS_DIR%" 2>nul
 if not exist "%LOGS_DIR%" (
     echo ERREUR FATALE : Impossible de creer le dossier logs.
@@ -28,10 +28,10 @@ if not exist "%LOGS_DIR%" (
     exit /b 1
 )
 
-:: ── Initialiser le fichier de log ────────────────────────────
+:: -- Initialiser le fichier de log -----------------------------
 (
 echo ============================================================
-echo   SUDO STUDIO v2.3 - Demarrage : %START_DATE% %START_TIME%
+echo   SUDO STUDIO v2.4 - Demarrage : %START_DATE% %START_TIME%
 echo ============================================================
 echo   Repertoire : %ROOT%
 ) > "%LOG_FILE%"
@@ -50,33 +50,30 @@ echo   Port RT   : %RUNTIME_PORT%
 echo.
 ) >> "%LOG_FILE%"
 
-:: Macro de log : call :LOG "message"
-:: Ecrit dans la console ET dans le fichier de log
-
 echo.
 echo ============================================================
-echo   SUDO STUDIO v2.3 - Demarrage automatique
+echo   SUDO STUDIO v2.4 - Demarrage automatique
 echo ============================================================
 echo.
 
 :: ============================================================
-::  PHASE 1 — NODE.JS
+::  PHASE 1 -- NODE.JS
 ::
 ::  Strategie 4 couches + reboot :
-::    [0] node dans PATH           — detection immediate
-::    [1] node.exe sur disque      — injection PATH directe
-::    [2] winget                   — installation LTS silencieuse
-::    [3] MSI PowerShell           — LTS dynamique, /qn, -PassThru
-::    [R] ExitCode 3010            — reboot + HKCU\Run auto-resume
+::    [0] node dans PATH           -- detection immediate
+::    [1] node.exe sur disque      -- injection PATH directe
+::    [2] winget                   -- installation LTS silencieuse
+::    [3] MSI PowerShell           -- LTS dynamique, /qn, -PassThru
+::    [R] ExitCode 3010            -- reboot + HKCU\Run auto-resume
 :: ============================================================
 call :LOG "[PHASE 1] Verification Node.js..."
 echo [1/4] Verification Node.js...
 
-:: ── [0] Node dans PATH ───────────────────────────────────────
+:: -- [0] Node dans PATH -----------------------------------------
 node --version >nul 2>&1
 if !errorlevel! equ 0 goto :node_found
 
-:: ── [1] node.exe sur disque (PATH stale) ─────────────────────
+:: -- [1] node.exe sur disque (PATH stale) -----------------------
 if exist "%ProgramFiles%\nodejs\node.exe" (
     set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
     node --version >nul 2>&1
@@ -98,7 +95,7 @@ call :LOG "  Node.js absent - installation automatique requise"
 echo       Node.js absent - installation automatique...
 echo.
 
-:: ── [2] winget ───────────────────────────────────────────────
+:: -- [2] winget -------------------------------------------------
 winget --version >nul 2>&1
 if !errorlevel! equ 0 (
     call :LOG "  [2] Tentative installation via winget..."
@@ -133,14 +130,14 @@ if !errorlevel! equ 0 (
     echo       winget absent - fallback MSI PowerShell...
 )
 
-:: ── [3] Fallback MSI via script PowerShell externe ───────────
+:: -- [3] Fallback MSI via script PowerShell externe -------------
 call :LOG "  [3] Preparation script MSI PowerShell..."
 echo       [3] Telechargement Node.js LTS via MSI...
 echo.
 
 set "PS1=%TEMP%\sudo_node_install.ps1"
 
-:: Ecriture du script PS1 ligne par ligne (pas de -Command, evite echappements)
+:: Ecriture du script PS1 ligne par ligne
 (echo $ErrorActionPreference = 'Stop') > "%PS1%"
 (echo $logFile = '%LOG_FILE:\=\\%') >> "%PS1%"
 (echo function Write-Log($msg^) { Add-Content -Path $logFile -Value $msg -ErrorAction SilentlyContinue }) >> "%PS1%"
@@ -254,7 +251,7 @@ if !PS_EXIT! neq 0 (
     exit /b 1
 )
 
-:: MSI OK — refresher PATH
+:: MSI OK -- refresher PATH
 call :refresh_node_path
 node --version >nul 2>&1
 if !errorlevel! equ 0 (
@@ -262,7 +259,7 @@ if !errorlevel! equ 0 (
     goto :node_found
 )
 
-:: PATH encore stale — tester chemins directs
+:: PATH encore stale -- tester chemins directs
 if exist "%ProgramFiles%\nodejs\node.exe" (
     set "PATH=%PATH%;%ProgramFiles%\nodejs\;%APPDATA%\npm\"
     node --version >nul 2>&1
@@ -284,12 +281,12 @@ if exist "%ProgramW6432%\nodejs\node.exe" (
 call :LOG "  [3] MSI OK mais node non detecte = reboot requis"
 goto :node_reboot_required
 
-:: ── [R] Reboot automatique + HKCU\Run pour reprise ──────────
+:: -- [R] Reboot automatique + HKCU\Run pour reprise ------------
 :node_reboot_required
 call :LOG "  [R] Reboot requis - enregistrement HKCU\Run"
 echo.
 echo   +----------------------------------------------------------+
-echo   ^|  Node.js installe — Windows doit redemarrer              ^|
+echo   ^|  Node.js installe -- Windows doit redemarrer             ^|
 echo   ^|  pour finaliser l'enregistrement du PATH (normal MSI^).   ^|
 echo   ^|                                                          ^|
 echo   ^|  start.bat sera relance AUTOMATIQUEMENT apres reboot.    ^|
@@ -298,13 +295,15 @@ echo   ^|  >> Appuyez sur ENTREE pour redemarrer maintenant.       ^|
 echo   ^|     Fermez cette fenetre pour redemarrer plus tard.      ^|
 echo   +----------------------------------------------------------+
 echo.
-:: Script PS1 externe pour ecrire HKCU\Run sans pb d echappement
+
+:: FIX v2.4 BUG #1 : SUDO_BAT_PATH DOIT etre defini AVANT le PS1 qui le lit
+:: (v2.3 avait set SUDO_BAT_PATH APRES l ecriture du PS1 : variable vide au reboot)
+set "SUDO_BAT_PATH=%ROOT%start.bat"
 set "RUN_PS1=%TEMP%\sudo_run_register.ps1"
 (echo $batPath = $env:SUDO_BAT_PATH) > "%RUN_PS1%"
 (echo $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run') >> "%RUN_PS1%"
 (echo $value = 'cmd /k "' + $batPath + '"') >> "%RUN_PS1%"
 (echo Set-ItemProperty -Path $regPath -Name 'SudoStudioAutoStart' -Value $value -Force) >> "%RUN_PS1%"
-set "SUDO_BAT_PATH=%ROOT%start.bat"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%RUN_PS1%" >nul 2>&1
 del "%RUN_PS1%" >nul 2>&1
 echo   Reprise automatique enregistree dans le registre.
@@ -312,7 +311,7 @@ pause
 shutdown /r /t 5 /c "Sudo Studio - finalisation Node.js"
 exit /b 0
 
-:: ── Subroutine : rafraichir PATH depuis registre Windows ─────
+:: -- Subroutine : rafraichir PATH depuis registre Windows ------
 :refresh_node_path
     :: findstr filtre la ligne REG_SZ/REG_EXPAND_SZ directement
     for /f "tokens=3*" %%A in (
@@ -326,15 +325,14 @@ exit /b 0
     set "PATH=!PATH!;%ProgramFiles%\nodejs\;%ProgramW6432%\nodejs\;%APPDATA%\npm\"
     exit /b 0
 
-:: ── Subroutine : ecrire dans le log ──────────────────────────
+:: -- Subroutine : ecrire dans le log ---------------------------
 :LOG
     echo %~1 >> "%LOG_FILE%" 2>nul
     exit /b 0
 
-:: ── Subroutine : health check avec fallback PowerShell ───────
+:: -- Subroutine : health check avec fallback PowerShell --------
 :check_port
-    :: %1 = port, %2 = path, %3 = variable de resultat (READY_VAR)
-    :: Teste d abord curl, puis fallback PowerShell si curl absent
+    :: %1 = port, %2 = path, %3 = variable de resultat
     set "%~3=0"
     curl --version >nul 2>&1
     if !errorlevel! equ 0 (
@@ -346,7 +344,7 @@ exit /b 0
     )
     exit /b 0
 
-:: ── Node.js confirme ─────────────────────────────────────────
+:: -- Node.js confirme ------------------------------------------
 :node_found
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v "SudoStudioAutoStart" /f >nul 2>&1
 for /f "tokens=*" %%v in ('node --version 2^>^&1') do set "NODE_VER=%%v"
@@ -354,28 +352,34 @@ call :LOG "[PHASE 1] Node.js %NODE_VER% - OK"
 echo [1/4] Node.js %NODE_VER% OK
 
 :: ============================================================
-::  PHASE 2 — RUNTIME IA (port 6000)
+::  PHASE 2 -- RUNTIME IA (port 6000)
 ::  Ordre obligatoire : Runtime AVANT Backend
+::  v2.4 : Smart Detection integree dans server.enterprise.py
+::  Le runtime scanne les modeles locaux avant tout telechargement
 :: ============================================================
 :phase2_runtime
 echo.
 echo [2/4] Demarrage Runtime IA (port %RUNTIME_PORT%)...
 call :LOG "[PHASE 2] Demarrage Runtime IA port %RUNTIME_PORT%"
 
+:: -- Detecter Python (utile pour les deux branches) -----------
+set "PYTHON_CMD="
+python --version >nul 2>&1
+if !errorlevel! equ 0 set "PYTHON_CMD=python"
+if not defined PYTHON_CMD (
+    python3 --version >nul 2>&1
+    if !errorlevel! equ 0 set "PYTHON_CMD=python3"
+)
+
+:: -- Lancer le bon runtime -------------------------------------
 if exist "%ROOT%runtime.exe" (
-    call :LOG "  Lancement runtime.exe"
+    call :LOG "  Lancement runtime.exe (smart detection integree)"
     echo       Lancement runtime.exe...
-    start "SudoRuntime" /B "%ROOT%runtime.exe" >> "%LOGS_DIR%\runtime.log" 2>&1
+    :: FIX v2.4 BUG #4 : redirection via wrapper cmd pour capturer les logs
+    start "SudoRuntime" /B cmd /c ^""%ROOT%runtime.exe" >> "%LOGS_DIR%\runtime.log" 2^>&1^"
 ) else if exist "%RUNTIME_DIR%\server.enterprise.py" (
     call :LOG "  runtime.exe absent - lancement Python"
     echo       runtime.exe absent - lancement via Python...
-    set "PYTHON_CMD="
-    python --version >nul 2>&1
-    if !errorlevel! equ 0 set "PYTHON_CMD=python"
-    if not defined PYTHON_CMD (
-        python3 --version >nul 2>&1
-        if !errorlevel! equ 0 set "PYTHON_CMD=python3"
-    )
     if not defined PYTHON_CMD (
         call :LOG "  ERREUR : Python introuvable"
         echo.
@@ -386,7 +390,11 @@ if exist "%ROOT%runtime.exe" (
         pause
         exit /b 1
     )
-    start "SudoRuntime" /B cmd /c "cd /d "%RUNTIME_DIR%" && !PYTHON_CMD! server.enterprise.py --port %RUNTIME_PORT% >> "%LOGS_DIR%\runtime.log" 2>&1"
+    :: FIX v2.4 BUG #2 : variable intermediaire pour eviter guillemets imbriques
+    :: quand RUNTIME_DIR contient des espaces (ex: C:\Users\Jean Michel\...)
+    set "RT_CMD=!PYTHON_CMD! server.enterprise.py --port %RUNTIME_PORT%"
+    set "RT_LOG=%LOGS_DIR%\runtime.log"
+    start "SudoRuntime" /B cmd /c "cd /d "%RUNTIME_DIR%" && !RT_CMD! >> "!RT_LOG!" 2>&1"
 ) else (
     call :LOG "  ERREUR : runtime.exe et server.enterprise.py introuvables"
     echo.
@@ -399,7 +407,19 @@ if exist "%ROOT%runtime.exe" (
     exit /b 1
 )
 
-:: Poll port 6000 — timeout 180 secondes (2s * 90)
+:: -- Affichage etat modeles (informatif, non bloquant) ---------
+call :LOG "  [MODELES] Smart detection activee dans server.enterprise.py"
+echo       Searching for existing AI models...
+set "MODELS_STATE=%USERPROFILE%\.sudo_studio\models\model_state.json"
+if exist "!MODELS_STATE!" (
+    call :LOG "  [MODELES] State file present - modele precedemment valide"
+    echo       Existing model found. Model verified. Using local model.
+) else (
+    call :LOG "  [MODELES] Pas de state file - premier lancement"
+    echo       No local model state. Runtime will scan and download if needed.
+)
+
+:: -- Poll port 6000 -- timeout 180 secondes (2s * 90) ----------
 echo       Attente du Runtime IA (max 180s)...
 set "RUNTIME_READY=0"
 set "WAIT_COUNT=0"
@@ -419,14 +439,13 @@ if "!RUNTIME_READY!"=="1" (
     call :LOG "[PHASE 2] Runtime IA pret - port %RUNTIME_PORT% OK"
     echo [2/4] Runtime IA pret sur port %RUNTIME_PORT%
 ) else (
-    call :LOG "[PHASE 2] Runtime IA : timeout 180s - demarrage lent (modele IA en chargement)"
+    call :LOG "[PHASE 2] Runtime IA : timeout 180s - demarrage lent"
     echo [2/4] Runtime IA : demarrage lent (modele IA en cours de chargement^)
     echo       Le chat IA sera disponible dans quelques instants.
 )
 
 :: ============================================================
-::  PHASE 3 — BACKEND NODE.JS (port 5000)
-::  Demarre apres runtime
+::  PHASE 3 -- BACKEND NODE.JS (port 5000)
 :: ============================================================
 echo.
 echo [3/4] Demarrage Backend Node.js (port %BACKEND_PORT%)...
@@ -465,11 +484,13 @@ if not exist "%BACKEND_DIR%\node_modules" (
     echo       Dependances npm installees.
 )
 
-:: Lancer le backend
-start "SudoBackend" /B cmd /c "cd /d "%BACKEND_DIR%" && node server.js >> "%LOGS_DIR%\backend.log" 2>&1"
+:: FIX v2.4 BUG #3 : variable intermediaire pour eviter guillemets imbriques
+:: quand BACKEND_DIR contient des espaces
+set "BK_LOG=%LOGS_DIR%\backend.log"
+start "SudoBackend" /B cmd /c "cd /d "%BACKEND_DIR%" && node server.js >> "!BK_LOG!" 2>&1"
 call :LOG "  Backend lance en arriere-plan"
 
-:: Poll port 5000 — timeout 60 secondes
+:: Poll port 5000 -- timeout 60 secondes
 echo       Attente du Backend (max 60s)...
 set "BACKEND_READY=0"
 set "WAIT_COUNT=0"
@@ -510,8 +531,7 @@ if "!BACKEND_READY!"=="1" (
 )
 
 :: ============================================================
-::  PHASE 4 — VSCODIUM + EXTENSION SUDO AI
-::  Ouvre VSCodium en dernier, avec l'extension chargee
+::  PHASE 4 -- VSCODIUM + EXTENSION SUDO AI
 :: ============================================================
 echo.
 echo [4/4] Ouverture de Sudo Studio dans VSCodium...
@@ -519,7 +539,7 @@ call :LOG "[PHASE 4] Recherche VSCodium"
 
 set "VSCODIUM_EXE="
 
-:: Priorite 1 : portable dans le dossier du projet (vscodium/)
+:: Priorite 1 : portable dans le dossier du projet
 if exist "%ROOT%vscodium\VSCodium.exe" set "VSCODIUM_EXE=%ROOT%vscodium\VSCodium.exe"
 if not defined VSCODIUM_EXE if exist "%ROOT%VSCodium.exe" set "VSCODIUM_EXE=%ROOT%VSCodium.exe"
 :: Priorite 2 : installation systeme
@@ -560,7 +580,7 @@ if not defined VSCODIUM_EXE (
 :: ============================================================
 ::  RESUME FINAL
 :: ============================================================
-call :LOG "[OK] Sudo Studio demarre avec succes - %TIME%"
+call :LOG "[OK] Sudo Studio v2.4 demarre avec succes - %TIME%"
 echo.
 echo ============================================================
 echo   SUDO STUDIO DEMARRE
