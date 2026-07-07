@@ -69,9 +69,9 @@ async function activate(ctx) {
         // Auto-start runtime model download check
         setTimeout(() => autoEnsureModelDownload(), 3000);
 
-        // Show welcome message
+        // Show welcome message — confirmation that Sudo AI is loaded and connected
         vscode.window.showInformationMessage(
-            '🚀 Sudo Studio activé ! Cliquez sur le panneau Runtime pour gérer l\'IA.',
+            '✅ Sudo AI prêt — Backend et Runtime connectés',
             'Ouvrir Chat', 'Ouvrir Runtime'
         ).then(selection => {
             if (selection === 'Ouvrir Chat') openChat();

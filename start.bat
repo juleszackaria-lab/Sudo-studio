@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 title Sudo Studio - Demarrage
 
 :: ============================================================
-::   SUDO STUDIO v2.4 -- Lanceur automatique Windows
+::   SUDO STUDIO v2.5 -- Lanceur automatique Windows
 ::   Double-cliquer pour demarrer. NE PAS MODIFIER.
 ::   Version : 2.4 -- Stabilisation + Smart Model Detection
 :: ============================================================
@@ -31,7 +31,7 @@ if not exist "%LOGS_DIR%" (
 :: -- Initialiser le fichier de log -----------------------------
 (
 echo ============================================================
-echo   SUDO STUDIO v2.4 - Demarrage : %START_DATE% %START_TIME%
+echo   SUDO STUDIO v2.5 - Demarrage : %START_DATE% %START_TIME%
 echo ============================================================
 echo   Repertoire : %ROOT%
 ) > "%LOG_FILE%"
@@ -52,7 +52,7 @@ echo.
 
 echo.
 echo ============================================================
-echo   SUDO STUDIO v2.4 - Demarrage automatique
+echo   SUDO STUDIO v2.5 - Demarrage automatique
 echo ============================================================
 echo.
 
@@ -572,7 +572,12 @@ if not defined VSCODIUM_EXE (
     echo   Services backend et runtime ACTIFS. Ouvrez VSCodium manuellement.
 ) else (
     call :LOG "[PHASE 4] VSCodium trouve : !VSCODIUM_EXE!"
-    start "SudoStudio" "" "!VSCODIUM_EXE!" --extensionDevelopmentPath="%ROOT%sudo-ai-extension"
+    set "VSCO_EXT_DIR=!ROOT!data\extensions"
+    set "VSCO_USER_DIR=!ROOT!data\user-data"
+    set "VSCO_EXT_SRC=!ROOT!sudo-ai-extension"
+    call :LOG "[PHASE 4] Extensions dir : !VSCO_EXT_DIR!"
+    call :LOG "[PHASE 4] User-data dir  : !VSCO_USER_DIR!"
+    start "SudoStudio" "!VSCODIUM_EXE!" --extensions-dir "!VSCO_EXT_DIR!" --user-data-dir "!VSCO_USER_DIR!" --extensionDevelopmentPath "!VSCO_EXT_SRC!"
     echo [4/4] VSCodium ouvert : !VSCODIUM_EXE!
     call :LOG "[PHASE 4] VSCodium lance avec extension"
 )
@@ -580,7 +585,7 @@ if not defined VSCODIUM_EXE (
 :: ============================================================
 ::  RESUME FINAL
 :: ============================================================
-call :LOG "[OK] Sudo Studio v2.4 demarre avec succes - %TIME%"
+call :LOG "[OK] Sudo Studio v2.5 demarre avec succes - %TIME%"
 echo.
 echo ============================================================
 echo   SUDO STUDIO DEMARRE
