@@ -285,6 +285,12 @@
         "icon": "$(package)"
       },
       {
+        "command": "sudoStudio.openEnvironmentPanel",
+        "title": "Open Reproductible Environments Panel",
+        "category": "Sudo Studio",
+        "icon": "$(sync)"
+      },
+      {
         "command": "sudoStudio.refreshDashboard",
         "title": "Refresh Dashboard",
         "category": "Sudo Studio",

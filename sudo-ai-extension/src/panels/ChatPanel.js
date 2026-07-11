@@ -95,6 +95,7 @@ class ChatPanel {
             case 'openDevOps':    vscode.commands.executeCommand('sudoStudio.openDevOpsPanel'); break;
             case 'openSDK':       vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
             case 'openRuntime':   vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
+            case 'openEnvironment': vscode.commands.executeCommand('sudoStudio.openEnvironmentPanel'); break;
         }
     }
 
@@ -117,6 +118,8 @@ class ChatPanel {
             return 'openSDK';
         if (/runtime|modèle|model.*status|status.*model|télécharge.*model|download.*model/.test(t))
             return 'openRuntime';
+        if (/environnement.*reproductible|reproduc|snapshot.*env|exporte.*env|import.*profil|synchronis.*env|ça marche chez moi|marche.pas.chez|sync.*équipe|team.*sync/.test(t))
+            return 'openEnvironment';
         return null;
     }
 
@@ -173,7 +176,8 @@ class ChatPanel {
             genCICD:        '⚙️ **Génération CI/CD...**\n\nJ\'ouvre le panneau DevOps.',
             genKubernetes:  '☸️ **Génération Kubernetes...**\n\nJ\'ouvre le panneau DevOps.',
             openSDK:        '📦 **SDK Manager...**\n\nJ\'ouvre le gestionnaire de SDKs.',
-            openRuntime:    '🤖 **Runtime Manager...**\n\nJ\'ouvre le panneau de gestion du runtime IA.'
+            openRuntime:    '🤖 **Runtime Manager...**\n\nJ\'ouvre le panneau de gestion du runtime IA.',
+            openEnvironment: '🔄 **Environnements Reproductibles...**\n\nJ\'ouvre le panneau de synchronisation d\'environnement. Scannez, exportez et comparez vos environnements développeur.'
         };
 
         const reply = replies[intent] || '✅ Action lancée.';
@@ -191,6 +195,7 @@ class ChatPanel {
                 case 'genKubernetes':  vscode.commands.executeCommand('sudoStudio.openDevOpsPanel'); break;
                 case 'openSDK':        vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
                 case 'openRuntime':    vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
+                case 'openEnvironment': vscode.commands.executeCommand('sudoStudio.openEnvironmentPanel'); break;
             }
         }, 500);
     }
@@ -495,6 +500,7 @@ body {
             <button class="qb" onclick="vscPost({type:'openRuntime'})">🤖 Runtime & Modèles</button>
             <button class="qb" onclick="vscPost({type:'openSDK'})">📦 SDK Manager</button>
             <button class="qb" onclick="vscPost({type:'openDevOps'})">🚀 DevOps Panel</button>
+            <button class="qb" onclick="vscPost({type:'openEnvironment'})">🔄 Env Reproductible</button>
         </div>
     </div>
 </div>

@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { exec } = require('child_process');
 const { promisify } = require('util');
+const fs = require('fs');
+const path = require('path');
 const logger = require('../utils/logger');
 const { verifyToken } = require('../middleware/auth.middleware');
 const axios = require('axios');
@@ -10,381 +12,292 @@ const execPromise = promisify(exec);
 
 /**
  * PHASE 2 - GESTION AUTOMATIQUE DES MODÈLES IA
- * Module pour installer/supprimer/lister les modèles IA locaux
+ * Module pour lister/gérer les modèles IA locaux HuggingFace.
+ * NOTE: Le runtime Python (port 6000) utilise HuggingFace transformers,
+ * PAS Ollama. Ce module reflète la réalité du runtime.
  */
 
-// Liste des modèles disponibles avec leurs métadonnées
+// Modèles HuggingFace supportés par le runtime
 const AVAILABLE_MODELS = {
-  // Ollama models
-  'llama3': {
-    name: 'llama3',
-    displayName: 'Llama 3',
-    type: 'ollama',
-    size: '4.7 GB',
-    description: 'General purpose model, great for chat and questions',
-    command: 'ollama pull llama3:latest',
-    recommended: true
+  'TinyLlama/TinyLlama-1.1B-Chat-v1.0': {
+    id: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0',
+    name: 'TinyLlama',
+    displayName: 'TinyLlama 1.1B Chat',
+    type: 'huggingface',
+    size: '~600 MB',
+    description: 'Rapide, léger, CPU compatible. Recommandé pour démarrer.',
+    recommended: true,
+    minRam: '4GB'
   },
-  'llama3.1': {
-    name: 'llama3.1',
-    displayName: 'Llama 3.1',
-    type: 'ollama',
-    size: '4.7 GB',
-    description: 'Enhanced version with better reasoning',
-    command: 'ollama pull llama3.1:latest',
-    recommended: true
-  },
-  'llama3.2': {
-    name: 'llama3.2',
-    displayName: 'Llama 3.2',
-    type: 'ollama',
-    size: '2.0 GB',
-    description: 'Latest lightweight version',
-    command: 'ollama pull llama3.2:latest',
-    recommended: true
-  },
-  'mistral': {
-    name: 'mistral',
-    displayName: 'Mistral',
-    type: 'ollama',
-    size: '4.1 GB',
-    description: 'Fast and efficient model for general tasks',
-    command: 'ollama pull mistral:latest',
-    recommended: true
-  },
-  'mixtral': {
-    name: 'mixtral',
-    displayName: 'Mixtral 8x7B',
-    type: 'ollama',
-    size: '26 GB',
-    description: 'Powerful mixture-of-experts model',
-    command: 'ollama pull mixtral:latest',
-    recommended: false
-  },
-  'gemma4': {
-    name: 'gemma4',
-    displayName: 'Gemma 4',
-    type: 'ollama',
-    size: '5.0 GB',
-    description: 'Google\'s open model, balanced performance',
-    command: 'ollama pull gemma:latest',
-    recommended: true
-  },
-  'codellama': {
-    name: 'codellama',
-    displayName: 'Code Llama',
-    type: 'ollama',
-    size: '3.8 GB',
-    description: 'Specialized for code generation',
-    command: 'ollama pull codellama:latest',
-    recommended: true
-  },
-  'qwen-coder': {
-    name: 'qwen-coder',
-    displayName: 'Qwen Coder',
-    type: 'ollama',
-    size: '4.2 GB',
-    description: 'Excellent for code analysis',
-    command: 'ollama pull qwen:latest',
-    recommended: true
-  },
-  'qwen2.5-coder': {
+  'Qwen/Qwen2.5-Coder-1.5B-Instruct': {
+    id: 'Qwen/Qwen2.5-Coder-1.5B-Instruct',
     name: 'qwen2.5-coder',
-    displayName: 'Qwen 2.5 Coder',
-    type: 'ollama',
-    size: '4.7 GB',
-    description: 'Latest Qwen model optimized for coding',
-    command: 'ollama pull qwen2.5-coder:latest',
-    recommended: true
+    displayName: 'Qwen 2.5 Coder 1.5B',
+    type: 'huggingface',
+    size: '~1.5 GB',
+    description: 'Optimisé pour le code. Excellent rapport qualité/taille.',
+    recommended: true,
+    minRam: '6GB'
   },
-  'deepseek-coder': {
+  'microsoft/phi-2': {
+    id: 'microsoft/phi-2',
+    name: 'phi-2',
+    displayName: 'Phi-2 2.7B',
+    type: 'huggingface',
+    size: '~2.7 GB',
+    description: 'Modèle Microsoft très performant pour sa taille.',
+    recommended: true,
+    minRam: '8GB'
+  },
+  'deepseek-ai/deepseek-coder-1.3b-instruct': {
+    id: 'deepseek-ai/deepseek-coder-1.3b-instruct',
     name: 'deepseek-coder',
-    displayName: 'DeepSeek Coder',
-    type: 'ollama',
-    size: '3.8 GB',
-    description: 'Advanced code understanding',
-    command: 'ollama pull deepseek-coder:latest',
-    recommended: true
+    displayName: 'DeepSeek Coder 1.3B',
+    type: 'huggingface',
+    size: '~1.3 GB',
+    description: 'Spécialisé code, DeepSeek AI. Rapide et précis.',
+    recommended: true,
+    minRam: '6GB'
   },
-  'deepseek-coder-v2': {
-    name: 'deepseek-coder-v2',
-    displayName: 'DeepSeek Coder V2',
-    type: 'ollama',
-    size: '16 GB',
-    description: 'Most advanced DeepSeek model for coding',
-    command: 'ollama pull deepseek-coder-v2:latest',
-    recommended: false
+  'Qwen/Qwen2-1.5B-Instruct': {
+    id: 'Qwen/Qwen2-1.5B-Instruct',
+    name: 'qwen2-chat',
+    displayName: 'Qwen2 Chat 1.5B',
+    type: 'huggingface',
+    size: '~1.5 GB',
+    description: 'Modèle de conversation Qwen2, compact et efficace.',
+    recommended: false,
+    minRam: '6GB'
+  },
+  'meta-llama/Llama-3.2-1B-Instruct': {
+    id: 'meta-llama/Llama-3.2-1B-Instruct',
+    name: 'Llama-3.2-1B',
+    displayName: 'Llama 3.2 1B',
+    type: 'huggingface',
+    size: '~1.2 GB',
+    description: 'Meta Llama 3.2, compact et efficace.',
+    recommended: false,
+    minRam: '6GB'
   }
 };
 
 /**
+ * Scan HuggingFace cache to find installed models.
+ * HF cache is at ~/.cache/huggingface/hub/
+ */
+function scanHFCache() {
+  const installed = [];
+  try {
+    const hfHome = process.env.HF_HOME
+      || process.env.HUGGINGFACE_HUB_CACHE
+      || path.join(require('os').homedir(), '.cache', 'huggingface', 'hub');
+
+    if (!fs.existsSync(hfHome)) return installed;
+
+    const entries = fs.readdirSync(hfHome);
+    for (const entry of entries) {
+      // HF cache entries look like "models--TinyLlama--TinyLlama-1.1B-Chat-v1.0"
+      if (!entry.startsWith('models--')) continue;
+      const modelId = entry.replace('models--', '').replace(/--/g, '/');
+      const modelPath = path.join(hfHome, entry);
+      // Check if snapshots directory exists (model is downloaded)
+      const snapshotsPath = path.join(modelPath, 'snapshots');
+      if (fs.existsSync(snapshotsPath)) {
+        const snapshots = fs.readdirSync(snapshotsPath);
+        if (snapshots.length > 0) {
+          installed.push(modelId);
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn('HF cache scan failed', { error: err.message });
+  }
+  return installed;
+}
+
+/**
+ * Check AI runtime status
+ */
+async function checkRuntimeStatus() {
+  try {
+    const r = await axios.get('http://localhost:6000/health', { timeout: 2000 });
+    return { running: true, model: r.data.model || {} };
+  } catch (_) {
+    return { running: false, model: {} };
+  }
+}
+
+/**
  * GET /api/models/list
- * Liste tous les modèles installés et disponibles
+ * Liste les modèles HuggingFace installés et disponibles
  */
 router.get('/api/models/list', verifyToken, async (req, res) => {
   try {
-    logger.info('Listing models', { user: req.user.username });
+    logger.info('Listing HuggingFace models', { user: req.user.username });
 
-    // Vérifier les modèles installés via Ollama
-    let installedModels = [];
-    
-    try {
-      const { stdout } = await execPromise('ollama list');
-      
-      // Parser la sortie d'ollama list
-      const lines = stdout.split('\n').slice(1); // Skip header
-      installedModels = lines
-        .filter(line => line.trim())
-        .map(line => {
-          const parts = line.split(/\s+/);
-          const modelName = parts[0].split(':')[0]; // Remove :latest tag
-          return modelName;
-        });
-      
-    } catch (error) {
-      logger.warn('Ollama not available or no models installed', { error: error.message });
-    }
+    const installedIds = scanHFCache();
+    const runtimeStatus = await checkRuntimeStatus();
 
-    // Construire la liste complète
     const availableList = Object.values(AVAILABLE_MODELS).map(model => ({
       ...model,
-      installed: installedModels.includes(model.name)
+      installed: installedIds.some(id =>
+        id.toLowerCase() === model.id.toLowerCase() ||
+        id.toLowerCase().replace(/\//g, '--') === model.id.toLowerCase().replace(/\//g, '--')
+      ),
+      active: runtimeStatus.model?.name === model.name || runtimeStatus.model?.name === model.id
     }));
 
     const response = {
-      installed: installedModels,
+      installed: installedIds,
       available: availableList,
       total_available: availableList.length,
-      total_installed: installedModels.length,
-      ollama_running: installedModels.length > 0 || (await checkOllamaRunning())
+      total_installed: installedIds.length,
+      runtime_running: runtimeStatus.running,
+      current_model: runtimeStatus.model?.name || null,
+      hf_cache_path: path.join(require('os').homedir(), '.cache', 'huggingface', 'hub')
     };
 
     res.json(response);
 
   } catch (error) {
-    logger.error('Failed to list models', { error: error.message, stack: error.stack });
-    res.status(500).json({ 
+    logger.error('Failed to list models', { error: error.message });
+    res.status(500).json({
       error: 'Failed to list models',
-      message: error.message,
-      suggestion: 'Make sure Ollama is installed: https://ollama.ai/download'
-    });
-  }
-});
-
-/**
- * POST /api/models/install
- * Installe un modèle IA
- * 
- * Body: {
- *   model: string (ex: "llama3", "codellama")
- * }
- */
-router.post('/api/models/install', verifyToken, async (req, res) => {
-  try {
-    const { model } = req.body;
-
-    if (!model) {
-      return res.status(400).json({ 
-        error: 'model is required',
-        example: { model: 'llama3' }
-      });
-    }
-
-    // Vérifier que le modèle existe dans la liste
-    const modelInfo = AVAILABLE_MODELS[model];
-    
-    if (!modelInfo) {
-      return res.status(404).json({ 
-        error: `Model '${model}' not found`,
-        available_models: Object.keys(AVAILABLE_MODELS),
-        suggestion: 'Check the model name and try again'
-      });
-    }
-
-    logger.info('Installing model', { 
-      user: req.user.username, 
-      model,
-      size: modelInfo.size
-    });
-
-    // Vérifier qu'Ollama est disponible
-    const ollamaRunning = await checkOllamaRunning();
-    
-    if (!ollamaRunning) {
-      return res.status(503).json({
-        error: 'Ollama service is not running',
-        message: 'Please start Ollama first',
-        help: {
-          install: 'Download from https://ollama.ai/download',
-          start: 'Run: ollama serve'
-        }
-      });
-    }
-
-    // Retourner immédiatement avec le statut "installing"
-    res.json({
-      status: 'installing',
-      model: model,
-      displayName: modelInfo.displayName,
-      size: modelInfo.size,
-      command: modelInfo.command,
-      estimated_time: '2-10 minutes',
-      message: `Installing ${modelInfo.displayName}... This may take a few minutes.`,
-      progress_endpoint: `/api/models/install/status/${model}`
-    });
-
-    // Installer en arrière-plan
-    installModelBackground(model, modelInfo, req.user.username);
-
-  } catch (error) {
-    logger.error('Model installation failed', { error: error.message, stack: error.stack });
-    res.status(500).json({ 
-      error: 'Installation failed',
       message: error.message
     });
   }
 });
 
 /**
- * Installation en arrière-plan
+ * POST /api/models/download
+ * Lance le téléchargement d'un modèle via le runtime Python
+ *
+ * Body: { model: string }  -- HuggingFace model ID
  */
-async function installModelBackground(model, modelInfo, username) {
-  try {
-    logger.info('Starting background installation', { model, username });
-    
-    // Exécuter la commande d'installation
-    const { stdout, stderr } = await execPromise(modelInfo.command, {
-      timeout: 600000 // 10 minutes timeout
-    });
-    
-    logger.info('Model installed successfully', { 
-      model,
-      output: stdout,
-      username
-    });
-    
-    // TODO: Émettre un événement Socket.io pour notifier l'utilisateur
-    
-  } catch (error) {
-    logger.error('Background installation failed', { 
-      model,
-      error: error.message,
-      username
-    });
-  }
-}
-
-/**
- * DELETE /api/models/remove
- * Supprime un modèle installé
- * 
- * Body: {
- *   model: string
- * }
- */
-router.delete('/api/models/remove', verifyToken, async (req, res) => {
+router.post('/api/models/download', verifyToken, async (req, res) => {
   try {
     const { model } = req.body;
 
     if (!model) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'model is required',
-        example: { model: 'llama3' }
+        example: { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }
       });
     }
 
-    logger.info('Removing model', { 
+    const modelInfo = Object.values(AVAILABLE_MODELS).find(
+      m => m.id === model || m.name === model
+    );
+
+    logger.info('Starting model download via runtime', {
       user: req.user.username,
       model
     });
 
-    // Vérifier qu'Ollama est disponible
-    const ollamaRunning = await checkOllamaRunning();
-    
-    if (!ollamaRunning) {
-      return res.status(503).json({
-        error: 'Ollama service is not running',
-        message: 'Cannot remove model without Ollama'
-      });
-    }
-
-    // Supprimer le modèle
+    // Delegate to Python runtime
     try {
-      const { stdout } = await execPromise(`ollama rm ${model}`);
-      
-      logger.info('Model removed successfully', { 
-        model,
-        output: stdout,
-        user: req.user.username
-      });
+      const r = await axios.post('http://localhost:6000/download',
+        { model },
+        { timeout: 10000 }
+      );
 
       res.json({
-        status: 'success',
-        message: `Model '${model}' has been removed`,
-        model
+        status: 'downloading',
+        model,
+        displayName: modelInfo?.displayName || model,
+        size: modelInfo?.size || 'unknown',
+        message: `Downloading ${modelInfo?.displayName || model}...`,
+        runtime_response: r.data
       });
-
-    } catch (error) {
-      if (error.message.includes('not found')) {
-        return res.status(404).json({
-          error: `Model '${model}' is not installed`,
-          suggestion: 'Use GET /api/models/list to see installed models'
+    } catch (runtimeErr) {
+      if (runtimeErr.code === 'ECONNREFUSED') {
+        return res.status(503).json({
+          error: 'AI Runtime not running',
+          message: 'Start runtime.exe first (port 6000)',
+          fix: 'Launch runtime.exe from start.bat'
         });
       }
-      throw error;
+      throw runtimeErr;
     }
 
   } catch (error) {
-    logger.error('Model removal failed', { error: error.message, stack: error.stack });
-    res.status(500).json({ 
-      error: 'Removal failed',
+    logger.error('Model download failed', { error: error.message });
+    res.status(500).json({
+      error: 'Download failed',
       message: error.message
     });
   }
 });
 
 /**
- * GET /api/models/install/status/:model
- * Vérifie le statut d'installation d'un modèle
+ * POST /api/models/switch
+ * Change le modèle actif via le runtime Python
+ *
+ * Body: { model: string }
  */
-router.get('/api/models/install/status/:model', verifyToken, async (req, res) => {
+router.post('/api/models/switch', verifyToken, async (req, res) => {
   try {
-    const { model } = req.params;
+    const { model } = req.body;
 
-    // Vérifier si le modèle est installé
-    const { stdout } = await execPromise('ollama list');
-    const installedModels = stdout.split('\n').slice(1).map(line => {
-      const parts = line.split(/\s+/);
-      return parts[0]?.split(':')[0];
-    }).filter(Boolean);
+    if (!model) {
+      return res.status(400).json({ error: 'model is required' });
+    }
 
-    const isInstalled = installedModels.includes(model);
+    logger.info('Switching model via runtime', {
+      user: req.user.username,
+      model
+    });
 
+    try {
+      const r = await axios.post('http://localhost:6000/reload',
+        { model },
+        { timeout: 10000 }
+      );
+      res.json({
+        status: 'switching',
+        model,
+        message: `Switching to ${model}...`,
+        runtime_response: r.data
+      });
+    } catch (runtimeErr) {
+      if (runtimeErr.code === 'ECONNREFUSED') {
+        return res.status(503).json({
+          error: 'AI Runtime not running',
+          message: 'Start runtime.exe first (port 6000)'
+        });
+      }
+      throw runtimeErr;
+    }
+
+  } catch (error) {
+    logger.error('Model switch failed', { error: error.message });
+    res.status(500).json({ error: 'Switch failed', message: error.message });
+  }
+});
+
+/**
+ * GET /api/models/status
+ * Retourne l'état actuel du modèle chargé dans le runtime
+ */
+router.get('/api/models/status', verifyToken, async (req, res) => {
+  try {
+    const runtimeStatus = await checkRuntimeStatus();
     res.json({
-      model,
-      status: isInstalled ? 'installed' : 'installing',
-      installed: isInstalled
+      runtime_running: runtimeStatus.running,
+      model: runtimeStatus.model,
+      timestamp: new Date().toISOString()
     });
-
   } catch (error) {
-    logger.error('Failed to check installation status', { error: error.message });
-    res.status(500).json({ 
-      error: 'Failed to check status',
-      message: error.message
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
 /**
- * Vérifie si Ollama est en cours d'exécution
+ * POST /api/models/install  (kept for backward compat — delegates to /download)
  */
-async function checkOllamaRunning() {
-  try {
-    await axios.get('http://localhost:11434/api/tags', { timeout: 2000 });
-    return true;
-  } catch (error) {
-    return false;
-  }
-}
+router.post('/api/models/install', verifyToken, async (req, res) => {
+  req.url = '/api/models/download';
+  return router.handle(req, res, () => {});
+});
 
 module.exports = router;

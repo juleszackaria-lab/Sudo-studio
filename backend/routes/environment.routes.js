@@ -1,327 +1,314 @@
 const express = require('express');
 const router = express.Router();
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const logger = require('../utils/logger');
-const { verifyToken, requireAdmin } = require('../middleware/auth.middleware');
+const { verifyToken } = require('../middleware/auth.middleware');
+
+const execPromise = promisify(exec);
 
 /**
- * PHASE 1 - ENVIRONMENT ENGINE
- * Module de réplication et configuration d'environnement
+ * FEATURE 6 - ENVIRONNEMENTS REPRODUCTIBLES
+ * Snapshot, export et synchronisation des environnements développeur.
+ * Permet l'élimination du problème "ça marche chez moi".
  */
 
 /**
- * POST /api/environment/replicate
- * Réplique un environnement de développement complet
- * 
- * Body: {
- *   projectName: string,
- *   template: 'node' | 'react' | 'vue' | 'express' | 'fastify',
- *   dependencies: string[],
- *   services: string[] // ex: ['redis', 'postgres', 'mongo']
- * }
+ * Detect tool version via exec
  */
-router.post('/api/environment/replicate', verifyToken, async (req, res) => {
+async function detectTool(cmd, name) {
   try {
-    const { projectName, template, dependencies = [], services = [] } = req.body;
-
-    if (!projectName || !template) {
-      return res.status(400).json({ 
-        error: 'projectName and template are required',
-        allowed_templates: ['node', 'react', 'vue', 'express', 'fastify', 'nextjs']
-      });
-    }
-
-    logger.info('Environment replication started', { 
-      user: req.user.username, 
-      projectName, 
-      template,
-      dependencies: dependencies.length,
-      services: services.length
-    });
-
-    // Simuler la création de l'environnement
-    const result = {
-      status: 'success',
-      projectName,
-      template,
-      steps_completed: [
-        '1. Project structure created',
-        '2. Package.json initialized',
-        `3. ${dependencies.length} dependencies installed`,
-        `4. ${services.length} services configured`,
-        '5. Environment variables set',
-        '6. Git initialized'
-      ],
-      dependencies_installed: dependencies,
-      services_configured: services,
-      next_steps: [
-        `cd ${projectName}`,
-        'npm start',
-        'Open http://localhost:3000'
-      ],
-      estimated_time: '2-5 minutes'
+    const { stdout } = await execPromise(cmd, { timeout: 5000 });
+    return {
+      name,
+      installed: true,
+      version: stdout.trim().split('\n')[0].replace(/^v/, '')
     };
-
-    // En production, ici on appellerait le vrai moteur de réplication
-    // qui exécuterait npx create-* ou des commandes Docker
-
-    res.json(result);
-
-  } catch (error) {
-    logger.error('Environment replication failed', { error: error.message, stack: error.stack });
-    res.status(500).json({ error: error.message });
+  } catch (_) {
+    return { name, installed: false, version: null };
   }
-});
+}
 
 /**
- * GET /api/environment/templates
- * Liste tous les templates disponibles
+ * Scan all development tools and return their status
  */
-router.get('/api/environment/templates', verifyToken, (req, res) => {
-  const templates = [
-    {
-      id: 'node',
-      name: 'Node.js',
-      description: 'Basic Node.js project with Express',
-      command: 'npm init -y',
-      dependencies: ['express', 'nodemon', 'dotenv']
-    },
-    {
-      id: 'react',
-      name: 'React App',
-      description: 'React application with Vite',
-      command: 'npm create vite@latest',
-      dependencies: ['react', 'react-dom', 'vite']
-    },
-    {
-      id: 'vue',
-      name: 'Vue.js App',
-      description: 'Vue 3 application with Vite',
-      command: 'npm create vue@latest',
-      dependencies: ['vue', 'vite']
-    },
-    {
-      id: 'express',
-      name: 'Express API',
-      description: 'Express REST API with middleware',
-      command: 'npx express-generator',
-      dependencies: ['express', 'cors', 'helmet', 'morgan']
-    },
-    {
-      id: 'fastify',
-      name: 'Fastify API',
-      description: 'Fast and low overhead web framework',
-      command: 'npm init fastify',
-      dependencies: ['fastify', '@fastify/cors']
-    },
-    {
-      id: 'nextjs',
-      name: 'Next.js',
-      description: 'React framework for production',
-      command: 'npx create-next-app@latest',
-      dependencies: ['next', 'react', 'react-dom']
-    }
-  ];
+async function scanEnvironment() {
+  const isWin = process.platform === 'win32';
 
-  res.json({ total: templates.length, templates });
-});
+  const toolChecks = await Promise.all([
+    detectTool('node --version',                     'Node.js'),
+    detectTool('npm --version',                      'npm'),
+    detectTool(isWin ? 'python --version 2>&1' : 'python3 --version', 'Python'),
+    detectTool(isWin ? 'pip --version' : 'pip3 --version', 'pip'),
+    detectTool('git --version',                      'Git'),
+    detectTool('docker --version',                   'Docker'),
+    detectTool('flutter --version',                  'Flutter'),
+    detectTool('java --version 2>&1',                'Java'),
+    detectTool('rustc --version',                    'Rust'),
+    detectTool('go version',                         'Go'),
+  ]);
+
+  return {
+    platform: `${os.platform()} ${os.arch()}`,
+    hostname: os.hostname(),
+    total_ram_gb: Math.round(os.totalmem() / 1024 / 1024 / 1024),
+    free_ram_gb: Math.round(os.freemem() / 1024 / 1024 / 1024),
+    cpu_cores: os.cpus().length,
+    cpu_model: os.cpus()[0]?.model || 'Unknown',
+    tools: toolChecks,
+    timestamp: new Date().toISOString()
+  };
+}
 
 /**
  * GET /api/environment/status
- * Vérifie l'état de l'environnement système
+ * Retourne l'état complet de l'environnement développeur (outils, système, versions)
  */
-router.get('/api/environment/status', verifyToken, (req, res) => {
-  const status = {
-    node: {
-      version: process.version,
-      installed: true
-    },
-    npm: {
-      installed: true, // On suppose que npm est installé avec Node
-      version: 'check with npm --version'
-    },
-    memory: {
-      free: process.memoryUsage().heapTotal - process.memoryUsage().heapUsed,
-      total: process.memoryUsage().heapTotal,
-      used: process.memoryUsage().heapUsed
-    },
-    platform: process.platform,
-    arch: process.arch,
-    cwd: process.cwd()
-  };
-
-  res.json(status);
-});
-
-/**
- * POST /api/environment/install
- * Installe des dépendances dans un projet
- * 
- * Body: {
- *   projectPath: string,
- *   dependencies: string[],
- *   dev: boolean
- * }
- */
-router.post('/api/environment/install', verifyToken, async (req, res) => {
+router.get('/api/environment/status', verifyToken, async (req, res) => {
   try {
-    const { projectPath, dependencies = [], dev = false } = req.body;
+    logger.info('Getting environment status', { user: req.user.username });
 
-    if (!projectPath || dependencies.length === 0) {
-      return res.status(400).json({ 
-        error: 'projectPath and dependencies are required' 
-      });
-    }
+    const env = await scanEnvironment();
 
-    logger.info('Installing dependencies', { 
-      user: req.user.username,
-      projectPath,
-      dependencies,
-      dev
-    });
+    // Summary stats
+    const installed = env.tools.filter(t => t.installed).length;
+    const total = env.tools.length;
+    const health_score = Math.round((installed / total) * 100);
 
-    // Simuler l'installation
-    const result = {
-      status: 'success',
-      projectPath,
-      dependencies_installed: dependencies,
-      dev_dependencies: dev,
-      command: dev 
-        ? `npm install --save-dev ${dependencies.join(' ')}`
-        : `npm install ${dependencies.join(' ')}`,
-      duration: '30-120 seconds'
-    };
-
-    // En production, ici on exécuterait:
-    // const { exec } = require('child_process');
-    // exec(result.command, { cwd: projectPath }, ...)
-
-    res.json(result);
-
-  } catch (error) {
-    logger.error('Dependencies installation failed', { error: error.message });
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * POST /api/environment/fix
- * Fix environment issues automatically.
- * Called by EnvironmentPanel via BackendService.fixEnvironment().
- *
- * Body: { issues: string[] }
- */
-router.post('/api/environment/fix', verifyToken, async (req, res) => {
-  try {
-    const { issues = [] } = req.body;
-
-    logger.info('Environment fix started', {
-      user: req.user.username,
-      issues_count: issues.length,
-      issues
-    });
-
-    const fixes = [];
-    
-    for (const issue of issues) {
-      const issueLower = issue.toLowerCase();
-      if (issueLower.includes('node') || issueLower.includes('npm')) {
-        fixes.push({ issue, action: 'Verified Node.js installation', status: 'ok', command: 'node --version' });
-      } else if (issueLower.includes('python') || issueLower.includes('pip')) {
-        fixes.push({ issue, action: 'Verified Python installation', status: 'ok', command: 'python --version' });
-      } else if (issueLower.includes('git')) {
-        fixes.push({ issue, action: 'Verified Git installation', status: 'ok', command: 'git --version' });
-      } else if (issueLower.includes('docker')) {
-        fixes.push({ issue, action: 'Docker check performed', status: 'info', command: 'docker --version' });
-      } else if (issueLower.includes('permission') || issueLower.includes('access')) {
-        fixes.push({ issue, action: 'Permission issue logged', status: 'warning', command: null });
-      } else {
-        fixes.push({ issue, action: 'Issue logged for manual review', status: 'info', command: null });
+    res.json({
+      ...env,
+      summary: {
+        tools_installed: installed,
+        tools_total: total,
+        health_score,
+        status: health_score >= 80 ? 'healthy' : health_score >= 50 ? 'partial' : 'degraded'
       }
-    }
-
-    const result = {
-      status: 'completed',
-      fixes_attempted: fixes.length,
-      fixes_successful: fixes.filter(f => f.status === 'ok').length,
-      fixes,
-      timestamp: new Date().toISOString(),
-      next_steps: fixes
-        .filter(f => f.command)
-        .map(f => f.command)
-    };
-
-    res.json(result);
+    });
 
   } catch (error) {
-    logger.error('Environment fix failed', { error: error.message });
+    logger.error('Environment status failed', { error: error.message });
     res.status(500).json({ error: error.message });
   }
 });
 
 /**
  * POST /api/environment/export
- * Export current environment configuration as a portable snapshot.
- * Called by BackendService.exportEnvironment().
- *
- * Body: { projectPath: string, format: 'json'|'env'|'dockerfile' }
+ * Exporte un snapshot complet de l'environnement (.env-profile.json)
+ * Permet de reproduire exactement l'environnement sur une autre machine.
  */
 router.post('/api/environment/export', verifyToken, async (req, res) => {
   try {
-    const { projectPath = process.cwd(), format = 'json' } = req.body;
-    const { exec } = require('child_process');
-    const os = require('os');
+    logger.info('Exporting environment snapshot', { user: req.user.username });
 
-    logger.info('Environment export started', {
-      user: req.user.username,
-      projectPath,
-      format
-    });
+    const env = await scanEnvironment();
 
-    // Gather system environment snapshot
-    const nodeVersion = await new Promise(resolve => {
-      exec('node --version', { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
-    });
-    const pythonVersion = await new Promise(resolve => {
-      const cmd = process.platform === 'win32' ? 'python --version 2>&1' : 'python3 --version';
-      exec(cmd, { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
-    });
-    const npmVersion = await new Promise(resolve => {
-      exec('npm --version', { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
-    });
-    const gitVersion = await new Promise(resolve => {
-      exec('git --version', { timeout: 3000 }, (err, stdout) => resolve(err ? 'unknown' : stdout.trim()));
-    });
+    // Scan global npm packages
+    let npmGlobals = [];
+    try {
+      const { stdout } = await execPromise('npm list -g --depth=0 --json', { timeout: 10000 });
+      const parsed = JSON.parse(stdout);
+      npmGlobals = Object.keys(parsed.dependencies || {}).map(name => ({
+        name,
+        version: parsed.dependencies[name].version
+      }));
+    } catch (_) {}
+
+    // Scan pip packages
+    let pipPackages = [];
+    try {
+      const pipCmd = process.platform === 'win32' ? 'pip list --format=json' : 'pip3 list --format=json';
+      const { stdout } = await execPromise(pipCmd, { timeout: 10000 });
+      pipPackages = JSON.parse(stdout);
+    } catch (_) {}
+
+    // Check for workspace project
+    let projectInfo = null;
+    try {
+      const pkgPath = path.join(process.cwd(), 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        projectInfo = {
+          name: pkg.name,
+          version: pkg.version,
+          dependencies: Object.keys(pkg.dependencies || {}),
+          devDependencies: Object.keys(pkg.devDependencies || {})
+        };
+      }
+    } catch (_) {}
 
     const snapshot = {
+      export_version: '1.0',
       exported_at: new Date().toISOString(),
-      project_path: projectPath,
-      format,
+      exported_by: req.user.username,
       system: {
-        platform: os.platform(),
-        arch: os.arch(),
-        node: nodeVersion,
-        npm: npmVersion,
-        python: pythonVersion,
-        git: gitVersion,
-        ram_gb: Math.round(os.totalmem() / 1024 / 1024 / 1024),
-        cpu_cores: os.cpus().length
+        platform: env.platform,
+        hostname: env.hostname,
+        total_ram_gb: env.total_ram_gb,
+        cpu_cores: env.cpu_cores
       },
-      environment_variables: {
-        NODE_ENV: process.env.NODE_ENV || 'development',
-        PATH: process.env.PATH ? '(set)' : '(not set)'
-      },
-      recommended_setup: [
-        `Node.js ${nodeVersion}`,
-        `Python ${pythonVersion}`,
-        `npm ${npmVersion}`,
-        `Git ${gitVersion}`
-      ]
+      tools: env.tools,
+      npm_globals: npmGlobals,
+      pip_packages: pipPackages.slice(0, 50), // cap at 50
+      project: projectInfo,
+      sudo_studio_version: '3.0'
     };
 
-    res.json({ success: true, snapshot });
+    // Return as downloadable JSON
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="env-profile.json"');
+    res.json(snapshot);
 
   } catch (error) {
     logger.error('Environment export failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/environment/sync
+ * Compare l'environnement local avec un profil importé et détecte les écarts.
+ * Body: { profile: object }  -- env-profile.json content
+ */
+router.post('/api/environment/sync', verifyToken, async (req, res) => {
+  try {
+    const { profile } = req.body;
+
+    if (!profile || !profile.tools) {
+      return res.status(400).json({ error: 'profile with tools array is required' });
+    }
+
+    logger.info('Syncing environment', { user: req.user.username });
+
+    const currentEnv = await scanEnvironment();
+
+    const diffs = [];
+    for (const targetTool of profile.tools) {
+      const currentTool = currentEnv.tools.find(t => t.name === targetTool.name);
+
+      if (!currentTool) {
+        diffs.push({
+          tool: targetTool.name,
+          issue: 'missing',
+          target_version: targetTool.version,
+          current_version: null,
+          severity: 'error'
+        });
+      } else if (!currentTool.installed) {
+        diffs.push({
+          tool: targetTool.name,
+          issue: 'not_installed',
+          target_version: targetTool.version,
+          current_version: null,
+          severity: 'error'
+        });
+      } else if (targetTool.installed && targetTool.version && currentTool.version) {
+        // Simple version comparison (major.minor)
+        const targetMaj = targetTool.version.split('.')[0];
+        const currentMaj = currentTool.version.split('.')[0];
+        if (targetMaj !== currentMaj) {
+          diffs.push({
+            tool: targetTool.name,
+            issue: 'version_mismatch',
+            target_version: targetTool.version,
+            current_version: currentTool.version,
+            severity: 'warning'
+          });
+        }
+      }
+    }
+
+    const synced = diffs.length === 0;
+
+    res.json({
+      synced,
+      differences: diffs,
+      current_environment: currentEnv,
+      profile_environment: profile,
+      summary: {
+        errors: diffs.filter(d => d.severity === 'error').length,
+        warnings: diffs.filter(d => d.severity === 'warning').length,
+        status: synced ? 'synchronized' : 'drift_detected'
+      }
+    });
+
+  } catch (error) {
+    logger.error('Environment sync failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/environment/snapshot
+ * Alias de /export — crée un snapshot nommé stocké côté serveur
+ * Body: { name: string }
+ */
+router.post('/api/environment/snapshot', verifyToken, async (req, res) => {
+  try {
+    const { name = `snapshot-${Date.now()}` } = req.body;
+    logger.info('Creating environment snapshot', { user: req.user.username, name });
+
+    const env = await scanEnvironment();
+    const snapshot = {
+      name,
+      created_at: new Date().toISOString(),
+      created_by: req.user.username,
+      system: {
+        platform: env.platform,
+        hostname: env.hostname,
+        total_ram_gb: env.total_ram_gb
+      },
+      tools: env.tools
+    };
+
+    res.json({
+      status: 'success',
+      snapshot_name: name,
+      snapshot,
+      message: `Environment snapshot '${name}' created successfully`
+    });
+
+  } catch (error) {
+    logger.error('Snapshot creation failed', { error: error.message });
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/environment/requirements
+ * Retourne les requirements Sudo Studio (outils minimum requis)
+ */
+router.get('/api/environment/requirements', verifyToken, async (req, res) => {
+  try {
+    const env = await scanEnvironment();
+
+    const required = ['Node.js', 'Python', 'Git'];
+    const optional = ['Docker', 'Flutter', 'Java', 'Rust', 'Go'];
+
+    const missing_required = required.filter(name => {
+      const tool = env.tools.find(t => t.name === name);
+      return !tool || !tool.installed;
+    });
+
+    const missing_optional = optional.filter(name => {
+      const tool = env.tools.find(t => t.name === name);
+      return !tool || !tool.installed;
+    });
+
+    res.json({
+      required_tools: env.tools.filter(t => required.includes(t.name)),
+      optional_tools: env.tools.filter(t => optional.includes(t.name)),
+      missing_required,
+      missing_optional,
+      ready: missing_required.length === 0,
+      message: missing_required.length === 0
+        ? '✅ All required tools are installed'
+        : `❌ Missing required tools: ${missing_required.join(', ')}`
+    });
+
+  } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });

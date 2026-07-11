@@ -27,6 +27,7 @@ const { SDKPanel }             = require('./src/panels/SDKPanel');
 const { RuntimePanel }         = require('./src/panels/RuntimePanel');
 const { DevOpsPanel }          = require('./src/panels/DevOpsPanel');
 const { ProjectAnalysisPanel } = require('./src/panels/ProjectAnalysisPanel');
+const { EnvironmentPanel }     = require('./src/panels/EnvironmentPanel');
 
 // Global instances
 let backend, state, context;
@@ -244,9 +245,10 @@ function registerCommands() {
         ['sudoStudio.analyzeProject', analyzeProject],
 
         // New Panels (v3)
-        ['sudoStudio.openRuntimePanel',   openRuntimePanel],
-        ['sudoStudio.openDevOpsPanel',    openDevOpsPanel],
-        ['sudoStudio.openAnalysisPanel',  openAnalysisPanel],
+        ['sudoStudio.openRuntimePanel',      openRuntimePanel],
+        ['sudoStudio.openDevOpsPanel',       openDevOpsPanel],
+        ['sudoStudio.openAnalysisPanel',     openAnalysisPanel],
+        ['sudoStudio.openEnvironmentPanel',  openEnvironmentPanel],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -1483,6 +1485,12 @@ function openDevOpsPanel() {
 
 function openAnalysisPanel() {
     ProjectAnalysisPanel.createOrShow(context.extensionUri);
+}
+
+function openEnvironmentPanel() {
+    // Pass auth token from backend service if available
+    const authToken = backend ? backend.authToken : null;
+    EnvironmentPanel.createOrShow(context.extensionUri, authToken);
 }
 
 // ============================================================================
