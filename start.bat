@@ -1,256 +1,340 @@
 @echo off
 setlocal enabledelayedexpansion
-title Sudo Studio - Starting
+title Sudo Studio - Starting...
 
 :: ============================================================
-::   SUDO STUDIO v3.0 -- Windows Launcher
-::   backend.exe and runtime.exe include Node.js/Python.
-::   No system dependencies required.
+::  SUDO STUDIO v4.0 - Windows Launcher
+::  backend.exe  = Node.js/Express (pkg node18-win-x64)
+::  runtime.exe  = Python/Flask + HuggingFace AI
+::  No system Node.js or Python required.
 :: ============================================================
 
-:: -- Global variables ----------------------------------------
+:: -- CRITICAL: Set working directory to script location ------
+:: -- This fixes the shortcut WorkingDir problem            ---
+cd /d "%~dp0"
+
+:: -- Global Variables ----------------------------------------
 set "ROOT=%~dp0"
-set "APP=%ROOT%app"
+set "APP=%ROOT%"
 set "LOGS=%ROOT%logs"
 set "LOG_FILE=%ROOT%logs\startup.log"
 set "BACKEND_PORT=5000"
 set "RUNTIME_PORT=6000"
-set "EXT=%APP%\extensions\sudo-ai"
-set "DATA=%APP%\data"
-set "START_TIME=%TIME%"
-set "START_DATE=%DATE%"
+set "EXT=%ROOT%extensions\sudo-ai"
+set "DATA=%ROOT%data"
 
-:: -- Create logs folder if missing ---------------------------
+:: -- STEP 1: Confirm script is actually running ---------------
+echo.
+echo ============================================================
+echo   SUDO STUDIO v4.0
+echo ============================================================
+echo   STEP 1 - Script is running
+echo   Root directory: %ROOT%
+echo ============================================================
+echo.
+
+:: -- Create logs folder ---------------------------------------
 if not exist "%LOGS%" mkdir "%LOGS%" 2>nul
 if not exist "%LOGS%" (
-    echo [ERROR] Cannot create logs folder.
-    echo         Check permissions: %ROOT%
+    echo [ERROR] Cannot create logs folder at: %LOGS%
+    echo         Check write permissions.
+    echo.
     pause
     exit /b 1
 )
 
-:: -- Init log file -------------------------------------------
+:: -- Init log file --------------------------------------------
 (
-echo ============================================================
-echo   SUDO STUDIO v3.0 - Started: %START_DATE% %START_TIME%
-echo   Root: %ROOT%
-echo   App : %APP%
-echo ============================================================
+    echo ============================================================
+    echo   SUDO STUDIO v4.0 - %DATE% %TIME%
+    echo   Root: %ROOT%
+    echo ============================================================
 ) > "%LOG_FILE%"
-
-echo.
-echo ============================================================
-echo   SUDO STUDIO v3.0 - Starting...
-echo ============================================================
+echo [LOG] Logging to: %LOG_FILE%
 echo.
 
 :: ============================================================
-::  SUBROUTINES -- defined here so :LOG and :check_port are callable from :main
+::  PHASE 1 - VERIFY ALL EXECUTABLES (STEP 2)
 :: ============================================================
-goto :main
+echo [STEP 2] Checking application files...
+echo [PHASE 1] Checking files... >> "%LOG_FILE%"
+echo.
 
-:: -- Subroutine: write to log --------------------------------
-:LOG
-    echo %~1 >> "%LOG_FILE%" 2>nul
-    exit /b 0
-
-:: -- Subroutine: HTTP health check --------------------------
-:: Usage: call :check_port <port> <path> <result_var>
-:: Sets result_var=1 if HTTP 200, else 0
-:check_port
-    set "%~3=0"
-    curl --version >nul 2>&1
-    if !errorlevel! equ 0 (
-        curl -s -o nul -w "%%{http_code}" http://localhost:%~1%~2 2>nul | findstr /B "200" >nul 2>&1
-        if !errorlevel! equ 0 set "%~3=1"
-    ) else (
-        powershell -NoProfile -Command "try{$r=(Invoke-WebRequest -Uri 'http://localhost:%~1%~2' -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop);if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
-        if !errorlevel! equ 0 set "%~3=1"
-    )
-    exit /b 0
-
-:: ============================================================
-:main
-:: ============================================================
-::  PHASE 1 -- FILE VERIFICATION (< 5 seconds)
-:: ============================================================
-call :LOG "[PHASE 1] Verifying required files..."
-echo [1/4] Verifying application files...
-
-:: Check backend.exe
-if not exist "%APP%\backend.exe" (
-    call :LOG "[PHASE 1] ERROR: backend.exe not found"
+:: --- backend.exe ---
+if exist "%APP%backend.exe" (
+    echo   [OK] backend.exe found
+    echo   [OK] backend.exe >> "%LOG_FILE%"
+) else (
+    echo   [NOT FOUND] backend.exe
+    echo   Expected at: %APP%backend.exe
+    echo   [ERROR] backend.exe not found >> "%LOG_FILE%"
     echo.
-    echo   [ERROR] backend.exe not found
-    echo           Expected: %APP%\backend.exe
-    echo           Please reinstall SudoStudio.
+    echo [FATAL] backend.exe is missing.
+    echo         Please reinstall Sudo Studio.
     echo.
     pause
     exit /b 1
 )
 
-:: Check runtime.exe
-if not exist "%APP%\runtime.exe" (
-    call :LOG "[PHASE 1] ERROR: runtime.exe not found"
+:: --- runtime.exe ---
+if exist "%APP%runtime.exe" (
+    echo   [OK] runtime.exe found
+    echo   [OK] runtime.exe >> "%LOG_FILE%"
+) else (
+    echo   [NOT FOUND] runtime.exe
+    echo   Expected at: %APP%runtime.exe
+    echo   [ERROR] runtime.exe not found >> "%LOG_FILE%"
     echo.
-    echo   [ERROR] runtime.exe not found
-    echo           Expected: %APP%\runtime.exe
-    echo           Please reinstall SudoStudio.
-    echo.
-    pause
-    exit /b 1
-)
-
-:: Check VSCodium.exe
-if not exist "%APP%\VSCodium.exe" (
-    call :LOG "[PHASE 1] ERROR: VSCodium.exe not found"
-    echo.
-    echo   [ERROR] VSCodium.exe not found
-    echo           Expected: %APP%\VSCodium.exe
-    echo           Please reinstall SudoStudio.
+    echo [FATAL] runtime.exe is missing.
+    echo         Please reinstall Sudo Studio.
     echo.
     pause
     exit /b 1
 )
 
-:: Check Sudo AI extension (warning only — not fatal)
-if not exist "%EXT%\extension.js" (
-    call :LOG "[PHASE 1] WARNING: Sudo AI extension not found at %EXT%"
+:: --- VSCodium.exe ---
+if exist "%APP%VSCodium.exe" (
+    echo   [OK] VSCodium.exe found
+    echo   [OK] VSCodium.exe >> "%LOG_FILE%"
+) else (
+    echo   [NOT FOUND] VSCodium.exe
+    echo   Expected at: %APP%VSCodium.exe
+    echo   [ERROR] VSCodium.exe not found >> "%LOG_FILE%"
     echo.
-    echo   [WARNING] Sudo AI extension not found.
-    echo             VSCodium will open without Sudo AI features.
+    echo [FATAL] VSCodium.exe is missing.
+    echo         Please reinstall Sudo Studio.
     echo.
+    pause
+    exit /b 1
 )
 
-call :LOG "[PHASE 1] All required files verified OK"
-echo [1/4] Files OK
+:: --- Sudo AI Extension (warning only - not fatal) ---
+if exist "%EXT%\extension.js" (
+    echo   [OK] Sudo AI extension found
+    echo   [OK] extension.js >> "%LOG_FILE%"
+) else (
+    echo   [WARNING] Sudo AI extension not found at:
+    echo             %EXT%\extension.js
+    echo   [WARNING] Extension missing - VSCodium will open without Sudo AI >> "%LOG_FILE%"
+)
 
-:: ============================================================
-::  PHASE 2 -- AI RUNTIME (port 6000)
-::  runtime.exe embeds Python + AI model loader
-::  First run downloads AI model (~600 MB) -- up to 5 minutes
-:: ============================================================
 echo.
-echo [2/4] Starting AI Runtime (port %RUNTIME_PORT%)...
-echo        First run downloads AI model (~600MB, may take minutes)
-call :LOG "[PHASE 2] Launching runtime.exe on port %RUNTIME_PORT%"
+echo [STEP 2] All required files verified.
+echo [PHASE 1] All files OK >> "%LOG_FILE%"
+echo.
 
-start "SudoRuntime" /B cmd /c ^""%APP%\runtime.exe" >> "%LOGS%\runtime.log" 2^>&1^"
-call :LOG "[PHASE 2] runtime.exe launched"
+:: ============================================================
+::  PHASE 2 - LAUNCH AI RUNTIME (port 6000) (STEP 3)
+:: ============================================================
+echo [STEP 3] Starting AI Runtime on port %RUNTIME_PORT%...
+echo          (First run may download AI model ~600MB - up to 5 min)
+echo [PHASE 2] Launching runtime.exe on port %RUNTIME_PORT% >> "%LOG_FILE%"
+echo.
 
-:: -- Poll port 6000 -- timeout 300s (first run downloads model) --
+:: Kill any existing runtime on port 6000
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":6000 " ^| findstr "LISTENING"') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+
+:: Launch runtime.exe in a minimized window
+start "SudoRuntime" /MIN "%APP%runtime.exe"
+echo [PHASE 2] runtime.exe launched >> "%LOG_FILE%"
+echo   [LAUNCHED] runtime.exe -> port %RUNTIME_PORT%
+echo.
+
+:: -- Poll port 6000 every 3 seconds, timeout 300s (5 min for model download) --
 set "RUNTIME_READY=0"
-set "WAIT_COUNT=0"
-set "LAST_MSG=0"
+set "RUNTIME_WAIT=0"
+
 :wait_runtime
-    set /a WAIT_COUNT+=1
-    if !WAIT_COUNT! gtr 150 goto :runtime_done
-    timeout /t 2 /nobreak >nul
-    call :check_port %RUNTIME_PORT% /health RUNTIME_HIT
-    if "!RUNTIME_HIT!"=="1" (
+    set /a RUNTIME_WAIT+=1
+    if !RUNTIME_WAIT! gtr 100 goto :runtime_timeout
+    timeout /t 3 /nobreak >nul
+
+    :: Try curl first (faster)
+    curl -s -o nul -w "%%{http_code}" http://localhost:%RUNTIME_PORT%/health 2>nul | findstr /B "200" >nul 2>&1
+    if !errorlevel! equ 0 (
         set "RUNTIME_READY=1"
-        goto :runtime_done
+        goto :runtime_ok
     )
-    :: Print status every 15 seconds (every 7-8 polls of 2s)
-    set /a ELAPSED=WAIT_COUNT*2
-    set /a MSG_SLOT=ELAPSED/15
-    if !MSG_SLOT! gtr !LAST_MSG! (
-        set "LAST_MSG=!MSG_SLOT!"
-        echo        Still loading AI model... (!ELAPSED!s elapsed)
+
+    :: Fallback: PowerShell
+    powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri 'http://localhost:%RUNTIME_PORT%/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "RUNTIME_READY=1"
+        goto :runtime_ok
+    )
+
+    :: Print progress every 15 seconds
+    set /a RUNTIME_ELAPSED=RUNTIME_WAIT*3
+    set /a RUNTIME_MOD=RUNTIME_ELAPSED %% 15
+    if !RUNTIME_MOD! equ 0 (
+        echo   Still waiting for Runtime... !RUNTIME_ELAPSED!s elapsed
     )
     goto :wait_runtime
-:runtime_done
 
-if "!RUNTIME_READY!"=="1" (
-    call :LOG "[PHASE 2] AI Runtime ready on port %RUNTIME_PORT%"
-    echo [2/4] AI Runtime ready on port %RUNTIME_PORT%
-) else (
-    call :LOG "[PHASE 2] WARNING: Runtime not responding after 300s -- continuing"
-    echo.
-    echo   [WARNING] AI Runtime not responding after 5 minutes.
-    echo             AI features may be limited. Continuing anyway...
-    echo             Check: %LOGS%\runtime.log
-    echo.
+:runtime_timeout
+    echo   [WARNING] Runtime did not respond after 300s. Continuing...
+    echo   Check log: %LOGS%\runtime.log if it exists.
+    echo [PHASE 2] WARNING: Runtime timeout >> "%LOG_FILE%"
+    goto :runtime_done
+
+:runtime_ok
+    echo   [OK] AI Runtime ready on port %RUNTIME_PORT%
+    echo [PHASE 2] Runtime ready on port %RUNTIME_PORT% >> "%LOG_FILE%"
+
+:runtime_done
+echo.
+
+:: ============================================================
+::  PHASE 3 - LAUNCH BACKEND (port 5000) (STEP 4)
+:: ============================================================
+echo [STEP 4] Starting Backend on port %BACKEND_PORT%...
+echo [PHASE 3] Launching backend.exe on port %BACKEND_PORT% >> "%LOG_FILE%"
+echo.
+
+:: Kill any existing backend on port 5000
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":5000 " ^| findstr "LISTENING"') do (
+    taskkill /F /PID %%a >nul 2>&1
 )
 
-:: ============================================================
-::  PHASE 3 -- BACKEND (port 5000)
-::  backend.exe embeds Node.js (compiled with pkg node18-win-x64)
-::  NO system Node.js required
-:: ============================================================
+:: Launch backend.exe in a minimized window
+start "SudoBackend" /MIN "%APP%backend.exe"
+echo [PHASE 3] backend.exe launched >> "%LOG_FILE%"
+echo   [LAUNCHED] backend.exe -> port %BACKEND_PORT%
 echo.
-echo [3/4] Starting Backend (port %BACKEND_PORT%)...
-call :LOG "[PHASE 3] Launching backend.exe on port %BACKEND_PORT%"
 
-start "SudoBackend" /B cmd /c ^""%APP%\backend.exe" >> "%LOGS%\backend.log" 2^>&1^"
-call :LOG "[PHASE 3] backend.exe launched"
-
-:: -- Poll port 5000 -- timeout 60 seconds -------------------
+:: -- Poll port 5000 every 2 seconds, timeout 60s --
 set "BACKEND_READY=0"
-set "WAIT_COUNT=0"
-:wait_backend
-    set /a WAIT_COUNT+=1
-    if !WAIT_COUNT! gtr 60 goto :backend_done
-    timeout /t 1 /nobreak >nul
-    call :check_port %BACKEND_PORT% /api/system/health BACKEND_HIT
-    if "!BACKEND_HIT!"=="1" (
-        set "BACKEND_READY=1"
-        goto :backend_done
-    )
-    goto :wait_backend
-:backend_done
+set "BACKEND_WAIT=0"
 
-if "!BACKEND_READY!"=="1" (
-    call :LOG "[PHASE 3] Backend ready on port %BACKEND_PORT%"
-    echo [3/4] Backend ready on port %BACKEND_PORT%
-) else (
-    call :LOG "[PHASE 3] ERROR: Backend not responding after 60s"
-    echo.
-    echo   [ERROR] Backend not responding after 60 seconds.
-    echo.
-    echo   Check log: %LOGS%\backend.log
-    if exist "%LOGS%\backend.log" (
-        echo   Last lines:
-        powershell -NoProfile -Command "Get-Content '%LOGS%\backend.log' -Tail 8 -ErrorAction SilentlyContinue" 2>nul
-        echo.
+:wait_backend
+    set /a BACKEND_WAIT+=1
+    if !BACKEND_WAIT! gtr 30 goto :backend_timeout
+    timeout /t 2 /nobreak >nul
+
+    :: Try curl first
+    curl -s -o nul -w "%%{http_code}" http://localhost:%BACKEND_PORT%/api/system/health 2>nul | findstr /B "200" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "BACKEND_READY=1"
+        goto :backend_ok
     )
-    echo   Solutions:
-    echo     1. Check that port %BACKEND_PORT% is not already in use
-    echo     2. Relaunch start.bat
+
+    :: Fallback: PowerShell
+    powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri 'http://localhost:%BACKEND_PORT%/api/system/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "BACKEND_READY=1"
+        goto :backend_ok
+    )
+
+    echo   Waiting for Backend... !BACKEND_WAIT! / 30
+    goto :wait_backend
+
+:backend_timeout
     echo.
+    echo   [ERROR] Backend did not respond after 60 seconds.
+    echo   [ERROR] Backend timeout >> "%LOG_FILE%"
+    echo.
+    echo   Diagnostics:
+    echo     - Port %BACKEND_PORT% may already be in use
+    echo     - Check: %ROOT%logs\backend.log
+    echo.
+    echo   Last backend output (if any):
+    if exist "%LOGS%\backend.log" (
+        powershell -NoProfile -WindowStyle Hidden -Command "Get-Content '%LOGS%\backend.log' -Tail 5 -EA SilentlyContinue" 2>nul
+    ) else (
+        echo     No backend.log found yet.
+    )
+    echo.
+    echo ============================================================
+    echo   Backend failed. Press any key to close.
+    echo ============================================================
     pause
     exit /b 1
+
+:backend_ok
+    echo   [OK] Backend ready on port %BACKEND_PORT%
+    echo [PHASE 3] Backend ready on port %BACKEND_PORT% >> "%LOG_FILE%"
+
+:backend_done
+echo.
+
+:: ============================================================
+::  PHASE 4 - HEALTH CHECK SUMMARY (STEP 5)
+:: ============================================================
+echo [STEP 5] Health Check Summary:
+echo.
+
+:: Runtime health
+if "!RUNTIME_READY!"=="1" (
+    echo   Runtime  (port %RUNTIME_PORT%) : OK
+) else (
+    echo   Runtime  (port %RUNTIME_PORT%) : WARNING - Not responding
 )
 
-:: ============================================================
-::  PHASE 4 -- VSCODIUM + SUDO AI EXTENSION
-:: ============================================================
+:: Backend health
+if "!BACKEND_READY!"=="1" (
+    echo   Backend  (port %BACKEND_PORT%) : OK
+) else (
+    echo   Backend  (port %BACKEND_PORT%) : ERROR
+)
+
+:: Extension check
+if exist "%EXT%\extension.js" (
+    echo   Extension               : OK
+) else (
+    echo   Extension               : WARNING - Not found
+)
+
 echo.
-echo [4/4] Opening Sudo Studio in VSCodium...
-call :LOG "[PHASE 4] Launching VSCodium"
 
-:: Create data dirs if missing
+:: ============================================================
+::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)
+:: ============================================================
+echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...
+echo [PHASE 5] Launching VSCodium >> "%LOG_FILE%"
+echo.
+
+:: Create required directories
 if not exist "%DATA%" mkdir "%DATA%" 2>nul
-if not exist "%APP%\extensions" mkdir "%APP%\extensions" 2>nul
+if not exist "%ROOT%extensions" mkdir "%ROOT%extensions" 2>nul
 
-set "VSCO_EXE=%APP%\VSCodium.exe"
-set "VSCO_EXT_DIR=%APP%\extensions"
-set "VSCO_USER_DIR=%DATA%"
-set "VSCO_EXT_SRC=%EXT%"
-call :LOG "[PHASE 4] EXE     : !VSCO_EXE!"
-call :LOG "[PHASE 4] Ext-dir : !VSCO_EXT_DIR!"
-call :LOG "[PHASE 4] Data-dir: !VSCO_USER_DIR!"
-call :LOG "[PHASE 4] Ext-src : !VSCO_EXT_SRC!"
+:: Launch VSCodium with Sudo AI extension
+start "SudoStudio" "%APP%VSCodium.exe" ^
+    --extensions-dir "%ROOT%extensions" ^
+    --user-data-dir "%DATA%" ^
+    --extensionDevelopmentPath "%EXT%"
 
-start "SudoStudio" "!VSCO_EXE!" --extensions-dir "!VSCO_EXT_DIR!" --user-data-dir "!VSCO_USER_DIR!" --extensionDevelopmentPath "!VSCO_EXT_SRC!"
+echo   [LAUNCHED] VSCodium.exe with Sudo AI extension
+echo [PHASE 5] VSCodium launched >> "%LOG_FILE%"
+echo.
 
-echo [4/4] VSCodium launched with Sudo AI
-call :LOG "[PHASE 4] VSCodium launched OK"
+:: ============================================================
+::  PHASE 6 - EXTENSION VERIFICATION (STEP 7)
+:: ============================================================
+echo [STEP 7] Extension Verification:
+if exist "%EXT%\extension.js" (
+    echo   [OK] extension.js present
+) else (
+    echo   [WARN] extension.js not found - Sudo AI features unavailable
+)
+if exist "%EXT%\package.json" (
+    echo   [OK] package.json present
+) else (
+    echo   [WARN] package.json not found
+)
+if exist "%EXT%\src" (
+    echo   [OK] src\ directory present
+) else (
+    echo   [WARN] src\ directory not found
+)
+echo.
 
 :: ============================================================
 ::  ALL SERVICES RUNNING
 :: ============================================================
-call :LOG "[OK] Sudo Studio v3.0 started successfully - %TIME%"
+echo [DONE] >> "%LOG_FILE%"
+echo %DATE% %TIME% - ALL SERVICES STARTED >> "%LOG_FILE%"
 echo.
 echo ============================================================
 echo   SUDO STUDIO IS RUNNING
@@ -260,17 +344,17 @@ echo   Backend   : http://localhost:%BACKEND_PORT%
 echo   AI Runtime: http://localhost:%RUNTIME_PORT%
 echo.
 echo   Logs      : %LOGS%\startup.log
-echo   Backend   : %LOGS%\backend.log
-echo   Runtime   : %LOGS%\runtime.log
+echo.
+echo   VSCodium should now be opening with Sudo AI loaded.
+echo   If VSCodium is not open yet, wait 5-10 seconds.
 echo.
 echo ============================================================
-echo.
 echo   Keep this window open to maintain services.
 echo   Close this window to stop everything.
+echo ============================================================
 echo.
-echo %date% %time% - ALL SERVICES STARTED >> "%LOG_FILE%"
 
-:: -- Keep terminal open (services stay alive as children) ----
+:: -- Keep terminal open, services run in their own windows ---
 :keep_alive
 timeout /t 30 /nobreak >nul
 goto :keep_alive
