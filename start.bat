@@ -93,12 +93,12 @@ if exist "%APP%runtime.exe" (
 )
 
 :: --- VSCodium.exe ---
-if exist "%APP%VSCodium.exe" (
+if exist "%APP%app\VSCodium.exe" (
     echo   [OK] VSCodium.exe found
     echo   [OK] VSCodium.exe >> "%LOG_FILE%"
 ) else (
     echo   [NOT FOUND] VSCodium.exe
-    echo   Expected at: %APP%VSCodium.exe
+    echo   Expected at: %APP%app\VSCodium.exe
     echo   [ERROR] VSCodium.exe not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] VSCodium.exe is missing.
