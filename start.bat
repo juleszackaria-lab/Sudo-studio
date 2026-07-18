@@ -300,7 +300,7 @@ if not exist "%DATA%" mkdir "%DATA%" 2>nul
 if not exist "%ROOT%extensions" mkdir "%ROOT%extensions" 2>nul
 
 :: Launch VSCodium with Sudo AI extension
-start "SudoStudio" "%APP%VSCodium.exe" ^
+start "SudoStudio" "%~dp0app\VSCodium.exe" ^
     --extensions-dir "%ROOT%extensions" ^
     --user-data-dir "%DATA%" ^
     --extensionDevelopmentPath "%EXT%"
