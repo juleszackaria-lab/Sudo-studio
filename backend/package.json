@@ -44,5 +44,24 @@
     "nodemon": "^3.0.0",
     "socket.io-client": "^4.8.3",
     "supertest": "^7.2.2"
+  },
+  "pkg": {
+    "targets": ["node18-win-x64"],
+    "assets": [
+      "node_modules/sqlite3/build/Release/node_sqlite3.node",
+      "node_modules/bcrypt/lib/binding/napi-v3/bcrypt_lib.node",
+      "node_modules/**/*.node",
+      "ai/models/**",
+      "data/**"
+    ],
+    "scripts": [
+      "routes/**/*.js",
+      "middleware/**/*.js",
+      "models/**/*.js",
+      "utils/**/*.js",
+      "ai/**/*.js",
+      "controllers/**/*.js",
+      "security/**/*.js"
+    ]
   }
 }

@@ -15,13 +15,13 @@ cd /d "%~dp0"
 
 :: -- Global Variables ----------------------------------------
 set "ROOT=%~dp0"
-set "APP=%ROOT%"
+set "APPDIR=%ROOT%app\"
 set "LOGS=%ROOT%logs"
 set "LOG_FILE=%ROOT%logs\startup.log"
 set "BACKEND_PORT=5000"
 set "RUNTIME_PORT=6000"
-set "EXT=%ROOT%extensions\sudo-ai"
-set "DATA=%ROOT%data"
+set "EXT=%ROOT%app\extensions\sudo-ai"
+set "DATA=%ROOT%app\data"
 
 :: -- STEP 1: Confirm script is actually running ---------------
 echo.
@@ -61,12 +61,12 @@ echo [PHASE 1] Checking files... >> "%LOG_FILE%"
 echo.
 
 :: --- backend.exe ---
-if exist "%APP%backend.exe" (
+if exist "%APPDIR%backend.exe" (
     echo   [OK] backend.exe found
     echo   [OK] backend.exe >> "%LOG_FILE%"
 ) else (
     echo   [NOT FOUND] backend.exe
-    echo   Expected at: %APP%backend.exe
+    echo   Expected at: %APPDIR%backend.exe
     echo   [ERROR] backend.exe not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] backend.exe is missing.
@@ -77,12 +77,12 @@ if exist "%APP%backend.exe" (
 )
 
 :: --- runtime.exe ---
-if exist "%APP%runtime.exe" (
+if exist "%APPDIR%runtime.exe" (
     echo   [OK] runtime.exe found
     echo   [OK] runtime.exe >> "%LOG_FILE%"
 ) else (
     echo   [NOT FOUND] runtime.exe
-    echo   Expected at: %APP%runtime.exe
+    echo   Expected at: %APPDIR%runtime.exe
     echo   [ERROR] runtime.exe not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] runtime.exe is missing.
@@ -93,12 +93,12 @@ if exist "%APP%runtime.exe" (
 )
 
 :: --- VSCodium.exe ---
-if exist "%APP%app\VSCodium.exe" (
+if exist "%ROOT%VSCodium.exe" (
     echo   [OK] VSCodium.exe found
     echo   [OK] VSCodium.exe >> "%LOG_FILE%"
 ) else (
     echo   [NOT FOUND] VSCodium.exe
-    echo   Expected at: %APP%app\VSCodium.exe
+    echo   Expected at: %ROOT%VSCodium.exe
     echo   [ERROR] VSCodium.exe not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] VSCodium.exe is missing.
@@ -137,7 +137,7 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":6000 " ^| findstr "LISTENIN
 )
 
 :: Launch runtime.exe in a minimized window
-start "SudoRuntime" /MIN "%APP%runtime.exe"
+start "SudoRuntime" /MIN "%APPDIR%runtime.exe"
 echo [PHASE 2] runtime.exe launched >> "%LOG_FILE%"
 echo   [LAUNCHED] runtime.exe -> port %RUNTIME_PORT%
 echo.
@@ -199,7 +199,7 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":5000 " ^| findstr "LISTENIN
 )
 
 :: Launch backend.exe in a minimized window
-start "SudoBackend" /MIN "%APP%backend.exe"
+start "SudoBackend" /MIN "%APPDIR%backend.exe"
 echo [PHASE 3] backend.exe launched >> "%LOG_FILE%"
 echo   [LAUNCHED] backend.exe -> port %BACKEND_PORT%
 echo.
@@ -297,11 +297,11 @@ echo.
 
 :: Create required directories
 if not exist "%DATA%" mkdir "%DATA%" 2>nul
-if not exist "%ROOT%extensions" mkdir "%ROOT%extensions" 2>nul
+if not exist "%ROOT%app\extensions" mkdir "%ROOT%app\extensions" 2>nul
 
 :: Launch VSCodium with Sudo AI extension
-start "SudoStudio" "%~dp0app\VSCodium.exe" ^
-    --extensions-dir "%ROOT%extensions" ^
+start "SudoStudio" "%ROOT%VSCodium.exe" ^
+    --extensions-dir "%ROOT%app\extensions" ^
     --user-data-dir "%DATA%" ^
     --extensionDevelopmentPath "%EXT%"
 

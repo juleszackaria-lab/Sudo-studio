@@ -1,6 +1,6 @@
 name: 03 - Package Sudo Studio (Windows Installer) - FINAL
 
-# 🔹 Déclenchement 100% manuel
+# Declenchement 100% manuel
 on:
   workflow_dispatch:
     inputs:
@@ -38,6 +38,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      # ============================================================
+      # STEP 1 - Download compiled binaries
+      # ============================================================
       - name: Download backend artifact
         uses: dawidd6/action-download-artifact@v5
         with:
@@ -54,44 +57,139 @@ jobs:
           run_id: ${{ github.event.inputs.runtime_run_id }}
           github_token: ${{ secrets.PAT_DOWNLOAD }}
 
+      # ============================================================
+      # STEP 2 - Download and extract VSCodium
+      # ============================================================
       - name: Download VSCodium
         run: curl -L -o vscodium.zip https://github.com/VSCodium/vscodium/releases/latest/download/VSCodium-win32-x64-1.90.0.0.zip
 
       - name: Extract VSCodium
-        run: powershell Expand-Archive vscodium.zip -DestinationPath vscodium
+        run: powershell Expand-Archive vscodium.zip -DestinationPath vscodium-extracted
 
-      - name: Inject assets
+      # ============================================================
+      # STEP 3 - Build final package structure
+      #
+      # Target structure after installation ({app} = install root):
+      #
+      #   {app}\
+      #     VSCodium.exe              <- VSCodium main executable
+      #     ... (all VSCodium files)
+      #     app\
+      #       backend.exe             <- Node.js/Express (pkg)
+      #       runtime.exe             <- Python/Flask AI
+      #       native-modules\         <- sqlite3.node + bcrypt.node
+      #         node_sqlite3.node
+      #         bcrypt_lib.node
+      #       extensions\
+      #         sudo-ai\              <- Sudo AI VSCode extension
+      #           extension.js
+      #           package.json
+      #           src\
+      #             ...
+      #       data\                   <- VSCodium user data dir
+      #     start.bat                 <- Our v4.0 launcher (from repo)
+      #     logs\                     <- Created at runtime
+      #
+      # start.bat uses:
+      #   %~dp0VSCodium.exe           <- correct (root)
+      #   %~dp0app\backend.exe        <- correct (app subdir)
+      #   %~dp0app\runtime.exe        <- correct (app subdir)
+      #   %~dp0app\extensions\sudo-ai <- correct (app/extensions subdir)
+      # ============================================================
+
+      - name: Create package structure
+        shell: powershell
         run: |
-          mkdir vscodium\SudoStudio
-          copy build-assets\backend\backend.exe vscodium\SudoStudio\
-          copy build-assets\runtime\server.exe vscodium\SudoStudio\runtime.exe
-          xcopy /E /I web-ui vscodium\SudoStudio\web-ui\
-          copy product.json vscodium\SudoStudio\product.json
+          # Root = vscodium-extracted contents (VSCodium.exe lives here)
+          $root = "package-root"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\app" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\app\native-modules" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\app\extensions\sudo-ai" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\app\data" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root\logs" | Out-Null
 
-      - name: Create auto-start script
-        shell: cmd
+          # Copy VSCodium files to root
+          Copy-Item "vscodium-extracted\*" -Destination $root -Recurse -Force
+          Write-Host "VSCodium files copied to root"
+
+          # Copy backend.exe
+          Copy-Item "build-assets\backend\backend.exe" -Destination "$root\app\backend.exe"
+          Write-Host "backend.exe copied"
+
+          # Copy native modules (sqlite3.node, bcrypt.node) - CRITICAL for pkg
+          if (Test-Path "build-assets\backend\native-modules") {
+            Copy-Item "build-assets\backend\native-modules\*" -Destination "$root\app\native-modules\" -Force
+            Write-Host "Native modules copied:"
+            Get-ChildItem "$root\app\native-modules"
+          } else {
+            Write-Warning "No native-modules folder found in backend artifact - backend may fail on Windows"
+          }
+
+          # Copy runtime.exe
+          Copy-Item "build-assets\runtime\server.exe" -Destination "$root\app\runtime.exe"
+          Write-Host "runtime.exe copied"
+
+          # Copy Sudo AI extension - FIX: was missing entirely in previous workflow
+          Copy-Item "sudo-ai-extension\*" -Destination "$root\app\extensions\sudo-ai\" -Recurse -Force -Exclude "node_modules"
+          Write-Host "Sudo AI extension copied"
+
+          # Copy start.bat from repo (our v4.0 - NOT regenerated inline)
+          Copy-Item "start.bat" -Destination "$root\start.bat"
+          Write-Host "start.bat v4.0 copied from repo"
+
+          # Verify structure
+          Write-Host ""
+          Write-Host "=== Package structure ==="
+          Get-ChildItem $root -Recurse | Select-Object FullName | ForEach-Object { $_.FullName.Replace((Resolve-Path $root).Path, "") }
+
+      # ============================================================
+      # STEP 4 - Verify critical files exist before packaging
+      # ============================================================
+      - name: Verify package structure
+        shell: powershell
         run: |
-          echo @echo off > vscodium\SudoStudio\start.bat
-          echo cd /d "%%~dp0" >> vscodium\SudoStudio\start.bat
-          echo start backend.exe >> vscodium\SudoStudio\start.bat
-          echo start runtime.exe >> vscodium\SudoStudio\start.bat
-          echo timeout /t 3 >> vscodium\SudoStudio\start.bat
-          echo start ..\codium.exe --user-data-dir . --extensions-dir SudoStudio >> vscodium\SudoStudio\start.bat
+          $root = "package-root"
+          $errors = 0
 
-      - name: Create launcher
-        shell: cmd
-        run: |
-          echo @echo off > SudoStudio.cmd
-          echo cd /d "%%~dp0vscodium\SudoStudio" >> SudoStudio.cmd
-          echo call start.bat >> SudoStudio.cmd
+          $required = @(
+            "$root\VSCodium.exe",
+            "$root\app\backend.exe",
+            "$root\app\runtime.exe",
+            "$root\app\extensions\sudo-ai\extension.js",
+            "$root\app\extensions\sudo-ai\package.json",
+            "$root\start.bat"
+          )
 
+          foreach ($f in $required) {
+            if (Test-Path $f) {
+              Write-Host "  [OK] $f"
+            } else {
+              Write-Error "  [MISSING] $f"
+              $errors++
+            }
+          }
+
+          if ($errors -gt 0) {
+            Write-Error "$errors required file(s) missing - aborting"
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "All required files present - proceeding with installer build"
+
+      # ============================================================
+      # STEP 5 - Build installer with Inno Setup
+      # ============================================================
       - name: Install Inno Setup
         run: choco install innosetup -y
 
-      - name: Create installer script
+      - name: Build installer
         shell: powershell
         run: |
-          $content = @"
+          # Write installer.iss dynamically to match our package-root structure
+          # WorkingDir is CRITICAL so start.bat runs from the correct directory
+          $iss = @"
 [Setup]
 AppName=Sudo Studio
 AppVersion=1.0
@@ -102,18 +200,25 @@ Compression=lzma
 SolidCompression=yes
 
 [Files]
-Source: "vscodium\*"; DestDir: "{app}"; Flags: recursesubdirs
-Source: "SudoStudio.cmd"; DestDir: "{app}"
+; Copy entire package-root into {app}
+; Result: VSCodium.exe at {app}\ and app\ subdirectory at {app}\app\
+Source: "package-root\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\SudoStudio"; Filename: "{app}\SudoStudio.cmd"
-Name: "{commondesktop}\SudoStudio"; Filename: "{app}\SudoStudio.cmd"
+; WorkingDir is CRITICAL: without it Windows may launch from System32
+Name: "{group}\SudoStudio"; Filename: "{app}\start.bat"; WorkingDir: "{app}"; Comment: "Launch Sudo Studio"
+Name: "{commondesktop}\SudoStudio"; Filename: "{app}\start.bat"; WorkingDir: "{app}"; Comment: "Launch Sudo Studio"
+
+[Run]
+Filename: "{app}\start.bat"; WorkingDir: "{app}"; Description: "Lancer Sudo Studio"; Flags: nowait postinstall skipifsilent
 "@
 
-          $content | Out-File -Encoding ASCII installer.iss
+          $iss | Out-File -Encoding ASCII -FilePath installer-final.iss
+          Write-Host "installer-final.iss written"
+          Get-Content installer-final.iss
 
-      - name: Build installer
-        run: iscc installer.iss
+          # Build
+          iscc installer-final.iss
 
       - name: Upload installer
         uses: actions/upload-artifact@v4

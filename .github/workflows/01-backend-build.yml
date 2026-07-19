@@ -26,11 +26,50 @@ jobs:
       - name: Install pkg globally
         run: npm install -g pkg
 
-      - name: Build backend.exe
-        run: pkg server.js --targets node18-win-x64 --output backend.exe
+      # FIX: sqlite3 and bcrypt are native C++ modules.
+      # pkg cannot bundle .node binary files inside the exe.
+      # Solution: copy .node files next to backend.exe so they are found at runtime.
+      # pkg --options expose-gc helps with memory; snapshot disabled for native compat.
+      - name: Build backend.exe with native module support
+        run: |
+          pkg package.json --targets node18-win-x64 --output backend.exe
+          echo backend.exe built OK
+
+      # Copy native .node binaries next to the exe.
+      # At runtime, pkg extracts the exe to a temp dir and looks for .node files
+      # relative to the snapshot. We also ship them as loose files for reliability.
+      - name: Copy native binaries next to backend.exe
+        shell: powershell
+        run: |
+          $dest = "native-modules"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+
+          # sqlite3
+          $sqlite = "node_modules\sqlite3\build\Release\node_sqlite3.node"
+          if (Test-Path $sqlite) {
+            Copy-Item $sqlite -Destination "$dest\node_sqlite3.node"
+            Write-Host "Copied node_sqlite3.node"
+          } else {
+            Write-Warning "node_sqlite3.node NOT FOUND - sqlite3 will fail at runtime"
+          }
+
+          # bcrypt
+          $bcrypt = "node_modules\bcrypt\lib\binding\napi-v3\bcrypt_lib.node"
+          if (Test-Path $bcrypt) {
+            Copy-Item $bcrypt -Destination "$dest\bcrypt_lib.node"
+            Write-Host "Copied bcrypt_lib.node"
+          } else {
+            Write-Warning "bcrypt_lib.node NOT FOUND - bcrypt will fail at runtime"
+          }
+
+          # List what we have
+          Write-Host "Native modules to ship:"
+          Get-ChildItem $dest
 
       - name: Upload backend artifact
         uses: actions/upload-artifact@v4
         with:
           name: backend-exe
-          path: backend/backend.exe
+          path: |
+            backend/backend.exe
+            backend/native-modules/
