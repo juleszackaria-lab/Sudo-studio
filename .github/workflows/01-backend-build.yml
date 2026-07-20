@@ -26,18 +26,11 @@ jobs:
       - name: Install pkg globally
         run: npm install -g pkg
 
-      # FIX: sqlite3 and bcrypt are native C++ modules.
-      # pkg cannot bundle .node binary files inside the exe.
-      # Solution: copy .node files next to backend.exe so they are found at runtime.
-      # pkg --options expose-gc helps with memory; snapshot disabled for native compat.
       - name: Build backend.exe with native module support
         run: |
-          pkg package.json --targets node18-win-x64 --output backend.exe
+          pkg server.js --targets node18-win-x64 --output backend.exe
           echo backend.exe built OK
 
-      # Copy native .node binaries next to the exe.
-      # At runtime, pkg extracts the exe to a temp dir and looks for .node files
-      # relative to the snapshot. We also ship them as loose files for reliability.
       - name: Copy native binaries next to backend.exe
         shell: powershell
         run: |
@@ -62,7 +55,6 @@ jobs:
             Write-Warning "bcrypt_lib.node NOT FOUND - bcrypt will fail at runtime"
           }
 
-          # List what we have
           Write-Host "Native modules to ship:"
           Get-ChildItem $dest
 
