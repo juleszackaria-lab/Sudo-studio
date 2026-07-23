@@ -77,9 +77,8 @@ jobs:
       #     app\
       #       backend.exe             <- Node.js/Express (pkg)
       #       runtime.exe             <- Python/Flask AI
-      #       native-modules\         <- sqlite3.node + bcrypt.node
-      #         node_sqlite3.node
-      #         bcrypt_lib.node
+      #       native-modules\         <- better_sqlite3.node (bcryptjs is pure-JS)
+      #         better_sqlite3.node
       #       extensions\
       #         sudo-ai\              <- Sudo AI VSCode extension
       #           extension.js
@@ -117,7 +116,7 @@ jobs:
           Copy-Item "build-assets\backend\backend.exe" -Destination "$root\app\backend.exe"
           Write-Host "backend.exe copied"
 
-          # Copy native modules (sqlite3.node, bcrypt.node) - CRITICAL for pkg
+          # Copy native modules (better_sqlite3.node) - bcryptjs is pure-JS, no .node needed
           if (Test-Path "build-assets\backend\native-modules") {
             Copy-Item "build-assets\backend\native-modules\*" -Destination "$root\app\native-modules\" -Force
             Write-Host "Native modules copied:"

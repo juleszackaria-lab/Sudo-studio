@@ -26,7 +26,8 @@
   },
   "dependencies": {
     "axios": "^1.4.0",
-    "bcrypt": "^5.1.0",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "express-rate-limit": "^6.7.0",
@@ -35,7 +36,6 @@
     "helmet": "^7.0.0",
     "jsonwebtoken": "^9.0.0",
     "socket.io": "^4.8.3",
-    "sqlite3": "^5.1.6",
     "winston": "^3.9.0"
   },
   "devDependencies": {
@@ -48,8 +48,7 @@
   "pkg": {
     "targets": ["node18-win-x64"],
     "assets": [
-      "node_modules/sqlite3/build/Release/node_sqlite3.node",
-      "node_modules/bcrypt/lib/binding/napi-v3/bcrypt_lib.node",
+      "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
       "node_modules/**/*.node",
       "ai/models/**",
       "data/**"
@@ -61,7 +60,8 @@
       "utils/**/*.js",
       "ai/**/*.js",
       "controllers/**/*.js",
-      "security/**/*.js"
+      "security/**/*.js",
+      "config/**/*.js"
     ]
   }
 }

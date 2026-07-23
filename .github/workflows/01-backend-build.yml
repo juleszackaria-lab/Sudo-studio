@@ -26,37 +26,43 @@ jobs:
       - name: Install pkg globally
         run: npm install -g pkg
 
-      - name: Build backend.exe with native module support
-        run: |
-          pkg server.js --targets node18-win-x64 --output backend.exe
-          echo backend.exe built OK
+      # FIX: Use pkg package.json config (includes assets for better_sqlite3.node)
+      # better-sqlite3 has ONE .node binary (no bindings indirection via Error.stack)
+      # bcryptjs is pure-JS (zero .node file needed)
+      - name: Build backend.exe
+        run: pkg package.json --targets node18-win-x64 --output backend.exe
 
+      # Copy better-sqlite3 native binary next to the exe.
+      # pkg includes it in the snapshot but also needs it accessible on disk
+      # for process.dlopen() to work correctly on Windows.
       - name: Copy native binaries next to backend.exe
         shell: powershell
         run: |
           $dest = "native-modules"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
-          # sqlite3
-          $sqlite = "node_modules\sqlite3\build\Release\node_sqlite3.node"
-          if (Test-Path $sqlite) {
-            Copy-Item $sqlite -Destination "$dest\node_sqlite3.node"
-            Write-Host "Copied node_sqlite3.node"
+          $bsqlite = "node_modules\better-sqlite3\build\Release\better_sqlite3.node"
+          if (Test-Path $bsqlite) {
+            Copy-Item $bsqlite -Destination "$dest\better_sqlite3.node"
+            Write-Host "[OK] Copied better_sqlite3.node"
           } else {
-            Write-Warning "node_sqlite3.node NOT FOUND - sqlite3 will fail at runtime"
-          }
-
-          # bcrypt
-          $bcrypt = "node_modules\bcrypt\lib\binding\napi-v3\bcrypt_lib.node"
-          if (Test-Path $bcrypt) {
-            Copy-Item $bcrypt -Destination "$dest\bcrypt_lib.node"
-            Write-Host "Copied bcrypt_lib.node"
-          } else {
-            Write-Warning "bcrypt_lib.node NOT FOUND - bcrypt will fail at runtime"
+            Write-Warning "[WARN] better_sqlite3.node NOT FOUND - path: $bsqlite"
+            Get-ChildItem "node_modules\better-sqlite3\build" -Recurse -Filter "*.node" -ErrorAction SilentlyContinue
           }
 
           Write-Host "Native modules to ship:"
           Get-ChildItem $dest
+
+      - name: Verify build output
+        shell: powershell
+        run: |
+          if (Test-Path "backend.exe") {
+            $size = (Get-Item "backend.exe").Length / 1MB
+            Write-Host "[OK] backend.exe built: $([math]::Round($size,1)) MB"
+          } else {
+            Write-Error "[FAIL] backend.exe not found!"
+            exit 1
+          }
 
       - name: Upload backend artifact
         uses: actions/upload-artifact@v4
