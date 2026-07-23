@@ -10,14 +10,13 @@ title Sudo Studio - Starting...
 :: ============================================================
 
 :: -- CRITICAL: Set working directory to script location ------
-:: -- This fixes the shortcut WorkingDir problem            ---
 cd /d "%~dp0"
 
 :: -- Global Variables ----------------------------------------
 set "ROOT=%~dp0"
 set "APPDIR=%ROOT%app\"
-set "LOGS=%ROOT%app\logs"
-set "LOG_FILE=%ROOT%app\logs\startup.log"
+set "LOGS=%ROOT%logs"
+set "LOG_FILE=%ROOT%logs\startup.log"
 set "BACKEND_PORT=5000"
 set "RUNTIME_PORT=6000"
 set "EXT=%ROOT%app\extensions\sudo-ai"
@@ -93,12 +92,12 @@ if exist "%APPDIR%runtime.exe" (
 )
 
 :: --- VSCodium.exe ---
-if exist "%ROOT%VSCodium.exe" (
+if exist "%APPDIR%VSCodium.exe" (
     echo   [OK] VSCodium.exe found
     echo   [OK] VSCodium.exe >> "%LOG_FILE%"
 ) else (
     echo   [NOT FOUND] VSCodium.exe
-    echo   Expected at: %ROOT%VSCodium.exe
+    echo   Expected at: %APPDIR%VSCodium.exe
     echo   [ERROR] VSCodium.exe not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] VSCodium.exe is missing.
@@ -142,7 +141,7 @@ echo [PHASE 2] runtime.exe launched >> "%LOG_FILE%"
 echo   [LAUNCHED] runtime.exe -> port %RUNTIME_PORT%
 echo.
 
-:: -- Poll port 6000 every 3 seconds, timeout 300s (5 min for model download) --
+:: -- Poll port 6000 every 3 seconds, timeout 300s --
 set "RUNTIME_READY=0"
 set "RUNTIME_WAIT=0"
 
@@ -151,21 +150,18 @@ set "RUNTIME_WAIT=0"
     if !RUNTIME_WAIT! gtr 100 goto :runtime_timeout
     timeout /t 3 /nobreak >nul
 
-    :: Try curl first (faster)
     curl -s -o nul -w "%%{http_code}" http://localhost:%RUNTIME_PORT%/health 2>nul | findstr /B "200" >nul 2>&1
     if !errorlevel! equ 0 (
         set "RUNTIME_READY=1"
         goto :runtime_ok
     )
 
-    :: Fallback: PowerShell
     powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri 'http://localhost:%RUNTIME_PORT%/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
     if !errorlevel! equ 0 (
         set "RUNTIME_READY=1"
         goto :runtime_ok
     )
 
-    :: Print progress every 15 seconds
     set /a RUNTIME_ELAPSED=RUNTIME_WAIT*3
     set /a RUNTIME_MOD=RUNTIME_ELAPSED %% 15
     if !RUNTIME_MOD! equ 0 (
@@ -175,7 +171,6 @@ set "RUNTIME_WAIT=0"
 
 :runtime_timeout
     echo   [WARNING] Runtime did not respond after 300s. Continuing...
-    echo   Check log: %LOGS%\runtime.log if it exists.
     echo [PHASE 2] WARNING: Runtime timeout >> "%LOG_FILE%"
     goto :runtime_done
 
@@ -204,42 +199,39 @@ echo [PHASE 3] backend.exe launched >> "%LOG_FILE%"
 echo   [LAUNCHED] backend.exe -> port %BACKEND_PORT%
 echo.
 
-:: -- Poll port 5000 every 2 seconds, timeout 60s --
+:: -- Poll port 5000 every 2 seconds, timeout 120s --
 set "BACKEND_READY=0"
 set "BACKEND_WAIT=0"
 
 :wait_backend
     set /a BACKEND_WAIT+=1
-    if !BACKEND_WAIT! gtr 30 goto :backend_timeout
+    if !BACKEND_WAIT! gtr 60 goto :backend_timeout
     timeout /t 2 /nobreak >nul
 
-    :: Try curl first
     curl -s -o nul -w "%%{http_code}" http://localhost:%BACKEND_PORT%/api/system/health 2>nul | findstr /B "200" >nul 2>&1
     if !errorlevel! equ 0 (
         set "BACKEND_READY=1"
         goto :backend_ok
     )
 
-    :: Fallback: PowerShell
     powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri 'http://localhost:%BACKEND_PORT%/api/system/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
     if !errorlevel! equ 0 (
         set "BACKEND_READY=1"
         goto :backend_ok
     )
 
-    echo   Waiting for Backend... !BACKEND_WAIT! / 30
+    echo   Waiting for Backend... !BACKEND_WAIT! / 60
     goto :wait_backend
 
 :backend_timeout
     echo.
-    echo   [ERROR] Backend did not respond after 60 seconds.
+    echo   [ERROR] Backend did not respond after 120 seconds.
     echo   [ERROR] Backend timeout >> "%LOG_FILE%"
     echo.
     echo   Diagnostics:
     echo     - Port %BACKEND_PORT% may already be in use
-    echo     - Check: %ROOT%app\logs\backend.log
+    echo     - Check: %ROOT%logs\backend.log
     echo.
-    echo   Last backend output (if any):
     if exist "%LOGS%\backend.log" (
         powershell -NoProfile -WindowStyle Hidden -Command "Get-Content '%LOGS%\backend.log' -Tail 5 -EA SilentlyContinue" 2>nul
     ) else (
@@ -265,21 +257,18 @@ echo.
 echo [STEP 5] Health Check Summary:
 echo.
 
-:: Runtime health
 if "!RUNTIME_READY!"=="1" (
     echo   Runtime  (port %RUNTIME_PORT%) : OK
 ) else (
     echo   Runtime  (port %RUNTIME_PORT%) : WARNING - Not responding
 )
 
-:: Backend health
 if "!BACKEND_READY!"=="1" (
     echo   Backend  (port %BACKEND_PORT%) : OK
 ) else (
     echo   Backend  (port %BACKEND_PORT%) : ERROR
 )
 
-:: Extension check
 if exist "%EXT%\extension.js" (
     echo   Extension               : OK
 ) else (
@@ -300,7 +289,7 @@ if not exist "%DATA%" mkdir "%DATA%" 2>nul
 if not exist "%ROOT%app\extensions" mkdir "%ROOT%app\extensions" 2>nul
 
 :: Launch VSCodium with Sudo AI extension
-start "SudoStudio" "%ROOT%VSCodium.exe" ^
+start "SudoStudio" "%APPDIR%VSCodium.exe" ^
     --extensions-dir "%ROOT%app\extensions" ^
     --user-data-dir "%DATA%" ^
     --extensionDevelopmentPath "%EXT%"
@@ -354,7 +343,6 @@ echo   Close this window to stop everything.
 echo ============================================================
 echo.
 
-:: -- Keep terminal open, services run in their own windows ---
 :keep_alive
 timeout /t 30 /nobreak >nul
 goto :keep_alive
