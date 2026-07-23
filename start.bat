@@ -16,8 +16,8 @@ cd /d "%~dp0"
 :: -- Global Variables ----------------------------------------
 set "ROOT=%~dp0"
 set "APPDIR=%ROOT%app\"
-set "LOGS=%ROOT%logs"
-set "LOG_FILE=%ROOT%logs\startup.log"
+set "LOGS=%ROOT%app\logs"
+set "LOG_FILE=%ROOT%app\logs\startup.log"
 set "BACKEND_PORT=5000"
 set "RUNTIME_PORT=6000"
 set "EXT=%ROOT%app\extensions\sudo-ai"
@@ -237,7 +237,7 @@ set "BACKEND_WAIT=0"
     echo.
     echo   Diagnostics:
     echo     - Port %BACKEND_PORT% may already be in use
-    echo     - Check: %ROOT%logs\backend.log
+    echo     - Check: %ROOT%app\logs\backend.log
     echo.
     echo   Last backend output (if any):
     if exist "%LOGS%\backend.log" (

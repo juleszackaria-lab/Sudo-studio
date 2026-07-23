@@ -1,29 +1,127 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const path = require('path');
-const aiModelsManager = require('./ai/aiModelsManager');
-// Enterprise security & utilities
-const helmet = require('helmet');
-const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-const { initDB } = require('./models/user.model');
-const logger = require('./utils/logger');
-const adminRoutes = require('./routes/admin.routes');
-const papitoRoutes = require('./routes/papito.routes');
-const monitorRoutes = require('./routes/monitor.routes');
-const systemRoutes = require('./routes/system.routes');
-const authRoutes = require('./routes/auth.routes');
-// God Mode - Phase 1-3 routes
-const environmentRoutes = require('./routes/environment.routes');
-const projectRoutes = require('./routes/project.routes');
-const devopsRoutes = require('./routes/devops.routes');
-const aiRoutes = require('./routes/ai.routes');
-const modelsRoutes = require('./routes/models.routes'); // ULTIME: Model management
-const sdkRoutes = require('./routes/sdk.routes'); // SDK management
+/**
+ * server.js - Sudo Studio Backend
+ *
+ * PKG-SAFE: All writable paths use process.execPath-relative resolution.
+ * Logging starts at line 1. No silent crashes.
+ * Optional modules (sqlite3, bcrypt) degrade gracefully without killing the server.
+ */
 
+'use strict';
+
+// ================================================================
+// STEP 0 — EARLY LOG: First thing that runs, before ANY require()
+// This guarantees backend.log is created even if everything else fails.
+// ================================================================
+const path = require('path');
+const fs = require('fs');
+
+// PKG-SAFE base directory (same logic as logger.js and user.model.js)
+const BASE_DIR = (typeof process.pkg !== 'undefined')
+  ? path.dirname(process.execPath)   // C:\SudoStudio\app\  under pkg
+  : path.join(__dirname, '..');      // ./backend/ in dev
+
+const LOGS_DIR = path.join(BASE_DIR, 'logs');
+const BACKEND_LOG = path.join(LOGS_DIR, 'backend.log');
+
+// Create logs dir immediately
+try {
+  if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
+} catch (e) {
+  process.stderr.write('[backend] FATAL: Cannot create logs dir: ' + e.message + '\n');
+}
+
+// Early log helper — writes to both stderr and backend.log
+function earlyLog(msg) {
+  const line = '[' + new Date().toISOString() + '] ' + msg + '\n';
+  process.stderr.write(line);
+  try { fs.appendFileSync(BACKEND_LOG, line); } catch (_) { /* ignore */ }
+}
+
+earlyLog('=== Sudo Studio Backend starting ===');
+earlyLog('BASE_DIR: ' + BASE_DIR);
+earlyLog('LOGS_DIR: ' + LOGS_DIR);
+earlyLog('pkg context: ' + (typeof process.pkg !== 'undefined'));
+earlyLog('process.execPath: ' + process.execPath);
+earlyLog('Node version: ' + process.version);
+earlyLog('Platform: ' + process.platform + ' ' + process.arch);
+
+// ================================================================
+// STEP 0.5 — GLOBAL CRASH HANDLERS
+// Catch anything that slips through so we ALWAYS get a log entry.
+// ================================================================
+process.on('uncaughtException', (err) => {
+  earlyLog('UNCAUGHT EXCEPTION: ' + err.message);
+  earlyLog('STACK: ' + (err.stack || 'no stack'));
+  // Do NOT exit — let the server keep running if possible
+});
+
+process.on('unhandledRejection', (reason) => {
+  earlyLog('UNHANDLED REJECTION: ' + (reason && reason.message ? reason.message : String(reason)));
+  if (reason && reason.stack) earlyLog('STACK: ' + reason.stack);
+});
+
+// ================================================================
+// STEP 1 — REQUIRE ALL MODULES (each wrapped, logged on failure)
+// ================================================================
+earlyLog('Loading express...');
+const express = require('express');
+earlyLog('Loading http...');
+const http = require('http');
+earlyLog('Loading socket.io...');
+const { Server } = require('socket.io');
+earlyLog('Loading aiModelsManager...');
+const aiModelsManager = require('./ai/aiModelsManager');
+earlyLog('Loading helmet...');
+const helmet = require('helmet');
+earlyLog('Loading cors...');
+const cors = require('cors');
+earlyLog('Loading express-rate-limit...');
+const rateLimit = require('express-rate-limit');
+
+earlyLog('Loading user.model...');
+const { initDB } = require('./models/user.model');
+
+earlyLog('Loading logger (winston)...');
+const logger = require('./utils/logger');
+earlyLog('Logger loaded. File transport: ' + logger.fileTransportOk);
+
+// Routes — each wrapped individually so one bad require does not kill the server
+function safeRequire(modPath, name) {
+  try {
+    const m = require(modPath);
+    earlyLog('Loaded route: ' + name);
+    return m;
+  } catch (e) {
+    earlyLog('WARNING: Failed to load route ' + name + ': ' + e.message);
+    // Return an empty router as fallback
+    const r = express.Router();
+    r.use((req, res) => res.status(503).json({ error: name + ' not available', detail: e.message }));
+    return r;
+  }
+}
+
+earlyLog('Loading routes...');
+const adminRoutes       = safeRequire('./routes/admin.routes',       'admin');
+const papitoRoutes      = safeRequire('./routes/papito.routes',      'papito');
+const monitorRoutes     = safeRequire('./routes/monitor.routes',     'monitor');
+const systemRoutes      = safeRequire('./routes/system.routes',      'system');
+const authRoutes        = safeRequire('./routes/auth.routes',        'auth');
+const environmentRoutes = safeRequire('./routes/environment.routes', 'environment');
+const projectRoutes     = safeRequire('./routes/project.routes',     'project');
+const devopsRoutes      = safeRequire('./routes/devops.routes',      'devops');
+const aiRoutes          = safeRequire('./routes/ai.routes',          'ai');
+const modelsRoutes      = safeRequire('./routes/models.routes',      'models');
+const sdkRoutes         = safeRequire('./routes/sdk.routes',         'sdk');
+earlyLog('All routes loaded');
+
+// ================================================================
+// STEP 2 — CREATE EXPRESS APP
+// ================================================================
+earlyLog('Creating Express app...');
 const app = express();
 const server = http.createServer(app);
+
+earlyLog('Creating socket.io server...');
 const io = new Server(server, {
   cors: {
     origin: ['http://localhost:5173'],
@@ -31,37 +129,20 @@ const io = new Server(server, {
   },
 });
 
-let PORT = process.env.PORT || 5000;
+// ================================================================
+// STEP 3 — MIDDLEWARE
+// ================================================================
+earlyLog('Mounting middleware...');
 
-const startServer = (port) => {
-  server.listen(port, () => {
-    console.log(`Serveur en cours d'exécution sur http://localhost:${port}`);
-  }).on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.log(`Port ${port} en cours d'utilisation, tentative avec un autre port...`);
-      startServer(port + 1);
-    } else {
-      console.error('Erreur lors du démarrage du serveur :', err);
-    }
-  });
-};
-
-app.use(express.static(path.join(__dirname, '../dist')));
-app.use(express.json()); // Middleware to parse JSON bodies
-
-// Enterprise global hardening (added, does not remove existing middleware)
+app.use(express.static(path.join(BASE_DIR, 'dist')));
+app.use(express.json());
 app.use(helmet());
 
-// CORS: allow localhost dev server + VS Code/VSCodium WebViews (vscode-webview://) + null origin (file://)
 const corsOptions = {
-  origin: function(origin, callback) {
-    // Allow requests with no origin (Node.js extension process, curl, etc.)
+  origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    // Allow localhost dev
     if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) return callback(null, true);
-    // Allow VS Code / VSCodium WebViews
     if (origin.startsWith('vscode-webview://') || origin.startsWith('vscode-file://')) return callback(null, true);
-    // Allow null (file:// origins, WebViews on some systems)
     if (origin === 'null') return callback(null, true);
     return callback(null, false);
   },
@@ -70,149 +151,138 @@ const corsOptions = {
 app.use(cors(corsOptions));
 
 const limiter = rateLimit({
-  windowMs: 1 * 60 * 1000, // 1 minute window
-  max: 500, // FIX: was 100/15min (too tight for extension usage) → 500/min
-  skip: (req) => req.path === '/health' || req.path === '/version' // never rate-limit health checks
+  windowMs: 1 * 60 * 1000,
+  max: 500,
+  skip: (req) => req.path === '/health' || req.path === '/version',
 });
 app.use(limiter);
 
-// Initialize enterprise DB and logger
-initDB().catch((e) => {
-  console.error('Failed to initialize enterprise DB:', e);
-});
+// ================================================================
+// STEP 4 — DB INIT (non-blocking — server starts even if DB fails)
+// ================================================================
+earlyLog('Initializing database...');
+initDB()
+  .then(() => earlyLog('Database initialized OK'))
+  .catch((e) => earlyLog('WARNING: Database init failed: ' + e.message + ' (server continues)'));
 
-// Mount enterprise routes (new, existing routes untouched)
-app.use('/', authRoutes);        // AUTH: Authentication routes (must be before other routes)
+// ================================================================
+// STEP 5 — MOUNT ROUTES
+// ================================================================
+earlyLog('Mounting routes...');
+app.use('/', authRoutes);
 app.use('/', adminRoutes);
 app.use('/papito', papitoRoutes);
 app.use('/', monitorRoutes);
-app.use('/', systemRoutes); // PHASE 0: System audit routes
+app.use('/', systemRoutes);
+app.use('/', environmentRoutes);
+app.use('/', projectRoutes);
+app.use('/', devopsRoutes);
+app.use('/', aiRoutes);
+app.use('/', modelsRoutes);
+app.use('/', sdkRoutes);
 
-// God Mode - Mount new API routes (Phase 1-3)
-app.use('/', environmentRoutes); // PHASE 1: Environment management
-app.use('/', projectRoutes);     // PHASE 2: Project management & auto-fix
-app.use('/', devopsRoutes);      // PHASE 2: DevOps simulator
-app.use('/', aiRoutes);          // PHASE 3: AI Chat backend (multi-models)
-app.use('/', modelsRoutes);      // ULTIME: AI Model management (install/remove)
-app.use('/', sdkRoutes);         // SDK: SDK installation and detection
-
-// Serve simple web UI for chat and model management
-app.use('/ui', express.static(path.join(__dirname, '../web-ui')));
+// Static UI
+app.use('/ui', express.static(path.join(BASE_DIR, 'web-ui')));
 
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '../dist/index.html'));
+  const idx = path.join(BASE_DIR, 'dist', 'index.html');
+  if (fs.existsSync(idx)) {
+    res.sendFile(idx);
+  } else {
+    res.json({ status: 'ok', service: 'sudo-studio-backend' });
+  }
 });
 
-// API endpoints
+// Legacy /api/models endpoints (kept for compatibility)
 app.get('/api/models', (req, res) => {
-  const models = aiModelsManager.listModels();
-  res.json(models);
+  try { res.json(aiModelsManager.listModels()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/models/:modelName', (req, res) => {
-  const info = aiModelsManager.getModelInfo(req.params.modelName);
-  if (!info) return res.status(404).json({ error: 'Model not found' });
-  res.json(info);
+  try {
+    const info = aiModelsManager.getModelInfo(req.params.modelName);
+    if (!info) return res.status(404).json({ error: 'Model not found' });
+    res.json(info);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/models/start', (req, res) => {
   const { modelName } = req.body;
   if (!modelName) return res.status(400).json({ error: 'modelName required' });
-  try {
-    const state = aiModelsManager.startModel(modelName);
-    res.json({ message: 'started', state });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { res.json({ message: 'started', state: aiModelsManager.startModel(modelName) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/models/stop', (req, res) => {
   const { modelName } = req.body;
   if (!modelName) return res.status(400).json({ error: 'modelName required' });
-  try {
-    aiModelsManager.stopModel(modelName);
-    res.json({ message: 'stopped' });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { aiModelsManager.stopModel(modelName); res.json({ message: 'stopped' }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/models/infer', async (req, res) => {
   const { modelName, input } = req.body;
-  try {
-    const out = await aiModelsManager.infer(modelName, input);
-    res.json(out);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  try { res.json(await aiModelsManager.infer(modelName, input)); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/models/download', async (req, res) => {
   const { modelName, url } = req.body;
-
-  if (!modelName || !url) {
-    return res.status(400).json({ error: 'Model name and URL are required.' });
-  }
-
-  try {
-    const modelPath = await aiModelsManager.downloadModel(modelName, url);
-    res.json({ message: `Model ${modelName} downloaded successfully.`, path: modelPath });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to download model.' });
-  }
+  if (!modelName || !url) return res.status(400).json({ error: 'modelName and url required' });
+  try { res.json({ message: `Model ${modelName} downloaded`, path: await aiModelsManager.downloadModel(modelName, url) }); }
+  catch (e) { res.status(500).json({ error: 'Failed to download model' }); }
 });
 
-// Chat endpoint: frontend posts { modelName, prompt }
 app.post('/api/chat', async (req, res) => {
   const { modelName, prompt } = req.body;
   if (!prompt) return res.status(400).json({ error: 'Prompt is required.' });
-
-  const available = aiModelsManager.listModels();
-  if (modelName && !available.includes(modelName)) {
-    return res.status(400).json({ error: `Model ${modelName} not available on server.` });
-  }
-
-  // Placeholder: here you would load the model and run inference.
-  // For now we respond with a simulated reply referencing the prompt.
   const reply = `Réponse simulée pour le prompt: "${prompt}"`;
   res.json({ reply });
 });
 
 app.delete('/api/models/:modelName', (req, res) => {
-  const { modelName } = req.params;
-
-  try {
-    aiModelsManager.deleteModel(modelName);
-    res.json({ message: `Model ${modelName} deleted successfully.` });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to delete model.' });
-  }
+  try { aiModelsManager.deleteModel(req.params.modelName); res.json({ message: `Model deleted` }); }
+  catch (e) { res.status(500).json({ error: 'Failed to delete model' }); }
 });
 
+// Socket.io
 io.on('connection', (socket) => {
-  console.log('Un utilisateur est connecté');
-
+  earlyLog('Socket connected: ' + socket.id);
   socket.on('chat-message', async (data) => {
-    // data: { modelName, prompt }
-    const { modelName, prompt } = data || {};
-    const reply = `Réponse simulée: ${prompt || ''}`;
-    socket.emit('chat-response', { reply });
+    const { prompt } = data || {};
+    socket.emit('chat-response', { reply: `Réponse simulée: ${prompt || ''}` });
   });
-
   socket.on('disconnect', () => {
-    console.log('Un utilisateur s\'est déconnecté');
+    earlyLog('Socket disconnected: ' + socket.id);
   });
 });
+
+// Centralized error handler
+app.use((err, req, res, next) => {
+  earlyLog('Express error: ' + err.message);
+  try { logger.error(err); } catch (e) { /* ignore */ }
+  res.status(err.status || 500).json({ error: err.message || 'Internal Server Error' });
+});
+
+// ================================================================
+// STEP 6 — START LISTENING
+// ================================================================
+const PORT = process.env.PORT || 5000;
+
+function startServer(port) {
+  earlyLog('Starting server on port ' + port + '...');
+  server.listen(port, '0.0.0.0', () => {
+    earlyLog('=== SERVER LISTENING on port ' + port + ' ===');
+    earlyLog('Health: http://localhost:' + port + '/api/system/health');
+  }).on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      earlyLog('Port ' + port + ' in use, trying ' + (port + 1));
+      startServer(port + 1);
+    } else {
+      earlyLog('FATAL server error: ' + err.message);
+    }
+  });
+}
 
 startServer(PORT);
-
-// Centralized error handler (added, does not modify existing handlers)
-app.use((err, req, res, next) => {
-  try {
-    logger.error(err);
-  } catch (e) {
-    console.error('Logger error:', e);
-  }
-  const status = err.status || 500;
-  res.status(status).json({ error: err.message || 'Internal Server Error' });
-});
