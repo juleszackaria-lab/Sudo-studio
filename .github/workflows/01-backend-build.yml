@@ -20,22 +20,22 @@ jobs:
         with:
           node-version: 18
 
+      - name: Install Visual Studio Build Tools
+        run: |
+          npm install -g windows-build-tools --vs2019 2>nul || true
+          choco install visualstudio2019buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools" -y --no-progress 2>nul || true
+        shell: powershell
+
       - name: Install dependencies
         run: npm install
 
       - name: Install pkg globally
         run: npm install -g pkg
 
-      # FIX: Use pkg package.json config (includes assets for better_sqlite3.node)
-      # better-sqlite3 has ONE .node binary (no bindings indirection via Error.stack)
-      # bcryptjs is pure-JS (zero .node file needed)
       - name: Build backend.exe
         run: pkg package.json --targets node18-win-x64 --output backend.exe
 
-      # Copy better-sqlite3 native binary next to the exe.
-      # pkg includes it in the snapshot but also needs it accessible on disk
-      # for process.dlopen() to work correctly on Windows.
-      - name: Copy native binaries next to backend.exe
+      - name: Copy native binaries
         shell: powershell
         run: |
           $dest = "native-modules"
@@ -46,11 +46,11 @@ jobs:
             Copy-Item $bsqlite -Destination "$dest\better_sqlite3.node"
             Write-Host "[OK] Copied better_sqlite3.node"
           } else {
-            Write-Warning "[WARN] better_sqlite3.node NOT FOUND - path: $bsqlite"
-            Get-ChildItem "node_modules\better-sqlite3\build" -Recurse -Filter "*.node" -ErrorAction SilentlyContinue
+            Write-Warning "[WARN] better_sqlite3.node NOT FOUND"
+            Get-ChildItem "node_modules\better-sqlite3\build" -Recurse -Filter "*.node" -EA SilentlyContinue
           }
 
-          Write-Host "Native modules to ship:"
+          Write-Host "Native modules:"
           Get-ChildItem $dest
 
       - name: Verify build output
@@ -58,9 +58,9 @@ jobs:
         run: |
           if (Test-Path "backend.exe") {
             $size = (Get-Item "backend.exe").Length / 1MB
-            Write-Host "[OK] backend.exe built: $([math]::Round($size,1)) MB"
+            Write-Host "[OK] backend.exe: $([math]::Round($size,1)) MB"
           } else {
-            Write-Error "[FAIL] backend.exe not found!"
+            Write-Error "[FAIL] backend.exe not found"
             exit 1
           }
 
