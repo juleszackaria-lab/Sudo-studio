@@ -21,10 +21,10 @@ jobs:
           node-version: 18
 
       - name: Install Visual Studio Build Tools
+        shell: cmd
         run: |
-          npm install -g windows-build-tools --vs2019 2>nul || true
-          choco install visualstudio2019buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools" -y --no-progress 2>nul || true
-        shell: powershell
+          choco install visualstudio2019buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" -y --no-progress
+          choco install visualstudio2019-workload-vctools -y --no-progress
 
       - name: Install dependencies
         run: npm install
@@ -47,7 +47,7 @@ jobs:
             Write-Host "[OK] Copied better_sqlite3.node"
           } else {
             Write-Warning "[WARN] better_sqlite3.node NOT FOUND"
-            Get-ChildItem "node_modules\better-sqlite3\build" -Recurse -Filter "*.node" -EA SilentlyContinue
+            Get-ChildItem "node_modules\better-sqlite3\build" -Recurse -Filter "*.node" -ErrorAction SilentlyContinue
           }
 
           Write-Host "Native modules:"
