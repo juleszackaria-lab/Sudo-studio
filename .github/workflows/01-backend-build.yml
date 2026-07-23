@@ -33,7 +33,7 @@ jobs:
         run: npm install -g pkg
 
       - name: Build backend.exe
-        run: pkg package.json --targets node18-win-x64 --output backend.exe
+        run: pkg server.js --targets node18-win-x64 --output backend.exe
 
       - name: Copy native binaries
         shell: powershell
