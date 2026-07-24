@@ -2,35 +2,41 @@
  * server.js - Sudo Studio Backend
  *
  * PKG-SAFE: All writable paths use process.execPath-relative resolution.
- * Logging starts at line 1. No silent crashes.
- * Optional modules (sqlite3, bcrypt) degrade gracefully without killing the server.
+ * ZERO native C++ modules — sql.js (pure-JS SQLite) + bcryptjs (pure-JS bcrypt).
+ * backend.log is written as the VERY FIRST operation, before any npm require().
  */
 
+// ================================================================
+// ABSOLUTE FIRST LINES — write backend.log BEFORE any other require()
+// Uses ONLY Node.js built-ins (fs, path). Zero npm dependencies here.
+// ================================================================
+const fs = require('fs')
+const path = require('path')
+const logDir = process.pkg
+  ? path.join(path.dirname(process.execPath), '..', 'logs')
+  : path.join(__dirname, '..', 'logs')
+if (!fs.existsSync(logDir)) {
+  fs.mkdirSync(logDir, { recursive: true })
+}
+fs.writeFileSync(
+  path.join(logDir, 'backend.log'),
+  new Date().toISOString() + ' Backend starting...\n'
+)
+
+// ================================================================
+// STEP 0 — early log helper (appends to backend.log + stderr)
+// ================================================================
 'use strict';
 
-// ================================================================
-// STEP 0 — EARLY LOG: First thing that runs, before ANY require()
-// This guarantees backend.log is created even if everything else fails.
-// ================================================================
-const path = require('path');
-const fs = require('fs');
-
-// PKG-SAFE base directory (same logic as logger.js and user.model.js)
-const BASE_DIR = (typeof process.pkg !== 'undefined')
-  ? path.dirname(process.execPath)   // C:\SudoStudio\app\  under pkg
-  : path.join(__dirname, '..');      // ./backend/ in dev
-
-const LOGS_DIR = path.join(BASE_DIR, 'logs');
+const LOGS_DIR    = logDir;
 const BACKEND_LOG = path.join(LOGS_DIR, 'backend.log');
 
-// Create logs dir immediately
-try {
-  if (!fs.existsSync(LOGS_DIR)) fs.mkdirSync(LOGS_DIR, { recursive: true });
-} catch (e) {
-  process.stderr.write('[backend] FATAL: Cannot create logs dir: ' + e.message + '\n');
-}
+// BASE_DIR: root directory for static assets (dist/, web-ui/)
+// Same pkg-safe logic as logDir but without the /logs suffix
+const BASE_DIR = process.pkg
+  ? path.join(path.dirname(process.execPath), '..')
+  : path.join(__dirname, '..');
 
-// Early log helper — writes to both stderr and backend.log
 function earlyLog(msg) {
   const line = '[' + new Date().toISOString() + '] ' + msg + '\n';
   process.stderr.write(line);
@@ -38,8 +44,7 @@ function earlyLog(msg) {
 }
 
 earlyLog('=== Sudo Studio Backend starting ===');
-earlyLog('BASE_DIR: ' + BASE_DIR);
-earlyLog('LOGS_DIR: ' + LOGS_DIR);
+earlyLog('logDir (pkg-safe): ' + logDir);
 earlyLog('pkg context: ' + (typeof process.pkg !== 'undefined'));
 earlyLog('process.execPath: ' + process.execPath);
 earlyLog('Node version: ' + process.version);

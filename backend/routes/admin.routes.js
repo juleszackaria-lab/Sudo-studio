@@ -1,7 +1,7 @@
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs'); // pure-JS, zero native .node — compatible with pkg
 const logger = require('../utils/logger');
 const { getUserByUsername, createUser } = require('../models/user.model');
 const { verifyToken, requireAdmin } = require('../middleware/auth.middleware');

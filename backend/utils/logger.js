@@ -7,7 +7,7 @@
  *   crashes the process before server.listen() is ever reached.
  *
  *   Fix: use process.execPath-relative paths when running inside a pkg bundle.
- *     pkg context  -> path.dirname(process.execPath) = C:\SudoStudio\app\
+ *     pkg context  -> path.join(path.dirname(process.execPath), '..') = C:\SudoStudio\
  *     dev context  -> path.join(__dirname, '..') = ./backend/
  *
  *   This is the ONLY correct pattern for writable runtime paths under pkg.
@@ -23,8 +23,8 @@ const fs = require('fs');
 // In that case __dirname is a virtual read-only snapshot path.
 // ----------------------------------------------------------------
 const BASE_DIR = (typeof process.pkg !== 'undefined')
-  ? path.dirname(process.execPath)   // e.g. C:\SudoStudio\app\
-  : path.join(__dirname, '..');      // e.g. ./backend/ (dev)
+  ? path.join(path.dirname(process.execPath), '..') // e.g. C:\SudoStudio\ (install root, one up from app\)
+  : path.join(__dirname, '..');                      // e.g. ./backend/ (dev)
 
 const logsDir = path.join(BASE_DIR, 'logs');
 
