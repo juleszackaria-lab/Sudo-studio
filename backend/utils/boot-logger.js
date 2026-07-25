@@ -32,10 +32,13 @@ function getLogsDir() {
 
 const logsDir = getLogsDir();
 
+console.log('[PKG-SAFE] boot-logger writing to:', logsDir);
+
 // Create logs dir synchronously — must exist before first write
 try {
   if (!fs.existsSync(logsDir)) {
     fs.mkdirSync(logsDir, { recursive: true });
+    console.log('[PKG-SAFE] Created logs dir:', logsDir);
   }
 } catch (e) {
   // If we can't create logs dir, fall back to temp dir

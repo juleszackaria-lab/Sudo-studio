@@ -1,11 +1,29 @@
+// aiModelsManager.js (root — legacy compatibility shim)
+// PKG-SAFE: all writable paths use process.execPath-relative resolution.
+// Under pkg, __dirname = /snapshot/... (READ-ONLY). Never mkdir there.
+
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-const modelsPath = path.join(__dirname, 'models');
+// ----------------------------------------------------------------
+// PKG-SAFE base directory
+// ----------------------------------------------------------------
+const BASE = process.pkg
+  ? path.join(path.dirname(process.execPath), '..')
+  : path.join(__dirname, '..');
 
-if (!fs.existsSync(modelsPath)) {
-  fs.mkdirSync(modelsPath);
+const modelsPath = path.join(BASE, 'data', 'ai-models');
+
+console.log('[PKG-SAFE] aiModelsManager (root) writing to:', modelsPath);
+
+try {
+  if (!fs.existsSync(modelsPath)) {
+    fs.mkdirSync(modelsPath, { recursive: true });
+    console.log('[PKG-SAFE] Created models dir:', modelsPath);
+  }
+} catch (e) {
+  console.error('[aiModelsManager-root] WARNING: Cannot create modelsPath:', e.message);
 }
 
 const models = [
@@ -43,6 +61,8 @@ async function downloadModel(modelName) {
     console.log(`Model ${modelName} is already downloaded.`);
     return;
   }
+
+  console.log(`[PKG-SAFE] Downloading ${modelName} to ${filePath}...`);
 
   const writer = fs.createWriteStream(filePath);
   const response = await axios({

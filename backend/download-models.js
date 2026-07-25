@@ -1,8 +1,23 @@
+// download-models.js — PKG-SAFE model downloader
+// Under pkg, __dirname = /snapshot/... (READ-ONLY virtual FS).
+// All writes use BASE (install root) via process.execPath.
+
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
 
-const MAX_SIZE_MB = 100; // Taille maximale autorisée pour les téléchargements
+const MAX_SIZE_MB = 100;
+
+// ----------------------------------------------------------------
+// PKG-SAFE base directory
+// ----------------------------------------------------------------
+const BASE = process.pkg
+  ? path.join(path.dirname(process.execPath), '..')
+  : path.join(__dirname, '..');
+
+const modelsDir = path.join(BASE, 'data', 'ai-models');
+
+console.log('[PKG-SAFE] download-models writing to:', modelsDir);
 
 const download = (url, dest) => {
   return new Promise((resolve, reject) => {
@@ -10,9 +25,9 @@ const download = (url, dest) => {
       const contentLength = parseInt(response.headers['content-length'], 10) / (1024 * 1024);
 
       if (contentLength > MAX_SIZE_MB) {
-        console.error(`Le fichier ${url} dépasse la taille maximale autorisée (${MAX_SIZE_MB} Mo).`);
+        console.error(`File ${url} exceeds max size (${MAX_SIZE_MB} MB).`);
         response.destroy();
-        return reject(new Error('Fichier trop volumineux.'));
+        return reject(new Error('File too large.'));
       }
 
       const file = fs.createWriteStream(dest);
@@ -27,13 +42,14 @@ const download = (url, dest) => {
 };
 
 const models = [
-  { url: 'https://huggingface.co/gpt2/resolve/main/pytorch_model.bin', dest: path.join(__dirname, 'models', 'gpt2.bin') },
-  { url: 'https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin', dest: path.join(__dirname, 'models', 'bert-base-uncased.bin') },
+  { url: 'https://huggingface.co/gpt2/resolve/main/pytorch_model.bin',             dest: path.join(modelsDir, 'gpt2.bin') },
+  { url: 'https://huggingface.co/bert-base-uncased/resolve/main/pytorch_model.bin', dest: path.join(modelsDir, 'bert-base-uncased.bin') },
 ];
 
 (async () => {
-  if (!fs.existsSync(path.join(__dirname, 'models'))){
-    fs.mkdirSync(path.join(__dirname, 'models'));
+  if (!fs.existsSync(modelsDir)) {
+    fs.mkdirSync(modelsDir, { recursive: true });
+    console.log('[PKG-SAFE] Created models dir:', modelsDir);
   }
 
   for (const model of models) {

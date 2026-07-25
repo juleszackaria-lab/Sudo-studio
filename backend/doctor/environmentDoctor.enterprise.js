@@ -445,7 +445,13 @@ class EnvironmentDoctor {
    */
   async saveReport(filename = 'environment-report.json') {
     try {
-      const reportPath = path.join(process.cwd(), 'logs', filename);
+      // PKG-SAFE: process.cwd() inside pkg returns the snapshot dir (READ-ONLY).
+      // Use process.execPath-relative path to a real writable location.
+      const BASE = process.pkg
+        ? path.join(path.dirname(process.execPath), '..')
+        : path.join(__dirname, '..', '..');
+      const reportPath = path.join(BASE, 'logs', filename);
+      console.log('[PKG-SAFE] environmentDoctor saving report to:', reportPath);
       await fs.mkdir(path.dirname(reportPath), { recursive: true });
       await fs.writeFile(reportPath, JSON.stringify(this.report, null, 2));
       logger.info(`Report saved to ${reportPath}`);
