@@ -49,24 +49,20 @@ try {
 // ---------------------------------------------------------------------------
 // sql.js WASM location — pkg-safe
 // ---------------------------------------------------------------------------
-function locateWasmFile(filename /*, prefix*/) {
-  // sql.js calls this to find sql-wasm.wasm
-  // Under pkg: try next to the exe first, then next to execPath/../
-  if (process.pkg) {
-    const exeDir = path.dirname(process.execPath);
-    const candidates = [
-      path.join(exeDir, filename),
-      path.join(exeDir, '..', filename),
-    ];
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-    // Fallback: let sql.js use asm.js (no wasm needed) — handled below
-    return path.join(exeDir, filename);
-  }
-  // Dev: wasm file is inside node_modules/sql.js/dist/
-  return path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', filename);
-}
+// Under pkg, sql.js cannot auto-locate sql-wasm.wasm (it tries to fetch it
+// as a URL which fails in a Node.js exe).  We give it the exact absolute path
+// via locateFile: () => wasmPath so it never has to guess.
+//
+// pkg  : wasm is copied next to backend.exe by the CI workflow
+//        path.dirname(process.execPath) = C:\SudoStudio\app\
+// dev  : wasm lives in node_modules/sql.js/dist/
+//        __dirname here = backend/models/, so '../node_modules/...' is correct
+const wasmPath = process.pkg
+  ? path.join(path.dirname(process.execPath), 'sql-wasm.wasm')
+  : path.join(__dirname, '..', 'node_modules', 'sql.js', 'dist', 'sql-wasm.wasm');
+
+process.stderr.write('[user.model] sql-wasm.wasm path: ' + wasmPath + '\n');
+process.stderr.write('[user.model] wasm exists: ' + fs.existsSync(wasmPath) + '\n');
 
 // ---------------------------------------------------------------------------
 // Module-level DB instance (initialized lazily via initDB())
@@ -110,15 +106,17 @@ async function _doInitDB() {
       return;
     }
 
-    // Initialise sql.js — locateFile lets it find the .wasm next to the exe
+    // Initialise sql.js — locateFile returns exact absolute path, no guessing
     try {
-      SQL = await initSqlJs({ locateFile: locateWasmFile });
+      SQL = await initSqlJs({ locateFile: () => wasmPath });
+      process.stderr.write('[user.model] sql.js initialised OK (wasm)\n');
     } catch (e) {
-      // Wasm not found or failed — try asm.js build (truly pure JS, no wasm)
-      process.stderr.write('[user.model] wasm init failed (' + e.message + '), trying asm.js build\n');
+      // wasm load failed → fall back to asm.js (100% pure JS, no wasm file needed)
+      process.stderr.write('[user.model] wasm init failed (' + e.message + '), trying asm.js fallback\n');
       try {
-        initSqlJs = require('sql.js/dist/sql-asm.js');
-        SQL = await initSqlJs();
+        const initSqlJsAsm = require('sql.js/dist/sql-asm.js');
+        SQL = await initSqlJsAsm();
+        process.stderr.write('[user.model] sql.js initialised OK (asm.js fallback)\n');
       } catch (e2) {
         dbError = e2;
         process.stderr.write('[user.model] FATAL: sql.js asm.js also failed: ' + e2.message + '\n');
