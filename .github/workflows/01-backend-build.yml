@@ -20,36 +20,26 @@ jobs:
         with:
           node-version: 18
 
-      # No Visual Studio Build Tools needed — zero native C++ modules.
-      # sql.js = pure WebAssembly/JS. bcryptjs = pure JS. No .node files.
-
       - name: Install dependencies
         run: npm install
 
       - name: Install pkg globally
         run: npm install -g pkg
 
-      # Use package.json as entry point so pkg picks up the pkg.assets config
-      # (which embeds sql-wasm.wasm in the snapshot as a fallback).
-      # We also copy sql-wasm.wasm next to the exe on disk so locateFile()
-      # can find it at path.dirname(process.execPath)/sql-wasm.wasm.
       - name: Build backend.exe
-        run: pkg package.json --targets node18-win-x64 --output backend.exe
+        run: pkg server.js --targets node18-win-x64 --output backend.exe --assets node_modules/sql.js/dist/sql-wasm.wasm
 
-      # Copy sql-wasm.wasm next to backend.exe.
-      # user.model.js locateFile: () => path.dirname(process.execPath)/sql-wasm.wasm
-      # → this file must exist at that exact location when the exe runs.
       - name: Copy sql-wasm.wasm next to backend.exe
         shell: powershell
         run: |
           $wasmSrc = "node_modules\sql.js\dist\sql-wasm.wasm"
           if (Test-Path $wasmSrc) {
             Copy-Item $wasmSrc -Destination "sql-wasm.wasm"
-            Write-Host "[OK] Copied sql-wasm.wasm next to backend.exe"
+            Write-Host "[OK] Copied sql-wasm.wasm"
             $size = (Get-Item "sql-wasm.wasm").Length / 1KB
-            Write-Host "[OK] sql-wasm.wasm size: $([math]::Round($size,0)) KB"
+            Write-Host "[OK] Size: $([math]::Round($size,0)) KB"
           } else {
-            Write-Error "[FAIL] sql-wasm.wasm NOT FOUND at $wasmSrc"
+            Write-Error "[FAIL] sql-wasm.wasm NOT FOUND"
             exit 1
           }
 
@@ -58,20 +48,17 @@ jobs:
         run: |
           if (Test-Path "backend.exe") {
             $size = (Get-Item "backend.exe").Length / 1MB
-            Write-Host "[OK] backend.exe built: $([math]::Round($size,1)) MB"
+            Write-Host "[OK] backend.exe: $([math]::Round($size,1)) MB"
           } else {
-            Write-Error "[FAIL] backend.exe not found!"
+            Write-Error "[FAIL] backend.exe not found"
             exit 1
           }
           if (Test-Path "sql-wasm.wasm") {
-            Write-Host "[OK] sql-wasm.wasm present next to exe"
+            Write-Host "[OK] sql-wasm.wasm present"
           } else {
-            Write-Error "[FAIL] sql-wasm.wasm missing!"
+            Write-Error "[FAIL] sql-wasm.wasm missing"
             exit 1
           }
-          Write-Host "Artifact contents:"
-          Get-ChildItem . -Filter "*.exe"
-          Get-ChildItem . -Filter "*.wasm"
 
       - name: Upload backend artifact
         uses: actions/upload-artifact@v4
