@@ -20,6 +20,11 @@ jobs:
         with:
           node-version: 18
 
+      # Zero native C++ modules:
+      #   lowdb@1.0.0  — pure JS JSON database, no wasm, no .node
+      #   bcryptjs     — pure JS bcrypt, no .node
+      # No Visual Studio Build Tools needed.
+
       - name: Install dependencies
         run: npm install
 
@@ -27,36 +32,16 @@ jobs:
         run: npm install -g pkg
 
       - name: Build backend.exe
-        run: pkg server.js --targets node18-win-x64 --output backend.exe --assets node_modules/sql.js/dist/sql-wasm.wasm
-
-      - name: Copy sql-wasm.wasm next to backend.exe
-        shell: powershell
-        run: |
-          $wasmSrc = "node_modules\sql.js\dist\sql-wasm.wasm"
-          if (Test-Path $wasmSrc) {
-            Copy-Item $wasmSrc -Destination "sql-wasm.wasm"
-            Write-Host "[OK] Copied sql-wasm.wasm"
-            $size = (Get-Item "sql-wasm.wasm").Length / 1KB
-            Write-Host "[OK] Size: $([math]::Round($size,0)) KB"
-          } else {
-            Write-Error "[FAIL] sql-wasm.wasm NOT FOUND"
-            exit 1
-          }
+        run: pkg package.json --targets node18-win-x64 --output backend.exe
 
       - name: Verify build output
         shell: powershell
         run: |
           if (Test-Path "backend.exe") {
             $size = (Get-Item "backend.exe").Length / 1MB
-            Write-Host "[OK] backend.exe: $([math]::Round($size,1)) MB"
+            Write-Host "[OK] backend.exe built: $([math]::Round($size,1)) MB"
           } else {
-            Write-Error "[FAIL] backend.exe not found"
-            exit 1
-          }
-          if (Test-Path "sql-wasm.wasm") {
-            Write-Host "[OK] sql-wasm.wasm present"
-          } else {
-            Write-Error "[FAIL] sql-wasm.wasm missing"
+            Write-Error "[FAIL] backend.exe not found!"
             exit 1
           }
 
@@ -64,6 +49,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: backend-exe
-          path: |
-            backend/backend.exe
-            backend/sql-wasm.wasm
+          path: backend/backend.exe
