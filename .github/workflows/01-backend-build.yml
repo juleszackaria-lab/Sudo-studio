@@ -20,16 +20,38 @@ jobs:
         with:
           node-version: 18
 
-      # Zero native C++ modules:
-      #   lowdb@1.0.0  — pure JS JSON database, no wasm, no .node
-      #   bcryptjs     — pure JS bcrypt, no .node
-      # No Visual Studio Build Tools needed.
-
       - name: Install dependencies
         run: npm install
 
       - name: Install pkg globally
         run: npm install -g pkg
+
+      - name: Add bin to package.json
+        shell: powershell
+        run: |
+          $pkg = Get-Content "package.json" | ConvertFrom-Json
+          $pkg | Add-Member -NotePropertyName "bin" -NotePropertyValue "server.js" -Force
+          if (-not $pkg.pkg) {
+            $pkgConfig = @{
+              targets = @("node18-win-x64")
+              scripts = @(
+                "routes/**/*.js",
+                "middleware/**/*.js",
+                "models/**/*.js",
+                "services/**/*.js",
+                "utils/**/*.js",
+                "ai/**/*.js",
+                "doctor/**/*.js",
+                "installers/**/*.js",
+                "config/**/*.js"
+              )
+            }
+            $pkg | Add-Member -NotePropertyName "pkg" -NotePropertyValue $pkgConfig -Force
+          }
+          $pkg | ConvertTo-Json -Depth 10 | Set-Content "package.json"
+          Write-Host "[OK] Added bin and pkg config to package.json"
+          Write-Host "--- package.json bin field ---"
+          (Get-Content "package.json" | ConvertFrom-Json).bin
 
       - name: Build backend.exe
         run: pkg package.json --targets node18-win-x64 --output backend.exe
