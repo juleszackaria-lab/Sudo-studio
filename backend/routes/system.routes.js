@@ -69,7 +69,7 @@ router.get('/api/system/audit', async (req, res) => {
       { name: 'helmet', path: 'helmet' },
       { name: 'cors', path: 'cors' },
       { name: 'jsonwebtoken', path: 'jsonwebtoken' },
-      { name: 'bcrypt', path: 'bcrypt' },
+      { name: 'bcryptjs', path: 'bcryptjs' },
       { name: 'winston', path: 'winston' },
       { name: 'axios', path: 'axios' }
     ];

@@ -2,7 +2,7 @@
  * server.js - Sudo Studio Backend
  *
  * PKG-SAFE: All writable paths use process.execPath-relative resolution.
- * ZERO native C++ modules — sql.js (pure-JS SQLite) + bcryptjs (pure-JS bcrypt).
+ * ZERO native C++ modules — lowdb (pure-JS JSON DB) + bcryptjs (pure-JS bcrypt).
  * backend.log is written as the VERY FIRST operation, before any npm require().
  */
 
@@ -54,15 +54,37 @@ earlyLog('Platform: ' + process.platform + ' ' + process.arch);
 // STEP 0.5 — GLOBAL CRASH HANDLERS
 // Catch anything that slips through so we ALWAYS get a log entry.
 // ================================================================
+// Track whether we are already inside an error handler to prevent infinite EPIPE loops.
+// earlyLog() writes to process.stderr — if stderr itself is broken (EPIPE) the write
+// triggers another uncaughtException which calls earlyLog again → infinite loop.
+let _inErrorHandler = false;
+
 process.on('uncaughtException', (err) => {
-  earlyLog('UNCAUGHT EXCEPTION: ' + err.message);
-  earlyLog('STACK: ' + (err.stack || 'no stack'));
-  // Do NOT exit — let the server keep running if possible
+  if (_inErrorHandler) return; // break the EPIPE → uncaughtException loop
+  _inErrorHandler = true;
+  try {
+    // EPIPE on stderr is harmless — suppress the flood, just note it once
+    if (err.code === 'EPIPE') {
+      try { fs.appendFileSync(BACKEND_LOG, '[' + new Date().toISOString() + '] EPIPE on stderr (suppressed)\n'); } catch (_) {}
+      _inErrorHandler = false;
+      return;
+    }
+    earlyLog('UNCAUGHT EXCEPTION: ' + err.message);
+    earlyLog('STACK: ' + (err.stack || 'no stack'));
+  } finally {
+    _inErrorHandler = false;
+  }
 });
 
 process.on('unhandledRejection', (reason) => {
-  earlyLog('UNHANDLED REJECTION: ' + (reason && reason.message ? reason.message : String(reason)));
-  if (reason && reason.stack) earlyLog('STACK: ' + reason.stack);
+  if (_inErrorHandler) return;
+  _inErrorHandler = true;
+  try {
+    earlyLog('UNHANDLED REJECTION: ' + (reason && reason.message ? reason.message : String(reason)));
+    if (reason && reason.stack) earlyLog('STACK: ' + reason.stack);
+  } finally {
+    _inErrorHandler = false;
+  }
 });
 
 // ================================================================
