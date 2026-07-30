@@ -1,12 +1,12 @@
 const request = require('supertest');
 const express = require('express');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 
 // Mock dependencies
 jest.mock('../../models/user.model');
 jest.mock('../../utils/logger');
-jest.mock('bcrypt');
+jest.mock('bcryptjs');
 jest.mock('jsonwebtoken');
 
 const { getUserByUsername, createUser } = require('../../models/user.model');
