@@ -146,7 +146,7 @@ class BackendService {
      */
     async analyzeProject(projectPath) {
         const response = await axios.post(`${this.baseUrl}/api/project/analyze`, {
-            path: projectPath
+            projectPath: projectPath
         }, {
             headers: this.getHeaders(),
             timeout: 60000

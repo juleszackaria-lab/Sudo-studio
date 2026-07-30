@@ -63,9 +63,9 @@ process.on('uncaughtException', (err) => {
   if (_inErrorHandler) return; // break the EPIPE → uncaughtException loop
   _inErrorHandler = true;
   try {
-    // EPIPE on stderr is harmless — suppress the flood, just note it once
-    if (err.code === 'EPIPE') {
-      try { fs.appendFileSync(BACKEND_LOG, '[' + new Date().toISOString() + '] EPIPE on stderr (suppressed)\n'); } catch (_) {}
+    // EPIPE / ECONNRESET on stderr/sockets are harmless — suppress the flood
+    if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
+      try { fs.appendFileSync(BACKEND_LOG, '[' + new Date().toISOString() + '] ' + err.code + ' (suppressed)\n'); } catch (_) {}
       _inErrorHandler = false;
       return;
     }
