@@ -391,6 +391,7 @@ router.post('/api/devops/generate', verifyToken, async (req, res) => {
     }
 
     res.json({
+      success: true,
       status: 'generated',
       type,
       stack,

@@ -41,11 +41,27 @@ router.get('/api/sdk/list', verifyToken, (req, res) => {
  */
 router.post('/api/sdk/install', verifyToken, async (req, res) => {
   try {
-    const { sdk, version } = req.body;
+    const { sdk: sdkRaw, version } = req.body;
 
-    if (!sdk) {
+    if (!sdkRaw) {
       return res.status(400).json({ error: 'sdk is required' });
     }
+
+    // Normalize: accept both id ("nodejs") and display name ("Node.js", "Python 3", etc.)
+    const nameToId = {
+      'node.js': 'nodejs', 'node': 'nodejs', 'nodejs': 'nodejs',
+      'python 3': 'python', 'python3': 'python', 'python': 'python',
+      'java jdk': 'java', 'java': 'java',
+      '.net sdk': 'dotnet', '.net': 'dotnet', 'dotnet': 'dotnet',
+      'go': 'go',
+      'rust': 'rust',
+      'ruby': 'ruby',
+      'php': 'php',
+      'docker': 'docker',
+      'git': 'git',
+      'android sdk': 'android', 'android': 'android'
+    };
+    const sdk = nameToId[sdkRaw.toLowerCase()] || sdkRaw.toLowerCase();
 
     logger.info('SDK install requested', {
       user: req.user.username,
@@ -117,6 +133,7 @@ router.post('/api/sdk/install', verifyToken, async (req, res) => {
     }
 
     res.json({
+      success: true,
       status: 'ready',
       sdk,
       version: version || 'latest',

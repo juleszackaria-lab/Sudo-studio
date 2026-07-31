@@ -71,7 +71,8 @@ router.post('/api/project/analyze', verifyToken, async (req, res) => {
         maintainability: 72,
         test_coverage: 45,
         bundle_size: '1.2 MB'
-      }
+      },
+      score: 72
     };
 
     res.json(analysis);
