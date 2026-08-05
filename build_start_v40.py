@@ -3,25 +3,21 @@
 """
 build_start_v40.py
 ==================
-Generates start.bat v4.0 with CRLF line endings and pure ASCII content.
-Fixes ALL identified root causes from the diagnostic:
+Generates start.bat v4.1 with CRLF line endings and pure ASCII content.
 
-ROOT CAUSE #1: installer.iss missing WorkingDir  -> fixed in installer.iss (separate)
-ROOT CAUSE #2: APP=%ROOT%app wrong subdir        -> fixed: APP=%ROOT% (files are in root)
-ROOT CAUSE #3: UTF-8 chars in comments           -> fixed: pure ASCII only
-ROOT CAUSE #4: goto :main + full file parsed     -> fixed: subroutines at TOP, no goto needed
-ROOT CAUSE #5: start /B cmd /c ^"..."^" fragile  -> fixed: start "" /MIN "exe" approach
+ROOT CAUSES FIXED in v4.1:
+  BUG #1: APPDIR=%ROOT%app\\  WRONG  -> fixed: APP=%ROOT% (exe files are in ROOT directly)
+  BUG #2: EXT=%ROOT%app\\extensions\\sudo-ai  WRONG  -> fixed: EXT=%ROOT%extensions\\sudo-ai
+  BUG #3: DATA=%ROOT%app\\data  WRONG  -> fixed: DATA=%ROOT%data
+  BUG #4: start "..." exe ^ / next-line   FRAGILE  -> fixed: build full cmd in a variable, single line
+  BUG #5: startup.log stops at [PHASE 3]  -> fixed: PHASE 5 now writes to log + checks process
 """
 
 import os
 
 CRLF = "\r\n"
 
-def ln(*args):
-    """Join lines with CRLF."""
-    return CRLF.join(args)
-
-# Pure ASCII batch script - NO UTF-8, NO special chars, NO goto :main trick
+# Pure ASCII batch script - NO UTF-8, NO special chars
 LINES = [
     # ============================================================
     # HEADER
@@ -31,34 +27,33 @@ LINES = [
     "title Sudo Studio - Starting...",
     "",
     ":: ============================================================",
-    "::  SUDO STUDIO v4.0 - Windows Launcher",
+    "::  SUDO STUDIO v4.1 - Windows Launcher",
     "::  backend.exe  = Node.js/Express (pkg node18-win-x64)",
     "::  runtime.exe  = Python/Flask + HuggingFace AI",
     "::  No system Node.js or Python required.",
+    "::  v4.1: Fixed paths (no app\\ subdir) + robust VSCodium launch",
     ":: ============================================================",
     "",
     ":: -- CRITICAL: Set working directory to script location ------",
-    ":: -- This fixes the shortcut WorkingDir problem            ---",
     'cd /d "%~dp0"',
     "",
     ":: -- Global Variables ----------------------------------------",
     'set "ROOT=%~dp0"',
-    # FIX: APP is the root dir, NOT a subdir called 'app'
-    # installer.iss: Source: "*" -> DestDir: "{app}" -> all files are in {app} directly
+    # FIX #1: APP = ROOT (exe files installed directly in ROOT, no app\ subdir)
     'set "APP=%ROOT%"',
     'set "LOGS=%ROOT%logs"',
     'set "LOG_FILE=%ROOT%logs\\startup.log"',
     'set "BACKEND_PORT=5000"',
     'set "RUNTIME_PORT=6000"',
-    # Extension is in extensions\sudo-ai under root
+    # FIX #2: EXT = ROOT\extensions\sudo-ai  (not ROOT\app\extensions\sudo-ai)
     'set "EXT=%ROOT%extensions\\sudo-ai"',
-    # VSCodium user data dir
+    # FIX #3: DATA = ROOT\data  (not ROOT\app\data)
     'set "DATA=%ROOT%data"',
     "",
     ":: -- STEP 1: Confirm script is actually running ---------------",
     "echo.",
     "echo ============================================================",
-    "echo   SUDO STUDIO v4.0",
+    "echo   SUDO STUDIO v4.1",
     "echo ============================================================",
     "echo   STEP 1 - Script is running",
     "echo   Root directory: %ROOT%",
@@ -78,7 +73,7 @@ LINES = [
     ":: -- Init log file --------------------------------------------",
     '(',
     '    echo ============================================================',
-    '    echo   SUDO STUDIO v4.0 - %DATE% %TIME%',
+    '    echo   SUDO STUDIO v4.1 - %DATE% %TIME%',
     '    echo   Root: %ROOT%',
     '    echo ============================================================',
     ') > "%LOG_FILE%"',
@@ -191,7 +186,7 @@ LINES = [
     '    )',
     "",
     "    :: Fallback: PowerShell",
-    '    powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri \'http://localhost:%RUNTIME_PORT%/health\' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1',
+    "    powershell -NoProfile -WindowStyle Hidden -Command \"try{$r=(Invoke-WebRequest -Uri 'http://localhost:%RUNTIME_PORT%/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}\" >nul 2>&1",
     '    if !errorlevel! equ 0 (',
     '        set "RUNTIME_READY=1"',
     '        goto :runtime_ok',
@@ -253,7 +248,7 @@ LINES = [
     '    )',
     "",
     "    :: Fallback: PowerShell",
-    '    powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri \'http://localhost:%BACKEND_PORT%/api/system/health\' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1',
+    "    powershell -NoProfile -WindowStyle Hidden -Command \"try{$r=(Invoke-WebRequest -Uri 'http://localhost:%BACKEND_PORT%/api/system/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}\" >nul 2>&1",
     '    if !errorlevel! equ 0 (',
     '        set "BACKEND_READY=1"',
     '        goto :backend_ok',
@@ -295,50 +290,98 @@ LINES = [
     "::  PHASE 4 - HEALTH CHECK SUMMARY (STEP 5)",
     ":: ============================================================",
     "echo [STEP 5] Health Check Summary:",
+    'echo [PHASE 4] Health check summary >> "%LOG_FILE%"',
     "echo.",
     "",
     ":: Runtime health",
     'if "!RUNTIME_READY!"=="1" (',
     '    echo   Runtime  (port %RUNTIME_PORT%) : OK',
+    '    echo [PHASE 4] Runtime OK >> "%LOG_FILE%"',
     ') else (',
     '    echo   Runtime  (port %RUNTIME_PORT%) : WARNING - Not responding',
+    '    echo [PHASE 4] Runtime WARNING >> "%LOG_FILE%"',
     ')',
     "",
     ":: Backend health",
     'if "!BACKEND_READY!"=="1" (',
     '    echo   Backend  (port %BACKEND_PORT%) : OK',
+    '    echo [PHASE 4] Backend OK >> "%LOG_FILE%"',
     ') else (',
     '    echo   Backend  (port %BACKEND_PORT%) : ERROR',
+    '    echo [PHASE 4] Backend ERROR >> "%LOG_FILE%"',
     ')',
     "",
     ":: Extension check",
     'if exist "%EXT%\\extension.js" (',
     '    echo   Extension               : OK',
+    '    echo [PHASE 4] Extension OK >> "%LOG_FILE%"',
     ') else (',
     '    echo   Extension               : WARNING - Not found',
+    '    echo [PHASE 4] Extension WARNING - not found >> "%LOG_FILE%"',
     ')',
     "",
     "echo.",
     "",
+    # ============================================================
+    # PHASE 5 - LAUNCH VSCODIUM  (THE FIXED SECTION)
+    # ============================================================
     ":: ============================================================",
     "::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)",
     ":: ============================================================",
     "echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...",
-    'echo [PHASE 5] Launching VSCodium >> "%LOG_FILE%"',
+    'echo [PHASE 5] Preparing VSCodium launch >> "%LOG_FILE%"',
     "echo.",
     "",
     ":: Create required directories",
     'if not exist "%DATA%" mkdir "%DATA%" 2>nul',
     'if not exist "%ROOT%extensions" mkdir "%ROOT%extensions" 2>nul',
     "",
-    ":: Launch VSCodium with Sudo AI extension",
-    'start "SudoStudio" "%APP%VSCodium.exe" ^',
-    '    --extensions-dir "%ROOT%extensions" ^',
-    '    --user-data-dir "%DATA%" ^',
-    '    --extensionDevelopmentPath "%EXT%"',
+    # FIX #1 already applied: APP = ROOT, so VSCodium.exe is at %APP%VSCodium.exe = ROOT\VSCodium.exe
+    ":: Verify VSCodium.exe exists before attempting launch",
+    'if not exist "%APP%VSCodium.exe" (',
+    '    echo [ERROR] VSCodium.exe not found at: %APP%VSCodium.exe >> "%LOG_FILE%"',
+    '    echo.',
+    '    echo   [ERROR] VSCodium.exe introuvable!',
+    '    echo   Chemin cherche: %APP%VSCodium.exe',
+    '    echo.',
+    '    echo   Please reinstall Sudo Studio.',
+    '    pause',
+    '    exit /b 1',
+    ')',
     "",
-    'echo   [LAUNCHED] VSCodium.exe with Sudo AI extension',
-    'echo [PHASE 5] VSCodium launched >> "%LOG_FILE%"',
+    'echo [PHASE 5] VSCodium.exe confirmed at: %APP%VSCodium.exe >> "%LOG_FILE%"',
+    "",
+    # FIX #4: Build full command in one variable — NO fragile ^ line continuation
+    ":: Build launch command in a single variable (avoids ^ line-continuation bugs)",
+    # We use a helper .bat approach: write a tiny launch script and call it
+    # This is the most robust method for complex start commands in Windows batch
+    'set "VSCODIUM_EXE=%APP%VSCodium.exe"',
+    'set "VSCODIUM_EXT_DIR=%ROOT%extensions"',
+    'set "VSCODIUM_DATA=%DATA%"',
+    'set "VSCODIUM_DEV_EXT=%EXT%"',
+    "",
+    ":: Write a temporary launch helper (avoids ^ continuation issues)",
+    'echo @echo off > "%LOGS%\\launch_vscodium.bat"',
+    'echo start "SudoStudio" "%VSCODIUM_EXE%" --extensions-dir "%VSCODIUM_EXT_DIR%" --user-data-dir "%VSCODIUM_DATA%" --extensionDevelopmentPath "%VSCODIUM_DEV_EXT%" >> "%LOGS%\\launch_vscodium.bat"',
+    "",
+    'echo [PHASE 5] Launching VSCodium via helper script >> "%LOG_FILE%"',
+    'call "%LOGS%\\launch_vscodium.bat"',
+    "",
+    ":: Wait 3 seconds then confirm",
+    "timeout /t 3 /nobreak >nul",
+    'echo [PHASE 5] VSCodium launch command executed >> "%LOG_FILE%"',
+    "",
+    ":: Verify VSCodium process is running",
+    'tasklist | findstr /I "VSCodium" >nul 2>&1',
+    'if !errorlevel! equ 0 (',
+    '    echo [PHASE 5] VSCodium process confirmed running >> "%LOG_FILE%"',
+    '    echo   [OK] VSCodium is running',
+    ') else (',
+    '    echo [PHASE 5] WARNING: VSCodium process not detected after launch >> "%LOG_FILE%"',
+    '    echo   [WARNING] VSCodium may have closed immediately',
+    '    echo   Check that VSCodium.exe is not blocked by antivirus',
+    ')',
+    "",
     "echo.",
     "",
     ":: ============================================================",
@@ -395,17 +438,16 @@ LINES = [
 # ============================================================
 # Write file with CRLF
 # ============================================================
-output_path = os.path.join(os.path.dirname(__file__), "start.bat")
+output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "start.bat")
 
 content = CRLF.join(LINES) + CRLF
 
 # Verify pure ASCII (no UTF-8 sneaking in)
 try:
     content.encode("ascii")
-    print("✓ Content is pure ASCII")
+    print("OK Content is pure ASCII")
 except UnicodeEncodeError as e:
-    print(f"✗ Non-ASCII character found: {e}")
-    # Find the problematic line
+    print(f"FAIL Non-ASCII character found: {e}")
     for i, line in enumerate(LINES, 1):
         try:
             line.encode("ascii")
@@ -416,10 +458,10 @@ except UnicodeEncodeError as e:
 with open(output_path, "wb") as f:
     f.write(content.encode("ascii"))
 
-print(f"✓ Written: {output_path}")
-print(f"  Lines: {len(LINES)}")
-print(f"  Size : {len(content)} bytes")
-print(f"  CRLF : YES")
+print(f"OK Written: {output_path}")
+print(f"   Lines: {len(LINES)}")
+print(f"   Size : {len(content)} bytes")
+print(f"   CRLF : YES")
 
 # ============================================================
 # Validation checks
@@ -428,45 +470,43 @@ print()
 print("=== VALIDATION CHECKS ===")
 
 checks = [
-    ("cd /d \"%~dp0\"", "FIX #1: cd /d present"),
-    ("set \"APP=%ROOT%\"", "FIX #2: APP=%ROOT% (not %ROOT%app)"),
-    ("goto :main", "NO goto :main (must be absent)"),
-    ("[OK]", "OK/NOT FOUND display"),
-    ("NOT FOUND", "NOT FOUND messages"),
-    ("pause", "pause before exit"),
-    ("LOG_FILE", "logging enabled"),
-    ("RUNTIME_READY", "runtime health check"),
-    ("BACKEND_READY", "backend health check"),
-    ("extensionDevelopmentPath", "VSCodium extension flag"),
-    ("keep_alive", "terminal stays open"),
-    ("M-b", "NO UTF-8 garbage (must be absent)"),
+    ('cd /d "%~dp0"',                    True,  "FIX: cd /d present"),
+    ('set "APP=%ROOT%"',                 True,  "FIX #1: APP=%ROOT% (not %ROOT%app)"),
+    ('set "EXT=%ROOT%extensions\\',      True,  "FIX #2: EXT=%ROOT%extensions (not app\\extensions)"),
+    ('set "DATA=%ROOT%data"',            True,  "FIX #3: DATA=%ROOT%data (not app\\data)"),
+    ("launch_vscodium.bat",              True,  "FIX #4: helper bat for robust VSCodium launch"),
+    ("[PHASE 5]",                        True,  "FIX #5: PHASE 5 writes to log"),
+    ("VSCodium process confirmed",       True,  "FIX #5: process verification after launch"),
+    ("goto :main",                       False, "NO goto :main (must be absent)"),
+    ("APPDIR",                           False, "NO APPDIR variable (must be absent - was wrong)"),
+    ("%ROOT%app\\",                      False, "NO %ROOT%app\\ paths (must be absent)"),
+    ("M-b",                              False, "NO UTF-8 garbage"),
+    ("extensionDevelopmentPath",         True,  "VSCodium --extensionDevelopmentPath flag"),
+    ("keep_alive",                       True,  "terminal stays open"),
+    ("LOG_FILE",                         True,  "logging enabled"),
+    ("RUNTIME_READY",                    True,  "runtime health check"),
+    ("BACKEND_READY",                    True,  "backend health check"),
+    ("pause",                            True,  "pause before exit on error"),
 ]
 
 all_ok = True
-for text, desc in checks:
-    if text == "goto :main":
-        # This must be ABSENT
-        if text in content:
-            print(f"  ✗ FAIL - {desc} — goto :main IS present (should be absent!)")
-            all_ok = False
+for text, must_exist, desc in checks:
+    present = text in content
+    if must_exist:
+        if present:
+            print(f"  PASS - {desc}")
         else:
-            print(f"  ✓ PASS - {desc}")
-    elif text == "M-b":
-        # Must be absent
-        if text in content:
-            print(f"  ✗ FAIL - {desc} — UTF-8 garbage IS present!")
+            print(f"  FAIL - {desc} -- '{text}' not found!")
             all_ok = False
-        else:
-            print(f"  ✓ PASS - NO UTF-8 garbage")
     else:
-        if text in content:
-            print(f"  ✓ PASS - {desc}")
+        if not present:
+            print(f"  PASS - {desc}")
         else:
-            print(f"  ✗ FAIL - {desc} — '{text}' not found")
+            print(f"  FAIL - {desc} -- '{text}' IS present (should be absent!)")
             all_ok = False
 
 print()
 if all_ok:
-    print(f"=== ALL CHECKS PASSED === start.bat v4.0 ready")
+    print("=== ALL CHECKS PASSED === start.bat v4.1 ready")
 else:
     print("=== SOME CHECKS FAILED === Review output above")
