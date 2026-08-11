@@ -3,11 +3,11 @@ setlocal enabledelayedexpansion
 title Sudo Studio - Starting...
 
 :: ============================================================
-::  SUDO STUDIO v4.1 - Windows Launcher
+::  SUDO STUDIO v4.2 - Windows Launcher
 ::  backend.exe  = Node.js/Express (pkg node18-win-x64)
 ::  runtime.exe  = Python/Flask + HuggingFace AI
 ::  No system Node.js or Python required.
-::  v4.1: Fixed paths (no app\ subdir) + robust VSCodium launch
+::  v4.2: Removed fragile helper bat -> direct VSCodium launch
 :: ============================================================
 
 :: -- CRITICAL: Set working directory to script location ------
@@ -299,53 +299,45 @@ echo.
 ::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)
 :: ============================================================
 echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...
-echo [PHASE 5] Preparing VSCodium launch >> "%LOG_FILE%"
+echo [PHASE 5] Launching VSCodium... >> "%LOG_FILE%"
 echo.
 
-:: Create required directories
-if not exist "%DATA%" mkdir "%DATA%" 2>nul
-if not exist "%ROOT%extensions" mkdir "%ROOT%extensions" 2>nul
+:: Set VSCodium launch variables
+set "VSCODIUM=%ROOT%VSCodium.exe"
+set "VSCEXT=%ROOT%extensions"
+set "VSCDATA=%ROOT%data"
+set "VSCDEV=%ROOT%extensions\sudo-ai"
 
 :: Verify VSCodium.exe exists before attempting launch
-if not exist "%APP%VSCodium.exe" (
-    echo [ERROR] VSCodium.exe not found at: %APP%VSCodium.exe >> "%LOG_FILE%"
+if not exist "%VSCODIUM%" (
+    echo [ERROR] VSCodium not found: %VSCODIUM% >> "%LOG_FILE%"
     echo.
-    echo   [ERROR] VSCodium.exe introuvable!
-    echo   Chemin cherche: %APP%VSCodium.exe
-    echo.
-    echo   Please reinstall Sudo Studio.
+    echo [FATAL] VSCodium.exe introuvable
+    echo Chemin: %VSCODIUM%
     pause
     exit /b 1
 )
 
-echo [PHASE 5] VSCodium.exe confirmed at: %APP%VSCodium.exe >> "%LOG_FILE%"
+:: Create required directories
+if not exist "%VSCDATA%" mkdir "%VSCDATA%" 2>nul
+if not exist "%VSCEXT%" mkdir "%VSCEXT%" 2>nul
 
-:: Build launch command in a single variable (avoids ^ line-continuation bugs)
-set "VSCODIUM_EXE=%APP%VSCodium.exe"
-set "VSCODIUM_EXT_DIR=%ROOT%extensions"
-set "VSCODIUM_DATA=%DATA%"
-set "VSCODIUM_DEV_EXT=%EXT%"
+:: Launch VSCodium directly (no helper bat - avoids quote corruption + silent call failure)
+echo [PHASE 5] Starting VSCodium process... >> "%LOG_FILE%"
+start "SudoStudio" "%VSCODIUM%" --extensions-dir "%VSCEXT%" --user-data-dir "%VSCDATA%" --extensionDevelopmentPath "%VSCDEV%"
 
-:: Write a temporary launch helper (avoids ^ continuation issues)
-echo @echo off > "%LOGS%\launch_vscodium.bat"
-echo start "SudoStudio" "%VSCODIUM_EXE%" --extensions-dir "%VSCODIUM_EXT_DIR%" --user-data-dir "%VSCODIUM_DATA%" --extensionDevelopmentPath "%VSCODIUM_DEV_EXT%" >> "%LOGS%\launch_vscodium.bat"
-
-echo [PHASE 5] Launching VSCodium via helper script >> "%LOG_FILE%"
-call "%LOGS%\launch_vscodium.bat"
-
-:: Wait 3 seconds then confirm
 timeout /t 3 /nobreak >nul
-echo [PHASE 5] VSCodium launch command executed >> "%LOG_FILE%"
+echo [PHASE 5] VSCodium launch command sent >> "%LOG_FILE%"
 
 :: Verify VSCodium process is running
 tasklist | findstr /I "VSCodium" >nul 2>&1
 if !errorlevel! equ 0 (
-    echo [PHASE 5] VSCodium process confirmed running >> "%LOG_FILE%"
+    echo [PHASE 5] VSCodium process confirmed >> "%LOG_FILE%"
     echo   [OK] VSCodium is running
 ) else (
-    echo [PHASE 5] WARNING: VSCodium process not detected after launch >> "%LOG_FILE%"
-    echo   [WARNING] VSCodium may have closed immediately
-    echo   Check that VSCodium.exe is not blocked by antivirus
+    echo [PHASE 5] WARNING: VSCodium not detected >> "%LOG_FILE%"
+    echo   [WARNING] VSCodium may have closed
+    echo   Check antivirus or permissions
 )
 
 echo.

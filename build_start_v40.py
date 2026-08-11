@@ -3,7 +3,7 @@
 """
 build_start_v40.py
 ==================
-Generates start.bat v4.1 with CRLF line endings and pure ASCII content.
+Generates start.bat v4.2 with CRLF line endings and pure ASCII content.
 
 ROOT CAUSES FIXED in v4.1:
   BUG #1: APPDIR=%ROOT%app\\  WRONG  -> fixed: APP=%ROOT% (exe files are in ROOT directly)
@@ -11,6 +11,14 @@ ROOT CAUSES FIXED in v4.1:
   BUG #3: DATA=%ROOT%app\\data  WRONG  -> fixed: DATA=%ROOT%data
   BUG #4: start "..." exe ^ / next-line   FRAGILE  -> fixed: build full cmd in a variable, single line
   BUG #5: startup.log stops at [PHASE 3]  -> fixed: PHASE 5 now writes to log + checks process
+
+ROOT CAUSES FIXED in v4.2:
+  BUG #6: launch_vscodium.bat helper approach CRASHES silently:
+          - echo with embedded quotes corrupts the bat content
+          - call to corrupted bat terminates parent script
+          - No error visible because window closes immediately
+          FIXED: Replace helper bat with direct 'start' command (single line, no bat, no call)
+  BUG #7: Variable names mismatch (VSCODIUM_EXE vs VSCODIUM) -> unified as VSCODIUM/VSCEXT/VSCDATA/VSCDEV
 """
 
 import os
@@ -27,11 +35,11 @@ LINES = [
     "title Sudo Studio - Starting...",
     "",
     ":: ============================================================",
-    "::  SUDO STUDIO v4.1 - Windows Launcher",
+    "::  SUDO STUDIO v4.2 - Windows Launcher",
     "::  backend.exe  = Node.js/Express (pkg node18-win-x64)",
     "::  runtime.exe  = Python/Flask + HuggingFace AI",
     "::  No system Node.js or Python required.",
-    "::  v4.1: Fixed paths (no app\\ subdir) + robust VSCodium launch",
+    "::  v4.2: Removed fragile helper bat -> direct VSCodium launch",
     ":: ============================================================",
     "",
     ":: -- CRITICAL: Set working directory to script location ------",
@@ -323,63 +331,53 @@ LINES = [
     "echo.",
     "",
     # ============================================================
-    # PHASE 5 - LAUNCH VSCODIUM  (THE FIXED SECTION)
+    # PHASE 5 - LAUNCH VSCODIUM  v4.2: DIRECT LAUNCH (no helper bat)
     # ============================================================
     ":: ============================================================",
     "::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)",
     ":: ============================================================",
     "echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...",
-    'echo [PHASE 5] Preparing VSCodium launch >> "%LOG_FILE%"',
+    'echo [PHASE 5] Launching VSCodium... >> "%LOG_FILE%"',
     "echo.",
     "",
-    ":: Create required directories",
-    'if not exist "%DATA%" mkdir "%DATA%" 2>nul',
-    'if not exist "%ROOT%extensions" mkdir "%ROOT%extensions" 2>nul',
+    # FIX #6+#7: Clean variable names matching the direct start command
+    ":: Set VSCodium launch variables",
+    'set "VSCODIUM=%ROOT%VSCodium.exe"',
+    'set "VSCEXT=%ROOT%extensions"',
+    'set "VSCDATA=%ROOT%data"',
+    'set "VSCDEV=%ROOT%extensions\\sudo-ai"',
     "",
-    # FIX #1 already applied: APP = ROOT, so VSCodium.exe is at %APP%VSCodium.exe = ROOT\VSCodium.exe
     ":: Verify VSCodium.exe exists before attempting launch",
-    'if not exist "%APP%VSCodium.exe" (',
-    '    echo [ERROR] VSCodium.exe not found at: %APP%VSCodium.exe >> "%LOG_FILE%"',
+    'if not exist "%VSCODIUM%" (',
+    '    echo [ERROR] VSCodium not found: %VSCODIUM% >> "%LOG_FILE%"',
     '    echo.',
-    '    echo   [ERROR] VSCodium.exe introuvable!',
-    '    echo   Chemin cherche: %APP%VSCodium.exe',
-    '    echo.',
-    '    echo   Please reinstall Sudo Studio.',
+    '    echo [FATAL] VSCodium.exe introuvable',
+    '    echo Chemin: %VSCODIUM%',
     '    pause',
     '    exit /b 1',
     ')',
     "",
-    'echo [PHASE 5] VSCodium.exe confirmed at: %APP%VSCodium.exe >> "%LOG_FILE%"',
+    ":: Create required directories",
+    'if not exist "%VSCDATA%" mkdir "%VSCDATA%" 2>nul',
+    'if not exist "%VSCEXT%" mkdir "%VSCEXT%" 2>nul',
     "",
-    # FIX #4: Build full command in one variable — NO fragile ^ line continuation
-    ":: Build launch command in a single variable (avoids ^ line-continuation bugs)",
-    # We use a helper .bat approach: write a tiny launch script and call it
-    # This is the most robust method for complex start commands in Windows batch
-    'set "VSCODIUM_EXE=%APP%VSCodium.exe"',
-    'set "VSCODIUM_EXT_DIR=%ROOT%extensions"',
-    'set "VSCODIUM_DATA=%DATA%"',
-    'set "VSCODIUM_DEV_EXT=%EXT%"',
+    # FIX #6: Direct start command — NO helper bat, NO call, NO echo with embedded quotes
+    ":: Launch VSCodium directly (no helper bat - avoids quote corruption + silent call failure)",
+    'echo [PHASE 5] Starting VSCodium process... >> "%LOG_FILE%"',
+    'start "SudoStudio" "%VSCODIUM%" --extensions-dir "%VSCEXT%" --user-data-dir "%VSCDATA%" --extensionDevelopmentPath "%VSCDEV%"',
     "",
-    ":: Write a temporary launch helper (avoids ^ continuation issues)",
-    'echo @echo off > "%LOGS%\\launch_vscodium.bat"',
-    'echo start "SudoStudio" "%VSCODIUM_EXE%" --extensions-dir "%VSCODIUM_EXT_DIR%" --user-data-dir "%VSCODIUM_DATA%" --extensionDevelopmentPath "%VSCODIUM_DEV_EXT%" >> "%LOGS%\\launch_vscodium.bat"',
-    "",
-    'echo [PHASE 5] Launching VSCodium via helper script >> "%LOG_FILE%"',
-    'call "%LOGS%\\launch_vscodium.bat"',
-    "",
-    ":: Wait 3 seconds then confirm",
     "timeout /t 3 /nobreak >nul",
-    'echo [PHASE 5] VSCodium launch command executed >> "%LOG_FILE%"',
+    'echo [PHASE 5] VSCodium launch command sent >> "%LOG_FILE%"',
     "",
     ":: Verify VSCodium process is running",
     'tasklist | findstr /I "VSCodium" >nul 2>&1',
     'if !errorlevel! equ 0 (',
-    '    echo [PHASE 5] VSCodium process confirmed running >> "%LOG_FILE%"',
+    '    echo [PHASE 5] VSCodium process confirmed >> "%LOG_FILE%"',
     '    echo   [OK] VSCodium is running',
     ') else (',
-    '    echo [PHASE 5] WARNING: VSCodium process not detected after launch >> "%LOG_FILE%"',
-    '    echo   [WARNING] VSCodium may have closed immediately',
-    '    echo   Check that VSCodium.exe is not blocked by antivirus',
+    '    echo [PHASE 5] WARNING: VSCodium not detected >> "%LOG_FILE%"',
+    '    echo   [WARNING] VSCodium may have closed',
+    '    echo   Check antivirus or permissions',
     ')',
     "",
     "echo.",
@@ -474,7 +472,14 @@ checks = [
     ('set "APP=%ROOT%"',                 True,  "FIX #1: APP=%ROOT% (not %ROOT%app)"),
     ('set "EXT=%ROOT%extensions\\',      True,  "FIX #2: EXT=%ROOT%extensions (not app\\extensions)"),
     ('set "DATA=%ROOT%data"',            True,  "FIX #3: DATA=%ROOT%data (not app\\data)"),
-    ("launch_vscodium.bat",              True,  "FIX #4: helper bat for robust VSCodium launch"),
+    # v4.2: NO helper bat (was BUG #6)
+    ("launch_vscodium.bat",              False, "FIX #6: NO helper bat (removed - was fragile)"),
+    # v4.2: direct start command with clean var names
+    ('set "VSCODIUM=%ROOT%VSCodium.exe"', True, "FIX #7: VSCODIUM var = ROOT\\VSCodium.exe"),
+    ('set "VSCEXT=%ROOT%extensions"',    True,  "FIX #7: VSCEXT var = ROOT\\extensions"),
+    ('set "VSCDATA=%ROOT%data"',         True,  "FIX #7: VSCDATA var = ROOT\\data"),
+    ('set "VSCDEV=%ROOT%extensions\\sudo-ai"', True, "FIX #7: VSCDEV var = ROOT\\extensions\\sudo-ai"),
+    ('start "SudoStudio" "%VSCODIUM%"',  True,  "FIX #6: direct start command (no helper bat)"),
     ("[PHASE 5]",                        True,  "FIX #5: PHASE 5 writes to log"),
     ("VSCodium process confirmed",       True,  "FIX #5: process verification after launch"),
     ("goto :main",                       False, "NO goto :main (must be absent)"),
@@ -507,6 +512,6 @@ for text, must_exist, desc in checks:
 
 print()
 if all_ok:
-    print("=== ALL CHECKS PASSED === start.bat v4.1 ready")
+    print("=== ALL CHECKS PASSED === start.bat v4.2 ready")
 else:
     print("=== SOME CHECKS FAILED === Review output above")
