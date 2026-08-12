@@ -3,11 +3,11 @@ setlocal enabledelayedexpansion
 title Sudo Studio - Starting...
 
 :: ============================================================
-::  SUDO STUDIO v4.2 - Windows Launcher
+::  SUDO STUDIO v4.3 - Windows Launcher
 ::  backend.exe  = Node.js/Express (pkg node18-win-x64)
 ::  runtime.exe  = Python/Flask + HuggingFace AI
 ::  No system Node.js or Python required.
-::  v4.2: Removed fragile helper bat -> direct VSCodium launch
+::  v4.3: Fixed PHASE 4 !var! crash + PHASE 5 launcher script
 :: ============================================================
 
 :: -- CRITICAL: Set working directory to script location ------
@@ -26,7 +26,7 @@ set "DATA=%ROOT%data"
 :: -- STEP 1: Confirm script is actually running ---------------
 echo.
 echo ============================================================
-echo   SUDO STUDIO v4.1
+echo   SUDO STUDIO v4.3
 echo ============================================================
 echo   STEP 1 - Script is running
 echo   Root directory: %ROOT%
@@ -46,7 +46,7 @@ if not exist "%LOGS%" (
 :: -- Init log file --------------------------------------------
 (
     echo ============================================================
-    echo   SUDO STUDIO v4.1 - %DATE% %TIME%
+    echo   SUDO STUDIO v4.3 - %DATE% %TIME%
     echo   Root: %ROOT%
     echo ============================================================
 ) > "%LOG_FILE%"
@@ -266,8 +266,8 @@ echo [STEP 5] Health Check Summary:
 echo [PHASE 4] Health check summary >> "%LOG_FILE%"
 echo.
 
-:: Runtime health
-if "!RUNTIME_READY!"=="1" (
+:: Runtime health -- FIX #8: use %var% not !var! to avoid delayed-expansion crash
+if "%RUNTIME_READY%"=="1" (
     echo   Runtime  (port %RUNTIME_PORT%) : OK
     echo [PHASE 4] Runtime OK >> "%LOG_FILE%"
 ) else (
@@ -275,8 +275,8 @@ if "!RUNTIME_READY!"=="1" (
     echo [PHASE 4] Runtime WARNING >> "%LOG_FILE%"
 )
 
-:: Backend health
-if "!BACKEND_READY!"=="1" (
+:: Backend health -- FIX #8: use %var% not !var!
+if "%BACKEND_READY%"=="1" (
     echo   Backend  (port %BACKEND_PORT%) : OK
     echo [PHASE 4] Backend OK >> "%LOG_FILE%"
 ) else (
@@ -299,45 +299,48 @@ echo.
 ::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)
 :: ============================================================
 echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...
-echo [PHASE 5] Launching VSCodium... >> "%LOG_FILE%"
+echo [PHASE 5] Preparing VSCodium... >> "%LOG_FILE%"
 echo.
 
-:: Set VSCodium launch variables
-set "VSCODIUM=%ROOT%VSCodium.exe"
-set "VSCEXT=%ROOT%extensions"
-set "VSCDATA=%ROOT%data"
-set "VSCDEV=%ROOT%extensions\sudo-ai"
+:: Chemins sans espaces dans les variables
+set "V_EXE=%ROOT%VSCodium.exe"
+set "V_EXT=%ROOT%extensions"
+set "V_DAT=%ROOT%data"
+set "V_DEV=%ROOT%extensions\sudo-ai"
 
-:: Verify VSCodium.exe exists before attempting launch
-if not exist "%VSCODIUM%" (
-    echo [ERROR] VSCodium not found: %VSCODIUM% >> "%LOG_FILE%"
-    echo.
-    echo [FATAL] VSCodium.exe introuvable
-    echo Chemin: %VSCODIUM%
+:: Creer dossiers necessaires
+if not exist "%V_DAT%" mkdir "%V_DAT%" 2>nul
+if not exist "%V_EXT%" mkdir "%V_EXT%" 2>nul
+
+:: Verifier VSCodium.exe
+if not exist "%V_EXE%" (
+    echo [FATAL] VSCodium.exe not found >> "%LOG_FILE%"
+    echo [FATAL] VSCodium.exe introuvable : %V_EXE%
     pause
     exit /b 1
 )
+echo [PHASE 5] VSCodium.exe found >> "%LOG_FILE%"
 
-:: Create required directories
-if not exist "%VSCDATA%" mkdir "%VSCDATA%" 2>nul
-if not exist "%VSCEXT%" mkdir "%VSCEXT%" 2>nul
+:: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption de guillemets)
+set "LAUNCHER=%ROOT%launch.bat"
+(
+    echo @echo off
+    echo start "" "%V_EXE%" --extensions-dir "%V_EXT%" --user-data-dir "%V_DAT%" --extensionDevelopmentPath "%V_DEV%"
+) > "%LAUNCHER%"
 
-:: Launch VSCodium directly (no helper bat - avoids quote corruption + silent call failure)
-echo [PHASE 5] Starting VSCodium process... >> "%LOG_FILE%"
-start "SudoStudio" "%VSCODIUM%" --extensions-dir "%VSCEXT%" --user-data-dir "%VSCDATA%" --extensionDevelopmentPath "%VSCDEV%"
+:: Lancer via le script propre
+echo [PHASE 5] Launching via launcher... >> "%LOG_FILE%"
+call "%LAUNCHER%"
 
-timeout /t 3 /nobreak >nul
-echo [PHASE 5] VSCodium launch command sent >> "%LOG_FILE%"
-
-:: Verify VSCodium process is running
-tasklist | findstr /I "VSCodium" >nul 2>&1
-if !errorlevel! equ 0 (
-    echo [PHASE 5] VSCodium process confirmed >> "%LOG_FILE%"
+:: Attendre et verifier
+timeout /t 5 /nobreak >nul
+tasklist 2>nul | findstr /I "VSCodium" >nul 2>&1
+if not errorlevel 1 (
+    echo [PHASE 5] VSCodium running OK >> "%LOG_FILE%"
     echo   [OK] VSCodium is running
 ) else (
-    echo [PHASE 5] WARNING: VSCodium not detected >> "%LOG_FILE%"
+    echo [PHASE 5] VSCodium not detected >> "%LOG_FILE%"
     echo   [WARNING] VSCodium may have closed
-    echo   Check antivirus or permissions
 )
 
 echo.
