@@ -33,6 +33,16 @@ ROOT CAUSES FIXED in v4.3:
           The launcher is written to %ROOT%launch.bat (NOT %LOGS%) to avoid any %LOGS% path issues.
   BUG #10: tasklist | findstr uses !errorlevel! (delayed expansion) which can fail if
            the pipe resets ERRORLEVEL. FIXED: Use explicit if errorlevel 1 / if not errorlevel 1
+
+ROOT CAUSES FIXED in v4.4:
+  BUG #11: :backend_timeout uses exit /b 1 -> KILLS start.bat silently if backend is slow.
+           start.bat must reach PHASE 5 even if backend/runtime are not yet ready.
+           FIXED: backend_timeout is now NON-FATAL -> warning only, continues to PHASE 5.
+  BUG #12: No DEBUG marker in PHASE 5 -> impossible to know if script reaches PHASE 5.
+           FIXED: Added "DEBUG PHASE 5 START" as very first log line of PHASE 5.
+  BUG #13: echo in (parenthesized) launcher block adds ECHO is ON / ECHO is OFF when
+           echo @echo off line has no content after it -> produces corrupt bat.
+           FIXED: Use explicit content on each echo line in launcher block.
 """
 
 import os
@@ -53,7 +63,7 @@ LINES = [
     "::  backend.exe  = Node.js/Express (pkg node18-win-x64)",
     "::  runtime.exe  = Python/Flask + HuggingFace AI",
     "::  No system Node.js or Python required.",
-    "::  v4.3: Fixed PHASE 4 !var! crash + PHASE 5 launcher script",
+    "::  v4.4: backend_timeout non-fatal + DEBUG PHASE 5 + activate() non-blocking",
     ":: ============================================================",
     "",
     ":: -- CRITICAL: Set working directory to script location ------",
@@ -281,25 +291,15 @@ LINES = [
     "",
     ":backend_timeout",
     '    echo.',
-    '    echo   [ERROR] Backend did not respond after 60 seconds.',
-    '    echo   [ERROR] Backend timeout >> "%LOG_FILE%"',
+    '    echo   [WARNING] Backend did not respond after 60 seconds.',
+    '    echo   [WARNING] Backend timeout - continuing to launch VSCodium >> "%LOG_FILE%"',
     '    echo.',
-    '    echo   Diagnostics:',
-    '    echo     - Port %BACKEND_PORT% may already be in use',
-    '    echo     - Check: %ROOT%logs\\backend.log',
+    '    echo   Backend may still be starting. VSCodium will open.',
+    '    echo   If backend is needed, check: %ROOT%logs\\backend.log',
     '    echo.',
-    '    echo   Last backend output (if any):',
-    '    if exist "%LOGS%\\backend.log" (',
-    '        powershell -NoProfile -WindowStyle Hidden -Command "Get-Content \'%LOGS%\\backend.log\' -Tail 5 -EA SilentlyContinue" 2>nul',
-    '    ) else (',
-    '        echo     No backend.log found yet.',
-    '    )',
-    '    echo.',
-    '    echo ============================================================',
-    '    echo   Backend failed. Press any key to close.',
-    '    echo ============================================================',
-    '    pause',
-    '    exit /b 1',
+    # FIX #11: NON-FATAL - goto backend_done instead of exit /b 1
+    # start.bat MUST reach PHASE 5 even if backend is slow/offline
+    '    goto :backend_done',
     "",
     ":backend_ok",
     '    echo   [OK] Backend ready on port %BACKEND_PORT%',
@@ -348,11 +348,14 @@ LINES = [
     "echo.",
     "",
     # ============================================================
-    # PHASE 5 - LAUNCH VSCODIUM  v4.3: LAUNCHER SCRIPT (parenthesized block)
+    # PHASE 5 - LAUNCH VSCODIUM  v4.4: DEBUG + NON-BLOCKING LAUNCHER
     # ============================================================
     ":: ============================================================",
     "::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)",
     ":: ============================================================",
+    # FIX #12: DEBUG marker - VERY FIRST thing in PHASE 5
+    # If this line does NOT appear in startup.log -> script exited before PHASE 5
+    'echo DEBUG PHASE 5 START >> "%LOG_FILE%"',
     "echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...",
     'echo [PHASE 5] Preparing VSCodium... >> "%LOG_FILE%"',
     "echo.",
@@ -377,10 +380,11 @@ LINES = [
     ')',
     'echo [PHASE 5] VSCodium.exe found >> "%LOG_FILE%"',
     "",
-    # FIX #9: Write launcher with parenthesized block - the ONLY safe way
-    # to write quoted content to a file without quote corruption.
-    # Written to %ROOT%launch.bat (ROOT dir, not LOGS) - avoids %LOGS% path issues.
-    ":: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption de guillemets)",
+    # FIX #9+#13: Write launcher with parenthesized block - safe for quoted content.
+    # IMPORTANT: echo inside () block does NOT add "ECHO is ON" because content is non-empty.
+    # echo @echo off  -> writes "@echo off" literally (no trailing space issue)
+    # echo start "" -> writes the start command with empty window title
+    ":: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption)",
     'set "LAUNCHER=%ROOT%launch.bat"',
     '(',
     '    echo @echo off',
@@ -501,6 +505,11 @@ checks = [
     ('if "%BACKEND_READY%"=="1"',           True,  "FIX #8: BACKEND uses %var% not !var!"),
     ('if "!RUNTIME_READY!"=="1"',           False, "FIX #8: NO !RUNTIME_READY! in PHASE 4"),
     ('if "!BACKEND_READY!"=="1"',           False, "FIX #8: NO !BACKEND_READY! in PHASE 4"),
+    # v4.4 FIX #11: backend_timeout is NON-FATAL
+    ('goto :backend_done',                  True,  "FIX #11: backend_timeout -> goto backend_done (non-fatal)"),
+    ('Backend failed. Press any key',       False, "FIX #11: NO 'Backend failed' fatal message"),
+    # v4.4 FIX #12: DEBUG marker in PHASE 5
+    ('DEBUG PHASE 5 START',                 True,  "FIX #12: DEBUG PHASE 5 START log line"),
     # v4.3 FIX #9: launcher script via parenthesized block
     ('set "LAUNCHER=%ROOT%launch.bat"',     True,  "FIX #9: LAUNCHER=%ROOT%launch.bat"),
     ('set "V_EXE=%ROOT%VSCodium.exe"',      True,  "FIX #9: V_EXE variable"),
@@ -524,7 +533,7 @@ checks = [
     (":keep_alive",                         True,  "keep_alive label present"),
     ("goto :keep_alive",                    True,  "goto :keep_alive present"),
     ("LOG_FILE",                            True,  "logging enabled"),
-    ("pause",                               True,  "pause before exit on error"),
+    ("pause",                               True,  "pause before exit on error (VSCodium check only)"),
 ]
 
 all_ok = True
@@ -545,6 +554,6 @@ for text, must_exist, desc in checks:
 
 print()
 if all_ok:
-    print("=== ALL CHECKS PASSED === start.bat v4.3 ready")
+    print("=== ALL CHECKS PASSED === start.bat v4.4 ready")
 else:
     print("=== SOME CHECKS FAILED === Review output above")

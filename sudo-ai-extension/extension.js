@@ -38,52 +38,58 @@ let runtimeProcess = null;      // Child process for auto-started runtime
 let startupProcess = null;      // Child process for start.bat/start.sh
 
 /**
- * Extension activation - POINT D'ENTRÉE PRINCIPAL
+ * Extension activation - POINT D'ENTREE PRINCIPAL
+ * v4.4: Non-blocking - UI loads immediately, backend connects in background
  */
 async function activate(ctx) {
     context = ctx;
-    console.log('🚀 Sudo Studio Enterprise - Activation starting...');
+    console.log('Sudo AI extension activating...');
+    console.log('Sudo Studio Enterprise - Activation starting...');
 
     try {
-        // Initialize core services
+        // Initialize core services (synchronous - no network calls)
         backend = getBackendService();
         state = getStateManager();
 
-        // Initialize backend connection
-        await initializeBackend();
-
-        // Register all providers
+        // Register all providers IMMEDIATELY (synchronous - loads UI fast)
         registerProviders();
 
-        // Register all commands
+        // Register all commands (synchronous)
         registerCommands();
 
-        // Setup event listeners
+        // Setup event listeners (synchronous)
         setupEventListeners();
 
-        // Status bar for AI runtime
+        // Status bar for AI runtime (synchronous)
         setupStatusBar(ctx);
 
-        // AUTO-START: Launch runtime automatically via spawn()
-        autoStartRuntime();
+        // NON-BLOCKING: Connect to backend after 2s delay
+        // This lets VSCodium finish loading the UI before any network calls.
+        // start.bat already launched backend.exe and runtime.exe.
+        setTimeout(() => {
+            initializeBackend().catch(function(err) {
+                console.warn('Background backend init (non-fatal):', err.message);
+            });
+        }, 2000);
 
-        // Auto-start runtime model download check
-        setTimeout(() => autoEnsureModelDownload(), 3000);
+        // autoStartRuntime() intentionally disabled:
+        // start.bat already launches runtime.exe - no need to spawn again.
+        // Calling it here would cause double-launch + 5min polling loop.
 
-        // Show welcome message — confirmation that Sudo AI is loaded and connected
+        // Show welcome message immediately (does not wait for backend)
         vscode.window.showInformationMessage(
-            '✅ Sudo AI prêt — Backend et Runtime connectés',
+            'Sudo AI pret',
             'Ouvrir Chat', 'Ouvrir Runtime'
-        ).then(selection => {
+        ).then(function(selection) {
             if (selection === 'Ouvrir Chat') openChat();
             else if (selection === 'Ouvrir Runtime') openRuntimePanel();
         });
 
-        console.log('✅ Sudo Studio Enterprise fully activated!');
-        
+        console.log('Sudo Studio Enterprise fully activated!');
+
     } catch (error) {
-        console.error('❌ Activation error:', error);
-        vscode.window.showErrorMessage(`Sudo Studio activation failed: ${error.message}`);
+        console.error('Activation error:', error.message);
+        vscode.window.showErrorMessage('Sudo Studio activation failed: ' + error.message);
     }
 }
 

@@ -7,7 +7,7 @@ title Sudo Studio - Starting...
 ::  backend.exe  = Node.js/Express (pkg node18-win-x64)
 ::  runtime.exe  = Python/Flask + HuggingFace AI
 ::  No system Node.js or Python required.
-::  v4.3: Fixed PHASE 4 !var! crash + PHASE 5 launcher script
+::  v4.4: backend_timeout non-fatal + DEBUG PHASE 5 + activate() non-blocking
 :: ============================================================
 
 :: -- CRITICAL: Set working directory to script location ------
@@ -232,25 +232,13 @@ set "BACKEND_WAIT=0"
 
 :backend_timeout
     echo.
-    echo   [ERROR] Backend did not respond after 60 seconds.
-    echo   [ERROR] Backend timeout >> "%LOG_FILE%"
+    echo   [WARNING] Backend did not respond after 60 seconds.
+    echo   [WARNING] Backend timeout - continuing to launch VSCodium >> "%LOG_FILE%"
     echo.
-    echo   Diagnostics:
-    echo     - Port %BACKEND_PORT% may already be in use
-    echo     - Check: %ROOT%logs\backend.log
+    echo   Backend may still be starting. VSCodium will open.
+    echo   If backend is needed, check: %ROOT%logs\backend.log
     echo.
-    echo   Last backend output (if any):
-    if exist "%LOGS%\backend.log" (
-        powershell -NoProfile -WindowStyle Hidden -Command "Get-Content '%LOGS%\backend.log' -Tail 5 -EA SilentlyContinue" 2>nul
-    ) else (
-        echo     No backend.log found yet.
-    )
-    echo.
-    echo ============================================================
-    echo   Backend failed. Press any key to close.
-    echo ============================================================
-    pause
-    exit /b 1
+    goto :backend_done
 
 :backend_ok
     echo   [OK] Backend ready on port %BACKEND_PORT%
@@ -298,6 +286,7 @@ echo.
 :: ============================================================
 ::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)
 :: ============================================================
+echo DEBUG PHASE 5 START >> "%LOG_FILE%"
 echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...
 echo [PHASE 5] Preparing VSCodium... >> "%LOG_FILE%"
 echo.
@@ -321,7 +310,7 @@ if not exist "%V_EXE%" (
 )
 echo [PHASE 5] VSCodium.exe found >> "%LOG_FILE%"
 
-:: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption de guillemets)
+:: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption)
 set "LAUNCHER=%ROOT%launch.bat"
 (
     echo @echo off
