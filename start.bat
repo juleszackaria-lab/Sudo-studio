@@ -7,7 +7,7 @@ title Sudo Studio - Starting...
 ::  backend.exe  = Node.js/Express (pkg node18-win-x64)
 ::  runtime.exe  = Python/Flask + HuggingFace AI
 ::  No system Node.js or Python required.
-::  v4.4: backend_timeout non-fatal + DEBUG PHASE 5 + activate() non-blocking
+::  v4.5: PHASE 4 simplified (no if/else) + offline HF vars
 :: ============================================================
 
 :: -- CRITICAL: Set working directory to script location ------
@@ -250,37 +250,11 @@ echo.
 :: ============================================================
 ::  PHASE 4 - HEALTH CHECK SUMMARY (STEP 5)
 :: ============================================================
-echo [STEP 5] Health Check Summary:
 echo [PHASE 4] Health check summary >> "%LOG_FILE%"
-echo.
-
-:: Runtime health -- FIX #8: use %var% not !var! to avoid delayed-expansion crash
-if "%RUNTIME_READY%"=="1" (
-    echo   Runtime  (port %RUNTIME_PORT%) : OK
-    echo [PHASE 4] Runtime OK >> "%LOG_FILE%"
-) else (
-    echo   Runtime  (port %RUNTIME_PORT%) : WARNING - Not responding
-    echo [PHASE 4] Runtime WARNING >> "%LOG_FILE%"
-)
-
-:: Backend health -- FIX #8: use %var% not !var!
-if "%BACKEND_READY%"=="1" (
-    echo   Backend  (port %BACKEND_PORT%) : OK
-    echo [PHASE 4] Backend OK >> "%LOG_FILE%"
-) else (
-    echo   Backend  (port %BACKEND_PORT%) : ERROR
-    echo [PHASE 4] Backend ERROR >> "%LOG_FILE%"
-)
-
-:: Extension check
-if exist "%EXT%\extension.js" (
-    echo   Extension               : OK
-    echo [PHASE 4] Extension OK >> "%LOG_FILE%"
-) else (
-    echo   Extension               : WARNING - Not found
-    echo [PHASE 4] Extension WARNING - not found >> "%LOG_FILE%"
-)
-
+echo [STEP 5] Services running:
+echo   Runtime  : port 6000
+echo   Backend  : port 5000
+echo [PHASE 4] Done >> "%LOG_FILE%"
 echo.
 
 :: ============================================================

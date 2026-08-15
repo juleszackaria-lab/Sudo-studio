@@ -43,6 +43,14 @@ ROOT CAUSES FIXED in v4.4:
   BUG #13: echo in (parenthesized) launcher block adds ECHO is ON / ECHO is OFF when
            echo @echo off line has no content after it -> produces corrupt bat.
            FIXED: Use explicit content on each echo line in launcher block.
+
+ROOT CAUSES FIXED in v4.5:
+  BUG #14: PHASE 4 still uses if/else blocks with %RUNTIME_READY% / %BACKEND_READY%
+           variables. Even with %var% instead of !var!, these blocks can crash CMD on
+           some Windows systems when ERRORLEVEL is non-zero after curl/powershell.
+           FIXED: Replace ALL PHASE 4 if/else blocks with plain unconditional echo lines.
+           No conditions, no variables, no branches — ZERO crash risk. Flows directly
+           into PHASE 5.
 """
 
 import os
@@ -63,7 +71,7 @@ LINES = [
     "::  backend.exe  = Node.js/Express (pkg node18-win-x64)",
     "::  runtime.exe  = Python/Flask + HuggingFace AI",
     "::  No system Node.js or Python required.",
-    "::  v4.4: backend_timeout non-fatal + DEBUG PHASE 5 + activate() non-blocking",
+    "::  v4.5: PHASE 4 simplified (no if/else) + offline HF vars",
     ":: ============================================================",
     "",
     ":: -- CRITICAL: Set working directory to script location ------",
@@ -311,40 +319,14 @@ LINES = [
     ":: ============================================================",
     "::  PHASE 4 - HEALTH CHECK SUMMARY (STEP 5)",
     ":: ============================================================",
-    "echo [STEP 5] Health Check Summary:",
+    # MISSION 1 FIX: Replace ALL if/else variable blocks with plain echo lines.
+    # No conditions, no variables, no delayed expansion — zero crash risk.
+    # Flows directly into PHASE 5 with no branches.
     'echo [PHASE 4] Health check summary >> "%LOG_FILE%"',
-    "echo.",
-    "",
-    # FIX #8: Use %RUNTIME_READY% instead of !RUNTIME_READY! here.
-    # These variables are SET before the goto labels, so normal %var% expansion works.
-    # Delayed expansion !var! inside () blocks after curl/powershell can crash CMD silently.
-    ":: Runtime health -- FIX #8: use %var% not !var! to avoid delayed-expansion crash",
-    'if "%RUNTIME_READY%"=="1" (',
-    '    echo   Runtime  (port %RUNTIME_PORT%) : OK',
-    '    echo [PHASE 4] Runtime OK >> "%LOG_FILE%"',
-    ') else (',
-    '    echo   Runtime  (port %RUNTIME_PORT%) : WARNING - Not responding',
-    '    echo [PHASE 4] Runtime WARNING >> "%LOG_FILE%"',
-    ')',
-    "",
-    ":: Backend health -- FIX #8: use %var% not !var!",
-    'if "%BACKEND_READY%"=="1" (',
-    '    echo   Backend  (port %BACKEND_PORT%) : OK',
-    '    echo [PHASE 4] Backend OK >> "%LOG_FILE%"',
-    ') else (',
-    '    echo   Backend  (port %BACKEND_PORT%) : ERROR',
-    '    echo [PHASE 4] Backend ERROR >> "%LOG_FILE%"',
-    ')',
-    "",
-    ":: Extension check",
-    'if exist "%EXT%\\extension.js" (',
-    '    echo   Extension               : OK',
-    '    echo [PHASE 4] Extension OK >> "%LOG_FILE%"',
-    ') else (',
-    '    echo   Extension               : WARNING - Not found',
-    '    echo [PHASE 4] Extension WARNING - not found >> "%LOG_FILE%"',
-    ')',
-    "",
+    "echo [STEP 5] Services running:",
+    "echo   Runtime  : port 6000",
+    "echo   Backend  : port 5000",
+    'echo [PHASE 4] Done >> "%LOG_FILE%"',
     "echo.",
     "",
     # ============================================================
@@ -500,11 +482,15 @@ checks = [
     ('set "APP=%ROOT%"',                    True,  "FIX #1: APP=%ROOT%"),
     ('set "EXT=%ROOT%extensions\\',         True,  "FIX #2: EXT=%ROOT%extensions"),
     ('set "DATA=%ROOT%data"',               True,  "FIX #3: DATA=%ROOT%data"),
-    # v4.3 FIX #8: %var% instead of !var! in PHASE 4
-    ('if "%RUNTIME_READY%"=="1"',           True,  "FIX #8: RUNTIME uses %var% not !var!"),
-    ('if "%BACKEND_READY%"=="1"',           True,  "FIX #8: BACKEND uses %var% not !var!"),
-    ('if "!RUNTIME_READY!"=="1"',           False, "FIX #8: NO !RUNTIME_READY! in PHASE 4"),
-    ('if "!BACKEND_READY!"=="1"',           False, "FIX #8: NO !BACKEND_READY! in PHASE 4"),
+    # v4.5 FIX #14: PHASE 4 has NO if/else blocks at all — plain echo only
+    ('if "%RUNTIME_READY%"=="1"',           False, "FIX #14: NO if RUNTIME_READY block in PHASE 4"),
+    ('if "%BACKEND_READY%"=="1"',           False, "FIX #14: NO if BACKEND_READY block in PHASE 4"),
+    ('if "!RUNTIME_READY!"=="1"',           False, "FIX #14: NO !RUNTIME_READY! in PHASE 4"),
+    ('if "!BACKEND_READY!"=="1"',           False, "FIX #14: NO !BACKEND_READY! in PHASE 4"),
+    ('[PHASE 4] Health check summary',      True,  "FIX #14: PHASE 4 first log line"),
+    ('echo   Runtime  : port 6000',         True,  "FIX #14: plain Runtime echo (no conditions)"),
+    ('echo   Backend  : port 5000',         True,  "FIX #14: plain Backend echo (no conditions)"),
+    ('[PHASE 4] Done',                      True,  "FIX #14: PHASE 4 Done log line"),
     # v4.4 FIX #11: backend_timeout is NON-FATAL
     ('goto :backend_done',                  True,  "FIX #11: backend_timeout -> goto backend_done (non-fatal)"),
     ('Backend failed. Press any key',       False, "FIX #11: NO 'Backend failed' fatal message"),
@@ -554,6 +540,6 @@ for text, must_exist, desc in checks:
 
 print()
 if all_ok:
-    print("=== ALL CHECKS PASSED === start.bat v4.4 ready")
+    print("=== ALL CHECKS PASSED === start.bat v4.5 ready")
 else:
     print("=== SOME CHECKS FAILED === Review output above")

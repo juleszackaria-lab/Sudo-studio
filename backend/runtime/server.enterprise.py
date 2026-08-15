@@ -13,6 +13,16 @@ Boot logic:
   6. Idempotent: successive runs never create duplicates
 """
 
+# ── OFFLINE MODE: force HuggingFace to load from local cache only ──────────
+# Must be set BEFORE any transformers / huggingface_hub import.
+# Prevents network calls on startup and avoids HF connection errors
+# when running as a distributed runtime.exe with no internet access.
+import os
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+# ───────────────────────────────────────────────────────────────────────────
+
 import sys, os, json, logging, time, threading, gc, hashlib
 from pathlib import Path
 from flask import Flask, request, jsonify
