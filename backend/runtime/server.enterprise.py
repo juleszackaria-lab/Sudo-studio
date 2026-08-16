@@ -21,6 +21,13 @@ import os
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
+# HF_HOME: point HuggingFace cache root at our managed directory.
+# This ensures TRANSFORMERS_OFFLINE=1 searches ~/.sudo_studio/hub/
+# instead of the default ~/.cache/huggingface/hub/
+os.environ.setdefault(
+    "HF_HOME",
+    os.path.join(os.path.expanduser("~"), ".sudo_studio")
+)
 # ───────────────────────────────────────────────────────────────────────────
 
 import sys, os, json, logging, time, threading, gc, hashlib
@@ -437,23 +444,121 @@ def load_model_thread(model_id: str, force_download: bool = False):
         cache_dir = str(MODELS_DIR)
         state.download_progress = 10
 
-        logger.info(f"[MODEL] Loading tokenizer (cache: {cache_dir})...")
+        # ── Resolve the best load path for tokenizer + model ──────────────
+        # Strategy (in priority order):
+        #   1. cache_dir from detect_existing_model() if it contains tokenizer files
+        #   2. HF cache snapshot dir (~/.cache/huggingface/hub/models--Owner--Repo/snapshots/HASH)
+        #   3. Fall back to model_id string (online or HF_HOME-based cache)
+        #
+        # Tokenizer sentinel files — any one of these means the dir is usable
+        _TOK_SENTINELS = [
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "tokenizer.model",          # SentencePiece / LLaMA variants
+        ]
+
+        def _has_tokenizer_files(dirpath: str) -> bool:
+            """Return True if dirpath contains at least one tokenizer file."""
+            p = Path(dirpath)
+            if not p.is_dir():
+                return False
+            return any((p / f).exists() for f in _TOK_SENTINELS)
+
+        def _find_hf_cache_snapshot(mid: str) -> str:
+            """
+            Scan the standard HF hub cache for a snapshot that contains
+            tokenizer files for model `mid` (e.g. 'TinyLlama/TinyLlama-1.1B-...').
+            Returns the snapshot path string, or '' if not found.
+            Searches both ~/.cache/huggingface/hub/ (HF default) and
+            ~/.sudo_studio/hub/ (our HF_HOME).
+            """
+            # Candidate cache roots to search
+            home = Path(os.path.expanduser("~"))
+            candidate_roots = [
+                home / ".sudo_studio" / "hub",              # our HF_HOME
+                home / ".cache" / "huggingface" / "hub",    # HF default
+            ]
+            # HF converts 'Owner/Repo' → 'models--Owner--Repo'
+            safe_name = "models--" + mid.replace("/", "--")
+            for root in candidate_roots:
+                snap_base = root / safe_name / "snapshots"
+                if not snap_base.is_dir():
+                    continue
+                # Prefer the most recently modified snapshot
+                snaps = sorted(
+                    snap_base.iterdir(),
+                    key=lambda p: p.stat().st_mtime,
+                    reverse=True
+                )
+                for snap in snaps:
+                    if _has_tokenizer_files(str(snap)):
+                        return str(snap)
+            return ""
+
+        # Determine the load path
+        is_local = (local_model is not None)
+        load_path = model_id   # default: use HF string id
+
+        if is_local:
+            candidate_dir = local_model.get('cache_dir', '')
+            if candidate_dir and _has_tokenizer_files(candidate_dir):
+                # sudo_models_dir has a full model directory — use directly
+                load_path = candidate_dir
+                logger.info(f"[MODEL] Tokenizer found in sudo_models_dir: {load_path}")
+            else:
+                # Tokenizer files absent from sudo_models_dir — search HF cache
+                snap_path = _find_hf_cache_snapshot(model_id)
+                if snap_path:
+                    load_path = snap_path
+                    logger.info(f"[MODEL] Tokenizer found in HF cache snapshot: {load_path}")
+                else:
+                    # Last resort: pass the model_id string and let HF_HOME guide the search
+                    logger.warning(
+                        f"[MODEL] Tokenizer files not found locally for {model_id}. "
+                        f"Trying model_id string with HF_HOME={os.environ.get('HF_HOME', 'unset')}"
+                    )
+                    load_path = model_id
+
+        logger.info(f"[MODEL] Loading tokenizer from: {load_path}")
         tokenizer = AutoTokenizer.from_pretrained(
-            model_id,
-            cache_dir=cache_dir,
-            trust_remote_code=True,
-            local_files_only=(local_model is not None),   # skip network if local
+            load_path,
+            local_files_only=is_local,   # never contact internet when loading local
+            trust_remote_code=False,     # safe default; avoid arbitrary remote code
         )
         state.download_progress = 40
         logger.info("[MODEL] Tokenizer loaded. Loading weights...")
 
+        # Model weights: prefer the original cache_dir (may be different from load_path)
+        # If load_path already contains weight files, use it directly.
+        # Otherwise fall back to model_id (handles online / HF_HOME cache case).
+        _WEIGHT_SENTINELS = ["config.json", "model.safetensors", "pytorch_model.bin"]
+        def _has_weight_files(dirpath: str) -> bool:
+            p = Path(dirpath)
+            if not p.is_dir():
+                return False
+            return (p / "config.json").exists() and any(
+                (p / wf).exists() for wf in _WEIGHT_SENTINELS[1:]
+            )
+
+        model_load_path = load_path  # start with tokenizer path (often same dir)
+        if is_local and not _has_weight_files(model_load_path):
+            # load_path is a snapshot with tokenizer only; check the original cache_dir
+            original_dir = local_model.get('cache_dir', '')
+            if original_dir and _has_weight_files(original_dir):
+                model_load_path = original_dir
+                logger.info(f"[MODEL] Weights found in cache_dir: {model_load_path}")
+            else:
+                logger.warning(f"[MODEL] Weight files not found at {model_load_path}, using model_id string")
+                model_load_path = model_id
+
+        logger.info(f"[MODEL] Loading weights from: {model_load_path}")
         model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            cache_dir=cache_dir,
+            model_load_path,
+            cache_dir=cache_dir if model_load_path == model_id else None,
             torch_dtype=torch.float16 if state.device == 'cuda' else torch.float32,
             low_cpu_mem_usage=True,
-            trust_remote_code=True,
-            local_files_only=(local_model is not None),   # skip network if local
+            trust_remote_code=False,
+            local_files_only=is_local,
         )
         state.download_progress = 80
         logger.info(f"[MODEL] Weights loaded. Moving to {state.device}...")
