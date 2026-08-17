@@ -629,11 +629,13 @@ def run_inference(prompt: str, max_tokens: int = 256, temperature: float = 0.7) 
     if not state.loaded or state.model is None:
         mock_reply = generate_mock_reply(prompt)
         return {
-            "reply":      mock_reply,
-            "mock":       True,
-            "model":      "mock",
-            "latency_ms": int((time.time() - start) * 1000),
-            "tokens":     len(mock_reply.split())
+            "reply":             mock_reply,
+            "mock":              True,
+            "model":             "mock",
+            "latency_ms":        int((time.time() - start) * 1000),
+            "tokens":            len(mock_reply.split()),
+            "loading":           state.loading,
+            "download_progress": state.download_progress,
         }
 
     try:
@@ -690,18 +692,29 @@ def run_inference(prompt: str, max_tokens: int = 256, temperature: float = 0.7) 
 
 
 def generate_mock_reply(prompt: str) -> str:
+    pct = state.download_progress
+    loading_status = f"[Chargement TinyLlama: {pct}%]" if state.loading else "[Modele non encore charge]"
     p = prompt.lower()
     if any(w in p for w in ['bonjour', 'salut', 'hello', 'hi', 'hey']):
-        return "Bonjour ! Je suis Sudo AI. Le modèle IA est en cours de chargement. En attendant, je peux vous répondre en mode basique. Comment puis-je vous aider ?"
+        return (f"Bonjour ! Je suis Sudo AI. {loading_status}\n\n"
+                f"Le modele IA est en cours de chargement (3-5 min au premier demarrage).\n"
+                f"En attendant, je reponds en mode basique. Posez vos questions !")
     if any(w in p for w in ['code', 'function', 'class', 'def ', 'var ', 'const ']):
-        return "Je détecte une question sur du code. Le modèle IA complet est en cours de chargement. Une fois chargé, je pourrai analyser et améliorer votre code en détail."
+        return (f"Je detecte une question sur du code. {loading_status}\n\n"
+                f"Une fois le modele charge, j'analyserai votre code avec l'IA complete.\n"
+                f"Pour l'instant, utilisez System Doctor ou DevOps dans la sidebar.")
     if any(w in p for w in ['error', 'erreur', 'bug', 'fix', 'broken']):
-        return "Je vois un problème à résoudre. Le modèle IA se charge pour vous donner une réponse précise."
+        return (f"Je vois un probleme a resoudre. {loading_status}\n\n"
+                f"L'IA complete analysera le probleme une fois le modele pret.\n"
+                f"Essayez System Doctor (sidebar) pour un diagnostic immediat.")
     if any(w in p for w in ['docker', 'container', 'kubernetes', 'deploy']):
-        return "Question sur le déploiement. Je peux générer des Dockerfiles et configurations CI/CD via les commandes DevOps dans la sidebar."
-    return (f"⚙️ Modèle IA en chargement ({state.download_progress}%)...\n\n"
-            f"Votre message a bien été reçu. Une fois le modèle chargé, vous aurez des réponses IA complètes.\n\n"
-            f"En attendant, utilisez les commandes dans la sidebar : System Doctor, SDK Manager, DevOps.")
+        return (f"Question sur le deploiement. {loading_status}\n\n"
+                f"Utilisez le panneau DevOps dans la sidebar pour generer Dockerfile et CI/CD maintenant.")
+    return (f"Message recu ! {loading_status}\n\n"
+            f"Le modele TinyLlama (2.1GB) se charge en memoire. Progression: {pct}%\n"
+            f"Temps restant approximatif: {max(0, 5 - pct//20)} min\n\n"
+            f"Des que le chargement est termine, vous recevrez des reponses IA completes.\n"
+            f"En attendant : System Doctor, SDK Manager et DevOps fonctionnent deja !")
 
 
 # ─── Routes ─────────────────────────────────────────────────────────────────────

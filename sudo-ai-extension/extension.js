@@ -63,14 +63,16 @@ async function activate(ctx) {
         // Status bar for AI runtime (synchronous)
         setupStatusBar(ctx);
 
-        // NON-BLOCKING: Connect to backend after 2s delay
-        // This lets VSCodium finish loading the UI before any network calls.
-        // start.bat already launched backend.exe and runtime.exe.
+        // NON-BLOCKING: Connect to backend after 5s delay
+        // Longer delay (5s instead of 2s) to avoid "Extension host did not start"
+        // VSCode warning. start.bat already launched backend.exe and runtime.exe.
+        // The 5s gives the Extension Host time to fully initialise before any
+        // network calls that could block the host process.
         setTimeout(() => {
             initializeBackend().catch(function(err) {
                 console.warn('Background backend init (non-fatal):', err.message);
             });
-        }, 2000);
+        }, 5000);
 
         // autoStartRuntime() intentionally disabled:
         // start.bat already launches runtime.exe - no need to spawn again.
@@ -97,58 +99,23 @@ async function activate(ctx) {
  * Initialize backend connection and check health
  */
 async function initializeBackend() {
+    // Silent background connection — no error popups to avoid spamming user
+    // while start.bat is still booting services.
+    // The status bar (pollRuntimeStatus every 5s) shows live state instead.
     try {
-        console.log('🔌 Connecting to backend...');
+        console.log('[Backend] Connecting silently in background...');
         const connected = await backend.initialize();
-        
         if (connected) {
-            console.log('✅ Backend connected');
-            vscode.window.showInformationMessage('✅ Backend connected successfully');
-            
-            // Check runtime status
-            try {
-                const runtimeHealth = await backend.checkRuntimeHealth();
-                const isHealthy = runtimeHealth.status === 'healthy';
-                const modelLoaded = runtimeHealth.model_loaded || runtimeHealth.model?.loaded || false;
-                const modelName = runtimeHealth.loaded_model || runtimeHealth.model?.name || 'unknown';
-                
-                state.updateRuntimeState({
-                    status: isHealthy ? 'healthy' : 'unhealthy',
-                    modelLoaded: modelLoaded,
-                    modelName: modelName,
-                    port: 6000
-                });
-                
-                if (modelLoaded) {
-                    console.log(`✅ AI Runtime ready - Model: ${modelName}`);
-                    vscode.window.showInformationMessage(`✅ AI Ready: ${modelName}`);
-                } else {
-                    console.log('⚠️ AI Runtime healthy but no model loaded');
-                    vscode.window.showWarningMessage('⚠️ AI Runtime: No model loaded');
-                }
-            } catch (runtimeError) {
-                console.error('Runtime check error:', runtimeError);
-                state.updateRuntimeState({ status: 'offline' });
-            }
-            
+            console.log('[Backend] Connected to backend:5000');
+            // Do NOT call checkRuntimeHealth here — it triggers backend to poll
+            // all models (qwen, phi, deepseek...) via ECONNREFUSED, flooding logs.
+            // Runtime status is tracked by pollRuntimeStatus() on port 6000 directly.
         } else {
-            console.log('⚠️ Backend offline');
-            vscode.window.showWarningMessage(
-                '⚠️ Backend offline. Start with: cd backend && node server.js',
-                'Show Instructions'
-            ).then(selection => {
-                if (selection === 'Show Instructions') {
-                    vscode.window.showInformationMessage(
-                        'Backend start: cd backend && node server.js\n' +
-                        'Runtime start: cd backend/runtime && python server.enterprise.py'
-                    );
-                }
-            });
+            console.warn('[Backend] Backend not yet ready — will retry via polling');
         }
     } catch (error) {
-        console.error('Backend initialization error:', error);
-        state.updateBackendState({ connected: false, healthy: false });
-        vscode.window.showErrorMessage(`Backend error: ${error.message}`);
+        // Silent — backend may still be starting. pollRuntimeStatus() handles UI.
+        console.warn('[Backend] Init error (non-fatal):', error.message);
     }
 }
 
@@ -644,33 +611,49 @@ function setupStatusBar(ctx) {
     pollRuntimeStatus(); // immediate first check
 }
 
+// Track consecutive failures to avoid "hors ligne" flash during startup
+let _runtimeOfflineCount = 0;
+const _OFFLINE_THRESHOLD = 3; // show "hors ligne" only after 3 consecutive failures
+
 async function pollRuntimeStatus() {
     if (!statusBarItem) return;
     try {
         const r = await axios.get('http://localhost:6000/health', { timeout: 2500 });
+        _runtimeOfflineCount = 0; // reset on success
         const d = r.data;
         const m = d.model || {};
         if (m.loaded) {
             const short = (m.name || 'IA').split('/').pop().substring(0, 20);
             statusBarItem.text    = `$(check) Sudo AI: ${short}`;
-            statusBarItem.tooltip = `IA prête · ${m.name} · ${m.device || 'cpu'}\nCliquez pour ouvrir Runtime`;
+            statusBarItem.tooltip = `IA prete · ${m.name} · ${m.device || 'cpu'}\nCliquez pour ouvrir Runtime`;
             statusBarItem.backgroundColor = undefined;
         } else if (m.loading) {
             const pct = m.download_progress || 0;
             statusBarItem.text    = `$(loading~spin) Sudo AI: chargement ${pct}%`;
-            statusBarItem.tooltip = `Téléchargement modèle ${m.name || ''} — ${pct}%\nCliquez pour ouvrir Runtime`;
+            statusBarItem.tooltip = `Chargement modele ${m.name || 'TinyLlama'} - ${pct}%\nCliquez pour ouvrir Runtime`;
             statusBarItem.backgroundColor = undefined;
         } else {
-            statusBarItem.text    = '$(warning) Sudo AI: aucun modèle';
-            statusBarItem.tooltip = 'Runtime actif mais aucun modèle chargé\nCliquez pour télécharger';
-            statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            // Runtime up but model not started yet (just launched)
+            statusBarItem.text    = '$(loading~spin) Sudo AI: demarrage modele...';
+            statusBarItem.tooltip = 'Runtime actif - demarrage du modele en cours\nCliquez pour ouvrir Runtime';
+            statusBarItem.backgroundColor = undefined;
         }
         // Refresh runtime provider tree
-        providers.runtime?.refresh();
+        if (providers.runtime && providers.runtime.refresh) providers.runtime.refresh();
     } catch (_) {
-        statusBarItem.text    = '$(x) Sudo AI: hors ligne';
-        statusBarItem.tooltip = 'Runtime hors ligne (port 6000)\nVérifiez que runtime.exe est lancé';
-        statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+        _runtimeOfflineCount++;
+        if (_runtimeOfflineCount >= _OFFLINE_THRESHOLD) {
+            // Only show "hors ligne" after 3 consecutive failures (15s)
+            // This prevents false "hors ligne" during startup
+            statusBarItem.text    = '$(x) Sudo AI: hors ligne';
+            statusBarItem.tooltip = 'Runtime hors ligne (port 6000)\nVerifiez que runtime.exe est lance';
+            statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+        } else {
+            // During startup grace period — show loading instead
+            statusBarItem.text    = '$(loading~spin) Sudo AI: demarrage...';
+            statusBarItem.tooltip = `Runtime en cours de demarrage (${_runtimeOfflineCount}/${_OFFLINE_THRESHOLD})...`;
+            statusBarItem.backgroundColor = undefined;
+        }
     }
 }
 

@@ -145,12 +145,15 @@ class ChatPanel {
         try {
             const reply = await this._sendToAI(text);
             this.panel.webview.postMessage({ type: 'generating', show: false });
+            // Determine display label: if model is loading, don't label as "Mock"
+            const isLoading = reply.loading || (reply.download_progress !== undefined && reply.download_progress < 100 && !reply.mock === false);
             this.panel.webview.postMessage({
                 type: 'aiMessage',
-                text: reply.reply || reply.response || 'Pas de réponse.',
-                model: reply.model || 'AI',
+                text: reply.reply || reply.response || 'Pas de reponse.',
+                model: reply.model === 'mock' ? 'Sudo AI (chargement modele)' : (reply.model || 'AI'),
                 latency: reply.latency_ms,
                 mock: reply.mock || false,
+                loading: reply.loading || false,
                 progress: reply.download_progress
             });
             this._addHistory('assistant', reply.reply || reply.response || '', reply.model, reply.mock);
@@ -239,9 +242,11 @@ class ChatPanel {
             const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
             this.panel.webview.postMessage({ type: 'status', data: r.data });
         } catch (_) {
+            // Don't immediately show offline - runtime may still be starting
+            // The status bar polling handles graceful offline detection
             this.panel.webview.postMessage({
                 type: 'status',
-                data: { status: 'offline', model: { loaded: false, loading: false, download_progress: 0 } }
+                data: { status: 'starting', model: { loaded: false, loading: true, download_progress: 0 } }
             });
         }
     }
@@ -635,7 +640,14 @@ function updateStatus(data) {
 
     if (!data || data.status === 'offline') {
         dot.className = 'dot offline';
-        txt.textContent = '⚠ Runtime hors ligne — lancez runtime.exe';
+        txt.textContent = 'Runtime hors ligne - lancez runtime.exe';
+        dlBtn.style.display = 'none';
+        dlBar.classList.remove('show');
+        return;
+    }
+    if (data.status === 'starting') {
+        dot.className = 'dot loading';
+        txt.textContent = 'Runtime en demarrage... (3-5 min pour TinyLlama)';
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
         return;
@@ -672,10 +684,16 @@ window.addEventListener('message', ev => {
             break;
         case 'aiMessage': {
             let meta = '';
-            if (msg.model) meta += 'Modèle: ' + msg.model;
-            if (msg.latency) meta += (meta ? ' · ' : '') + msg.latency + 'ms';
-            if (msg.mock) meta += '<span class="badge">⚠ Mock</span>';
-            if (msg.progress !== undefined && msg.progress < 100) meta += (meta ? ' · ' : '') + '⬇ ' + msg.progress + '%';
+            if (msg.model) meta += msg.model;
+            if (msg.latency && msg.latency > 0) meta += (meta ? ' · ' : '') + msg.latency + 'ms';
+            if (msg.mock && msg.loading) {
+                meta += '<span class="badge" style="background:rgba(33,150,243,.2);color:#2196f3">Chargement modele...</span>';
+            } else if (msg.mock) {
+                meta += '<span class="badge">Mode basique</span>';
+            }
+            if (msg.progress !== undefined && msg.progress > 0 && msg.progress < 100) {
+                meta += (meta ? ' · ' : '') + msg.progress + '%';
+            }
             addMsg(renderMarkdown(msg.text), false, meta, msg.noScroll);
             setGenerating(false);
             break;

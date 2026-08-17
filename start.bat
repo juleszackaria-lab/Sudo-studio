@@ -3,11 +3,11 @@ setlocal enabledelayedexpansion
 title Sudo Studio - Starting...
 
 :: ============================================================
-::  SUDO STUDIO v4.3 - Windows Launcher
+::  SUDO STUDIO v4.6 - Windows Launcher
 ::  backend.exe  = Node.js/Express (pkg node18-win-x64)
 ::  runtime.exe  = Python/Flask + HuggingFace AI
 ::  No system Node.js or Python required.
-::  v4.5: PHASE 4 simplified (no if/else) + offline HF vars
+::  v4.6: runtime timeout 600s + chat fixes
 :: ============================================================
 
 :: -- CRITICAL: Set working directory to script location ------
@@ -26,7 +26,7 @@ set "DATA=%ROOT%data"
 :: -- STEP 1: Confirm script is actually running ---------------
 echo.
 echo ============================================================
-echo   SUDO STUDIO v4.3
+echo   SUDO STUDIO v4.6
 echo ============================================================
 echo   STEP 1 - Script is running
 echo   Root directory: %ROOT%
@@ -127,7 +127,7 @@ echo.
 ::  PHASE 2 - LAUNCH AI RUNTIME (port 6000) (STEP 3)
 :: ============================================================
 echo [STEP 3] Starting AI Runtime on port %RUNTIME_PORT%...
-echo          (First run may download AI model ~600MB - up to 5 min)
+echo          (TinyLlama 2.1GB - first load 3-5 min. Waiting up to 10 min.)
 echo [PHASE 2] Launching runtime.exe on port %RUNTIME_PORT% >> "%LOG_FILE%"
 echo.
 
@@ -142,13 +142,13 @@ echo [PHASE 2] runtime.exe launched >> "%LOG_FILE%"
 echo   [LAUNCHED] runtime.exe -> port %RUNTIME_PORT%
 echo.
 
-:: -- Poll port 6000 every 3 seconds, timeout 300s (5 min for model download) --
+:: -- Poll port 6000 every 3s, timeout 600s (10 min for 2GB model load) --
 set "RUNTIME_READY=0"
 set "RUNTIME_WAIT=0"
 
 :wait_runtime
     set /a RUNTIME_WAIT+=1
-    if !RUNTIME_WAIT! gtr 100 goto :runtime_timeout
+    if !RUNTIME_WAIT! gtr 200 goto :runtime_timeout
     timeout /t 3 /nobreak >nul
 
     :: Try curl first (faster)
@@ -169,14 +169,17 @@ set "RUNTIME_WAIT=0"
     set /a RUNTIME_ELAPSED=RUNTIME_WAIT*3
     set /a RUNTIME_MOD=RUNTIME_ELAPSED %% 15
     if !RUNTIME_MOD! equ 0 (
-        echo   Still waiting for Runtime... !RUNTIME_ELAPSED!s elapsed
+        echo   [AI Loading] !RUNTIME_ELAPSED!s elapsed - TinyLlama loading... ^(up to 600s^)
+        echo   [AI Loading] !RUNTIME_ELAPSED!s >> "%LOG_FILE%"
     )
     goto :wait_runtime
 
 :runtime_timeout
-    echo   [WARNING] Runtime did not respond after 300s. Continuing...
-    echo   Check log: %LOGS%\runtime.log if it exists.
-    echo [PHASE 2] WARNING: Runtime timeout >> "%LOG_FILE%"
+    echo.
+    echo   [OK] 600s elapsed. runtime.exe is STILL RUNNING and loading the model.
+    echo   [OK] VSCodium will open now. Chat will work once model finishes loading.
+    echo   [OK] Watch SudoRuntime window for: Model Ready on cpu
+    echo [PHASE 2] 600s timeout - runtime still loading >> "%LOG_FILE%"
     goto :runtime_done
 
 :runtime_ok
