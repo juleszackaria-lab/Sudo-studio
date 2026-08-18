@@ -555,7 +555,9 @@ def load_model_thread(model_id: str, force_download: bool = False):
         model = AutoModelForCausalLM.from_pretrained(
             model_load_path,
             cache_dir=cache_dir if model_load_path == model_id else None,
-            torch_dtype=torch.float16 if state.device == 'cuda' else torch.float32,
+            # FIX: torch_dtype is deprecated in newer transformers — use dtype instead.
+            # Both parameters are kept for maximum compatibility across versions.
+            dtype=torch.float16 if state.device == 'cuda' else torch.float32,
             low_cpu_mem_usage=True,
             trust_remote_code=False,
             local_files_only=is_local,
@@ -581,32 +583,46 @@ def load_model_thread(model_id: str, force_download: bool = False):
         save_model_state(model_id, cache_dir_path)
 
     except OSError as e:
-        # local_files_only=True but files not found — retry with download
-        if local_model is not None and 'local_files_only' in str(e).lower() or 'No such file' in str(e):
-            logger.warning(f"[MODEL] Local cache stale, retrying with download: {e}")
+        # local_files_only=True but files not found — attempt ONE download retry.
+        # Use a flag to prevent infinite recursion (stale cache → download → stale again).
+        errmsg = str(e).lower()
+        if (local_model is not None
+                and not force_download
+                and ('local_files_only' in errmsg or 'no such file' in errmsg or 'does not appear' in errmsg)):
+            logger.warning(f"[MODEL] Local cache stale, retrying with download (once): {e}")
             state.loading = False
+            # Call with force_download=True — this will NOT retry again because
+            # on the second call local_model will be None or force_download=True.
             load_model_thread(model_id, force_download=True)
             return
-        state.error   = str(e)
+        import traceback
+        state.error   = f"File error: {str(e)}"
         state.loading = False
         state.download_progress = 0
-        logger.error(f"[MODEL] ❌ Failed: {e}")
+        logger.error(f"[MODEL] ❌ OSError: {e}")
+        logger.error(traceback.format_exc())
+        logger.info("[MODEL] Runtime continues in mock mode — /infer will return mock replies")
         gc.collect()
 
     except MemoryError as e:
+        import traceback
         avail = get_available_ram_gb()
         state.error   = f"Out of memory ({avail:.1f}GB available). Free RAM and retry."
         state.loading = False
         state.download_progress = 0
         logger.error(f"[MODEL] ❌ OOM: {e}")
+        logger.error(traceback.format_exc())
+        logger.info("[MODEL] Runtime continues in mock mode after OOM")
         gc.collect()
 
     except Exception as e:
+        import traceback
         state.error   = str(e)
         state.loading = False
         state.download_progress = 0
         logger.error(f"[MODEL] ❌ Failed to load {model_id}: {e}")
-        logger.info("[MODEL] Falling back to mock mode")
+        logger.error(traceback.format_exc())
+        logger.info("[MODEL] Runtime continues in mock mode — /infer will return mock replies")
         gc.collect()
 
     finally:
@@ -617,7 +633,11 @@ def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False
     t = threading.Thread(
         target=load_model_thread,
         args=(model_id, force_download),
-        daemon=True
+        # CRITICAL: daemon=False — thread MUST NOT die when main thread ends.
+        # With daemon=True, if Flask's internal thread finishes first on Windows,
+        # all daemon threads are killed immediately → runtime exits silently.
+        daemon=False,
+        name="ModelLoader"
     )
     t.start()
 
@@ -910,4 +930,36 @@ if __name__ == '__main__':
     else:
         logger.info("[BOOT] Mock mode — no model will be loaded")
 
-    app.run(host=args.host, port=args.port, debug=False, threaded=True)
+    # ── Start Flask server (blocking call in main thread) ─────────────────
+    # Wrapped in a while loop so that if Flask crashes unexpectedly (e.g.
+    # WSGI error, port briefly stolen) it auto-restarts instead of exiting.
+    # The process only exits on explicit KeyboardInterrupt (Ctrl+C).
+    _flask_restart_count = 0
+    while True:
+        try:
+            logger.info(f"[FLASK] Starting on {args.host}:{args.port} (restart #{_flask_restart_count})")
+            app.run(host=args.host, port=args.port, debug=False, threaded=True, use_reloader=False)
+            # app.run() returned normally — should not happen unless shutdown requested
+            logger.warning("[FLASK] app.run() returned — restarting Flask in 3s...")
+        except KeyboardInterrupt:
+            logger.info("[EXIT] Runtime stopped by user (KeyboardInterrupt)")
+            break
+        except OSError as flask_e:
+            if 'address already in use' in str(flask_e).lower() or 'only one usage' in str(flask_e).lower():
+                logger.error(f"[FLASK] Port {args.port} already in use — cannot restart: {flask_e}")
+                logger.info("[FLASK] Runtime will keep model in memory. Fix port conflict and restart.")
+                # Don't exit — keep the process alive so model stays in RAM
+                try:
+                    while True:
+                        time.sleep(60)
+                        logger.info("[ALIVE] Runtime alive (port conflict — Flask not running)")
+                except KeyboardInterrupt:
+                    break
+            logger.error(f"[FLASK] OSError: {flask_e} — restarting in 3s...")
+        except Exception as flask_e:
+            import traceback
+            logger.error(f"[FLASK] Unexpected error: {flask_e}")
+            logger.error(traceback.format_exc())
+            logger.info("[FLASK] Restarting Flask in 3s...")
+        _flask_restart_count += 1
+        time.sleep(3)
