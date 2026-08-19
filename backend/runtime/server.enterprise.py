@@ -1,4 +1,84 @@
 #!/usr/bin/env python3
+# ══════════════════════════════════════════════════════════════════════════════
+# DEBUG BOOTSTRAP — must be the very first code executed, before any import.
+# Writes every step to a log file so we can pinpoint where runtime.exe crashes.
+# ══════════════════════════════════════════════════════════════════════════════
+import sys
+import os
+import traceback as _tb
+
+# ── Log file: Windows path used by runtime.exe ─────────────────────────────
+#   Primary  : %USERPROFILE%\AppData\Local\Programs\SudoStudio\logs\runtime_debug.log
+#   Fallback : ~/.sudo_studio/logs/runtime_debug.log  (Linux / macOS / PyInstaller)
+_WIN_LOG = os.path.join(
+    os.path.expanduser("~"),
+    "AppData", "Local", "Programs", "SudoStudio", "logs", "runtime_debug.log"
+)
+_UNIX_LOG = os.path.join(
+    os.path.expanduser("~"),
+    ".sudo_studio", "logs", "runtime_debug.log"
+)
+# Pick whichever parent directory already exists (prefer Windows path)
+if os.path.isdir(os.path.dirname(os.path.dirname(_WIN_LOG))):
+    LOG_FILE = _WIN_LOG
+else:
+    LOG_FILE = _UNIX_LOG
+
+try:
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+except Exception:
+    LOG_FILE = os.path.join(os.path.expanduser("~"), "runtime_debug.log")
+    os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+
+
+def dlog(msg: str):
+    """Write a timestamped debug line to stdout AND the log file immediately."""
+    import datetime
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    line = f"[{ts}][DEBUG] {msg}\n"
+    try:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as _f:
+            _f.write(line)
+            _f.flush()
+    except Exception:
+        pass
+
+
+# ── Global uncaught-exception handler ──────────────────────────────────────
+def _handle_exception(exc_type, exc_value, exc_tb):
+    dlog(f"UNCAUGHT EXCEPTION: {exc_type.__name__}: {exc_value}")
+    tb_str = "".join(_tb.format_exception(exc_type, exc_value, exc_tb))
+    dlog(tb_str)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8", errors="replace") as _f:
+            _tb.print_exception(exc_type, exc_value, exc_tb, file=_f)
+            _f.flush()
+    except Exception:
+        pass
+
+
+sys.excepthook = _handle_exception
+
+# ── Bootstrap log ──────────────────────────────────────────────────────────
+dlog("=" * 60)
+dlog("=== SUDO STUDIO RUNTIME STARTING ===")
+dlog("=" * 60)
+dlog(f"Python version : {sys.version}")
+dlog(f"Platform       : {sys.platform}")
+dlog(f"Executable     : {sys.executable}")
+dlog(f"CWD            : {os.getcwd()}")
+dlog(f"Args           : {sys.argv}")
+dlog(f"Log file       : {LOG_FILE}")
+dlog("Bootstrap block OK")
+# ══════════════════════════════════════════════════════════════════════════════
+# END DEBUG BOOTSTRAP
+# ══════════════════════════════════════════════════════════════════════════════
+
 """
 SUDO STUDIO - AI RUNTIME SERVER v2.2
 Intelligent model detection: scans local cache BEFORE downloading.
@@ -15,26 +95,32 @@ Boot logic:
 
 # ── OFFLINE MODE: force HuggingFace to load from local cache only ──────────
 # Must be set BEFORE any transformers / huggingface_hub import.
-# Prevents network calls on startup and avoids HF connection errors
-# when running as a distributed runtime.exe with no internet access.
-import os
+dlog("Setting HuggingFace offline env vars...")
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["HF_HUB_OFFLINE"] = "1"
-# HF_HOME: point HuggingFace cache root at our managed directory.
-# This ensures TRANSFORMERS_OFFLINE=1 searches ~/.sudo_studio/hub/
-# instead of the default ~/.cache/huggingface/hub/
 os.environ.setdefault(
     "HF_HOME",
     os.path.join(os.path.expanduser("~"), ".sudo_studio")
 )
+dlog(f"HF_HOME = {os.environ.get('HF_HOME')}")
+dlog("HuggingFace offline env vars OK")
 # ───────────────────────────────────────────────────────────────────────────
 
-import sys, os, json, logging, time, threading, gc, hashlib
+dlog("Importing stdlib: json, logging, time, threading, gc, hashlib, pathlib...")
+import json, logging, time, threading, gc, hashlib
 from pathlib import Path
-from flask import Flask, request, jsonify
-from flask_cors import CORS
+dlog("stdlib imports OK")
 
+dlog("Importing flask...")
+from flask import Flask, request, jsonify
+dlog("flask imported OK")
+
+dlog("Importing flask_cors...")
+from flask_cors import CORS
+dlog("flask_cors imported OK")
+
+dlog("Configuring Python logging...")
 # ─── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -42,10 +128,13 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger('sudo-runtime')
+dlog("Python logging configured OK")
 
+dlog("Creating Flask app...")
 # ─── App ────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 CORS(app)
+dlog("Flask app + CORS created OK")
 
 # ─── State ──────────────────────────────────────────────────────────────────────
 class State:
@@ -403,6 +492,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
     If model is already cached locally, loads from cache (no download).
     Only downloads if not present OR force_download=True.
     """
+    dlog(f"load_model_thread START: model_id={model_id} force_download={force_download}")
     state.loading = True
     state.error   = None
     state.download_progress = 0
@@ -411,6 +501,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
 
     try:
         # ── RAM pre-check ─────────────────────────────────────────────────
+        dlog("RAM pre-check...")
         ok, avail, req, msg = check_ram_for_model(model_id)
         if not ok:
             logger.warning(f"[MODEL] RAM warning: {msg}")
@@ -435,10 +526,16 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 _log_detect(f"[MODEL] No compatible model found. Downloading default model: {model_id}")
 
         # ── Import torch / transformers ────────────────────────────────────
-        from transformers import AutoTokenizer, AutoModelForCausalLM
+        dlog("Importing torch (may take 5-30s)...")
         import torch
+        dlog(f"torch imported OK: version={torch.__version__} cuda={torch.cuda.is_available()}")
+
+        dlog("Importing transformers AutoTokenizer + AutoModelForCausalLM...")
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        dlog("transformers imported OK")
 
         state.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        dlog(f"Device selected: {state.device}")
         logger.info(f"[MODEL] Device: {state.device}")
 
         cache_dir = str(MODELS_DIR)
@@ -519,6 +616,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     )
                     load_path = model_id
 
+        dlog(f"Loading tokenizer from: {load_path} (local={is_local})")
         logger.info(f"[MODEL] Loading tokenizer from: {load_path}")
         tokenizer = AutoTokenizer.from_pretrained(
             load_path,
@@ -526,6 +624,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
             trust_remote_code=False,     # safe default; avoid arbitrary remote code
         )
         state.download_progress = 40
+        dlog("Tokenizer loaded OK")
         logger.info("[MODEL] Tokenizer loaded. Loading weights...")
 
         # Model weights: prefer the original cache_dir (may be different from load_path)
@@ -551,6 +650,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 logger.warning(f"[MODEL] Weight files not found at {model_load_path}, using model_id string")
                 model_load_path = model_id
 
+        dlog(f"Loading model weights from: {model_load_path} (local={is_local})")
         logger.info(f"[MODEL] Loading weights from: {model_load_path}")
         model = AutoModelForCausalLM.from_pretrained(
             model_load_path,
@@ -563,6 +663,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
             local_files_only=is_local,
         )
         state.download_progress = 80
+        dlog("Model weights loaded OK")
         logger.info(f"[MODEL] Weights loaded. Moving to {state.device}...")
 
         model = model.to(state.device)
@@ -576,6 +677,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
         state.download_progress  = 100
         state.detected_local = (local_model is not None)
 
+        dlog(f"Model READY: {model_id} on {state.device}")
         logger.info(f"[MODEL] ✅ Ready: {model_id} on {state.device}")
 
         # Persist the valid model for next runs
@@ -583,6 +685,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
         save_model_state(model_id, cache_dir_path)
 
     except OSError as e:
+        dlog(f"OSError in load_model_thread: {e}")
         # local_files_only=True but files not found — attempt ONE download retry.
         # Use a flag to prevent infinite recursion (stale cache → download → stale again).
         errmsg = str(e).lower()
@@ -605,6 +708,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
         gc.collect()
 
     except MemoryError as e:
+        dlog(f"MemoryError in load_model_thread: {e}")
         import traceback
         avail = get_available_ram_gb()
         state.error   = f"Out of memory ({avail:.1f}GB available). Free RAM and retry."
@@ -616,17 +720,20 @@ def load_model_thread(model_id: str, force_download: bool = False):
         gc.collect()
 
     except Exception as e:
+        dlog(f"Exception in load_model_thread: {type(e).__name__}: {e}")
         import traceback
         state.error   = str(e)
         state.loading = False
         state.download_progress = 0
         logger.error(f"[MODEL] ❌ Failed to load {model_id}: {e}")
         logger.error(traceback.format_exc())
+        dlog(traceback.format_exc())
         logger.info("[MODEL] Runtime continues in mock mode — /infer will return mock replies")
         gc.collect()
 
     finally:
         state.loading = False
+        dlog(f"load_model_thread DONE: loaded={state.loaded} error={state.error}")
 
 
 def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False):
@@ -921,14 +1028,19 @@ if __name__ == '__main__':
     print(f"  Detection  : {'FORCED DOWNLOAD' if args.force_download else 'Smart (local-first)'}")
     print("=" * 60)
 
+    dlog(f"no_auto_download={args.no_auto_download} model={args.model} force_download={args.force_download}")
     if not args.no_auto_download:
         ok, avail, req, msg = check_ram_for_model(args.model)
         if not ok:
             logger.warning(f"[BOOT] RAM WARNING: {msg}")
+            dlog(f"RAM WARNING: {msg}")
             logger.info("[BOOT] Attempting to load anyway (page file may help on Windows)...")
+        dlog("Calling start_model_load()...")
         start_model_load(args.model, force_download=args.force_download)
+        dlog("start_model_load() spawned (daemon=False thread)")
     else:
         logger.info("[BOOT] Mock mode — no model will be loaded")
+        dlog("Mock mode: no model load")
 
     # ── Start Flask server (blocking call in main thread) ─────────────────
     # Wrapped in a while loop so that if Flask crashes unexpectedly (e.g.
@@ -937,29 +1049,39 @@ if __name__ == '__main__':
     _flask_restart_count = 0
     while True:
         try:
+            dlog(f"Flask starting on {args.host}:{args.port} (restart #{_flask_restart_count})...")
             logger.info(f"[FLASK] Starting on {args.host}:{args.port} (restart #{_flask_restart_count})")
             app.run(host=args.host, port=args.port, debug=False, threaded=True, use_reloader=False)
+            dlog("app.run() returned normally (unexpected)")
             # app.run() returned normally — should not happen unless shutdown requested
             logger.warning("[FLASK] app.run() returned — restarting Flask in 3s...")
         except KeyboardInterrupt:
+            dlog("KeyboardInterrupt — runtime stopping cleanly")
             logger.info("[EXIT] Runtime stopped by user (KeyboardInterrupt)")
             break
         except OSError as flask_e:
+            dlog(f"OSError in Flask: {flask_e}")
             if 'address already in use' in str(flask_e).lower() or 'only one usage' in str(flask_e).lower():
+                dlog(f"Port {args.port} already in use — entering keepalive loop")
                 logger.error(f"[FLASK] Port {args.port} already in use — cannot restart: {flask_e}")
                 logger.info("[FLASK] Runtime will keep model in memory. Fix port conflict and restart.")
                 # Don't exit — keep the process alive so model stays in RAM
                 try:
                     while True:
                         time.sleep(60)
+                        dlog(f"[ALIVE] port conflict keepalive — uptime {int(time.time()-state.startup_time)}s")
                         logger.info("[ALIVE] Runtime alive (port conflict — Flask not running)")
                 except KeyboardInterrupt:
+                    dlog("KeyboardInterrupt in keepalive loop")
                     break
             logger.error(f"[FLASK] OSError: {flask_e} — restarting in 3s...")
         except Exception as flask_e:
             import traceback
+            dlog(f"Exception in Flask: {type(flask_e).__name__}: {flask_e}")
+            dlog(traceback.format_exc())
             logger.error(f"[FLASK] Unexpected error: {flask_e}")
             logger.error(traceback.format_exc())
             logger.info("[FLASK] Restarting Flask in 3s...")
         _flask_restart_count += 1
+        dlog(f"Flask restart #{_flask_restart_count} in 3s...")
         time.sleep(3)
