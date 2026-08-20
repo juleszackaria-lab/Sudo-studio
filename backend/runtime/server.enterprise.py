@@ -651,19 +651,105 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 model_load_path = model_id
 
         dlog(f"Loading model weights from: {model_load_path} (local={is_local})")
+        dlog(f"RAM before load: {get_available_ram_gb():.2f}GB free")
         logger.info(f"[MODEL] Loading weights from: {model_load_path}")
-        model = AutoModelForCausalLM.from_pretrained(
-            model_load_path,
-            cache_dir=cache_dir if model_load_path == model_id else None,
-            # FIX: torch_dtype is deprecated in newer transformers — use dtype instead.
-            # Both parameters are kept for maximum compatibility across versions.
-            dtype=torch.float16 if state.device == 'cuda' else torch.float32,
-            low_cpu_mem_usage=True,
-            trust_remote_code=False,
-            local_files_only=is_local,
+
+        # ── from_pretrained: ultra-granular wrapper ────────────────────────
+        # The crash log ends at "Loading model weights from:" which means
+        # from_pretrained() itself raises a non-Python signal (SIGSEGV) or a
+        # BaseException subclass (SystemExit, MemoryError variant) that the
+        # outer except blocks never see.  We therefore:
+        #   1. Log every kwarg we pass (to spot bad combos early)
+        #   2. Catch BaseException (not just Exception) so SystemExit/KeyboardInterrupt
+        #      inside transformers code is caught and logged instead of killing the process
+        #   3. Try a progressive fallback chain:
+        #        Attempt A: float32,  low_cpu_mem_usage=True  (default safe path)
+        #        Attempt B: float32,  low_cpu_mem_usage=False (avoids meta-tensor issues)
+        #        Attempt C: give up cleanly → mock mode, Flask stays alive
+        # ────────────────────────────────────────────────────────────────────
+
+        _load_kwargs_base = dict(
+            cache_dir      = cache_dir if model_load_path == model_id else None,
+            trust_remote_code = False,
+            local_files_only  = is_local,
         )
+        dlog(f"from_pretrained base kwargs: {_load_kwargs_base}")
+
+        model = None  # will be set by whichever attempt succeeds
+
+        # ── Attempt A: float32 + low_cpu_mem_usage=True ───────────────────
+        dlog("from_pretrained ATTEMPT A: dtype=float32 low_cpu_mem_usage=True ...")
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_load_path,
+                dtype=torch.float32,
+                low_cpu_mem_usage=True,
+                **_load_kwargs_base,
+            )
+            dlog("from_pretrained ATTEMPT A: SUCCESS")
+        except (MemoryError, RuntimeError) as _e_a:
+            _is_oom_a = (
+                isinstance(_e_a, MemoryError)
+                or 'out of memory' in str(_e_a).lower()
+                or 'cannot allocate' in str(_e_a).lower()
+            )
+            if _is_oom_a:
+                dlog(f"from_pretrained ATTEMPT A: OOM — {_e_a}")
+            else:
+                dlog(f"from_pretrained ATTEMPT A: RuntimeError — {_e_a}")
+            import traceback as _trc_a
+            dlog(_trc_a.format_exc())
+            model = None
+        except BaseException as _e_base_a:
+            # Catches SystemExit, KeyboardInterrupt raised inside transformers
+            dlog(f"from_pretrained ATTEMPT A: BaseException {type(_e_base_a).__name__}: {_e_base_a}")
+            import traceback as _trc_ba
+            dlog(_trc_ba.format_exc())
+            model = None
+
+        # ── Attempt B: float32 + low_cpu_mem_usage=False ─────────────────
+        if model is None:
+            dlog("from_pretrained ATTEMPT B: dtype=float32 low_cpu_mem_usage=False ...")
+            gc.collect()
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_load_path,
+                    dtype=torch.float32,
+                    low_cpu_mem_usage=False,
+                    **_load_kwargs_base,
+                )
+                dlog("from_pretrained ATTEMPT B: SUCCESS")
+            except (MemoryError, RuntimeError) as _e_b:
+                dlog(f"from_pretrained ATTEMPT B: {type(_e_b).__name__}: {_e_b}")
+                import traceback as _trc_b
+                dlog(_trc_b.format_exc())
+                model = None
+            except BaseException as _e_base_b:
+                dlog(f"from_pretrained ATTEMPT B: BaseException {type(_e_base_b).__name__}: {_e_base_b}")
+                import traceback as _trc_bb
+                dlog(_trc_bb.format_exc())
+                model = None
+
+        # ── All attempts failed → mock mode, Flask stays alive ────────────
+        if model is None:
+            avail_after = get_available_ram_gb()
+            dlog(f"ALL from_pretrained ATTEMPTS FAILED. RAM now: {avail_after:.2f}GB")
+            dlog("Falling back to MOCK MODE — Flask will keep running")
+            logger.error("[MODEL] ❌ All load attempts failed — mock mode active")
+            state.error = (
+                f"Model failed to load (all attempts). "
+                f"RAM available: {avail_after:.1f}GB. "
+                f"Check runtime_debug.log for details."
+            )
+            state.loading = False
+            state.download_progress = 0
+            gc.collect()
+            # Return here — finally block will set state.loading=False
+            # Flask continues running; /infer returns mock replies
+            return
+
         state.download_progress = 80
-        dlog("Model weights loaded OK")
+        dlog(f"Model weights loaded OK — RAM now: {get_available_ram_gb():.2f}GB free")
         logger.info(f"[MODEL] Weights loaded. Moving to {state.device}...")
 
         model = model.to(state.device)
@@ -704,6 +790,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
         state.download_progress = 0
         logger.error(f"[MODEL] ❌ OSError: {e}")
         logger.error(traceback.format_exc())
+        dlog(traceback.format_exc())
         logger.info("[MODEL] Runtime continues in mock mode — /infer will return mock replies")
         gc.collect()
 
@@ -716,6 +803,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
         state.download_progress = 0
         logger.error(f"[MODEL] ❌ OOM: {e}")
         logger.error(traceback.format_exc())
+        dlog(traceback.format_exc())
         logger.info("[MODEL] Runtime continues in mock mode after OOM")
         gc.collect()
 
@@ -731,14 +819,56 @@ def load_model_thread(model_id: str, force_download: bool = False):
         logger.info("[MODEL] Runtime continues in mock mode — /infer will return mock replies")
         gc.collect()
 
+    except BaseException as e:
+        # Catches SystemExit / KeyboardInterrupt raised deep inside transformers/torch.
+        # We log it but DO NOT re-raise — the process must stay alive.
+        dlog(f"BaseException in load_model_thread: {type(e).__name__}: {e}")
+        import traceback
+        state.error   = f"Critical error during model load: {type(e).__name__}: {e}"
+        state.loading = False
+        state.download_progress = 0
+        logger.error(f"[MODEL] ❌ BaseException: {type(e).__name__}: {e}")
+        logger.error(traceback.format_exc())
+        dlog(traceback.format_exc())
+        logger.info("[MODEL] Runtime continues in mock mode after BaseException")
+        gc.collect()
+        # NOTE: intentionally NOT re-raising — Flask must keep running
+
     finally:
         state.loading = False
         dlog(f"load_model_thread DONE: loaded={state.loaded} error={state.error}")
 
 
+def _model_thread_target(model_id: str, force_download: bool):
+    """
+    Thread entry point that wraps load_model_thread() with an extra safety net.
+    Even if a totally unexpected BaseException escapes load_model_thread()
+    (shouldn't happen given the except BaseException block inside, but belt+braces),
+    this wrapper catches it, logs it, and returns cleanly so the thread ends
+    without bringing down the process.  Flask keeps running.
+    """
+    try:
+        load_model_thread(model_id, force_download)
+    except BaseException as _thread_crash:
+        import traceback as _tc
+        _msg = f"THREAD CRASH (escaped load_model_thread): {type(_thread_crash).__name__}: {_thread_crash}"
+        dlog(_msg)
+        dlog(_tc.format_exc())
+        logger.error(f"[MODEL] ❌ {_msg}")
+        logger.error(_tc.format_exc())
+        # Ensure state is consistent so Flask continues serving mock replies
+        state.loading = False
+        state.loaded  = False
+        state.error   = _msg
+        state.download_progress = 0
+        gc.collect()
+        dlog("Thread wrapper: mock mode active, Flask unaffected")
+
+
 def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False):
+    dlog(f"start_model_load: spawning ModelLoader thread daemon=False model={model_id}")
     t = threading.Thread(
-        target=load_model_thread,
+        target=_model_thread_target,
         args=(model_id, force_download),
         # CRITICAL: daemon=False — thread MUST NOT die when main thread ends.
         # With daemon=True, if Flask's internal thread finishes first on Windows,
@@ -747,6 +877,7 @@ def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False
         name="ModelLoader"
     )
     t.start()
+    dlog(f"ModelLoader thread started: ident={t.ident} alive={t.is_alive()}")
 
 
 # ─── Inference ──────────────────────────────────────────────────────────────────
