@@ -134,7 +134,16 @@ class ChatPanel {
         // Check for intent shortcuts
         const intent = this._detectIntent(text);
         if (intent) {
-            await this._handleIntent(intent, text);
+            // FIX BUG: _handleIntent never sent 'generating: false' to the WebView,
+            // so sendBtn stayed disabled forever after an intent was detected.
+            // Always wrap in try/finally so generating is always reset.
+            try {
+                await this._handleIntent(intent, text);
+            } finally {
+                // aiMessage sent by _handleIntent already calls setGenerating(false)
+                // in the WebView, but send an explicit reset as belt-and-braces.
+                this.panel.webview.postMessage({ type: 'generating', show: false });
+            }
             return;
         }
 
@@ -144,9 +153,17 @@ class ChatPanel {
 
         try {
             const reply = await this._sendToAI(text);
+
+            // FIX BUG: _sendToAI could return undefined (ECONNREFUSED with no authToken)
+            // which caused "Cannot read property 'reply' of undefined" → unhandled crash.
+            if (!reply) {
+                throw new Error(
+                    'Runtime IA hors ligne (port 6000).\n' +
+                    'Vérifiez que runtime.exe est lancé depuis start.bat.'
+                );
+            }
+
             this.panel.webview.postMessage({ type: 'generating', show: false });
-            // Determine display label: if model is loading, don't label as "Mock"
-            const isLoading = reply.loading || (reply.download_progress !== undefined && reply.download_progress < 100 && !reply.mock === false);
             this.panel.webview.postMessage({
                 type: 'aiMessage',
                 text: reply.reply || reply.response || 'Pas de reponse.',
@@ -158,13 +175,18 @@ class ChatPanel {
             });
             this._addHistory('assistant', reply.reply || reply.response || '', reply.model, reply.mock);
         } catch (e) {
+            // FIX BUG: always reset generating state FIRST, then show error/stop message.
+            // Previously 'generating: false' was sent but the WebView 'error' case
+            // didn't call setGenerating(false), leaving sendBtn permanently disabled.
             this.panel.webview.postMessage({ type: 'generating', show: false });
             if (e.name === 'AbortError' || e.message === 'STOPPED') {
                 this.panel.webview.postMessage({ type: 'aiMessage', text: '⏹ Génération arrêtée.', model: 'system' });
             } else {
                 this.panel.webview.postMessage({
-                    type: 'error',
-                    text: `❌ ${e.message}\n\nVérifiez que runtime.exe est lancé (port 6000).`
+                    type: 'aiMessage',
+                    text: `❌ ${e.message}\n\nVérifiez que runtime.exe est lancé (port 6000).`,
+                    model: 'system',
+                    mock: true
                 });
             }
         }
@@ -533,12 +555,28 @@ function vscPost(msg) { vscode.postMessage(msg); }
 function sendMsg() {
     const t = input.value.trim();
     if (!t || generating) return;
+    // FIX: Clear input BEFORE setGenerating so user sees message was accepted
+    input.value = ''; input.style.height = 'auto';
+    // FIX: Set generating AFTER clearing so if postMessage fails the state is consistent
     setGenerating(true);
     vscPost({ type: 'sendMessage', text: t });
-    input.value = ''; input.style.height = 'auto';
+    // Safety timeout: if no aiMessage arrives within 130s, reset generating
+    // (covers network hangs, extension crashes, etc. that leave button disabled)
+    const _safetyTimer = setTimeout(() => {
+        if (generating) {
+            setGenerating(false);
+            console.warn('[sendMsg] Safety timeout: reset generating after 130s');
+        }
+    }, 130000);
+    // Store timer so stopGen() can cancel it
+    window._sendSafetyTimer = _safetyTimer;
 }
 function retryLast() { vscPost({ type: 'retryLast' }); }
-function stopGen()   { vscPost({ type: 'stopGeneration' }); setGenerating(false); }
+function stopGen()   {
+    vscPost({ type: 'stopGeneration' });
+    setGenerating(false);
+    if (window._sendSafetyTimer) { clearTimeout(window._sendSafetyTimer); window._sendSafetyTimer = null; }
+}
 function clearChat() { vscPost({ type: 'clearChat' }); }
 function checkStatus(){ vscPost({ type: 'checkStatus' }); }
 function downloadModel(){ vscPost({ type: 'downloadModel', modelId: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }); }
@@ -552,6 +590,11 @@ function setGenerating(v) {
     document.getElementById('sendBtn').disabled = v;
     document.getElementById('genWrap').classList.toggle('show', v);
     document.getElementById('stopBtn').classList.toggle('show', v);
+    // Cancel safety timer whenever generating is turned off
+    if (!v && window._sendSafetyTimer) {
+        clearTimeout(window._sendSafetyTimer);
+        window._sendSafetyTimer = null;
+    }
 }
 
 input.addEventListener('keydown', e => {
@@ -699,9 +742,12 @@ window.addEventListener('message', ev => {
             break;
         }
         case 'error':
+            // FIX BUG: 'error' case never called setGenerating(false) — button stayed
+            // disabled forever after any network error. Fixed: always reset.
             addMsg('<span style="color:var(--vscode-errorForeground)">' +
                 msg.text.replace(/\n/g,'<br>') + '</span>', false);
             setGenerating(false);
+            if (window._sendSafetyTimer) { clearTimeout(window._sendSafetyTimer); window._sendSafetyTimer = null; }
             break;
         case 'generating':
             if (!msg.show) setGenerating(false);
