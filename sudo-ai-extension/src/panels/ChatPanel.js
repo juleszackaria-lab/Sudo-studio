@@ -341,14 +341,29 @@ class ChatPanel {
     }
 
     getHtmlContent() {
+        // ── CSP NONCE ────────────────────────────────────────────────────────
+        // VSCode WebView enforces "script-src 'nonce-XXXX'" — any <script> tag
+        // without the matching nonce is silently blocked, which means
+        // acquireVsCodeApi() never runs, sendMsg() is never defined, and the
+        // keydown listener is never attached → button does nothing, Enter adds newline.
+        // Fix: generate a per-load nonce and inject it into both the CSP meta tag
+        // and the <script> tag.
+        const nonce = (function() {
+            let n = '';
+            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+            for (let i = 0; i < 32; i++) n += chars.charAt(Math.floor(Math.random() * chars.length));
+            return n;
+        })();
+
         return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sudo AI Chat</title>
-<!-- FIX: Removed external CDN scripts — blocked by VS Code WebView CSP.
-     Syntax highlighting is done inline with simple token coloring instead. -->
+<!-- FIX SESSION 14: CSP nonce required — without it the entire <script> block is
+     silently blocked by VSCode WebView, making every button/keydown dead. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: https:; connect-src http://localhost:*;">
 <style>
 /* ─── SUDO STUDIO DARK THEME OVERRIDE ─────────────────────── */
 :root {
@@ -495,17 +510,17 @@ body {
 <div id="header">
     <h1>🤖 Sudo AI Chat</h1>
     <div class="hdr-btns">
-        <button class="sbtn" onclick="newChat()" title="Nouvelle conversation">✨ New</button>
-        <button class="sbtn" onclick="retryLast()" title="Réessayer">↩ Retry</button>
-        <button class="sbtn" onclick="checkStatus()">⟳ Status</button>
-        <button class="sbtn" onclick="clearChat()">🗑 Clear</button>
+        <button class="sbtn" id="newChatBtn" title="Nouvelle conversation">✨ New</button>
+        <button class="sbtn" id="retryBtn" title="Réessayer">↩ Retry</button>
+        <button class="sbtn" id="statusBtn">⟳ Status</button>
+        <button class="sbtn" id="clearBtn">🗑 Clear</button>
     </div>
 </div>
 
 <div id="statusBar">
     <div class="dot" id="dot"></div>
     <span id="statusTxt">Vérification runtime...</span>
-    <button class="sbtn" id="dlBtn" style="display:none" onclick="downloadModel()">⬇ Download Model</button>
+    <button class="sbtn" id="dlBtn" style="display:none">⬇ Download Model</button>
 </div>
 
 <div id="dlBar">
@@ -518,16 +533,16 @@ body {
         <div class="empty-icon">🤖</div>
         <div style="font-size:16px;font-weight:600">Sudo AI Assistant</div>
         <div style="font-size:12px;opacity:.7">Posez une question ou choisissez une action rapide</div>
-        <div class="quick-grid">
-            <button class="qb" onclick="usePrompt('Analyse ce projet')">🔍 Analyser le projet</button>
-            <button class="qb" onclick="usePrompt('Diagnostique mon système')">🩺 System Doctor</button>
-            <button class="qb" onclick="usePrompt('Crée un Dockerfile')">🐳 Dockerfile</button>
-            <button class="qb" onclick="usePrompt('Génère un pipeline CI/CD GitHub Actions')">⚙️ CI/CD Pipeline</button>
-            <button class="qb" onclick="usePrompt('Corrige automatiquement les erreurs')">🔧 AutoFix</button>
-            <button class="qb" onclick="vscPost({type:'openRuntime'})">🤖 Runtime & Modèles</button>
-            <button class="qb" onclick="vscPost({type:'openSDK'})">📦 SDK Manager</button>
-            <button class="qb" onclick="vscPost({type:'openDevOps'})">🚀 DevOps Panel</button>
-            <button class="qb" onclick="vscPost({type:'openEnvironment'})">🔄 Env Reproductible</button>
+        <div class="quick-grid" id="quickGrid">
+            <button class="qb" data-prompt="Analyse ce projet">🔍 Analyser le projet</button>
+            <button class="qb" data-prompt="Diagnostique mon système">🩺 System Doctor</button>
+            <button class="qb" data-prompt="Crée un Dockerfile">🐳 Dockerfile</button>
+            <button class="qb" data-prompt="Génère un pipeline CI/CD GitHub Actions">⚙️ CI/CD Pipeline</button>
+            <button class="qb" data-prompt="Corrige automatiquement les erreurs">🔧 AutoFix</button>
+            <button class="qb" data-vscpost='{"type":"openRuntime"}'>🤖 Runtime &amp; Modèles</button>
+            <button class="qb" data-vscpost='{"type":"openSDK"}'>📦 SDK Manager</button>
+            <button class="qb" data-vscpost='{"type":"openDevOps"}'>🚀 DevOps Panel</button>
+            <button class="qb" data-vscpost='{"type":"openEnvironment"}'>🔄 Env Reproductible</button>
         </div>
     </div>
 </div>
@@ -540,12 +555,12 @@ body {
 <div id="inputArea">
     <div class="input-row">
         <textarea id="msgInput" rows="1" placeholder="Message... (Entrée = envoyer, Shift+Entrée = nouvelle ligne)"></textarea>
-        <button class="ibtn" id="sendBtn" onclick="sendMsg()">Envoyer</button>
-        <button class="ibtn" id="stopBtn" onclick="stopGen()">⏹ Stop</button>
+        <button class="ibtn" id="sendBtn">Envoyer</button>
+        <button class="ibtn" id="stopBtn">⏹ Stop</button>
     </div>
 </div>
 
-<script>
+<script nonce="${nonce}">
 const vscode = acquireVsCodeApi();
 const chat   = document.getElementById('chat');
 const input  = document.getElementById('msgInput');
@@ -597,10 +612,46 @@ function setGenerating(v) {
     }
 }
 
-input.addEventListener('keydown', e => {
+// ── FIX SESSION 14: Replace ALL inline onclick= with addEventListener ─────
+// VSCode WebView CSP blocks onclick="..." HTML attributes (inline handlers).
+// Every button must be wired via JS addEventListener AFTER the script loads.
+
+// Send button
+document.getElementById('sendBtn').addEventListener('click', function(e) {
+    e.preventDefault(); sendMsg();
+});
+// Stop button
+document.getElementById('stopBtn').addEventListener('click', function(e) {
+    e.preventDefault(); stopGen();
+});
+// Header buttons
+document.getElementById('newChatBtn').addEventListener('click', function() { newChat(); });
+document.getElementById('retryBtn').addEventListener('click', function() { retryLast(); });
+document.getElementById('statusBtn').addEventListener('click', function() { checkStatus(); });
+document.getElementById('clearBtn').addEventListener('click', function() { clearChat(); });
+// Download Model button
+document.getElementById('dlBtn').addEventListener('click', function() { downloadModel(); });
+
+// Quick-action buttons — use data attributes, delegate via event bubbling
+function bindQuickGrid(container) {
+    container.querySelectorAll('.qb').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            const prompt = btn.getAttribute('data-prompt');
+            const post   = btn.getAttribute('data-vscpost');
+            if (prompt) { usePrompt(prompt); }
+            else if (post) { try { vscPost(JSON.parse(post)); } catch(_) {} }
+        });
+    });
+}
+// Bind initial quick-grid (in #emptyState)
+const initialGrid = document.getElementById('quickGrid');
+if (initialGrid) bindQuickGrid(initialGrid.parentElement);
+
+// Keyboard: Enter = send, Shift+Enter = newline
+input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
 });
-input.addEventListener('input', () => {
+input.addEventListener('input', function() {
     input.style.height = 'auto';
     input.style.height = Math.min(input.scrollHeight, 110) + 'px';
 });
@@ -763,15 +814,28 @@ window.addEventListener('message', ev => {
             chat.innerHTML = '';
             const es = document.createElement('div');
             es.className = 'empty'; es.id = 'emptyState';
-            es.innerHTML = \`<div class="empty-icon">🤖</div><div style="font-size:16px;font-weight:600">Nouvelle conversation</div>
-            <div class="quick-grid">
-                <button class="qb" onclick="usePrompt('Analyse ce projet')">🔍 Analyser le projet</button>
-                <button class="qb" onclick="usePrompt('Diagnostique mon système')">🩺 System Doctor</button>
-                <button class="qb" onclick="usePrompt('Crée un Dockerfile')">🐳 Dockerfile</button>
-                <button class="qb" onclick="usePrompt('Génère un pipeline CI/CD')">⚙️ CI/CD</button>
-                <button class="qb" onclick="usePrompt('Corrige automatiquement')">🔧 AutoFix</button>
-                <button class="qb" onclick="vscPost({type:'openRuntime'})">🤖 Modèles IA</button>
-            </div>\`;
+            // FIX: Build buttons programmatically — no inline onclick= (blocked by CSP)
+            const esIcon  = document.createElement('div'); esIcon.className = 'empty-icon'; esIcon.textContent = '🤖';
+            const esTitle = document.createElement('div'); esTitle.style.cssText = 'font-size:16px;font-weight:600'; esTitle.textContent = 'Nouvelle conversation';
+            const esGrid  = document.createElement('div'); esGrid.className = 'quick-grid';
+            const esItems = [
+                { label: '🔍 Analyser le projet',   prompt: 'Analyse ce projet' },
+                { label: '🩺 System Doctor',         prompt: 'Diagnostique mon système' },
+                { label: '🐳 Dockerfile',             prompt: 'Crée un Dockerfile' },
+                { label: '⚙️ CI/CD',                 prompt: 'Génère un pipeline CI/CD' },
+                { label: '🔧 AutoFix',               prompt: 'Corrige automatiquement' },
+                { label: '🤖 Modèles IA',            vscpost: {type:'openRuntime'} }
+            ];
+            esItems.forEach(function(item) {
+                const b = document.createElement('button');
+                b.className = 'qb'; b.textContent = item.label;
+                b.addEventListener('click', function() {
+                    if (item.prompt)  { usePrompt(item.prompt); }
+                    else if (item.vscpost) { vscPost(item.vscpost); }
+                });
+                esGrid.appendChild(b);
+            });
+            es.appendChild(esIcon); es.appendChild(esTitle); es.appendChild(esGrid);
             chat.appendChild(es);
             break;
         case 'retryMessage':
