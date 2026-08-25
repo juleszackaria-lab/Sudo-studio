@@ -97,6 +97,7 @@ class ChatPanel {
             case 'openSDK':       vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
             case 'openRuntime':   vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
             case 'openEnvironment': vscode.commands.executeCommand('sudoStudio.openEnvironmentPanel'); break;
+            case 'openAgentMode': vscode.commands.executeCommand('sudoStudio.openAgentPanel'); break;
         }
     }
 
@@ -515,6 +516,7 @@ body {
 <div id="header">
     <h1>🤖 Sudo AI Chat</h1>
     <div class="hdr-btns">
+        <button class="sbtn" id="agentModeBtn" title="Mode Agent Autonome" style="background:#1f6feb;color:#fff;border-color:#1f6feb">🤖 Agent</button>
         <button class="sbtn" id="newChatBtn" title="Nouvelle conversation">✨ New</button>
         <button class="sbtn" id="retryBtn" title="Réessayer">↩ Retry</button>
         <button class="sbtn" id="statusBtn">⟳ Status</button>
@@ -682,6 +684,15 @@ if (stopBtnEl) {
         console.log('[CHAT] ' + id + ' listener attached');
     } else { console.warn('[CHAT] ' + id + ' not found'); }
 });
+
+// Agent mode button
+const agentModeEl = document.getElementById('agentModeBtn');
+if (agentModeEl) {
+    agentModeEl.addEventListener('click', function() {
+        vscPost({ type: 'openAgentMode' });
+    });
+    console.log('[CHAT] agentModeBtn listener attached');
+}
 
 // Download Model button
 const dlBtnEl = document.getElementById('dlBtn');

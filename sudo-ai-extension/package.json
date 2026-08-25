@@ -291,6 +291,12 @@
         "icon": "$(sync)"
       },
       {
+        "command": "sudoStudio.openAgentPanel",
+        "title": "🤖 Sudo Agent — Mode Autonome",
+        "category": "Sudo Studio",
+        "icon": "$(robot)"
+      },
+      {
         "command": "sudoStudio.refreshDashboard",
         "title": "Refresh Dashboard",
         "category": "Sudo Studio",

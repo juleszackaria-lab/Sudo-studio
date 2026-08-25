@@ -29,6 +29,9 @@ const { DevOpsPanel }          = require('./src/panels/DevOpsPanel');
 const { ProjectAnalysisPanel } = require('./src/panels/ProjectAnalysisPanel');
 const { EnvironmentPanel }     = require('./src/panels/EnvironmentPanel');
 
+// Agent Mode (Mission 2 — autonomous programming agent)
+const { AgentPanel }           = require('./src/agent/AgentPanel');
+
 // Global instances
 let backend, state, context;
 let providers = {};
@@ -222,6 +225,9 @@ function registerCommands() {
         ['sudoStudio.openDevOpsPanel',       openDevOpsPanel],
         ['sudoStudio.openAnalysisPanel',     openAnalysisPanel],
         ['sudoStudio.openEnvironmentPanel',  openEnvironmentPanel],
+
+        // Agent Mode (Mission 2)
+        ['sudoStudio.openAgentPanel',        openAgentPanel],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -1480,6 +1486,19 @@ function openEnvironmentPanel() {
     // Pass auth token from backend service if available
     const authToken = backend ? backend.authToken : null;
     EnvironmentPanel.createOrShow(context.extensionUri, authToken);
+}
+
+// ── Agent Mode ────────────────────────────────────────────────────────────────
+function openAgentPanel() {
+    const panel = AgentPanel.createOrShow(context.extensionUri);
+    // Wire 'openChat' message from AgentPanel back to ChatPanel
+    if (panel) {
+        panel.panel.webview.onDidReceiveMessage(function(m) {
+            if (m.type === 'openChat') {
+                ChatPanel.createOrShow(context.extensionUri, context);
+            }
+        }, null, []);
+    }
 }
 
 // ============================================================================
