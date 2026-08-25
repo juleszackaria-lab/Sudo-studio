@@ -83,6 +83,7 @@ class ChatPanel {
     }
 
     async handleMessage(message) {
+        console.log('[EXT] handleMessage received — type:', message.type);
         switch (message.type) {
             case 'sendMessage':   await this.handleChat(message.text); break;
             case 'retryLast':     await this.retryLast(); break;
@@ -125,6 +126,7 @@ class ChatPanel {
 
     async handleChat(text) {
         if (!text || !text.trim()) return;
+        console.log('[EXT] handleChat — text[:60]:', text.slice(0,60));
         this.lastUserMsg = text;
 
         // Show user message immediately
@@ -286,6 +288,7 @@ class ChatPanel {
 
     async _sendToAI(text) {
         // PRIMARY PATH: Direct call to Python runtime on port 6000
+        console.log('[EXT] _sendToAI — calling http://localhost:6000/infer');
         // This is always tried first — no auth required, most reliable
         const payload = { message: text, prompt: text, input: text, max_tokens: 512, temperature: 0.7 };
 
@@ -295,6 +298,7 @@ class ChatPanel {
 
         try {
             const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 120000, signal });
+            console.log('[EXT] /infer response — status:', r.status, '| reply[:60]:', (r.data.reply||'').slice(0,60));
             return r.data;
         } catch (e) {
             // If aborted by Stop button, rethrow as AbortError for proper UI handling
@@ -303,6 +307,7 @@ class ChatPanel {
                 err.name = 'AbortError';
                 throw err;
             }
+            console.warn('[EXT] /infer error — code:', e.code, '| msg:', e.message);
             if (e.code !== 'ECONNREFUSED' && e.code !== 'ENOTFOUND') {
                 // Runtime is up but returned an error — still return what we got
                 if (e.response && e.response.data) return e.response.data;
@@ -561,44 +566,78 @@ body {
 </div>
 
 <script nonce="${nonce}">
-const vscode = acquireVsCodeApi();
-const chat   = document.getElementById('chat');
-const input  = document.getElementById('msgInput');
+// ── DIAGNOSTIC SESSION 15 ────────────────────────────────────────────────
+// Every step logs to console so Help→Toggle Dev Tools shows exact failure.
+console.log('[CHAT] Script starting — nonce OK, DOM loading...');
+
+// ── FIX: acquireVsCodeApi() throws if called twice (panel reveal/reload).
+// Without try/catch the ENTIRE script crashes here and nothing below runs.
+// Always guard with try/catch and cache in window._vscode.
+let vscode;
+try {
+    vscode = acquireVsCodeApi();
+    window._vscode = vscode;
+    console.log('[CHAT] acquireVsCodeApi() OK — vscode:', typeof vscode);
+} catch(e) {
+    // Already acquired — reuse the cached instance.
+    vscode = window._vscode;
+    console.warn('[CHAT] acquireVsCodeApi() threw (already acquired) — reusing cached:', typeof vscode, '| error:', e.message);
+}
+if (!vscode) {
+    console.error('[CHAT] FATAL: vscode API unavailable — postMessage will fail');
+}
+
+const chat  = document.getElementById('chat');
+const input = document.getElementById('msgInput');
+console.log('[CHAT] DOM refs — chat:', chat ? 'OK' : 'NULL', '| input(msgInput):', input ? 'OK' : 'NULL');
+
 let generating = false;
 
-function vscPost(msg) { vscode.postMessage(msg); }
+function vscPost(msg) {
+    if (!vscode) { console.error('[CHAT] vscPost: vscode undefined, cannot send', msg); return; }
+    try {
+        vscode.postMessage(msg);
+        console.log('[CHAT] vscPost OK — type:', msg.type);
+    } catch(e) {
+        console.error('[CHAT] vscPost ERROR:', e.message, '| msg:', JSON.stringify(msg));
+    }
+}
+
 function sendMsg() {
+    console.log('[CHAT] sendMsg() called — generating:', generating);
+    if (!input) { console.error('[CHAT] sendMsg: input#msgInput not found'); return; }
     const t = input.value.trim();
-    if (!t || generating) return;
-    // FIX: Clear input BEFORE setGenerating so user sees message was accepted
+    console.log('[CHAT] sendMsg text:', JSON.stringify(t));
+    if (!t || generating) {
+        console.log('[CHAT] sendMsg: aborted — empty:', !t, '| generating:', generating);
+        return;
+    }
     input.value = ''; input.style.height = 'auto';
-    // FIX: Set generating AFTER clearing so if postMessage fails the state is consistent
     setGenerating(true);
     vscPost({ type: 'sendMessage', text: t });
-    // Safety timeout: if no aiMessage arrives within 130s, reset generating
-    // (covers network hangs, extension crashes, etc. that leave button disabled)
+    // Safety timeout: auto-reset if no aiMessage in 130s
     const _safetyTimer = setTimeout(() => {
         if (generating) {
             setGenerating(false);
-            console.warn('[sendMsg] Safety timeout: reset generating after 130s');
+            console.warn('[CHAT] Safety timeout: reset generating after 130s');
         }
     }, 130000);
-    // Store timer so stopGen() can cancel it
     window._sendSafetyTimer = _safetyTimer;
 }
-function retryLast() { vscPost({ type: 'retryLast' }); }
-function stopGen()   {
+function retryLast()    { vscPost({ type: 'retryLast' }); }
+function stopGen()      {
     vscPost({ type: 'stopGeneration' });
     setGenerating(false);
     if (window._sendSafetyTimer) { clearTimeout(window._sendSafetyTimer); window._sendSafetyTimer = null; }
 }
-function clearChat() { vscPost({ type: 'clearChat' }); }
-function checkStatus(){ vscPost({ type: 'checkStatus' }); }
+function clearChat()    { vscPost({ type: 'clearChat' }); }
+function checkStatus()  { vscPost({ type: 'checkStatus' }); }
 function downloadModel(){ vscPost({ type: 'downloadModel', modelId: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }); }
-function usePrompt(t){ input.value = t; input.focus(); sendMsg(); }
-function newChat() {
-    vscPost({ type: 'clearChat' });
+function usePrompt(t)   {
+    console.log('[CHAT] usePrompt:', JSON.stringify(t));
+    if (input) { input.value = t; input.focus(); sendMsg(); }
 }
+function newChat()      { vscPost({ type: 'clearChat' }); }
 
 function setGenerating(v) {
     generating = v;
@@ -612,25 +651,43 @@ function setGenerating(v) {
     }
 }
 
-// ── FIX SESSION 14: Replace ALL inline onclick= with addEventListener ─────
+// ── FIX SESSION 14+15: Replace ALL inline onclick= with addEventListener ──
 // VSCode WebView CSP blocks onclick="..." HTML attributes (inline handlers).
 // Every button must be wired via JS addEventListener AFTER the script loads.
 
 // Send button
-document.getElementById('sendBtn').addEventListener('click', function(e) {
-    e.preventDefault(); sendMsg();
-});
+const sendBtnEl = document.getElementById('sendBtn');
+if (sendBtnEl) {
+    sendBtnEl.addEventListener('click', function(e) { e.preventDefault(); sendMsg(); });
+    console.log('[CHAT] sendBtn listener attached');
+} else { console.error('[CHAT] sendBtn NOT FOUND in DOM'); }
+
 // Stop button
-document.getElementById('stopBtn').addEventListener('click', function(e) {
-    e.preventDefault(); stopGen();
-});
+const stopBtnEl = document.getElementById('stopBtn');
+if (stopBtnEl) {
+    stopBtnEl.addEventListener('click', function(e) { e.preventDefault(); stopGen(); });
+    console.log('[CHAT] stopBtn listener attached');
+} else { console.error('[CHAT] stopBtn NOT FOUND in DOM'); }
+
 // Header buttons
-document.getElementById('newChatBtn').addEventListener('click', function() { newChat(); });
-document.getElementById('retryBtn').addEventListener('click', function() { retryLast(); });
-document.getElementById('statusBtn').addEventListener('click', function() { checkStatus(); });
-document.getElementById('clearBtn').addEventListener('click', function() { clearChat(); });
+['newChatBtn','retryBtn','statusBtn','clearBtn'].forEach(function(id) {
+    const el = document.getElementById(id);
+    if (el) {
+        el.addEventListener('click', function() {
+            if (id === 'newChatBtn') newChat();
+            else if (id === 'retryBtn') retryLast();
+            else if (id === 'statusBtn') checkStatus();
+            else if (id === 'clearBtn') clearChat();
+        });
+        console.log('[CHAT] ' + id + ' listener attached');
+    } else { console.warn('[CHAT] ' + id + ' not found'); }
+});
+
 // Download Model button
-document.getElementById('dlBtn').addEventListener('click', function() { downloadModel(); });
+const dlBtnEl = document.getElementById('dlBtn');
+if (dlBtnEl) {
+    dlBtnEl.addEventListener('click', function() { downloadModel(); });
+}
 
 // Quick-action buttons — use data attributes, delegate via event bubbling
 function bindQuickGrid(container) {
@@ -648,13 +705,26 @@ const initialGrid = document.getElementById('quickGrid');
 if (initialGrid) bindQuickGrid(initialGrid.parentElement);
 
 // Keyboard: Enter = send, Shift+Enter = newline
-input.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
-});
-input.addEventListener('input', function() {
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 110) + 'px';
-});
+if (input) {
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            console.log('[CHAT] Enter key detected → sendMsg()');
+            sendMsg();
+        }
+    });
+    input.addEventListener('input', function() {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 110) + 'px';
+    });
+    console.log('[CHAT] keydown+input listeners attached on #msgInput');
+    input.focus();
+} else {
+    console.error('[CHAT] FATAL: #msgInput not found — keyboard send impossible');
+}
+
+console.log('[CHAT] Script init complete — all listeners attached');
 
 // ── Rendering ─────────────────────────────────────────────────────────────
 function addMsg(html, isUser, meta, noScroll) {
@@ -771,12 +841,14 @@ function updateStatus(data) {
 // ── Messages from extension ───────────────────────────────────────────────
 window.addEventListener('message', ev => {
     const msg = ev.data;
+    console.log('[CHAT] Message from extension — type:', msg.type, '| keys:', Object.keys(msg).join(','));
     switch (msg.type) {
         case 'userMessage':
             addMsg(msg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>'),
                 true, null, msg.noScroll);
             break;
         case 'aiMessage': {
+            console.log('[CHAT] aiMessage received — model:', msg.model, '| mock:', msg.mock, '| text[:60]:', (msg.text||'').slice(0,60));
             let meta = '';
             if (msg.model) meta += msg.model;
             if (msg.latency && msg.latency > 0) meta += (meta ? ' · ' : '') + msg.latency + 'ms';
@@ -850,7 +922,7 @@ window.addEventListener('message', ev => {
 // The Extension Host already polls every 5s via this._statusInterval and pushes 
 // status updates to the WebView. Having both caused double the network requests.
 // Initial status check on open is already handled in constructor setTimeout.
-input.focus();
+// NOTE: input.focus() is now inside the if(input) block above.
 </script>
 </body>
 </html>`;
