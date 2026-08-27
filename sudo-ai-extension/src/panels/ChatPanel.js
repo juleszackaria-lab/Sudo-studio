@@ -775,27 +775,55 @@ function addMsg(html, isUser, meta, noScroll) {
 }
 
 function renderMarkdown(text) {
-    // Escape HTML first
+    // FIX SESSION 16: All regex rewritten using new RegExp() constructor to avoid
+    // template-literal escape interpretation bugs. This function body lives inside
+    // the outer getHtmlContent() template literal, so Node.js evaluates escapes:
+    //   backslash+backtick  => raw backtick  => opens unclosed template literal
+    //   backslash-n in /.../ => literal newline => "Invalid regular expression: missing /"
+    //   backslash-star-star  => ** => parsed as block-comment start
+    //   backslash-d         => d  => backslash stripped, no longer matches digits
+    // Using new RegExp(string) avoids all of these because the string is NOT
+    // re-interpreted as a regex literal by the WebView JavaScript parser.
+
+    // Escape HTML first — these simple char-class regexes are safe
     let t = text
         .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    // Code blocks
-    t = t.replace(/\`\`\`(\w*)\n?([\s\S]*?)\`\`\`/g, (_, lang, code) =>
-        \`<pre><code class="language-\${lang || 'text'}">\${code.trim()}</code></pre>\`);
-    // Inline code
-    t = t.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-    // Bold
-    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-    // Italic
-    t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-    // Headers
+
+    // Code blocks: triple-backtick lang newline code triple-backtick
+    // Uses new RegExp() to avoid backtick/newline issues in template literal context
+    var reCB = new RegExp('\\x60{3}(\\w*)\\n?([\\s\\S]*?)\\x60{3}', 'g');
+    t = t.replace(reCB, function(_, lang, code) {
+        return '<pre><code class="language-' + (lang || 'text') + '">' + code.trim() + '</code></pre>';
+    });
+
+    // Inline code: single-backtick code single-backtick
+    // Uses new RegExp() to avoid backtick in regex literal
+    var reIC = new RegExp('\\x60([^\\x60]+)\\x60', 'g');
+    t = t.replace(reIC, '<code>$1</code>');
+
+    // Bold: **text** — avoid ** being parsed as block comment /*...*/
+    var reBold = new RegExp('[*][*]([^*]+)[*][*]', 'g');
+    t = t.replace(reBold, '<strong>$1</strong>');
+
+    // Italic: *text* (single star, not double) — same issue
+    var reItalic = new RegExp('(?<![*])[*]([^*]+)[*](?![*])', 'g');
+    t = t.replace(reItalic, '<em>$1</em>');
+
+    // Headers — these are safe as regex literals (no backtick/star issues)
     t = t.replace(/^### (.+)$/gm, '<strong>$1</strong>');
     t = t.replace(/^## (.+)$/gm, '<strong style="font-size:1.1em">$1</strong>');
-    t = t.replace(/^# (.+)$/gm, '<strong style="font-size:1.2em">$1</strong>');
+    t = t.replace(/^# (.+)$/gm,  '<strong style="font-size:1.2em">$1</strong>');
+
     // Lists
     t = t.replace(/^[*-] (.+)$/gm, '• $1');
-    t = t.replace(/^\d+\. (.+)$/gm, (_, c) => '› ' + c);
-    // Line breaks
-    t = t.replace(/\n/g, '<br>');
+
+    // Numbered lists — avoid \d (stripped to d by template literal)
+    var reNum = new RegExp('^[0-9]+[.] (.+)$', 'gm');
+    t = t.replace(reNum, function(_, c) { return '› ' + c; });
+
+    // Line breaks — use new RegExp with double-escaped backslash-n (avoids template literal evaluation)
+    var reNL = new RegExp('\\n', 'g');
+    t = t.replace(reNL, '<br>');
     return t;
 }
 
@@ -831,14 +859,14 @@ function updateStatus(data) {
     if (m.loading) {
         dot.className = 'dot loading';
         const pct = m.download_progress || 0;
-        txt.textContent = \`⬇ Chargement modèle \${pct}%...\`;
+        txt.textContent = '⬇ Chargement modèle ' + pct + '%...';
         dlBar.classList.add('show');
         dlFill.style.width = pct + '%';
-        dlLabel.textContent = \`Chargement: \${m.name || 'TinyLlama'} — \${pct}%\`;
+        dlLabel.textContent = 'Chargement: ' + (m.name || 'TinyLlama') + ' — ' + pct + '%';
         dlBtn.style.display = 'none';
     } else if (m.loaded) {
         dot.className = 'dot online';
-        txt.textContent = \`✅ IA prête · \${m.name || 'modèle'} · \${m.device || 'cpu'}\`;
+        txt.textContent = '\u2705 IA pr\u00eate \u00b7 ' + (m.name || 'mod\u00e8le') + ' \u00b7 ' + (m.device || 'cpu');
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
     } else {
@@ -855,7 +883,8 @@ window.addEventListener('message', ev => {
     console.log('[CHAT] Message from extension — type:', msg.type, '| keys:', Object.keys(msg).join(','));
     switch (msg.type) {
         case 'userMessage':
-            addMsg(msg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>'),
+            addMsg(msg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(new RegExp('\\n','g'),'<br>'),
+
                 true, null, msg.noScroll);
             break;
         case 'aiMessage': {
@@ -879,7 +908,7 @@ window.addEventListener('message', ev => {
             // FIX BUG: 'error' case never called setGenerating(false) — button stayed
             // disabled forever after any network error. Fixed: always reset.
             addMsg('<span style="color:var(--vscode-errorForeground)">' +
-                msg.text.replace(/\n/g,'<br>') + '</span>', false);
+                msg.text.replace(new RegExp('\\n','g'),'<br>') + '</span>', false);
             setGenerating(false);
             if (window._sendSafetyTimer) { clearTimeout(window._sendSafetyTimer); window._sendSafetyTimer = null; }
             break;
