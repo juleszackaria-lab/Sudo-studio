@@ -13,6 +13,7 @@
  */
 const vscode = require('vscode');
 const axios  = require('axios');
+const http   = require('http');
 const { exec } = require('child_process');
 
 const IS_WIN = process.platform === 'win32';
@@ -150,11 +151,16 @@ class ChatPanel {
             return;
         }
 
-        // Normal AI call
+        // Normal AI call — try SSE streaming first, fall back to plain /infer
         this.panel.webview.postMessage({ type: 'generating', show: true });
         this.abortCtrl = new AbortController();
 
         try {
+            // Attempt streaming via /infer-stream (SSE)
+            const streamed = await this._sendToAIStream(text);
+            if (streamed) return;  // stream handled all postMessages incl. final aiMessage
+
+            // Fallback: plain /infer (no streaming, but still works)
             const reply = await this._sendToAI(text);
 
             // FIX BUG: _sendToAI could return undefined (ECONNREFUSED with no authToken)
@@ -287,18 +293,144 @@ class ChatPanel {
         }
     }
 
+    /**
+     * SSE streaming call to /infer-stream.
+     * Returns true if streaming succeeded (all postMessages already sent).
+     * Returns false if the endpoint is unreachable (caller falls back to _sendToAI).
+     * Throws on abort.
+     */
+    async _sendToAIStream(text) {
+        return new Promise((resolve, reject) => {
+            const payload = JSON.stringify({
+                message: text, prompt: text, input: text,
+                max_tokens: 128, temperature: 0.7
+            });
+
+            const options = {
+                hostname: 'localhost',
+                port:     6000,
+                path:     '/infer-stream',
+                method:   'POST',
+                headers:  {
+                    'Content-Type':   'application/json',
+                    'Content-Length': Buffer.byteLength(payload),
+                    'Accept':         'text/event-stream',
+                },
+                timeout: 300000,  // 5 minutes
+            };
+
+            let streamStarted = false;
+            let accumulatedText = '';
+            let buffer = '';
+
+            const req = http.request(options, (res) => {
+                // Non-SSE response (e.g. 404, 500) → fall back to _sendToAI
+                if (res.statusCode !== 200 || !res.headers['content-type'] ||
+                    !res.headers['content-type'].includes('text/event-stream')) {
+                    res.resume();
+                    resolve(false);
+                    return;
+                }
+
+                res.setEncoding('utf8');
+
+                res.on('data', (chunk) => {
+                    // Abort check
+                    if (this.abortCtrl && this.abortCtrl.signal.aborted) {
+                        req.destroy();
+                        return;
+                    }
+
+                    buffer += chunk;
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();  // keep incomplete last line
+
+                    for (const line of lines) {
+                        if (!line.startsWith('data: ')) continue;
+                        const raw = line.slice(6).trim();
+                        if (!raw) continue;
+
+                        let evt;
+                        try { evt = JSON.parse(raw); }
+                        catch (_) { continue; }
+
+                        if (!streamStarted) {
+                            streamStarted = true;
+                            // Tell WebView to open a streaming bubble
+                            this.panel.webview.postMessage({ type: 'aiStreamStart' });
+                        }
+
+                        if (evt.token) {
+                            accumulatedText += evt.token;
+                            this.panel.webview.postMessage({ type: 'aiToken', token: evt.token });
+                        }
+
+                        if (evt.done) {
+                            const finalText = evt.reply || accumulatedText.trim();
+                            // Replace the streaming bubble with the final rendered message
+                            this.panel.webview.postMessage({
+                                type:    'aiMessage',
+                                text:    finalText,
+                                model:   evt.mock ? 'Sudo AI (chargement modele)' : (evt.model || 'AI'),
+                                latency: evt.latency_ms,
+                                mock:    evt.mock   || false,
+                                loading: evt.loading || false,
+                                stream:  true,   // signals WebView to replace the streaming bubble
+                            });
+                            this.panel.webview.postMessage({ type: 'generating', show: false });
+                            this._addHistory('assistant', finalText, evt.model, evt.mock);
+                            resolve(true);
+                        }
+                    }
+                });
+
+                res.on('end', () => {
+                    if (!streamStarted) {
+                        resolve(false);  // empty response → fall back
+                    } else {
+                        resolve(true);
+                    }
+                });
+
+                res.on('error', () => resolve(false));
+            });
+
+            req.on('error', (e) => {
+                if (e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
+                    resolve(false);  // runtime down → fall back
+                } else {
+                    resolve(false);
+                }
+            });
+
+            req.on('timeout', () => { req.destroy(); resolve(false); });
+
+            // Wire abort
+            if (this.abortCtrl) {
+                this.abortCtrl.signal.addEventListener('abort', () => {
+                    req.destroy();
+                    reject(Object.assign(new Error('STOPPED'), { name: 'AbortError' }));
+                });
+            }
+
+            req.write(payload);
+            req.end();
+        });
+    }
+
     async _sendToAI(text) {
         // PRIMARY PATH: Direct call to Python runtime on port 6000
         console.log('[EXT] _sendToAI — calling http://localhost:6000/infer');
         // This is always tried first — no auth required, most reliable
-        const payload = { message: text, prompt: text, input: text, max_tokens: 512, temperature: 0.7 };
+        // max_tokens: 128 — keeps CPU inference under ~30-60s for TinyLlama (was 512 → 120s+ timeout)
+        const payload = { message: text, prompt: text, input: text, max_tokens: 128, temperature: 0.7 };
 
         // FIX BUG: AbortController signal was never passed to axios — Stop button had no effect.
         // Now we pass signal so axios cancels the request when abortCtrl.abort() is called.
         const signal = this.abortCtrl ? this.abortCtrl.signal : undefined;
 
         try {
-            const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 120000, signal });
+            const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 300000, signal });
             console.log('[EXT] /infer response — status:', r.status, '| reply[:60]:', (r.data.reply||'').slice(0,60));
             return r.data;
         } catch (e) {
@@ -482,6 +614,9 @@ body {
 .dot-wave span:nth-child(2){animation-delay:.2s}
 .dot-wave span:nth-child(3){animation-delay:.4s}
 @keyframes dw { 0%,80%,100%{opacity:.2;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
+.stream-cursor { display:inline-block; width:2px; height:1em; background:var(--vscode-button-background); margin-left:2px; vertical-align:text-bottom; animation:blink .7s step-end infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+#streamingBubble { padding:8px 12px; border-radius:12px; background:var(--vscode-editor-inactiveSelectionBackground); max-width:85%; word-break:break-word; white-space:pre-wrap; }
 #inputArea {
     padding:10px 14px; background:var(--vscode-sideBar-background);
     border-top:1px solid var(--vscode-panel-border); flex-shrink:0;
@@ -617,13 +752,13 @@ function sendMsg() {
     input.value = ''; input.style.height = 'auto';
     setGenerating(true);
     vscPost({ type: 'sendMessage', text: t });
-    // Safety timeout: auto-reset if no aiMessage in 130s
+    // Safety timeout: auto-reset if no aiMessage in 310s (5min + 10s margin)
     const _safetyTimer = setTimeout(() => {
         if (generating) {
             setGenerating(false);
-            console.warn('[CHAT] Safety timeout: reset generating after 130s');
+            console.warn('[CHAT] Safety timeout: reset generating after 310s');
         }
-    }, 130000);
+    }, 310000);
     window._sendSafetyTimer = _safetyTimer;
 }
 function retryLast()    { vscPost({ type: 'retryLast' }); }
@@ -882,13 +1017,39 @@ window.addEventListener('message', ev => {
     const msg = ev.data;
     console.log('[CHAT] Message from extension — type:', msg.type, '| keys:', Object.keys(msg).join(','));
     switch (msg.type) {
+        case 'aiStreamStart': {
+            // Create a streaming bubble with a blinking cursor — tokens will be appended
+            removeEmpty();
+            const streamBubble = document.createElement('div');
+            streamBubble.className = 'msg ai';
+            streamBubble.id = 'streamingBubble';
+            streamBubble.innerHTML = '<span id="streamContent"></span><span class="stream-cursor">|</span>';
+            chat.appendChild(streamBubble);
+            chat.scrollTop = chat.scrollHeight;
+            console.log('[CHAT] aiStreamStart — bubble created');
+            break;
+        }
+        case 'aiToken': {
+            // Append token text to the streaming bubble (raw text, no markdown yet)
+            const sc = document.getElementById('streamContent');
+            if (sc) {
+                sc.textContent += msg.token || '';
+                chat.scrollTop = chat.scrollHeight;
+            }
+            break;
+        }
         case 'userMessage':
             addMsg(msg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(new RegExp('\\n','g'),'<br>'),
 
                 true, null, msg.noScroll);
             break;
         case 'aiMessage': {
-            console.log('[CHAT] aiMessage received — model:', msg.model, '| mock:', msg.mock, '| text[:60]:', (msg.text||'').slice(0,60));
+            console.log('[CHAT] aiMessage received — model:', msg.model, '| mock:', msg.mock, '| stream:', msg.stream, '| text[:60]:', (msg.text||'').slice(0,60));
+            // Remove the streaming bubble if this message is the final streamed result
+            if (msg.stream) {
+                const bubble = document.getElementById('streamingBubble');
+                if (bubble) bubble.remove();
+            }
             let meta = '';
             if (msg.model) meta += msg.model;
             if (msg.latency && msg.latency > 0) meta += (meta ? ' · ' : '') + msg.latency + 'ms';

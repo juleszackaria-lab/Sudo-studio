@@ -113,7 +113,7 @@ from pathlib import Path
 dlog("stdlib imports OK")
 
 dlog("Importing flask...")
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 dlog("flask imported OK")
 
 dlog("Importing flask_cors...")
@@ -881,7 +881,7 @@ def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False
 
 
 # ─── Inference ──────────────────────────────────────────────────────────────────
-def run_inference(prompt: str, max_tokens: int = 256, temperature: float = 0.7) -> dict:
+def run_inference(prompt: str, max_tokens: int = 128, temperature: float = 0.7) -> dict:
     start = time.time()
 
     if not state.loaded or state.model is None:
@@ -1017,7 +1017,7 @@ def infer():
     ).strip()
     if not prompt:
         return jsonify({"error": "No prompt provided", "fields": ["message", "prompt", "input"]}), 400
-    max_tokens  = min(int(data.get('max_tokens', 256)), 512)
+    max_tokens  = min(int(data.get('max_tokens', 128)), 128)  # hard cap 128 — keeps CPU inference <60s
     temperature = float(data.get('temperature', 0.7))
     result = run_inference(prompt, max_tokens, temperature)
     return jsonify(result)
@@ -1027,6 +1027,153 @@ def infer():
 def chat():
     """Alias for /infer with chat format."""
     return infer()
+
+
+@app.route('/infer-stream', methods=['POST'])
+def infer_stream():
+    """
+    SSE streaming endpoint — yields tokens one-by-one as they are generated.
+    Client receives: data: {"token": "..."}\n\n  during generation
+              then:  data: {"done": true, "reply": "<full>", "model": "...", "latency_ms": N}\n\n
+    Falls back to full /infer-style JSON if model not loaded (mock mode).
+    """
+    import json as _json
+    state.requests += 1
+    data   = request.get_json(force=True, silent=True) or {}
+    prompt = (
+        data.get('message') or
+        data.get('prompt')  or
+        data.get('input')   or
+        data.get('text')    or
+        ''
+    ).strip()
+    if not prompt:
+        return jsonify({"error": "No prompt provided"}), 400
+
+    max_tokens  = min(int(data.get('max_tokens', 128)), 128)
+    temperature = float(data.get('temperature', 0.7))
+
+    def generate_sse():
+        start = time.time()
+
+        # ── Mock mode (model not loaded yet) ───────────────────────────────
+        if not state.loaded or state.model is None:
+            mock_reply = generate_mock_reply(prompt)
+            # Stream word-by-word so the UI still shows progressive output
+            words = mock_reply.split(' ')
+            accumulated = ''
+            for i, word in enumerate(words):
+                chunk = word + (' ' if i < len(words) - 1 else '')
+                accumulated += chunk
+                yield 'data: ' + _json.dumps({"token": chunk}) + '\n\n'
+                time.sleep(0.02)  # 20ms between words — visible but fast
+            latency = int((time.time() - start) * 1000)
+            yield 'data: ' + _json.dumps({
+                "done": True, "reply": accumulated.strip(),
+                "mock": True, "model": "mock", "latency_ms": latency,
+                "loading": state.loading, "download_progress": state.download_progress
+            }) + '\n\n'
+            return
+
+        # ── Real model — token streaming via model.generate() ──────────────
+        try:
+            import torch
+            inputs    = state.tokenizer(prompt, return_tensors="pt").to(state.device)
+            input_len = inputs['input_ids'].shape[1]
+
+            # Build generation config
+            gen_kwargs = dict(
+                input_ids      = inputs['input_ids'],
+                attention_mask = inputs.get('attention_mask'),
+                max_new_tokens = max_tokens,
+                temperature    = temperature,
+                do_sample      = temperature > 0,
+                pad_token_id   = state.tokenizer.eos_token_id,
+                eos_token_id   = state.tokenizer.eos_token_id,
+            )
+
+            accumulated_ids = []
+            accumulated_text = ''
+
+            # Check if TextIteratorStreamer is available (transformers >= 4.28)
+            try:
+                from transformers import TextIteratorStreamer
+                import threading
+
+                streamer = TextIteratorStreamer(
+                    state.tokenizer,
+                    skip_prompt=True,
+                    skip_special_tokens=True
+                )
+                gen_kwargs['streamer'] = streamer
+
+                # Run generation in a background thread
+                gen_thread = threading.Thread(
+                    target=lambda: state.model.generate(**gen_kwargs),
+                    daemon=True
+                )
+                gen_thread.start()
+
+                # Yield tokens as they arrive from the streamer
+                for new_text in streamer:
+                    if new_text:
+                        accumulated_text += new_text
+                        yield 'data: ' + _json.dumps({"token": new_text}) + '\n\n'
+
+                gen_thread.join(timeout=300)
+
+            except (ImportError, AttributeError):
+                # Fallback: generate all at once, then stream word-by-word
+                logger.warning("[STREAM] TextIteratorStreamer unavailable — using word-by-word fallback")
+                with torch.no_grad():
+                    output = state.model.generate(**gen_kwargs)
+                new_tokens = output[0][input_len:]
+                full_reply = state.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+                if not full_reply:
+                    full_reply = "I understand your question. Let me help you with that."
+                words = full_reply.split(' ')
+                for i, word in enumerate(words):
+                    chunk = word + (' ' if i < len(words) - 1 else '')
+                    accumulated_text += chunk
+                    yield 'data: ' + _json.dumps({"token": chunk}) + '\n\n'
+                    time.sleep(0.005)  # tiny delay so client sees progressive update
+
+            if not accumulated_text:
+                accumulated_text = "I understand your question. Let me help you with that."
+
+            latency = int((time.time() - start) * 1000)
+            yield 'data: ' + _json.dumps({
+                "done": True, "reply": accumulated_text.strip(),
+                "mock": False, "model": state.model_name, "latency_ms": latency,
+                "tokens": len(accumulated_text.split())
+            }) + '\n\n'
+
+        except MemoryError:
+            gc.collect()
+            yield 'data: ' + _json.dumps({
+                "done": True, "error": "OOM",
+                "reply": "Out of memory. Try freeing RAM or use a smaller model.",
+                "mock": True, "model": state.model_name,
+                "latency_ms": int((time.time() - start) * 1000)
+            }) + '\n\n'
+        except Exception as e:
+            logger.error(f"[STREAM] Error: {e}")
+            yield 'data: ' + _json.dumps({
+                "done": True, "error": str(e),
+                "reply": f"Inference error: {str(e)}",
+                "mock": True, "model": state.model_name,
+                "latency_ms": int((time.time() - start) * 1000)
+            }) + '\n\n'
+
+    return Response(
+        stream_with_context(generate_sse()),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control':      'no-cache',
+            'X-Accel-Buffering':  'no',
+            'Access-Control-Allow-Origin': '*',
+        }
+    )
 
 
 @app.route('/models', methods=['GET'])
@@ -1127,7 +1274,7 @@ def index():
     return jsonify({
         "name":         "Sudo Studio AI Runtime",
         "version":      "2.2.0",
-        "endpoints":    ["/health", "/infer", "/chat", "/models", "/reload", "/download", "/scan"],
+        "endpoints":    ["/health", "/infer", "/infer-stream", "/chat", "/models", "/reload", "/download", "/scan"],
         "model_status": "loaded" if state.loaded else ("loading" if state.loading else "not_loaded"),
         "smart_detection": True,
     })
