@@ -228,6 +228,9 @@ function registerCommands() {
 
         // Agent Mode (Mission 2)
         ['sudoStudio.openAgentPanel',        openAgentPanel],
+
+        // Logs (Mission 3 — MISSION FINALE)
+        ['sudoStudio.openLogsFolder',        openLogsFolder],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -1498,6 +1501,56 @@ function openAgentPanel() {
                 ChatPanel.createOrShow(context.extensionUri, context);
             }
         }, null, []);
+    }
+}
+
+// ── Open Logs Folder (Mission FINALE — Mission 2B) ───────────────────────────
+function openLogsFolder() {
+    const path = require('path');
+    const fs   = require('fs');
+
+    // Resolve logs/ relative to extension install root (or project root one level up)
+    let logsPath = null;
+
+    // 1. Try <extensionPath>/logs
+    if (context && context.extensionPath) {
+        const candidate = path.join(context.extensionPath, 'logs');
+        if (fs.existsSync(candidate)) {
+            logsPath = candidate;
+        }
+        // 2. Try <extensionPath>/../logs  (extension is inside the Sudo Studio root)
+        if (!logsPath) {
+            const candidate2 = path.join(context.extensionPath, '..', 'logs');
+            if (fs.existsSync(candidate2)) {
+                logsPath = candidate2;
+            }
+        }
+    }
+
+    // 3. Last resort: create <extensionPath>/logs so the user has something to open
+    if (!logsPath && context && context.extensionPath) {
+        logsPath = path.join(context.extensionPath, 'logs');
+        try { fs.mkdirSync(logsPath, { recursive: true }); } catch (e) {}
+    }
+
+    if (logsPath) {
+        // Open the folder in the OS file manager (Windows Explorer, Finder, Nautilus)
+        vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(logsPath))
+            .then(undefined, () => {
+                // Fallback: show an informational message with the path
+                vscode.window.showInformationMessage(
+                    'Logs folder: ' + logsPath,
+                    'Copy Path'
+                ).then(sel => {
+                    if (sel === 'Copy Path') {
+                        vscode.env.clipboard.writeText(logsPath);
+                    }
+                });
+            });
+    } else {
+        vscode.window.showWarningMessage(
+            'Logs folder not found. Sudo Studio may not have been started yet.'
+        );
     }
 }
 

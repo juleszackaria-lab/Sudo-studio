@@ -1,4 +1,5 @@
 const vscode = require('vscode');
+const path = require('path');
 const { getBackendService } = require('../services/BackendService');
 const { getStateManager } = require('../services/StateManager');
 
@@ -82,6 +83,7 @@ class DashboardProvider {
             this.createActionItem('🤖 Runtime & Models',     'sudoStudio.openRuntimePanel',   'server'),
             this.createActionItem('🚀 DevOps Automation',    'sudoStudio.openDevOpsPanel',    'rocket'),
             this.createActionItem('🔍 Analyze Project',      'sudoStudio.openAnalysisPanel',  'search'),
+            this.createActionItem('📋 View Logs',            'sudoStudio.openLogsFolder',     'output'),
         ];
     }
 

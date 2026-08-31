@@ -602,12 +602,10 @@
     "gruntfuggly.todo-tree": {
       "default": false
     }
-  }
-}
-{
+  },
   "nameShort": "Sudo Studio",
   "nameLong": "Sudo Studio",
-  "applicationName": "sudostudio",
+  "applicationName": "sudo-studio",
   "extensionsGallery": {
     "serviceUrl": "https://open-vsx.org/vscode/gallery",
     "itemUrl": "https://open-vsx.org/vscode/item"
@@ -617,5 +615,21 @@
     "chat.enabled": false,
     "inlineSuggest.enabled": false,
     "intelliCode.enabled": false
-  }
+  },
+  "dataFolderName": ".sudo-studio",
+  "win32MutexName": "sudostudio",
+  "win32DirName": "Sudo Studio",
+  "win32NameVersion": "Sudo Studio",
+  "win32RegValueName": "SudoStudio",
+  "win32AppId": "{{A9B4E3C2-D5F6-4A7B-8C9D-E0F1A2B3C4D5}}",
+  "win32x64AppId": "{{B8C5F4D3-E6A7-5B8C-9D0E-F1A2B3C4D5E6}}",
+  "win32arm64AppId": "{{C9D6A5E4-F7B8-6C9D-0E1F-A2B3C4D5E6F7}}",
+  "win32UserAppId": "{{D0E7B6F5-A8C9-7D0E-1F2A-B3C4D5E6F7A8}}",
+  "win32x64UserAppId": "{{E1F8C7A6-B9D0-8E1F-2A3B-C4D5E6F7A8B9}}",
+  "win32arm64UserAppId": "{{F2A9D8B7-C0E1-9F2A-3B4C-D5E6F7A8B9C0}}",
+  "win32BackgroundUpdates": true,
+  "darwinBundleIdentifier": "com.sudostudio.app",
+  "linuxIconName": "sudo-studio",
+  "reportIssueUrl": "https://github.com/juleszackeria-lab/Sudo-studio/issues",
+  "urlProtocol": "sudo-studio"
 }

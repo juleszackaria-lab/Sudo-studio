@@ -49,37 +49,37 @@
         },
         {
           "id": "sudoStudioChat",
-          "name": "\ud83d\udcac AI Chat",
+          "name": "💬 AI Chat",
           "icon": "$(comment-discussion)",
           "contextualTitle": "AI Assistant"
         },
         {
           "id": "sudoStudioRuntime",
-          "name": "\ud83e\udd16 AI Runtime",
+          "name": "🤖 AI Runtime",
           "icon": "$(server-process)",
           "contextualTitle": "Runtime & Models"
         },
         {
           "id": "sudoStudioDoctor",
-          "name": "\ud83e\ude7a System Doctor",
+          "name": "🩺 System Doctor",
           "icon": "$(pulse)",
           "contextualTitle": "System Health"
         },
         {
           "id": "sudoStudioSDK",
-          "name": "\ud83d\udce6 SDK Manager",
+          "name": "📦 SDK Manager",
           "icon": "$(package)",
           "contextualTitle": "Development SDKs"
         },
         {
           "id": "sudoStudioDevOps",
-          "name": "\ud83d\ude80 DevOps",
+          "name": "🚀 DevOps",
           "icon": "$(rocket)",
           "contextualTitle": "DevOps Automation"
         },
         {
           "id": "sudoStudioEnvironment",
-          "name": "\ud83d\udd12 Environment",
+          "name": "🔒 Environment",
           "icon": "$(server-environment)",
           "contextualTitle": "Environment Manager"
         }
@@ -326,6 +326,12 @@
         "command": "sudoStudio.applyTemplate",
         "title": "Sudo AI: Apply Project Template",
         "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openLogsFolder",
+        "title": "Sudo Studio: View Logs Folder",
+        "category": "Sudo Studio",
+        "icon": "$(output)"
       }
     ],
     "menus": {
