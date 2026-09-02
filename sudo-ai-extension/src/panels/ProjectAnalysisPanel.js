@@ -21,7 +21,17 @@ class ProjectAnalysisPanel {
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
         this.panel.webview.onDidReceiveMessage(m => this.handleMessage(m), null, this.disposables);
 
-        setTimeout(() => this.analyzeProject(), 300);
+        // Pre-check workspace BEFORE showing the loading overlay.
+        // If no folder is open, send noWorkspace immediately so the user
+        // never sees "Analyse du projet en cours..." indefinitely.
+        if (!vscode.workspace.workspaceFolders || !vscode.workspace.workspaceFolders.length) {
+            setTimeout(() => {
+                this.panel.webview.postMessage({ type: 'noWorkspace' });
+            }, 150); // short delay to let the WebView script initialise
+        } else {
+            // Start analysis, but cap with a 10s safety timeout
+            this._analysisTimeout = setTimeout(() => this.analyzeProject(), 300);
+        }
     }
 
     static createOrShow(extensionUri) {
@@ -52,6 +62,14 @@ class ProjectAnalysisPanel {
             this.panel.webview.postMessage({ type: 'noWorkspace' });
             return;
         }
+        // 10-second safety timeout — if analysis hangs, show an error
+        const safetyTimeout = setTimeout(() => {
+            this.panel.webview.postMessage({
+                type: 'noWorkspace',
+                // Re-use noWorkspace message slot but with a timeout message
+            });
+            this.panel.webview.postMessage({ type: 'analysisTimeout' });
+        }, 10000);
 
         this.panel.webview.postMessage({ type: 'analyzing' });
 
@@ -174,6 +192,8 @@ class ProjectAnalysisPanel {
             result.issues.push({ level: 'error', area: 'Analyse', msg: `Erreur: ${e.message}`, fix: null });
         }
 
+        // Cancel the 10s safety timeout since analysis completed
+        if (safetyTimeout) clearTimeout(safetyTimeout);
         this.panel.webview.postMessage({ type: 'analysisResult', result });
     }
 
@@ -391,10 +411,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         </div>
     </div>
 
-    <div id="noWorkspaceMsg" style="display:none;padding:30px;text-align:center;color:var(--vscode-descriptionForeground)">
-        <div style="font-size:32px;margin-bottom:10px">📁</div>
-        <div style="font-size:14px">Aucun workspace ouvert</div>
-        <div style="font-size:12px;margin-top:4px">Ouvrez un dossier de projet dans VSCode</div>
+    <div id="noWorkspaceMsg" style="display:none;padding:40px 30px;text-align:center;color:var(--vscode-descriptionForeground)">
+        <div style="font-size:48px;margin-bottom:14px">📁</div>
+        <div style="font-size:16px;font-weight:600;margin-bottom:8px">Aucun projet ouvert</div>
+        <div style="font-size:13px;margin-top:4px;line-height:1.6">
+            Ouvrez un dossier via <strong>File &gt; Open Folder</strong><br>
+            pour analyser un projet.
+        </div>
+        <div id="timeoutNote" style="display:none;margin-top:14px;padding:10px 14px;border-radius:6px;background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);font-size:12px;color:#f85149">
+            ⏱ Timeout : l'analyse a pris trop de temps. Ouvrez un dossier et réessayez.
+        </div>
     </div>
 </div>
 
@@ -425,6 +451,11 @@ window.addEventListener('message', ev => {
         case 'noWorkspace':
             document.getElementById('loadingOverlay').classList.remove('show');
             document.getElementById('noWorkspaceMsg').style.display='block';
+            break;
+        case 'analysisTimeout':
+            document.getElementById('loadingOverlay').classList.remove('show');
+            document.getElementById('noWorkspaceMsg').style.display='block';
+            document.getElementById('timeoutNote').style.display='block';
             break;
         case 'analysisResult':
             renderResult(m.result);

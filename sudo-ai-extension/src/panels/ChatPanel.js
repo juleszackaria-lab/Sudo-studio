@@ -105,7 +105,21 @@ class ChatPanel {
     // ── Intent routing ─────────────────────────────────────────────────────
     _detectIntent(text) {
         const t = text.toLowerCase();
-        if (/analys[ez]|scan|inspecte|examine|audit.*(projet|code|workspace|dossier)/.test(t))
+        // IMPORTANT: Only trigger project analysis for EXPLICIT requests.
+        // Words like "analyse" alone are too broad — a user asking to
+        // "write an app that analyses data" must NOT open the Analysis panel.
+        // Require the analysis phrase to reference the project/code/workspace/folder
+        // explicitly, OR be the whole message, OR use imperative forms.
+        if (
+            // Explicit: "analyse le projet", "analyse mon code", "analyse le workspace"
+            /analys[ez]\s+(le\s+|mon\s+|ce\s+)?(projet|code|workspace|dossier|répertoire|repo|codebase)/i.test(t) ||
+            // "audit du code", "audit du projet"
+            /audit\s+(du|de|le|mon|ce)\s+(code|projet|workspace)/i.test(t) ||
+            // "inspecte le projet", "scanne le projet"
+            /(inspecte|scanne|examine)\s+(le|mon|ce)\s+(projet|code|workspace|dossier)/i.test(t) ||
+            // Very short messages that are ONLY "analyse" / "analyse le projet"
+            (/^\s*(analys[ez]|scan|audit|inspecte|examine)\s*$/.test(t))
+        )
             return 'analyzeProject';
         if (/doctor|docteur|diagnos|santé|health|problème.*système|système.*problème/.test(t))
             return 'openDoctor';
@@ -173,16 +187,19 @@ class ChatPanel {
             }
 
             this.panel.webview.postMessage({ type: 'generating', show: false });
+            const aiText = reply.reply || reply.response || 'Pas de reponse.';
             this.panel.webview.postMessage({
                 type: 'aiMessage',
-                text: reply.reply || reply.response || 'Pas de reponse.',
+                text: aiText,
                 model: reply.model === 'mock' ? 'Sudo AI (chargement modele)' : (reply.model || 'AI'),
                 latency: reply.latency_ms,
                 mock: reply.mock || false,
                 loading: reply.loading || false,
                 progress: reply.download_progress
             });
-            this._addHistory('assistant', reply.reply || reply.response || '', reply.model, reply.mock);
+            this._addHistory('assistant', aiText, reply.model, reply.mock);
+            // P4: Try to create a file if the user asked for one
+            this._tryWriteFile(text, aiText).catch(() => {});
         } catch (e) {
             // FIX BUG: always reset generating state FIRST, then show error/stop message.
             // Previously 'generating: false' was sent but the WebView 'error' case
@@ -379,6 +396,8 @@ class ChatPanel {
                             });
                             this.panel.webview.postMessage({ type: 'generating', show: false });
                             this._addHistory('assistant', finalText, evt.model, evt.mock);
+                            // P4: Try to create a file if the user asked for one
+                            this._tryWriteFile(text, finalText).catch(() => {});
                             resolve(true);
                         }
                     }
@@ -416,6 +435,145 @@ class ChatPanel {
             req.write(payload);
             req.end();
         });
+    }
+
+    // ── Real file writing ────────────────────────────────────────────────────
+    /**
+     * Inspect the AI reply for a file-creation intent and write the file if:
+     *  1. The user's message explicitly asked to create/write a file, AND
+     *  2. A code block is present in the AI reply.
+     *
+     * Detection heuristics (order matters — first match wins):
+     *  A. Comment on the first line of a code block: // file: name.ext  OR  # file: name.ext
+     *  B. Markdown heading immediately before the code block:  ### hello.py  etc.
+     *  C. User message contains "crée (un fichier|le fichier) <name.ext>"
+     *
+     * Returns the created file path (or null if nothing was written).
+     */
+    async _tryWriteFile(userText, aiReply) {
+        const path = require('path');
+        const fs   = require('fs');
+
+        // Only act when user explicitly asked to create/write a file
+        const userLower = userText.toLowerCase();
+        const isWriteRequest = (
+            /cr[ée]{1,2}[sz]?\s+(un\s+|le\s+|ce\s+)?(fichier|file)\b/i.test(userText) ||
+            /[ée]cris\s+(un\s+|le\s+|ce\s+)?(fichier|file)\b/i.test(userText) ||
+            /write\s+(a\s+|the\s+|this\s+)?(file|script)\b/i.test(userText) ||
+            /create\s+(a\s+|the\s+|this\s+)?(file|script)\b/i.test(userText) ||
+            /génère?\s+(un\s+|le\s+)?(fichier|file|script)\b/i.test(userText) ||
+            // Also detect "Crée un script Python", "Écris un script Dart" etc.
+            /cr[ée]{1,2}[sz]?\s+(un\s+|le\s+)?(script|module|programme|program|component|composant)/i.test(userText) ||
+            /[ée]cris\s+(un\s+|le\s+)?(script|module|programme|program)/i.test(userText)
+        );
+
+        if (!isWriteRequest) return null;
+
+        // Check workspace
+        const wsFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!wsFolder) {
+            // No workspace — inform the user but don't spam every message
+            this.panel.webview.postMessage({
+                type: 'aiMessage',
+                text: '⚠️ **Aucun dossier ouvert.** Ouvrez un projet via **File > Open Folder** pour que je puisse créer des fichiers réels.',
+                model: 'system',
+                mock: true
+            });
+            return null;
+        }
+
+        const workspaceRoot = wsFolder.uri.fsPath;
+
+        // ── Extract code block from AI reply ────────────────────────────────
+        // Regex: ```(lang)?\n(content)```  — or just ``` blocks without lang
+        const codeBlockRe = /```(?:[a-zA-Z0-9_+-]*)?\n([\s\S]*?)```/g;
+        let codeMatch = codeBlockRe.exec(aiReply);
+        if (!codeMatch) {
+            // No code block at all — nothing to write
+            return null;
+        }
+
+        const codeContent = codeMatch[1];
+
+        // ── Detect file name ─────────────────────────────────────────────────
+        let fileName = null;
+
+        // A. First line of code block is a comment naming the file
+        //    // file: hello.py  OR  # file: hello.py  OR  // fichier: hello.py
+        const firstLineMatch = codeContent.match(/^(?:\/\/|#)\s*(?:file|fichier)\s*:\s*([^\s\n]+)/i);
+        if (firstLineMatch) {
+            fileName = firstLineMatch[1].trim();
+        }
+
+        // B. Markdown heading right before the code block:  ### hello.py  or  **hello.py**
+        if (!fileName) {
+            const beforeBlock = aiReply.slice(0, codeBlockRe.lastIndex - codeMatch[0].length);
+            const headingMatch = beforeBlock.match(/(?:#{1,4}|\*\*|`)\s*([\w\-.]+\.[a-zA-Z]{1,10})\s*(?:`|\*\*)?[^\n]*\n\s*$/);
+            if (headingMatch) fileName = headingMatch[1].trim();
+        }
+
+        // C. User message explicitly mentions a file name
+        if (!fileName) {
+            const userFileMatch = userText.match(/\b([\w\-.]+\.(?:py|js|ts|dart|go|rs|java|c|cpp|cs|rb|php|swift|kt|sh|bat|json|yaml|yml|md|html|css|txt))\b/i);
+            if (userFileMatch) fileName = userFileMatch[1];
+        }
+
+        // D. Infer from language/context if still unknown
+        if (!fileName) {
+            // Check for language in user message to assign a sensible extension
+            const langMap = { python: 'script.py', dart: 'app.dart', javascript: 'index.js',
+                              typescript: 'index.ts', go: 'main.go', rust: 'main.rs',
+                              java: 'Main.java', 'c++': 'main.cpp', ruby: 'main.rb',
+                              kotlin: 'main.kt', swift: 'main.swift', bash: 'script.sh' };
+            for (const [lang, defaultName] of Object.entries(langMap)) {
+                if (userLower.includes(lang)) { fileName = defaultName; break; }
+            }
+            // Default fallback
+            if (!fileName) fileName = 'generated_code.txt';
+        }
+
+        // Sanitize: only allow safe path characters, prevent path traversal
+        fileName = path.basename(fileName.replace(/[<>:"|?*\\/]/g, '_'));
+        if (!fileName) return null;
+
+        // ── Write the file ───────────────────────────────────────────────────
+        const filePath = path.join(workspaceRoot, fileName);
+
+        // Remove the file-comment line from code if present (it was our marker)
+        let contentToWrite = codeContent;
+        if (firstLineMatch) {
+            // Strip the first line (the comment)
+            contentToWrite = codeContent.replace(/^[^\n]+\n/, '');
+        }
+
+        try {
+            fs.writeFileSync(filePath, contentToWrite, 'utf8');
+
+            // Refresh VS Code Explorer
+            await vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer');
+
+            // Post success confirmation in chat
+            const relPath = path.relative(workspaceRoot, filePath);
+            this.panel.webview.postMessage({
+                type: 'aiMessage',
+                text: `✅ **Fichier créé :** \`${relPath}\`\n\nLe fichier est visible dans l\'Explorer (panneau gauche).`,
+                model: 'system',
+                mock: false
+            });
+
+            console.log('[EXT] File written:', filePath);
+            return filePath;
+
+        } catch (e) {
+            console.error('[EXT] _tryWriteFile error:', e.message);
+            this.panel.webview.postMessage({
+                type: 'aiMessage',
+                text: `❌ Impossible de créer le fichier \`${fileName}\` : ${e.message}`,
+                model: 'system',
+                mock: true
+            });
+            return null;
+        }
     }
 
     async _sendToAI(text) {

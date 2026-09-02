@@ -34,6 +34,31 @@ const path         = require('path');
 const { exec }     = require('child_process');
 const axios        = require('axios');
 
+// ─── AGENT SYSTEM PROMPT ──────────────────────────────────────────────────────
+// Injected by AIProvider.query() / plan() / diagnose() to constrain the model
+// to produce structured, actionable responses suitable for autonomous execution.
+const AGENT_SYSTEM_PROMPT = `Tu es Sudo Agent, un agent de programmation autonome et précis.
+
+Pour toute tâche reçue :
+1. Analyse la demande précisément — comprends ce qui est demandé avant d'agir.
+2. Produis un plan numéroté clair (maximum 10 étapes).
+3. Pour chaque étape, produis une action concrète :
+   - LIRE un fichier : "Read <chemin/fichier>"
+   - ÉCRIRE un fichier : "Write <chemin/fichier>" suivi du code complet
+   - EXÉCUTER une commande : "Run <commande>"
+   - TESTER : "Test <framework>" 
+4. Le code produit doit être COMPLET et FONCTIONNEL dans le bon langage demandé.
+5. Ne jamais donner de réponse vague — toujours du code ou des actions concrètes.
+6. Si le langage cible est Dart, réponds en Dart. Si Python, en Python. Jamais un autre langage.
+7. Les blocs de code commencent par un commentaire // file: nom.ext ou # file: nom.ext.
+
+FORMAT DE RÉPONSE POUR LES PLANS :
+1. <action concrète>
+2. <action concrète>
+...
+
+Réponds directement sans introduction. Sois technique et précis.`;
+
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const MAX_ITERATIONS  = 10;
 const CMD_TIMEOUT_MS  = 60000;  // 60s per command
@@ -285,7 +310,11 @@ class AIProvider {
     async query(prompt, systemContext = '', options = {}) {
         const max_tokens  = options.max_tokens  || 1024;
         const temperature = options.temperature || 0.3;
-        const payload = { message: prompt, prompt, input: prompt, max_tokens, temperature };
+        // Prepend agent system prompt + optional context
+        const fullPrompt = AGENT_SYSTEM_PROMPT +
+            (systemContext ? '\n\nCONTEXT:\n' + systemContext : '') +
+            '\n\nUser: ' + prompt.trim() + '\nAssistant:';
+        const payload = { message: fullPrompt, prompt: fullPrompt, input: fullPrompt, max_tokens, temperature };
 
         // Try runtime first (local, no auth)
         try {
@@ -361,6 +390,8 @@ class AgentEngine extends EventEmitter {
     async run(task) {
         this._stopped = false;
         this.state = new AgentState(task, this.projectRoot);
+        console.log('[AGENT] Task received:', task);
+        console.log('[AGENT] projectRoot:', this.projectRoot);
         this.state.log(`Agent started — task: ${task}`);
         this._emit('step', { phase: 'start', message: `🚀 Agent démarré — tâche: ${task}` });
 
@@ -406,6 +437,7 @@ class AgentEngine extends EventEmitter {
     // ── Phases ────────────────────────────────────────────────────────────────
 
     async _phase_analyze() {
+        console.log('[AGENT] Starting ANALYZE phase');
         this._emit('step', { phase: 'analyze', message: '🔍 Analyse du projet...' });
         this.state.log('Phase: analyze');
 
@@ -444,6 +476,7 @@ class AgentEngine extends EventEmitter {
     }
 
     async _phase_plan() {
+        console.log('[AGENT] Starting PLAN phase');
         this._emit('step', { phase: 'plan', message: '📋 Construction du plan...' });
         this.state.log('Phase: plan');
 
@@ -478,6 +511,7 @@ class AgentEngine extends EventEmitter {
     }
 
     async _phase_execute() {
+        console.log('[AGENT] Starting EXECUTE phase');
         this.state.log('Phase: execute');
         let iteration = 0;
 
@@ -713,6 +747,7 @@ If no specific edit is needed, respond with: NO_EDIT_NEEDED`;
     // ── Verify ────────────────────────────────────────────────────────────────
 
     async _verify() {
+        console.log('[AGENT] Starting VERIFY phase');
         this._emit('step', { phase: 'verify', message: '✅ Vérification du résultat...' });
         this.state.log('Phase: verify');
 

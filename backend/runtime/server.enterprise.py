@@ -881,8 +881,42 @@ def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False
 
 
 # ─── Inference ──────────────────────────────────────────────────────────────────
-def run_inference(prompt: str, max_tokens: int = 128, temperature: float = 0.7) -> dict:
+
+# ── SYSTEM PROMPT — injected before every user message ──────────────────────
+# This constrains TinyLlama to stay focused, respond in the correct language,
+# and produce complete, well-formatted code blocks.
+SYSTEM_PROMPT = """Tu es Sudo AI, un assistant de programmation expert et précis.
+
+RÈGLES STRICTES :
+1. Réponds UNIQUEMENT dans le langage de programmation demandé par l'utilisateur.
+   Si Dart est demandé, réponds en Dart. Si Python est demandé, réponds en Python.
+   Ne jamais substituer un autre langage.
+2. Si on te demande d'écrire un fichier, fournis le code COMPLET dans un bloc de code.
+   La première ligne du bloc doit être un commentaire indiquant le nom du fichier :
+   // file: nom_du_fichier.ext  (pour JS/TS/Dart/Go/Rust)
+   # file: nom_du_fichier.ext   (pour Python/Ruby/Shell)
+3. Reste concis et technique. Pas de digressions hors sujet.
+4. Si la question est ambiguë, demande une clarification courte plutôt qu'inventer.
+5. Ne jamais halluciner des informations sans rapport avec la question posée.
+6. Les blocs de code doivent toujours être complets et fonctionnels.
+"""
+
+# Temperature/sampling settings — lower = more deterministic, better for code
+DEFAULT_TEMPERATURE      = 0.3   # was 0.7 — more deterministic, fewer hallucinations
+DEFAULT_TOP_P            = 0.85
+DEFAULT_REPETITION_PEN   = 1.2   # penalise repeated phrases
+
+
+def _build_prompt(user_message: str) -> str:
+    """Prepend the system prompt to the user message."""
+    return SYSTEM_PROMPT + "\n\nUser: " + user_message.strip() + "\nAssistant:"
+
+
+def run_inference(prompt: str, max_tokens: int = 128, temperature: float = DEFAULT_TEMPERATURE) -> dict:
     start = time.time()
+
+    # Inject system prompt before user message
+    full_prompt = _build_prompt(prompt)
 
     if not state.loaded or state.model is None:
         mock_reply = generate_mock_reply(prompt)
@@ -898,7 +932,7 @@ def run_inference(prompt: str, max_tokens: int = 128, temperature: float = 0.7) 
 
     try:
         import torch
-        inputs    = state.tokenizer(prompt, return_tensors="pt").to(state.device)
+        inputs    = state.tokenizer(full_prompt, return_tensors="pt").to(state.device)
         input_len = inputs['input_ids'].shape[1]
 
         with torch.no_grad():
@@ -907,6 +941,8 @@ def run_inference(prompt: str, max_tokens: int = 128, temperature: float = 0.7) 
                 max_new_tokens=max_tokens,
                 temperature=temperature,
                 do_sample=temperature > 0,
+                top_p=DEFAULT_TOP_P,
+                repetition_penalty=DEFAULT_REPETITION_PEN,
                 pad_token_id=state.tokenizer.eos_token_id,
                 eos_token_id=state.tokenizer.eos_token_id,
             )
@@ -1018,7 +1054,7 @@ def infer():
     if not prompt:
         return jsonify({"error": "No prompt provided", "fields": ["message", "prompt", "input"]}), 400
     max_tokens  = min(int(data.get('max_tokens', 128)), 128)  # hard cap 128 — keeps CPU inference <60s
-    temperature = float(data.get('temperature', 0.7))
+    temperature = float(data.get('temperature', DEFAULT_TEMPERATURE))
     result = run_inference(prompt, max_tokens, temperature)
     return jsonify(result)
 
@@ -1051,7 +1087,9 @@ def infer_stream():
         return jsonify({"error": "No prompt provided"}), 400
 
     max_tokens  = min(int(data.get('max_tokens', 128)), 128)
-    temperature = float(data.get('temperature', 0.7))
+    temperature = float(data.get('temperature', DEFAULT_TEMPERATURE))
+    # Inject system prompt for streaming path too
+    full_prompt = _build_prompt(prompt)
 
     def generate_sse():
         start = time.time()
@@ -1078,18 +1116,20 @@ def infer_stream():
         # ── Real model — token streaming via model.generate() ──────────────
         try:
             import torch
-            inputs    = state.tokenizer(prompt, return_tensors="pt").to(state.device)
+            inputs    = state.tokenizer(full_prompt, return_tensors="pt").to(state.device)
             input_len = inputs['input_ids'].shape[1]
 
-            # Build generation config
+            # Build generation config (with system prompt + better sampling params)
             gen_kwargs = dict(
-                input_ids      = inputs['input_ids'],
-                attention_mask = inputs.get('attention_mask'),
-                max_new_tokens = max_tokens,
-                temperature    = temperature,
-                do_sample      = temperature > 0,
-                pad_token_id   = state.tokenizer.eos_token_id,
-                eos_token_id   = state.tokenizer.eos_token_id,
+                input_ids          = inputs['input_ids'],
+                attention_mask     = inputs.get('attention_mask'),
+                max_new_tokens     = max_tokens,
+                temperature        = temperature,
+                do_sample          = temperature > 0,
+                top_p              = DEFAULT_TOP_P,
+                repetition_penalty = DEFAULT_REPETITION_PEN,
+                pad_token_id       = state.tokenizer.eos_token_id,
+                eos_token_id       = state.tokenizer.eos_token_id,
             )
 
             accumulated_ids = []

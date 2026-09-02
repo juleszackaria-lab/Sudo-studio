@@ -56,41 +56,63 @@ class AgentPanel {
     }
 
     async startTask(task) {
-        if (!task || !task.trim()) return;
+        console.log('[AGENT_PANEL] startTask called — task:', task);
+        if (!task || !task.trim()) {
+            this.post({ type: 'error', message: 'Veuillez saisir une tâche.' });
+            return;
+        }
         if (this._running) {
             this.post({ type: 'error', message: 'Un agent est déjà en cours.' });
             return;
         }
 
+        // Workspace is preferred but not mandatory.
+        // Fall back to the extension's own directory so the agent
+        // can still run tasks like "explain this code" or "generate a Dockerfile".
         const wsFolder = vscode.workspace.workspaceFolders?.[0];
+        const projectRoot = wsFolder
+            ? wsFolder.uri.fsPath
+            : (this.extensionUri ? require('path').dirname(this.extensionUri.fsPath) : process.cwd());
+
+        console.log('[AGENT_PANEL] projectRoot:', projectRoot, '| wsFolder:', wsFolder ? wsFolder.uri.fsPath : 'none (using fallback)');
+
         if (!wsFolder) {
-            this.post({ type: 'error', message: 'Aucun workspace ouvert.' });
-            return;
+            this.post({
+                type: 'step',
+                phase: 'analyze',
+                message: '⚠️ Aucun workspace ouvert — l\'agent travaillera en mode autonome (sans accès au projet). Ouvrez un dossier via File > Open Folder pour des résultats optimaux.'
+            });
         }
 
         this._running = true;
         this.post({ type: 'started', task });
+        console.log('[AGENT_PANEL] Engine starting...');
 
         this.engine = new AgentEngine({
-            projectRoot: wsFolder.uri.fsPath,
+            projectRoot,
         });
 
         // Wire all engine events to the WebView
-        this.engine.on('step',     d => this.post({ type: 'step',     ...d }));
-        this.engine.on('tool_call',d => this.post({ type: 'tool_call',...d }));
-        this.engine.on('progress', d => this.post({ type: 'progress', ...d }));
-        this.engine.on('error',    d => this.post({ type: 'agentError',...d }));
+        this.engine.on('step',     d => { console.log('[AGENT_ENGINE] step:', d.phase, d.message); this.post({ type: 'step', ...d }); });
+        this.engine.on('tool_call',d => { console.log('[AGENT_ENGINE] tool_call:', d.tool, JSON.stringify(d.args||{}).slice(0,80)); this.post({ type: 'tool_call', ...d }); });
+        this.engine.on('progress', d => { console.log('[AGENT_ENGINE] progress:', d.pct + '%'); this.post({ type: 'progress', ...d }); });
+        this.engine.on('error',    d => { console.log('[AGENT_ENGINE] error:', d.message); this.post({ type: 'agentError', ...d }); });
         this.engine.on('approval_needed', d => {
+            console.log('[AGENT_ENGINE] approval_needed:', d.action);
             this.post({ type: 'approval_needed', action: d.action, description: d.description });
         });
         this.engine.on('done', d => {
+            console.log('[AGENT_ENGINE] done — status:', d.status);
             this._running = false;
             this.post({ type: 'done', ...d });
         });
 
         try {
+            console.log('[AGENT_PANEL] Calling engine.run()...');
             await this.engine.run(task);
+            console.log('[AGENT_PANEL] engine.run() completed');
         } catch (e) {
+            console.error('[AGENT_PANEL] engine.run() threw:', e.message);
             this._running = false;
             this.post({ type: 'agentError', message: e.message, phase: 'engine' });
         }
