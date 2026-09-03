@@ -66,7 +66,13 @@ function Replace-Icon {
 
 # ─── Validate inputs ──────────────────────────────────────────────────────────
 
-$VSCodiumDir = (Resolve-Path $VSCodiumDir -ErrorAction SilentlyContinue)?.Path
+# PowerShell 5.1 compatible path resolution (no ?. null-conditional operator)
+$_resolved = Resolve-Path $VSCodiumDir -ErrorAction SilentlyContinue
+if ($_resolved) {
+    $VSCodiumDir = $_resolved.Path
+} else {
+    $VSCodiumDir = $null
+}
 if (-not $VSCodiumDir -or -not (Test-Path $VSCodiumDir)) {
     Fail "VSCodiumDir introuvable: $VSCodiumDir`nUsage: .\scripts\customize-vscodium.ps1 -VSCodiumDir <chemin>"
 }
