@@ -1,116 +1,78 @@
 @echo off
 setlocal enabledelayedexpansion
-
-:: ============================================================
-::  SUDO STUDIO v6.0 - Windows Launcher
-::  Changes in v6.0 (CRITICAL FIX RELEASE):
-::   - FIXED: pause removed from all fatal error handlers
-::             (script runs hidden — pause caused invisible freeze)
-::   - FIXED: 600s blocking runtime poll replaced with fast
-::             non-blocking tasklist check (2s timeout only)
-::   - FIXED: USE_VBS uses !delayed! expansion throughout
-::   - FIXED: UAC elevation preserves working directory reliably
-::   - FIXED: VBScript is primary, start /MIN is fallback
-::   - ADDED: Granular [STEP] logging at every critical junction
-::   - ADDED: tasklist verification after each process launch
-:: ============================================================
-
-:: ============================================================
-::  STEP 0 — Set working directory FIRST, before anything else
-::  This MUST be the absolute first operation.
-:: ============================================================
-cd /d "%~dp0"
-set "ROOT=%~dp0"
-set "LOGS=%ROOT%logs"
-set "LOG_FILE=%ROOT%logs\startup.log"
-
-:: Create logs folder early so UAC path can log immediately
-if not exist "%LOGS%" mkdir "%LOGS%" 2>nul
-
-:: ============================================================
-::  STEP 1 — UAC AUTO-ELEVATION
-::  If not admin, relaunch this script elevated WITH explicit
-::  WorkingDirectory so the elevated process keeps the right CWD.
-:: ============================================================
-echo [STEP 1] Checking administrator privileges...
-net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo [STEP 1] Not admin - requesting elevation via UAC...
-    echo [STEP 1] UAC elevation requested >> "%LOG_FILE%"
-    :: Use cmd /c to wrap the BAT call so CWD is preserved cleanly
-    powershell -NoProfile -WindowStyle Hidden -Command ^
-      "Start-Process -FilePath 'cmd.exe' -ArgumentList '/c ""%~f0""' -WorkingDirectory '%~dp0' -Verb RunAs"
-    exit /b 0
-)
-
-:: ============================================================
-::  Now confirmed running as Administrator
-::  Re-apply CWD in case elevation changed it
-:: ============================================================
-cd /d "%~dp0"
-set "ROOT=%~dp0"
-set "LOGS=%ROOT%logs"
-set "LOG_FILE=%ROOT%logs\startup.log"
-
 title Sudo Studio - Starting...
 
 :: ============================================================
-::  STEP 2 — Global Variables
+::  SUDO STUDIO v4.6 - Windows Launcher
+::  backend.exe  = Node.js/Express (pkg node18-win-x64)
+::  runtime.exe  = Python/Flask + HuggingFace AI
+::  No system Node.js or Python required.
+::  v4.6: runtime timeout 600s + chat fixes
 :: ============================================================
+
+:: -- CRITICAL: Set working directory to script location ------
+cd /d "%~dp0"
+
+:: -- Global Variables ----------------------------------------
+set "ROOT=%~dp0"
 set "APP=%ROOT%"
+set "LOGS=%ROOT%logs"
+set "LOG_FILE=%ROOT%logs\startup.log"
 set "BACKEND_PORT=5000"
 set "RUNTIME_PORT=6000"
 set "EXT=%ROOT%extensions\sudo-ai"
 set "DATA=%ROOT%data"
-set "VBS=%ROOT%launch_hidden.vbs"
-set "USE_VBS=0"
 
-:: ============================================================
-::  STEP 3 — Init log file
-:: ============================================================
+:: -- STEP 1: Confirm script is actually running ---------------
+echo.
+echo ============================================================
+echo   SUDO STUDIO v4.6
+echo ============================================================
+echo   STEP 1 - Script is running
+echo   Root directory: %ROOT%
+echo ============================================================
+echo.
+
+:: -- Create logs folder ---------------------------------------
 if not exist "%LOGS%" mkdir "%LOGS%" 2>nul
+if not exist "%LOGS%" (
+    echo [ERROR] Cannot create logs folder at: %LOGS%
+    echo         Check write permissions.
+    echo.
+    pause
+    exit /b 1
+)
+
+:: -- Init log file --------------------------------------------
 (
     echo ============================================================
-    echo   SUDO STUDIO v6.0 - %DATE% %TIME%
+    echo   SUDO STUDIO v4.3 - %DATE% %TIME%
     echo   Root: %ROOT%
-    echo   Running as: Administrator
-    echo   Log: %LOG_FILE%
     echo ============================================================
 ) > "%LOG_FILE%"
-
+echo [LOG] Logging to: %LOG_FILE%
 echo.
-echo ============================================================
-echo   SUDO STUDIO v6.0
-echo ============================================================
-echo   Root    : %ROOT%
-echo   Logs    : %LOGS%
-echo   Ports   : Backend=%BACKEND_PORT%  Runtime=%RUNTIME_PORT%
-echo ============================================================
-echo.
-echo [STEP 3] Log file initialized: %LOG_FILE%
-echo [STEP 3] Startup initiated >> "%LOG_FILE%"
 
 :: ============================================================
-::  STEP 4 — Verify executables
-::  CRITICAL: no pause in fatal handlers (script may run hidden)
-::            use timeout /t 5 instead so user CAN see message
-::            if they have a visible window, but script continues
+::  PHASE 1 - VERIFY ALL EXECUTABLES (STEP 2)
 :: ============================================================
+echo [STEP 2] Checking application files...
+echo [PHASE 1] Checking files... >> "%LOG_FILE%"
 echo.
-echo [STEP 4] Verifying application files...
-echo [STEP 4] Checking files... >> "%LOG_FILE%"
 
 :: --- backend.exe ---
 if exist "%APP%backend.exe" (
     echo   [OK] backend.exe found
     echo   [OK] backend.exe >> "%LOG_FILE%"
 ) else (
-    echo   [NOT FOUND] backend.exe - Expected at: %APP%backend.exe
-    echo   [FATAL] backend.exe missing >> "%LOG_FILE%"
+    echo   [NOT FOUND] backend.exe
+    echo   Expected at: %APP%backend.exe
+    echo   [ERROR] backend.exe not found >> "%LOG_FILE%"
     echo.
-    echo [FATAL] backend.exe is missing. Please reinstall Sudo Studio.
-    echo [FATAL] Path checked: %APP%backend.exe
-    timeout /t 10 /nobreak >nul
+    echo [FATAL] backend.exe is missing.
+    echo         Please reinstall Sudo Studio.
+    echo.
+    pause
     exit /b 1
 )
 
@@ -119,365 +81,282 @@ if exist "%APP%runtime.exe" (
     echo   [OK] runtime.exe found
     echo   [OK] runtime.exe >> "%LOG_FILE%"
 ) else (
-    echo   [NOT FOUND] runtime.exe - Expected at: %APP%runtime.exe
-    echo   [FATAL] runtime.exe missing >> "%LOG_FILE%"
+    echo   [NOT FOUND] runtime.exe
+    echo   Expected at: %APP%runtime.exe
+    echo   [ERROR] runtime.exe not found >> "%LOG_FILE%"
     echo.
-    echo [FATAL] runtime.exe is missing. Please reinstall Sudo Studio.
-    echo [FATAL] Path checked: %APP%runtime.exe
-    timeout /t 10 /nobreak >nul
+    echo [FATAL] runtime.exe is missing.
+    echo         Please reinstall Sudo Studio.
+    echo.
+    pause
     exit /b 1
 )
 
 :: --- VSCodium.exe ---
 if exist "%APP%VSCodium.exe" (
-    echo   [OK] VSCodium.exe (Sudo Studio editor) found
+    echo   [OK] VSCodium.exe found
     echo   [OK] VSCodium.exe >> "%LOG_FILE%"
 ) else (
-    echo   [NOT FOUND] VSCodium.exe - Expected at: %APP%VSCodium.exe
-    echo   [FATAL] VSCodium.exe missing >> "%LOG_FILE%"
+    echo   [NOT FOUND] VSCodium.exe
+    echo   Expected at: %APP%VSCodium.exe
+    echo   [ERROR] VSCodium.exe not found >> "%LOG_FILE%"
     echo.
-    echo [FATAL] VSCodium.exe is missing. Please reinstall Sudo Studio.
-    timeout /t 10 /nobreak >nul
+    echo [FATAL] VSCodium.exe is missing.
+    echo         Please reinstall Sudo Studio.
+    echo.
+    pause
     exit /b 1
 )
 
-:: --- VBScript launcher ---
-if exist "%VBS%" (
-    echo   [OK] launch_hidden.vbs found - will use VBScript (SW_HIDE)
-    echo   [OK] launch_hidden.vbs >> "%LOG_FILE%"
-    set "USE_VBS=1"
-) else (
-    echo   [WARN] launch_hidden.vbs not found - using start /MIN fallback
-    echo   [WARN] launch_hidden.vbs missing - using start /MIN >> "%LOG_FILE%"
-    set "USE_VBS=0"
-)
-
-echo   [INFO] USE_VBS=!USE_VBS!
-echo   [INFO] USE_VBS=!USE_VBS! >> "%LOG_FILE%"
-
-:: --- Extension ---
+:: --- Sudo AI Extension (warning only - not fatal) ---
 if exist "%EXT%\extension.js" (
     echo   [OK] Sudo AI extension found
-    echo   [OK] Extension >> "%LOG_FILE%"
+    echo   [OK] extension.js >> "%LOG_FILE%"
 ) else (
-    echo   [WARN] Sudo AI extension not found - AI features disabled
-    echo   [WARN] Extension missing >> "%LOG_FILE%"
+    echo   [WARNING] Sudo AI extension not found at:
+    echo             %EXT%\extension.js
+    echo   [WARNING] Extension missing - VSCodium will open without Sudo AI >> "%LOG_FILE%"
 )
 
 echo.
-echo [STEP 4] File verification complete.
-echo [STEP 4] Files OK >> "%LOG_FILE%"
+echo [STEP 2] All required files verified.
+echo [PHASE 1] All files OK >> "%LOG_FILE%"
 echo.
 
 :: ============================================================
-::  STEP 5 — Kill any stale processes on our ports
+::  PHASE 2 - LAUNCH AI RUNTIME (port 6000) (STEP 3)
 :: ============================================================
-echo [STEP 5] Clearing stale processes on ports %RUNTIME_PORT% and %BACKEND_PORT%...
-echo [STEP 5] Clearing stale processes >> "%LOG_FILE%"
+echo [STEP 3] Starting AI Runtime on port %RUNTIME_PORT%...
+echo          (TinyLlama 2.1GB - first load 3-5 min. Waiting up to 10 min.)
+echo [PHASE 2] Launching runtime.exe on port %RUNTIME_PORT% >> "%LOG_FILE%"
+echo.
 
-for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":%RUNTIME_PORT% " ^| findstr "LISTENING"') do (
+:: Kill any existing runtime on port 6000
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":6000 " ^| findstr "LISTENING"') do (
     taskkill /F /PID %%a >nul 2>&1
 )
-for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":%BACKEND_PORT% " ^| findstr "LISTENING"') do (
-    taskkill /F /PID %%a >nul 2>&1
-)
 
-:: Kill stale runtime/backend processes
-taskkill /F /IM runtime.exe >nul 2>&1
-taskkill /F /IM backend.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
-
-echo   [OK] Stale process cleanup done.
-echo [STEP 5] Stale cleanup done >> "%LOG_FILE%"
+:: Launch runtime.exe in a minimized window
+start "SudoRuntime" /MIN "%APP%runtime.exe"
+echo [PHASE 2] runtime.exe launched >> "%LOG_FILE%"
+echo   [LAUNCHED] runtime.exe -> port %RUNTIME_PORT%
 echo.
 
-:: ============================================================
-::  STEP 6 — Launch runtime.exe HIDDEN
-::  Primary:  VBScript SW_HIDE (truly invisible, no taskbar)
-::  Fallback: start /MIN (minimized CMD window — still works)
-:: ============================================================
-echo [STEP 6] Launching AI Runtime (port %RUNTIME_PORT%)...
-echo [STEP 6] Launching runtime.exe >> "%LOG_FILE%"
-
-if "!USE_VBS!"=="1" (
-    echo   [METHOD] VBScript SW_HIDE
-    echo   [METHOD] VBScript >> "%LOG_FILE%"
-    cscript //nologo "%VBS%" "%APP%runtime.exe" --port %RUNTIME_PORT%
-    echo   [LAUNCHED] runtime.exe via VBScript
-    echo [STEP 6] runtime.exe launched via VBScript >> "%LOG_FILE%"
-) else (
-    echo   [METHOD] start /MIN fallback
-    echo   [METHOD] start /MIN >> "%LOG_FILE%"
-    start "Sudo Runtime" /MIN "%APP%runtime.exe" --port %RUNTIME_PORT%
-    echo   [LAUNCHED] runtime.exe via start /MIN
-    echo [STEP 6] runtime.exe launched via start /MIN >> "%LOG_FILE%"
-)
-
-:: Wait 2 seconds then verify process is actually running
-timeout /t 2 /nobreak >nul
-
-echo [STEP 6] Verifying runtime.exe started...
-echo [STEP 6] Verifying runtime.exe... >> "%LOG_FILE%"
-
-tasklist /FI "IMAGENAME eq runtime.exe" 2>nul | find /I "runtime.exe" >nul
-if %errorlevel% equ 0 (
-    echo   [OK] runtime.exe IS running in background
-    echo   [OK] runtime.exe confirmed running >> "%LOG_FILE%"
-) else (
-    echo   [WARN] runtime.exe not found in tasklist yet - may still be starting
-    echo   [WARN] runtime.exe not in tasklist (may still be starting) >> "%LOG_FILE%"
-    :: Give it 3 more seconds
-    timeout /t 3 /nobreak >nul
-    tasklist /FI "IMAGENAME eq runtime.exe" 2>nul | find /I "runtime.exe" >nul
-    if %errorlevel% equ 0 (
-        echo   [OK] runtime.exe now running (delayed start)
-        echo   [OK] runtime.exe running after delay >> "%LOG_FILE%"
-    ) else (
-        echo   [ERROR] runtime.exe STILL not running - AI chat may not work
-        echo   [ERROR] runtime.exe failed to start >> "%LOG_FILE%"
-    )
-)
-echo.
-
-:: ============================================================
-::  STEP 7 — Launch backend.exe HIDDEN
-::  Same VBScript/fallback logic as runtime
-:: ============================================================
-echo [STEP 7] Launching Backend (port %BACKEND_PORT%)...
-echo [STEP 7] Launching backend.exe >> "%LOG_FILE%"
-
-if "!USE_VBS!"=="1" (
-    echo   [METHOD] VBScript SW_HIDE
-    cscript //nologo "%VBS%" "%APP%backend.exe" --port %BACKEND_PORT%
-    echo   [LAUNCHED] backend.exe via VBScript
-    echo [STEP 7] backend.exe launched via VBScript >> "%LOG_FILE%"
-) else (
-    echo   [METHOD] start /MIN fallback
-    start "Sudo Backend" /MIN "%APP%backend.exe" --port %BACKEND_PORT%
-    echo   [LAUNCHED] backend.exe via start /MIN
-    echo [STEP 7] backend.exe launched via start /MIN >> "%LOG_FILE%"
-)
-
-:: Wait 2 seconds then verify
-timeout /t 2 /nobreak >nul
-
-echo [STEP 7] Verifying backend.exe started...
-echo [STEP 7] Verifying backend.exe... >> "%LOG_FILE%"
-
-tasklist /FI "IMAGENAME eq backend.exe" 2>nul | find /I "backend.exe" >nul
-if %errorlevel% equ 0 (
-    echo   [OK] backend.exe IS running in background
-    echo   [OK] backend.exe confirmed running >> "%LOG_FILE%"
-) else (
-    echo   [WARN] backend.exe not found in tasklist - may still be starting
-    echo   [WARN] backend.exe not in tasklist >> "%LOG_FILE%"
-    timeout /t 3 /nobreak >nul
-    tasklist /FI "IMAGENAME eq backend.exe" 2>nul | find /I "backend.exe" >nul
-    if %errorlevel% equ 0 (
-        echo   [OK] backend.exe now running (delayed start)
-        echo   [OK] backend.exe running after delay >> "%LOG_FILE%"
-    ) else (
-        echo   [ERROR] backend.exe STILL not running - backend API may not work
-        echo   [ERROR] backend.exe failed to start >> "%LOG_FILE%"
-    )
-)
-echo.
-
-:: ============================================================
-::  STEP 8 — Wait for AI Runtime to be READY (non-blocking)
-::  Max 30 attempts × 3s = 90s total
-::  If not ready, continue anyway (model loads in background)
-::  NOTE: This replaces the old 600s blocking poll.
-::        We proceed after 90s regardless.
-:: ============================================================
-echo [STEP 8] Waiting for AI Runtime health check (max 90s)...
-echo [STEP 8] Runtime health check >> "%LOG_FILE%"
-
+:: -- Poll port 6000 every 3s, timeout 600s (10 min for 2GB model load) --
 set "RUNTIME_READY=0"
 set "RUNTIME_WAIT=0"
 
 :wait_runtime
     set /a RUNTIME_WAIT+=1
-    if !RUNTIME_WAIT! gtr 30 goto :runtime_timeout
+    if !RUNTIME_WAIT! gtr 200 goto :runtime_timeout
     timeout /t 3 /nobreak >nul
 
-    :: Primary check: curl
-    curl -s --connect-timeout 2 -o nul -w "%%{http_code}" http://localhost:%RUNTIME_PORT%/health 2>nul | findstr /B "200" >nul 2>&1
+    :: Try curl first (faster)
+    curl -s -o nul -w "%%{http_code}" http://localhost:%RUNTIME_PORT%/health 2>nul | findstr /B "200" >nul 2>&1
     if !errorlevel! equ 0 (
         set "RUNTIME_READY=1"
         goto :runtime_ok
     )
 
-    :: Print progress every 15s
+    :: Fallback: PowerShell
+    powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri 'http://localhost:%RUNTIME_PORT%/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "RUNTIME_READY=1"
+        goto :runtime_ok
+    )
+
+    :: Print progress every 15 seconds
     set /a RUNTIME_ELAPSED=RUNTIME_WAIT*3
     set /a RUNTIME_MOD=RUNTIME_ELAPSED %% 15
     if !RUNTIME_MOD! equ 0 (
-        echo   [AI Loading] !RUNTIME_ELAPSED!s elapsed - TinyLlama still loading...
+        echo   [AI Loading] !RUNTIME_ELAPSED!s elapsed - TinyLlama loading... ^(up to 600s^)
         echo   [AI Loading] !RUNTIME_ELAPSED!s >> "%LOG_FILE%"
     )
     goto :wait_runtime
 
 :runtime_timeout
     echo.
-    echo   [INFO] Runtime not ready after 90s - continuing anyway.
-    echo   [INFO] TinyLlama model loads in background (takes 2-5 min first time).
-    echo   [INFO] Chat will work once the model finishes loading.
-    echo   [INFO] Runtime not ready after 90s - will continue loading in background >> "%LOG_FILE%"
+    echo   [OK] 600s elapsed. runtime.exe is STILL RUNNING and loading the model.
+    echo   [OK] VSCodium will open now. Chat will work once model finishes loading.
+    echo   [OK] Watch SudoRuntime window for: Model Ready on cpu
+    echo [PHASE 2] 600s timeout - runtime still loading >> "%LOG_FILE%"
     goto :runtime_done
 
 :runtime_ok
-    set /a RUNTIME_ELAPSED_OK=RUNTIME_WAIT*3
-    echo.
-    echo   [OK] AI Runtime READY on port %RUNTIME_PORT% (!RUNTIME_ELAPSED_OK!s)
-    echo   [OK] Runtime ready after !RUNTIME_ELAPSED_OK!s >> "%LOG_FILE%"
+    echo   [OK] AI Runtime ready on port %RUNTIME_PORT%
+    echo [PHASE 2] Runtime ready on port %RUNTIME_PORT% >> "%LOG_FILE%"
 
 :runtime_done
 echo.
 
 :: ============================================================
-::  STEP 9 — Wait for Backend (max 30s)
+::  PHASE 3 - LAUNCH BACKEND (port 5000) (STEP 4)
 :: ============================================================
-echo [STEP 9] Waiting for Backend health check (max 30s)...
-echo [STEP 9] Backend health check >> "%LOG_FILE%"
+echo [STEP 4] Starting Backend on port %BACKEND_PORT%...
+echo [PHASE 3] Launching backend.exe on port %BACKEND_PORT% >> "%LOG_FILE%"
+echo.
 
+:: Kill any existing backend on port 5000
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":5000 " ^| findstr "LISTENING"') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+
+:: Launch backend.exe in a minimized window
+start "SudoBackend" /MIN "%APP%backend.exe"
+echo [PHASE 3] backend.exe launched >> "%LOG_FILE%"
+echo   [LAUNCHED] backend.exe -> port %BACKEND_PORT%
+echo.
+
+:: -- Poll port 5000 every 2 seconds, timeout 60s --
 set "BACKEND_READY=0"
 set "BACKEND_WAIT=0"
 
 :wait_backend
     set /a BACKEND_WAIT+=1
-    if !BACKEND_WAIT! gtr 15 goto :backend_timeout
+    if !BACKEND_WAIT! gtr 30 goto :backend_timeout
     timeout /t 2 /nobreak >nul
 
-    curl -s --connect-timeout 2 -o nul -w "%%{http_code}" http://localhost:%BACKEND_PORT%/api/system/health 2>nul | findstr /B "200" >nul 2>&1
+    :: Try curl first
+    curl -s -o nul -w "%%{http_code}" http://localhost:%BACKEND_PORT%/api/system/health 2>nul | findstr /B "200" >nul 2>&1
     if !errorlevel! equ 0 (
         set "BACKEND_READY=1"
         goto :backend_ok
     )
 
-    echo   [Backend] Waiting... !BACKEND_WAIT!/15
+    :: Fallback: PowerShell
+    powershell -NoProfile -WindowStyle Hidden -Command "try{$r=(Invoke-WebRequest -Uri 'http://localhost:%BACKEND_PORT%/api/system/health' -TimeoutSec 2 -UseBasicParsing -EA Stop).StatusCode;if($r -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "BACKEND_READY=1"
+        goto :backend_ok
+    )
+
+    echo   Waiting for Backend... !BACKEND_WAIT! / 30
     goto :wait_backend
 
 :backend_timeout
     echo.
-    echo   [WARN] Backend did not respond in 30s. Continuing anyway.
-    echo   [WARN] Check logs: %ROOT%logs\backend.log
-    echo   [WARN] Backend timeout after 30s >> "%LOG_FILE%"
+    echo   [WARNING] Backend did not respond after 60 seconds.
+    echo   [WARNING] Backend timeout - continuing to launch VSCodium >> "%LOG_FILE%"
+    echo.
+    echo   Backend may still be starting. VSCodium will open.
+    echo   If backend is needed, check: %ROOT%logs\backend.log
+    echo.
     goto :backend_done
 
 :backend_ok
-    echo.
-    echo   [OK] Backend READY on port %BACKEND_PORT%
-    echo   [OK] Backend ready >> "%LOG_FILE%"
+    echo   [OK] Backend ready on port %BACKEND_PORT%
+    echo [PHASE 3] Backend ready on port %BACKEND_PORT% >> "%LOG_FILE%"
 
 :backend_done
 echo.
 
 :: ============================================================
-::  STEP 10 — Launch Sudo Studio (VSCodium)
+::  PHASE 4 - HEALTH CHECK SUMMARY (STEP 5)
 :: ============================================================
-echo [STEP 10] Opening Sudo Studio (VSCodium)...
-echo [STEP 10] Launching Sudo Studio >> "%LOG_FILE%"
+echo [PHASE 4] Health check summary >> "%LOG_FILE%"
+echo [STEP 5] Services running:
+echo   Runtime  : port 6000
+echo   Backend  : port 5000
+echo [PHASE 4] Done >> "%LOG_FILE%"
+echo.
 
+:: ============================================================
+::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)
+:: ============================================================
+echo DEBUG PHASE 5 START >> "%LOG_FILE%"
+echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...
+echo [PHASE 5] Preparing VSCodium... >> "%LOG_FILE%"
+echo.
+
+:: Chemins sans espaces dans les variables
 set "V_EXE=%ROOT%VSCodium.exe"
 set "V_EXT=%ROOT%extensions"
 set "V_DAT=%ROOT%data"
 set "V_DEV=%ROOT%extensions\sudo-ai"
 
+:: Creer dossiers necessaires
 if not exist "%V_DAT%" mkdir "%V_DAT%" 2>nul
 if not exist "%V_EXT%" mkdir "%V_EXT%" 2>nul
 
-:: Write clean launcher script (avoids any quoting issues in start command)
+:: Verifier VSCodium.exe
+if not exist "%V_EXE%" (
+    echo [FATAL] VSCodium.exe not found >> "%LOG_FILE%"
+    echo [FATAL] VSCodium.exe introuvable : %V_EXE%
+    pause
+    exit /b 1
+)
+echo [PHASE 5] VSCodium.exe found >> "%LOG_FILE%"
+
+:: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption)
 set "LAUNCHER=%ROOT%launch.bat"
 (
     echo @echo off
     echo start "" "%V_EXE%" --extensions-dir "%V_EXT%" --user-data-dir "%V_DAT%" --extensionDevelopmentPath "%V_DEV%"
 ) > "%LAUNCHER%"
 
+:: Lancer via le script propre
+echo [PHASE 5] Launching via launcher... >> "%LOG_FILE%"
 call "%LAUNCHER%"
-echo   [LAUNCHED] Sudo Studio
-echo [STEP 10] VSCodium launched >> "%LOG_FILE%"
 
-:: Verify after 5s
+:: Attendre et verifier
 timeout /t 5 /nobreak >nul
 tasklist 2>nul | findstr /I "VSCodium" >nul 2>&1
 if not errorlevel 1 (
-    echo   [OK] Sudo Studio (VSCodium) is running
-    echo [STEP 10] VSCodium confirmed running >> "%LOG_FILE%"
+    echo [PHASE 5] VSCodium running OK >> "%LOG_FILE%"
+    echo   [OK] VSCodium is running
 ) else (
-    echo   [WARN] Sudo Studio may still be starting (first launch can be slow)
-    echo [STEP 10] VSCodium not yet detected - may still be starting >> "%LOG_FILE%"
+    echo [PHASE 5] VSCodium not detected >> "%LOG_FILE%"
+    echo   [WARNING] VSCodium may have closed
+)
+
+echo.
+
+:: ============================================================
+::  PHASE 6 - EXTENSION VERIFICATION (STEP 7)
+:: ============================================================
+echo [STEP 7] Extension Verification:
+if exist "%EXT%\extension.js" (
+    echo   [OK] extension.js present
+) else (
+    echo   [WARN] extension.js not found - Sudo AI features unavailable
+)
+if exist "%EXT%\package.json" (
+    echo   [OK] package.json present
+) else (
+    echo   [WARN] package.json not found
+)
+if exist "%EXT%\src" (
+    echo   [OK] src\ directory present
+) else (
+    echo   [WARN] src\ directory not found
 )
 echo.
 
 :: ============================================================
-::  STEP 11 — Extension check
+::  ALL SERVICES RUNNING
 :: ============================================================
-echo [STEP 11] Extension check:
-if exist "%EXT%\extension.js"  (echo   [OK] extension.js) else (echo   [WARN] extension.js missing)
-if exist "%EXT%\package.json"  (echo   [OK] package.json) else (echo   [WARN] package.json missing)
-if exist "%EXT%\src"           (echo   [OK] src\ directory) else (echo   [WARN] src\ missing)
-echo.
-
-:: ============================================================
-::  STARTUP COMPLETE
-:: ============================================================
+echo [DONE] >> "%LOG_FILE%"
 echo %DATE% %TIME% - ALL SERVICES STARTED >> "%LOG_FILE%"
 echo.
 echo ============================================================
 echo   SUDO STUDIO IS RUNNING
 echo ============================================================
 echo.
-echo   Backend   : http://localhost:%BACKEND_PORT%  [!BACKEND_READY!]
-echo   AI Runtime: http://localhost:%RUNTIME_PORT%  [!RUNTIME_READY!]
+echo   Backend   : http://localhost:%BACKEND_PORT%
+echo   AI Runtime: http://localhost:%RUNTIME_PORT%
 echo.
-echo   Logs folder: %LOGS%
+echo   Logs      : %LOGS%\startup.log
 echo.
-echo   Background processes (invisible):
-echo     backend.exe  - port %BACKEND_PORT%
-echo     runtime.exe  - port %RUNTIME_PORT%
-echo.
-echo   Sudo Studio editor is open.
-echo   This window stays open as the watchdog monitor.
+echo   VSCodium should now be opening with Sudo AI loaded.
+echo   If VSCodium is not open yet, wait 5-10 seconds.
 echo.
 echo ============================================================
-echo   To view logs: open %LOGS%
-echo   To stop all : close this window
+echo   Keep this window open to maintain services.
+echo   Close this window to stop everything.
 echo ============================================================
 echo.
-echo [WATCHDOG] Monitoring services every 30s. DO NOT CLOSE THIS WINDOW.
-echo [WATCHDOG] Starting watchdog loop >> "%LOG_FILE%"
 
-:: ============================================================
-::  WATCHDOG LOOP — Monitor and restart crashed services
-::  Uses !delayed expansion! throughout (FIXED from v5.0)
-:: ============================================================
+:: -- Keep terminal open, services run in their own windows ---
 :keep_alive
-    timeout /t 30 /nobreak >nul
-
-    :: Check runtime still alive
-    tasklist 2>nul | findstr /I "runtime.exe" >nul 2>&1
-    if errorlevel 1 (
-        echo [WATCHDOG] %TIME% - runtime.exe crashed - restarting...
-        echo [WATCHDOG] runtime.exe crashed - restarting >> "%LOG_FILE%"
-        if "!USE_VBS!"=="1" (
-            cscript //nologo "%VBS%" "%APP%runtime.exe" --port %RUNTIME_PORT%
-        ) else (
-            start "Sudo Runtime" /MIN "%APP%runtime.exe" --port %RUNTIME_PORT%
-        )
-        echo [WATCHDOG] runtime.exe restarted
-    )
-
-    :: Check backend still alive
-    tasklist 2>nul | findstr /I "backend.exe" >nul 2>&1
-    if errorlevel 1 (
-        echo [WATCHDOG] %TIME% - backend.exe crashed - restarting...
-        echo [WATCHDOG] backend.exe crashed - restarting >> "%LOG_FILE%"
-        if "!USE_VBS!"=="1" (
-            cscript //nologo "%VBS%" "%APP%backend.exe" --port %BACKEND_PORT%
-        ) else (
-            start "Sudo Backend" /MIN "%APP%backend.exe" --port %BACKEND_PORT%
-        )
-        echo [WATCHDOG] backend.exe restarted
-    )
-
-    goto :keep_alive
+timeout /t 30 /nobreak >nul
+goto :keep_alive
