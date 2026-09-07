@@ -308,22 +308,36 @@ class AIProvider {
     }
 
     async query(prompt, systemContext = '', options = {}) {
-        const max_tokens  = options.max_tokens  || 1024;
-        const temperature = options.temperature || 0.3;
-        // Prepend agent system prompt + optional context
+        const max_tokens  = options.max_tokens  || 512;
+        const temperature = options.temperature || 0.1;
+        // Build ChatML-compatible prompt (matches Qwen2.5-Coder format used by server.enterprise.py)
+        // We prepend AGENT_SYSTEM_PROMPT + context as the user turn; the server adds the ChatML wrapper
         const fullPrompt = AGENT_SYSTEM_PROMPT +
             (systemContext ? '\n\nCONTEXT:\n' + systemContext : '') +
             '\n\nUser: ' + prompt.trim() + '\nAssistant:';
         const payload = { message: fullPrompt, prompt: fullPrompt, input: fullPrompt, max_tokens, temperature };
 
+        console.log(`[AGENT_AI] query() → POST ${this.runtimeUrl}/infer | max_tokens=${max_tokens} temp=${temperature} | prompt_len=${fullPrompt.length}`);
+
         // Try runtime first (local, no auth)
         try {
             const r = await axios.post(`${this.runtimeUrl}/infer`, payload, { timeout: AI_TIMEOUT_MS });
-            return { ok: true, reply: r.data.reply || r.data.response || '', model: r.data.model, mock: r.data.mock };
+            const reply = r.data.reply || r.data.response || '';
+            const mock  = r.data.mock === true;
+            console.log(`[AGENT_AI] query() ← OK | model=${r.data.model} mock=${mock} tokens=${r.data.tokens} | reply_len=${reply.length}`);
+            if (!reply) {
+                console.warn('[AGENT_AI] query() — empty reply received from runtime');
+            }
+            return { ok: true, reply, model: r.data.model, mock };
         } catch (e1) {
+            console.error(`[AGENT_AI] query() — runtime error: ${e1.code || e1.message}`);
             if (e1.code === 'ECONNREFUSED') {
-                // Runtime offline — return a structured fallback
-                return { ok: false, error: 'Runtime offline', reply: null };
+                console.warn('[AGENT_AI] Runtime OFFLINE (ECONNREFUSED) — agent will use fallback plan');
+                return { ok: false, error: 'Runtime offline (port 6000 not responding)', reply: null };
+            }
+            if (e1.code === 'ECONNABORTED' || e1.message.includes('timeout')) {
+                console.warn(`[AGENT_AI] Runtime TIMEOUT after ${AI_TIMEOUT_MS}ms`);
+                return { ok: false, error: `Timeout after ${AI_TIMEOUT_MS}ms`, reply: null };
             }
             return { ok: false, error: e1.message, reply: null };
         }
@@ -437,7 +451,8 @@ class AgentEngine extends EventEmitter {
     // ── Phases ────────────────────────────────────────────────────────────────
 
     async _phase_analyze() {
-        console.log('[AGENT] Starting ANALYZE phase');
+        console.log('[AGENT] ─── PHASE 1: ANALYZE ───');
+        console.log('[AGENT] projectRoot:', this.projectRoot);
         this._emit('step', { phase: 'analyze', message: '🔍 Analyse du projet...' });
         this.state.log('Phase: analyze');
 
@@ -476,11 +491,14 @@ class AgentEngine extends EventEmitter {
     }
 
     async _phase_plan() {
-        console.log('[AGENT] Starting PLAN phase');
+        console.log('[AGENT] ─── PHASE 2: PLAN ───');
         this._emit('step', { phase: 'plan', message: '📋 Construction du plan...' });
         this.state.log('Phase: plan');
 
+        console.log('[AGENT_PLAN] Calling aiProvider.plan() for task:', this.state.task);
         const aiResult = await this.aiProvider.plan(this.state.task, this.state._projectContext);
+        console.log('[AGENT_PLAN] aiProvider.plan() result: ok=%s mock=%s error=%s reply_len=%d',
+            aiResult.ok, aiResult.mock, aiResult.error || 'none', (aiResult.reply || '').length);
 
         let plan = [];
         if (aiResult.ok && aiResult.reply) {
@@ -511,7 +529,7 @@ class AgentEngine extends EventEmitter {
     }
 
     async _phase_execute() {
-        console.log('[AGENT] Starting EXECUTE phase');
+        console.log('[AGENT] ─── PHASE 3: EXECUTE ─── plan has', this.state.currentPlan.length, 'steps');
         this.state.log('Phase: execute');
         let iteration = 0;
 

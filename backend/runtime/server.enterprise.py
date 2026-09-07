@@ -148,14 +148,17 @@ class State:
     download_progress = 0   # 0-100
     startup_time = time.time()
     requests     = 0
-    # NEW: detection result info
+    backend      = 'transformers'   # 'llama_cpp' or 'transformers'
+    # Detection result info
     detected_local = False   # True if model was found locally
     detection_log  = []      # Messages from the scan phase
 
 state = State()
 
 # ─── Model config ───────────────────────────────────────────────────────────────
-DEFAULT_MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+DEFAULT_MODEL = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
+DEFAULT_MODEL_FILENAME = "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+DEFAULT_MODEL_HF_REPO  = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
 
 # Sudo Studio dedicated models directory
 MODELS_DIR = Path(os.path.expanduser("~")) / ".sudo_studio" / "models"
@@ -166,7 +169,8 @@ STATE_FILE = MODELS_DIR / "model_state.json"
 
 # RAM requirements per model (GB)
 MODEL_RAM_REQUIREMENTS = {
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0":       2.5,
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF":    1.5,  # Q4_K_M GGUF ≈ 1GB on disk, ~1.5GB RAM
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0":        2.5,
     "deepseek-ai/deepseek-coder-1.3b-instruct":  3.0,
     "meta-llama/Llama-3.2-1B-Instruct":          2.5,
     "Qwen/Qwen2.5-Coder-1.5B-Instruct":          3.5,
@@ -174,9 +178,9 @@ MODEL_RAM_REQUIREMENTS = {
     "mistralai/Mistral-7B-Instruct-v0.2":         16.0,
 }
 
-# Priority order: lighter models first (better for test machines)
-# A model present locally is always preferred over downloading
+# Priority order: GGUF Qwen coder first (lightest + best code quality)
 MODEL_PRIORITY = [
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
     "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     "deepseek-ai/deepseek-coder-1.3b-instruct",
     "meta-llama/Llama-3.2-1B-Instruct",
@@ -524,6 +528,119 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 _log_detect(f"[MODEL] Force download requested for: {model_id}")
             else:
                 _log_detect(f"[MODEL] No compatible model found. Downloading default model: {model_id}")
+
+        # ── Log RAM before model load ─────────────────────────────────────
+        ram_before_load = get_available_ram_gb()
+        ram_total       = get_total_ram_gb()
+        dlog(f"[RAM] Before model load: {ram_before_load:.1f}GB free / {ram_total:.1f}GB total")
+        logger.info(f"[RAM] Before load: {ram_before_load:.1f}GB free / {ram_total:.1f}GB total")
+
+        # ── Try llama-cpp-python for GGUF models (lighter, no torch needed) ──
+        # Qwen2.5-Coder-1.5B-Instruct-GGUF (Q4_K_M) is the primary model.
+        # Attempt 1: check if a .gguf file is already in MODELS_DIR
+        # Attempt 2: download from HuggingFace Hub using hf_hub_download
+        # Falls through to transformers if llama-cpp is not available.
+        _gguf_loaded = False
+        if 'gguf' in model_id.lower() or model_id == DEFAULT_MODEL:
+            dlog("GGUF model detected — attempting llama-cpp-python loader...")
+            try:
+                from llama_cpp import Llama
+                dlog("llama-cpp-python imported OK")
+
+                # Locate GGUF file: check MODELS_DIR first, then download
+                gguf_path = None
+
+                # Search in MODELS_DIR for any matching .gguf file
+                gguf_candidates = list(MODELS_DIR.glob("**/*.gguf"))
+                dlog(f"[GGUF] Scanning MODELS_DIR: found {len(gguf_candidates)} .gguf file(s)")
+                for gf in gguf_candidates:
+                    dlog(f"[GGUF]   candidate: {gf} ({gf.stat().st_size // (1024*1024)}MB)")
+                    if gf.stat().st_size > 100 * 1024 * 1024:  # > 100MB → valid model
+                        gguf_path = str(gf)
+                        dlog(f"[GGUF] Using existing file: {gguf_path}")
+                        break
+
+                # If not found locally, download from HuggingFace Hub
+                if not gguf_path:
+                    dlog(f"[GGUF] Not found locally — downloading {DEFAULT_MODEL_FILENAME} from {DEFAULT_MODEL_HF_REPO}...")
+                    logger.info(f"[GGUF] Downloading {DEFAULT_MODEL_FILENAME} from {DEFAULT_MODEL_HF_REPO}")
+                    state.download_progress = 5
+                    try:
+                        # Temporarily re-enable network for the download
+                        os.environ.pop("TRANSFORMERS_OFFLINE", None)
+                        os.environ.pop("HF_HUB_OFFLINE", None)
+                        from huggingface_hub import hf_hub_download
+                        local_path = hf_hub_download(
+                            repo_id=DEFAULT_MODEL_HF_REPO,
+                            filename=DEFAULT_MODEL_FILENAME,
+                            cache_dir=str(MODELS_DIR),
+                            local_files_only=False,
+                        )
+                        gguf_path = local_path
+                        dlog(f"[GGUF] Downloaded to: {gguf_path}")
+                        logger.info(f"[GGUF] Downloaded to: {gguf_path}")
+                    except Exception as dl_err:
+                        dlog(f"[GGUF] Download failed: {dl_err}")
+                        logger.warning(f"[GGUF] Download failed: {dl_err}")
+                        gguf_path = None
+                    finally:
+                        # Re-apply offline mode
+                        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+                        os.environ["HF_HUB_OFFLINE"] = "1"
+
+                if gguf_path and os.path.isfile(gguf_path):
+                    dlog(f"[GGUF] Loading Llama model from: {gguf_path}")
+                    logger.info(f"[GGUF] Loading {gguf_path}")
+                    state.download_progress = 30
+
+                    # n_ctx=4096 gives generous context for code; n_threads=auto
+                    import multiprocessing
+                    n_threads = max(2, multiprocessing.cpu_count() - 1)
+                    dlog(f"[GGUF] n_threads={n_threads}")
+
+                    llm = Llama(
+                        model_path=gguf_path,
+                        n_ctx=4096,
+                        n_threads=n_threads,
+                        n_gpu_layers=0,   # CPU only (no CUDA required)
+                        verbose=False,
+                        use_mlock=False,  # don't lock RAM — safer on low-RAM machines
+                    )
+                    state.download_progress = 90
+
+                    ram_after_load = get_available_ram_gb()
+                    ram_used       = ram_before_load - ram_after_load
+                    dlog(f"[RAM] After model load: {ram_after_load:.1f}GB free | used: {ram_used:.1f}GB")
+                    logger.info(f"[RAM] After load: {ram_after_load:.1f}GB free | model used ~{max(0,ram_used):.1f}GB")
+
+                    # Save to state
+                    state.model      = llm
+                    state.tokenizer  = None    # llama-cpp doesn't use HF tokenizer
+                    state.model_name = f"Qwen2.5-Coder-1.5B-Q4_K_M (GGUF)"
+                    state.backend    = 'llama_cpp'
+                    state.loaded     = True
+                    state.loading    = False
+                    state.device     = 'cpu'
+                    state.detected_local = True
+                    state.download_progress = 100
+
+                    save_model_state(model_id, gguf_path)
+                    logger.info(f"[MODEL] ✅ Qwen2.5-Coder GGUF loaded successfully ({os.path.getsize(gguf_path)//(1024*1024)}MB)")
+                    dlog(f"[MODEL] GGUF load complete")
+                    _gguf_loaded = True
+                else:
+                    dlog("[GGUF] No valid GGUF file available — falling through to transformers")
+                    logger.warning("[GGUF] No valid file found — falling through to transformers loader")
+
+            except ImportError:
+                dlog("[GGUF] llama-cpp-python not installed — falling through to transformers")
+                logger.info("[GGUF] llama-cpp-python not available — using transformers fallback")
+            except Exception as gguf_err:
+                dlog(f"[GGUF] Error during GGUF load: {gguf_err}")
+                logger.error(f"[GGUF] Load error: {gguf_err}")
+
+        if _gguf_loaded:
+            return  # Done — skip transformers loading block below
 
         # ── Import torch / transformers ────────────────────────────────────
         dlog("Importing torch (may take 5-30s)...")
@@ -882,10 +999,10 @@ def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False
 
 # ─── Inference ──────────────────────────────────────────────────────────────────
 
-# ── SYSTEM PROMPT — injected before every user message ──────────────────────
-# Boosted v2.0: tighter rules + few-shot examples anchoring expected behaviour.
-# temperature lowered to 0.2, repetition_penalty raised to 1.3 for better code.
-SYSTEM_PROMPT = """Tu es Sudo AI Code Assistant, un expert en programmation strict et précis.
+# ── SYSTEM PROMPT — injected in every ChatML request ─────────────────────────
+# Qwen2.5-Coder uses ChatML format: <|im_start|>system / user / assistant<|im_end|>
+# This prompt is optimized for a code-specialist model, not a chat generalist.
+SYSTEM_PROMPT = """Tu es Sudo AI Code Assistant, un expert en programmation spécialisé dans l'écriture de code de qualité production.
 Tu réponds UNIQUEMENT à des questions de programmation, d'architecture logicielle et de débogage.
 
 RÈGLES ABSOLUES :
@@ -938,22 +1055,43 @@ def add(a, b):
 ```
 """
 
-# Temperature/sampling settings — v6.0 values: tighter than v5.0 for better code
-DEFAULT_TEMPERATURE      = 0.2   # v6.0: 0.2 (was 0.3) — near-deterministic, ideal for code
-DEFAULT_TOP_P            = 0.85
-DEFAULT_REPETITION_PEN   = 1.3   # v6.0: 1.3 (was 1.2) — stronger anti-repetition
+# ── Generation parameters — tuned for Qwen2.5-Coder Q4_K_M ─────────────────
+# Lower temperature = more deterministic = better for code generation
+DEFAULT_TEMPERATURE      = 0.1    # Near-deterministic; ideal for code tasks
+DEFAULT_TOP_P            = 0.9
+DEFAULT_REPETITION_PEN   = 1.1    # Light repetition penalty (Qwen handles this well)
+DEFAULT_MAX_TOKENS       = 512    # Code needs more space than 128
+
+
+def _build_chatml_prompt(user_message: str) -> str:
+    """Build a Qwen2.5-Coder ChatML format prompt.
+
+    Format:
+        <|im_start|>system
+        {SYSTEM_PROMPT}<|im_end|>
+        <|im_start|>user
+        {user_message}<|im_end|>
+        <|im_start|>assistant
+    """
+    return (
+        "<|im_start|>system\n"
+        + SYSTEM_PROMPT.strip()
+        + "<|im_end|>\n"
+        + "<|im_start|>user\n"
+        + user_message.strip()
+        + "<|im_end|>\n"
+        + "<|im_start|>assistant\n"
+    )
 
 
 def _build_prompt(user_message: str) -> str:
-    """Prepend the system prompt to the user message."""
-    return SYSTEM_PROMPT + "\n\nUser: " + user_message.strip() + "\nAssistant:"
+    """Unified prompt builder — uses ChatML for GGUF/llama-cpp, plain for transformers fallback."""
+    return _build_chatml_prompt(user_message)
 
 
-def run_inference(prompt: str, max_tokens: int = 128, temperature: float = DEFAULT_TEMPERATURE) -> dict:
+def run_inference(prompt: str, max_tokens: int = DEFAULT_MAX_TOKENS,
+                  temperature: float = DEFAULT_TEMPERATURE) -> dict:
     start = time.time()
-
-    # Inject system prompt before user message
-    full_prompt = _build_prompt(prompt)
 
     if not state.loaded or state.model is None:
         mock_reply = generate_mock_reply(prompt)
@@ -967,11 +1105,46 @@ def run_inference(prompt: str, max_tokens: int = 128, temperature: float = DEFAU
             "download_progress": state.download_progress,
         }
 
+    # ── Log RAM before inference ──────────────────────────────────────────────
+    ram_before = get_available_ram_gb()
+    dlog(f"[INFER] RAM before: {ram_before:.1f}GB | max_tokens={max_tokens} | temp={temperature}")
+
+    # ── Build ChatML prompt ───────────────────────────────────────────────────
+    full_prompt = _build_chatml_prompt(prompt)
+
     try:
+        # ── llama-cpp-python path (primary for GGUF models) ──────────────────
+        if getattr(state, 'backend', None) == 'llama_cpp':
+            output = state.model(
+                full_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=DEFAULT_TOP_P,
+                repeat_penalty=DEFAULT_REPETITION_PEN,
+                stop=["<|im_end|>", "<|im_start|>"],
+                echo=False,
+            )
+            reply = output['choices'][0]['text'].strip()
+            if not reply:
+                reply = "Je n'ai pas pu générer de réponse. Reformulez votre question."
+            latency = int((time.time() - start) * 1000)
+            token_count = output['usage']['completion_tokens']
+            ram_after = get_available_ram_gb()
+            dlog(f"[INFER] Done: {latency}ms | tokens={token_count} | RAM after={ram_after:.1f}GB")
+            return {
+                "reply":      reply,
+                "mock":       False,
+                "model":      state.model_name,
+                "latency_ms": latency,
+                "tokens":     token_count,
+                "ram_before_gb": round(ram_before, 2),
+                "ram_after_gb":  round(ram_after, 2),
+            }
+
+        # ── transformers path (fallback for HF models) ───────────────────────
         import torch
         inputs    = state.tokenizer(full_prompt, return_tensors="pt").to(state.device)
         input_len = inputs['input_ids'].shape[1]
-
         with torch.no_grad():
             output = state.model.generate(
                 **inputs,
@@ -983,27 +1156,28 @@ def run_inference(prompt: str, max_tokens: int = 128, temperature: float = DEFAU
                 pad_token_id=state.tokenizer.eos_token_id,
                 eos_token_id=state.tokenizer.eos_token_id,
             )
-
-        new_tokens = output[0][input_len:]
-        reply = state.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        new_tokens  = output[0][input_len:]
+        reply       = state.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
         if not reply:
-            reply = "I understand your question. Let me help you with that."
-
+            reply = "Je n'ai pas pu générer de réponse. Reformulez votre question."
         latency     = int((time.time() - start) * 1000)
         token_count = len(new_tokens)
-
+        ram_after   = get_available_ram_gb()
+        dlog(f"[INFER] transformers done: {latency}ms | tokens={token_count} | RAM after={ram_after:.1f}GB")
         return {
-            "reply":      reply,
-            "mock":       False,
-            "model":      state.model_name,
-            "latency_ms": latency,
-            "tokens":     token_count
+            "reply":         reply,
+            "mock":          False,
+            "model":         state.model_name,
+            "latency_ms":    latency,
+            "tokens":        token_count,
+            "ram_before_gb": round(ram_before, 2),
+            "ram_after_gb":  round(ram_after, 2),
         }
 
     except MemoryError:
         gc.collect()
         return {
-            "reply":      "Out of memory during inference. Try freeing RAM or use a smaller model.",
+            "reply":      "Mémoire insuffisante pendant l'inférence. Essayez de libérer de la RAM.",
             "mock":       True,
             "model":      state.model_name,
             "latency_ms": int((time.time() - start) * 1000),
@@ -1013,7 +1187,7 @@ def run_inference(prompt: str, max_tokens: int = 128, temperature: float = DEFAU
     except Exception as e:
         logger.error(f"[INFER] Error: {e}")
         return {
-            "reply":      f"Inference error: {str(e)}",
+            "reply":      f"Erreur d'inférence: {str(e)}",
             "mock":       True,
             "model":      state.model_name,
             "latency_ms": int((time.time() - start) * 1000),
@@ -1024,15 +1198,15 @@ def run_inference(prompt: str, max_tokens: int = 128, temperature: float = DEFAU
 
 def generate_mock_reply(prompt: str) -> str:
     pct = state.download_progress
-    loading_status = f"[Chargement TinyLlama: {pct}%]" if state.loading else "[Modele non encore charge]"
+    loading_status = f"[Chargement Qwen2.5-Coder: {pct}%]" if state.loading else "[Modele non encore charge]"
     p = prompt.lower()
     if any(w in p for w in ['bonjour', 'salut', 'hello', 'hi', 'hey']):
-        return (f"Bonjour ! Je suis Sudo AI. {loading_status}\n\n"
-                f"Le modele IA est en cours de chargement (3-5 min au premier demarrage).\n"
+        return (f"Bonjour ! Je suis Sudo AI Code Assistant. {loading_status}\n\n"
+                f"Le modele Qwen2.5-Coder est en cours de chargement.\n"
                 f"En attendant, je reponds en mode basique. Posez vos questions !")
     if any(w in p for w in ['code', 'function', 'class', 'def ', 'var ', 'const ']):
         return (f"Je detecte une question sur du code. {loading_status}\n\n"
-                f"Une fois le modele charge, j'analyserai votre code avec l'IA complete.\n"
+                f"Une fois le modele Qwen2.5-Coder charge, j'analyserai votre code.\n"
                 f"Pour l'instant, utilisez System Doctor ou DevOps dans la sidebar.")
     if any(w in p for w in ['error', 'erreur', 'bug', 'fix', 'broken']):
         return (f"Je vois un probleme a resoudre. {loading_status}\n\n"
@@ -1042,9 +1216,9 @@ def generate_mock_reply(prompt: str) -> str:
         return (f"Question sur le deploiement. {loading_status}\n\n"
                 f"Utilisez le panneau DevOps dans la sidebar pour generer Dockerfile et CI/CD maintenant.")
     return (f"Message recu ! {loading_status}\n\n"
-            f"Le modele TinyLlama (2.1GB) se charge en memoire. Progression: {pct}%\n"
-            f"Temps restant approximatif: {max(0, 5 - pct//20)} min\n\n"
-            f"Des que le chargement est termine, vous recevrez des reponses IA completes.\n"
+            f"Le modele Qwen2.5-Coder-1.5B-Q4_K_M (~1GB) se charge. Progression: {pct}%\n"
+            f"Temps restant approximatif: {max(0, 3 - pct//33)} min\n\n"
+            f"Des que le chargement est termine, vous recevrez des reponses IA specialisees code.\n"
             f"En attendant : System Doctor, SDK Manager et DevOps fonctionnent deja !")
 
 
@@ -1090,7 +1264,7 @@ def infer():
     ).strip()
     if not prompt:
         return jsonify({"error": "No prompt provided", "fields": ["message", "prompt", "input"]}), 400
-    max_tokens  = min(int(data.get('max_tokens', 128)), 128)  # hard cap 128 — keeps CPU inference <60s
+    max_tokens  = min(int(data.get('max_tokens', DEFAULT_MAX_TOKENS)), 512)  # cap 512 for code
     temperature = float(data.get('temperature', DEFAULT_TEMPERATURE))
     result = run_inference(prompt, max_tokens, temperature)
     return jsonify(result)
@@ -1123,10 +1297,10 @@ def infer_stream():
     if not prompt:
         return jsonify({"error": "No prompt provided"}), 400
 
-    max_tokens  = min(int(data.get('max_tokens', 128)), 128)
+    max_tokens  = min(int(data.get('max_tokens', DEFAULT_MAX_TOKENS)), 512)
     temperature = float(data.get('temperature', DEFAULT_TEMPERATURE))
-    # Inject system prompt for streaming path too
-    full_prompt = _build_prompt(prompt)
+    # Build ChatML prompt for streaming path
+    full_prompt = _build_chatml_prompt(prompt)
 
     def generate_sse():
         start = time.time()
@@ -1150,8 +1324,38 @@ def infer_stream():
             }) + '\n\n'
             return
 
-        # ── Real model — token streaming via model.generate() ──────────────
+        # ── Real model — token streaming ───────────────────────────────────
         try:
+            accumulated_text = ''
+
+            # ── llama-cpp-python streaming (GGUF path) ────────────────────
+            if getattr(state, 'backend', None) == 'llama_cpp':
+                stream_iter = state.model(
+                    full_prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=DEFAULT_TOP_P,
+                    repeat_penalty=DEFAULT_REPETITION_PEN,
+                    stop=["<|im_end|>", "<|im_start|>"],
+                    echo=False,
+                    stream=True,
+                )
+                for chunk in stream_iter:
+                    token_text = chunk['choices'][0].get('text', '')
+                    if token_text:
+                        accumulated_text += token_text
+                        yield 'data: ' + _json.dumps({"token": token_text}) + '\n\n'
+                latency = int((time.time() - start) * 1000)
+                if not accumulated_text:
+                    accumulated_text = "Je n'ai pas pu générer de réponse. Reformulez votre question."
+                yield 'data: ' + _json.dumps({
+                    "done": True, "reply": accumulated_text.strip(),
+                    "mock": False, "model": state.model_name, "latency_ms": latency,
+                    "tokens": len(accumulated_text.split())
+                }) + '\n\n'
+                return
+
+            # ── transformers streaming (HF models fallback) ───────────────
             import torch
             inputs    = state.tokenizer(full_prompt, return_tensors="pt").to(state.device)
             input_len = inputs['input_ids'].shape[1]
@@ -1168,9 +1372,6 @@ def infer_stream():
                 pad_token_id       = state.tokenizer.eos_token_id,
                 eos_token_id       = state.tokenizer.eos_token_id,
             )
-
-            accumulated_ids = []
-            accumulated_text = ''
 
             # Check if TextIteratorStreamer is available (transformers >= 4.28)
             try:

@@ -272,11 +272,32 @@ echo.
 set "V_EXE=%ROOT%VSCodium.exe"
 set "V_EXT=%ROOT%extensions"
 set "V_DAT=%ROOT%data"
+set "V_SRC=%ROOT%sudo-ai-extension"
 set "V_DEV=%ROOT%extensions\sudo-ai"
 
 :: Creer dossiers necessaires
 if not exist "%V_DAT%" mkdir "%V_DAT%" 2>nul
 if not exist "%V_EXT%" mkdir "%V_EXT%" 2>nul
+
+:: -- Sync extension to extensions\sudo-ai (production mode, no [Extension Development Host]) --
+:: This replaces --extensionDevelopmentPath (dev/debug mode) with proper extension installation.
+:: Copy sudo-ai-extension/ -> extensions\sudo-ai/ so VSCodium loads it as a real extension.
+if exist "%V_SRC%\package.json" (
+    echo [PHASE 5] Syncing extension to extensions\sudo-ai\...
+    echo [PHASE 5] Syncing extension >> "%LOG_FILE%"
+    if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
+    :: Copy key extension files (xcopy /S /Y /Q for silent recursive copy)
+    xcopy /S /Y /Q "%V_SRC%\extension.js"   "%V_DEV%\" >nul 2>&1
+    xcopy /S /Y /Q "%V_SRC%\package.json"   "%V_DEV%\" >nul 2>&1
+    xcopy /S /Y /Q "%V_SRC%\src"            "%V_DEV%\src\" >nul 2>&1
+    if exist "%V_SRC%\resources" xcopy /S /Y /Q "%V_SRC%\resources" "%V_DEV%\resources\" >nul 2>&1
+    if exist "%V_SRC%\node_modules" xcopy /S /Y /Q "%V_SRC%\node_modules" "%V_DEV%\node_modules\" >nul 2>&1
+    echo   [OK] Extension synced to %V_DEV%
+    echo   [OK] Extension synced >> "%LOG_FILE%"
+) else (
+    echo   [WARN] sudo-ai-extension\package.json not found - extension may not load
+    echo   [WARN] Extension source missing >> "%LOG_FILE%"
+)
 
 :: Verifier VSCodium.exe
 if not exist "%V_EXE%" (
@@ -291,7 +312,7 @@ echo [PHASE 5] VSCodium.exe found >> "%LOG_FILE%"
 set "LAUNCHER=%ROOT%launch.bat"
 (
     echo @echo off
-    echo start "" "%V_EXE%" --extensions-dir "%V_EXT%" --user-data-dir "%V_DAT%" --extensionDevelopmentPath "%V_DEV%"
+    echo start "" "%V_EXE%" --extensions-dir "%V_EXT%" --user-data-dir "%V_DAT%"
 ) > "%LAUNCHER%"
 
 :: Lancer via le script propre

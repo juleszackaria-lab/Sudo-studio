@@ -88,9 +88,15 @@ class AgentPanel {
         this.post({ type: 'started', task });
         console.log('[AGENT_PANEL] Engine starting...');
 
-        this.engine = new AgentEngine({
-            projectRoot,
-        });
+        try {
+            this.engine = new AgentEngine({ projectRoot });
+            console.log('[AGENT_PANEL] AgentEngine constructed OK');
+        } catch (constructErr) {
+            console.error('[AGENT_PANEL] AgentEngine constructor THREW:', constructErr.message);
+            this._running = false;
+            this.post({ type: 'agentError', message: 'Impossible de créer le moteur agent: ' + constructErr.message, phase: 'constructor' });
+            return;
+        }
 
         // Wire all engine events to the WebView
         this.engine.on('step',     d => { console.log('[AGENT_ENGINE] step:', d.phase, d.message); this.post({ type: 'step', ...d }); });

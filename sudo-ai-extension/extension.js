@@ -1493,14 +1493,23 @@ function openEnvironmentPanel() {
 
 // ── Agent Mode ────────────────────────────────────────────────────────────────
 function openAgentPanel() {
+    console.log('[EXT] openAgentPanel() called');
     const panel = AgentPanel.createOrShow(context.extensionUri);
-    // Wire 'openChat' message from AgentPanel back to ChatPanel
-    if (panel) {
+    console.log('[EXT] AgentPanel.createOrShow() returned:', panel ? 'panel OK' : 'null');
+    // Wire 'openChat' message back to ChatPanel — only if this is a fresh panel
+    // NOTE: AgentPanel already handles 'startTask', 'stopAgent', etc. via its own
+    // onDidReceiveMessage. We only add a listener here for cross-panel navigation.
+    // To avoid duplicate listeners, we track whether we've already wired this panel.
+    if (panel && !panel._extOpenChatWired) {
+        panel._extOpenChatWired = true;
         panel.panel.webview.onDidReceiveMessage(function(m) {
+            console.log('[EXT] AgentPanel msg (extension bridge):', m.type);
             if (m.type === 'openChat') {
+                console.log('[EXT] openChat requested from Agent — opening ChatPanel');
                 ChatPanel.createOrShow(context.extensionUri, context);
             }
-        }, null, []);
+        }, null, context.subscriptions);
+        console.log('[EXT] AgentPanel openChat bridge wired');
     }
 }
 
