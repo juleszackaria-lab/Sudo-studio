@@ -286,12 +286,13 @@ if exist "%V_SRC%\package.json" (
     echo [PHASE 5] Syncing extension to extensions\sudo-ai\...
     echo [PHASE 5] Syncing extension >> "%LOG_FILE%"
     if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
-    :: Copy key extension files (xcopy /S /Y /Q for silent recursive copy)
-    xcopy /S /Y /Q "%V_SRC%\extension.js"   "%V_DEV%\" >nul 2>&1
-    xcopy /S /Y /Q "%V_SRC%\package.json"   "%V_DEV%\" >nul 2>&1
-    xcopy /S /Y /Q "%V_SRC%\src"            "%V_DEV%\src\" >nul 2>&1
-    if exist "%V_SRC%\resources" xcopy /S /Y /Q "%V_SRC%\resources" "%V_DEV%\resources\" >nul 2>&1
-    if exist "%V_SRC%\node_modules" xcopy /S /Y /Q "%V_SRC%\node_modules" "%V_DEV%\node_modules\" >nul 2>&1
+    :: Copy key extension files
+    :: /Y=overwrite  /Q=quiet  /I=assume destination is dir  /E=include empty subdirs
+    xcopy /Y /Q /I "%V_SRC%\extension.js"   "%V_DEV%\" >nul 2>&1
+    xcopy /Y /Q /I "%V_SRC%\package.json"   "%V_DEV%\" >nul 2>&1
+    xcopy /S /E /Y /Q /I "%V_SRC%\src"      "%V_DEV%\src\" >nul 2>&1
+    if exist "%V_SRC%\resources"    xcopy /S /E /Y /Q /I "%V_SRC%\resources"    "%V_DEV%\resources\"    >nul 2>&1
+    if exist "%V_SRC%\node_modules" xcopy /S /E /Y /Q /I "%V_SRC%\node_modules" "%V_DEV%\node_modules\" >nul 2>&1
     echo   [OK] Extension synced to %V_DEV%
     echo   [OK] Extension synced >> "%LOG_FILE%"
 ) else (

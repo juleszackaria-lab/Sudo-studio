@@ -62,7 +62,7 @@ class AgentPanel {
             return;
         }
         if (this._running) {
-            this.post({ type: 'error', message: 'Un agent est déjà en cours.' });
+            this.post({ type: 'error', message: 'Un agent est déjà en cours. Cliquez Stop pour l\'arrêter.' });
             return;
         }
 
@@ -127,6 +127,8 @@ class AgentPanel {
     stopAgent() {
         if (this.engine) this.engine.stop();
         this._running = false;
+        // Inform WebView so it can re-enable the start button
+        this.post({ type: 'agentError', message: 'Agent arrêté par l\'utilisateur.', phase: 'stop' });
     }
 
     approveAction(approved) {
@@ -333,7 +335,10 @@ let running = false;
 let currentPlan = [];
 
 function vscPost(msg) {
-    if (!vscode) return;
+    if (!vscode) {
+        console.error('[AGENT] vscPost: vscode API is null — message dropped:', msg.type);
+        return;
+    }
     try { vscode.postMessage(msg); } catch(e) { console.error('[AGENT] postMessage error:', e.message); }
 }
 
@@ -536,6 +541,7 @@ window.addEventListener('message', function(ev) {
             break;
 
         case 'error':
+            setRunning(false);
             addFeedItem('done-failed', '❌', msg.message);
             break;
 

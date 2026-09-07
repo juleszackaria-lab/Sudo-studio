@@ -8,3 +8,14 @@ psutil
 accelerate
 sentencepiece
 requests
+
+# ── GGUF / llama-cpp-python (Qwen2.5-Coder-1.5B-Instruct-GGUF) ──────────────
+# Pre-built CPU wheel — no compiler needed.  Pins to a known-good build.
+# PyInstaller note: llama_cpp ships a compiled .so/.dll that PyInstaller
+# picks up automatically via the collect_dynamic_libs() hook shipped with
+# llama-cpp-python >= 0.2.  No extra spec tweaks needed for CPU-only build.
+llama-cpp-python==0.3.9
+
+# Required by load_model_thread() to download the GGUF from HuggingFace Hub
+# the first time runtime.exe runs (or when the model file is missing).
+huggingface_hub

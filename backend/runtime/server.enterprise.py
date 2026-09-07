@@ -305,17 +305,18 @@ def scan_hf_cache_for_models() -> list:
 def scan_sudo_models_dir() -> list:
     """
     Scan ~/.sudo_studio/models for any downloaded models.
-    A valid model folder must contain config.json and at least one weight file.
+    Handles:
+      - transformers model dirs (must have config.json + weight files)
+      - standalone GGUF files (*.gguf > 100MB), placed directly in MODELS_DIR
+        or in any HF hub cache sub-directory.
     """
     found = []
     if not MODELS_DIR.exists():
         return found
     try:
-        # HuggingFace stores models as: models--Owner--Repo/snapshots/HASH/
-        # We also check direct sub-directories
+        # ── Pass A: transformers model dirs (config.json + weight files) ──────
         for candidate in MODELS_DIR.rglob("config.json"):
             model_dir = candidate.parent
-            # Check for at least one weight file
             weight_files = (
                 list(model_dir.glob("*.bin")) +
                 list(model_dir.glob("*.safetensors")) +
@@ -325,11 +326,10 @@ def scan_sudo_models_dir() -> list:
             if not weight_files:
                 _log_detect(f"[SCAN] Skipping {model_dir.name}: config.json present but no weights")
                 continue
-            # Try to determine model id from config
-            model_id = _extract_model_id_from_config(candidate)
+            model_id   = _extract_model_id_from_config(candidate)
             total_size = sum(f.stat().st_size for f in model_dir.rglob("*") if f.is_file())
-            size_mb = round(total_size / (1024 * 1024), 1)
-            valid = (total_size > 50 * 1024 * 1024)
+            size_mb    = round(total_size / (1024 * 1024), 1)
+            valid      = (total_size > 50 * 1024 * 1024)
             found.append({
                 'model_id':   model_id or model_dir.name,
                 'cache_dir':  str(model_dir),
@@ -337,6 +337,38 @@ def scan_sudo_models_dir() -> list:
                 'valid':      valid,
                 'source':     'sudo_models_dir',
             })
+
+        # ── Pass B: standalone GGUF files (llama-cpp-python format) ──────────
+        # hf_hub_download stores files under:
+        #   MODELS_DIR/models--Owner--Repo/snapshots/HASH/filename.gguf
+        # We also accept files placed directly in MODELS_DIR.
+        for gf in MODELS_DIR.rglob("*.gguf"):
+            size_bytes = gf.stat().st_size
+            if size_bytes < 100 * 1024 * 1024:   # < 100 MB → likely partial/corrupt
+                _log_detect(f"[SCAN] Skipping small GGUF: {gf.name} ({size_bytes//1024}KB)")
+                continue
+            size_mb = round(size_bytes / (1024 * 1024), 1)
+            # Infer a human-readable model_id from the file name
+            stem = gf.stem.lower()
+            if "qwen" in stem and "coder" in stem:
+                model_id = DEFAULT_MODEL
+            elif "tinyllama" in stem:
+                model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+            else:
+                model_id = gf.stem
+            # Avoid duplicates (transformers scan may have already found it)
+            already = any(m.get('cache_dir') == str(gf) for m in found)
+            if not already:
+                _log_detect(f"[SCAN] Found standalone GGUF: {gf.name} ({size_mb}MB)")
+                found.append({
+                    'model_id':   model_id,
+                    'resolved_id': model_id,
+                    'cache_dir':  str(gf),   # path to the file itself
+                    'size_mb':    size_mb,
+                    'valid':      True,
+                    'source':     'gguf_file',
+                })
+
         _log_detect(f"[SCAN] Sudo models dir: {len(found)} model(s) found")
     except Exception as e:
         _log_detect(f"[SCAN] Models dir scan error: {e}")
@@ -411,11 +443,16 @@ def detect_existing_model(requested_model: str) -> dict | None:
         saved_id = saved['model_id']
         saved_path = saved.get('cache_path', '')
         _log_detect(f"[DETECT] State file: last model = {saved_id}")
-        # Quick validation: try to find config.json in saved path
+        # Quick validation: accept config.json (transformers) OR .gguf file (llama-cpp)
         if saved_path and Path(saved_path).exists():
-            config_p = Path(saved_path) / "config.json"
-            if config_p.exists():
-                _log_detect(f"[DETECT] Existing model found (state file validated).")
+            p = Path(saved_path)
+            is_valid = (
+                (p / "config.json").exists()      # transformers model dir
+                or p.suffix.lower() == '.gguf'    # GGUF file path directly
+                or bool(list(p.glob("*.gguf")))   # dir containing .gguf
+            )
+            if is_valid:
+                _log_detect(f"[DETECT] Existing model found (state file validated: {saved_path}).")
                 return {
                     'model_id':    saved_id,
                     'resolved_id': saved_id,
@@ -550,12 +587,23 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 # Locate GGUF file: check MODELS_DIR first, then download
                 gguf_path = None
 
-                # Search in MODELS_DIR for any matching .gguf file
-                gguf_candidates = list(MODELS_DIR.glob("**/*.gguf"))
-                dlog(f"[GGUF] Scanning MODELS_DIR: found {len(gguf_candidates)} .gguf file(s)")
+                # Search in MODELS_DIR (and HF hub cache) for any matching .gguf file
+                # hf_hub_download stores files under HF_HOME/hub/models--Owner--Repo/snapshots/HASH/
+                hf_hub_dir = Path(os.environ.get("HF_HOME", str(Path.home() / ".sudo_studio"))) / "hub"
+                search_roots = [MODELS_DIR]
+                if hf_hub_dir.exists() and hf_hub_dir != MODELS_DIR:
+                    search_roots.append(hf_hub_dir)
+                gguf_candidates = []
+                for root in search_roots:
+                    gguf_candidates.extend(root.rglob("*.gguf"))
+                dlog(f"[GGUF] Scanning for .gguf files in {[str(r) for r in search_roots]}: found {len(gguf_candidates)} file(s)")
                 for gf in gguf_candidates:
-                    dlog(f"[GGUF]   candidate: {gf} ({gf.stat().st_size // (1024*1024)}MB)")
-                    if gf.stat().st_size > 100 * 1024 * 1024:  # > 100MB → valid model
+                    try:
+                        sz = gf.stat().st_size
+                    except OSError:
+                        continue
+                    dlog(f"[GGUF]   candidate: {gf} ({sz // (1024*1024)}MB)")
+                    if sz > 100 * 1024 * 1024:  # > 100MB → valid model
                         gguf_path = str(gf)
                         dlog(f"[GGUF] Using existing file: {gguf_path}")
                         break
