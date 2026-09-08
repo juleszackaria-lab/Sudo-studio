@@ -391,13 +391,18 @@ def _extract_model_id_from_config(config_path: Path) -> str:
         pass
     return ""
 
-def select_best_local_model(all_found: list) -> dict | None:
+def select_best_local_model(all_found: list,
+                            target_model_id: str = None) -> dict | None:
     """
-    Given all locally found models, pick the best one:
-      1. Only valid (> 50 MB, has weights)
-      2. Match against MODEL_PRIORITY list (lighter first)
-      3. Fallback: any valid model found
-    Returns the selected entry or None.
+    Given all locally found models, pick the best one.
+
+    PRIORITY RULES (in order):
+      1. If target_model_id is set → ONLY return that exact model.
+         Never fall back to an unrelated cached model silently.
+         Unrelated models are logged as a warning and ignored.
+      2. If no target given → use MODEL_PRIORITY list (lighter-first).
+      3. If no priority match → free fallback to first valid model.
+    Returns the selected entry, or None (triggers download).
     """
     valid = [m for m in all_found if m['valid']]
     if not valid:
@@ -405,23 +410,50 @@ def select_best_local_model(all_found: list) -> dict | None:
 
     avail_ram = get_available_ram_gb()
 
-    # Try priority order first
+    # ── Case A: a specific model was requested ────────────────────────────
+    if target_model_id:
+        t = target_model_id.lower()
+        for m in valid:
+            mid = m['model_id'].lower()
+            if t in mid or mid in t:
+                ram_req = MODEL_RAM_REQUIREMENTS.get(target_model_id, 3.0)
+                if avail_ram >= ram_req:
+                    _log_detect(f"[SELECT] Exact match for configured model: {m['model_id']} ({m['size_mb']}MB, RAM OK)")
+                    m['resolved_id'] = target_model_id
+                    return m
+                else:
+                    _log_detect(f"[SELECT] Configured model found but RAM insufficient: needs {ram_req:.1f}GB, have {avail_ram:.1f}GB")
+                    return None  # force download to report RAM issue properly
+
+        # Configured model NOT found — log warning and return None to trigger download
+        unrelated = [m['model_id'] for m in valid]
+        _log_detect(
+            f"[WARN] Configured model '{target_model_id}' not found locally. "
+            f"Found unrelated model(s): {unrelated}. "
+            f"Returning None to trigger proper download — will NOT silently use wrong model."
+        )
+        logger.warning(
+            f"[MODEL] Configured model '{target_model_id}' absent from local cache. "
+            f"Unrelated cached model(s) ignored: {unrelated}. Downloading correct model."
+        )
+        return None  # ← caller will download the right model
+
+    # ── Case B: no target — use priority list then free fallback ─────────
     for priority_id in MODEL_PRIORITY:
         for m in valid:
             mid = m['model_id']
-            # Match if model_id contains the priority id (handles partial paths)
             if priority_id.lower() in mid.lower() or mid.lower() in priority_id.lower():
                 ram_req = MODEL_RAM_REQUIREMENTS.get(priority_id, 3.0)
                 if avail_ram >= ram_req:
-                    _log_detect(f"[SELECT] Best match: {priority_id} ({m['size_mb']}MB, RAM OK)")
+                    _log_detect(f"[SELECT] Priority match: {priority_id} ({m['size_mb']}MB, RAM OK)")
                     m['resolved_id'] = priority_id
                     return m
                 else:
-                    _log_detect(f"[SELECT] Skip {priority_id}: needs {ram_req}GB, only {avail_ram:.1f}GB available")
+                    _log_detect(f"[SELECT] Skip {priority_id}: needs {ram_req}GB, only {avail_ram:.1f}GB")
 
-    # Fallback: first valid model, regardless of priority
+    # Free fallback (no priority match, no target configured)
     m = valid[0]
-    _log_detect(f"[SELECT] Fallback: using first valid model: {m['model_id']} ({m['size_mb']}MB)")
+    _log_detect(f"[SELECT] Free fallback: using first valid model: {m['model_id']} ({m['size_mb']}MB)")
     m['resolved_id'] = m['model_id']
     return m
 
@@ -464,7 +496,7 @@ def detect_existing_model(requested_model: str) -> dict | None:
         _log_detect(f"[DETECT] State file path no longer valid, running full scan...")
 
     # ── Step 2: if a specific model was requested, check it first ───────────
-    if requested_model and requested_model != DEFAULT_MODEL:
+    if requested_model:
         _log_detect(f"[DETECT] Checking requested model: {requested_model}")
         hf_found = _check_model_in_hf_cache(requested_model)
         if hf_found:
@@ -497,7 +529,7 @@ def detect_existing_model(requested_model: str) -> dict | None:
         status = "valid" if m['valid'] else "INVALID (too small / corrupted)"
         _log_detect(f"[DETECT]   • {m['model_id']} — {m['size_mb']}MB [{status}]")
 
-    best = select_best_local_model(deduped)
+    best = select_best_local_model(deduped, requested_model)
     if best:
         _log_detect(f"[DETECT] Model verified. Using local model: {best.get('resolved_id', best['model_id'])}")
     else:

@@ -475,7 +475,7 @@ function showReport(data) {
     }
     if (data.summary && data.summary.logs && data.summary.logs.length) {
         html += '<div class="report-section"><h4>Log agent</h4><pre style="font-size:10px;color:var(--muted);max-height:100px;overflow-y:auto">' +
-            escHtml(data.summary.logs.join('\n')) + '</pre></div>';
+            escHtml(data.summary.logs.join('\\n')) + '</pre></div>';
     }
     content.innerHTML = html || '<p style="font-size:12px;color:var(--muted)">Aucun détail disponible.</p>';
     panel.classList.add('show');
