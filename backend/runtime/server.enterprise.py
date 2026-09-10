@@ -608,13 +608,34 @@ def load_model_thread(model_id: str, force_download: bool = False):
         # Qwen2.5-Coder-1.5B-Instruct-GGUF (Q4_K_M) is the primary model.
         # Attempt 1: check if a .gguf file is already in MODELS_DIR
         # Attempt 2: download from HuggingFace Hub using hf_hub_download
-        # Falls through to transformers if llama-cpp is not available.
+        # NOTE: GGUF-only models do NOT fall back to transformers — they raise
+        # a clear error so the user knows exactly what went wrong.
         _gguf_loaded = False
-        if 'gguf' in model_id.lower() or model_id == DEFAULT_MODEL:
+        _is_gguf_model = 'gguf' in model_id.lower() or model_id == DEFAULT_MODEL
+        if _is_gguf_model:
             dlog("GGUF model detected — attempting llama-cpp-python loader...")
             try:
                 from llama_cpp import Llama
                 dlog("llama-cpp-python imported OK")
+
+                # ── SANITY CHECK: verify llama_cpp native lib is accessible ───────
+                import llama_cpp as _llama_pkg
+                _lib_path = os.path.join(os.path.dirname(_llama_pkg.__file__), 'lib')
+                _lib_ok   = os.path.exists(_lib_path)
+                dlog(f"[SANITY] llama_cpp.__file__ = {_llama_pkg.__file__}")
+                dlog(f"[SANITY] llama_cpp lib path = {_lib_path}")
+                dlog(f"[SANITY] llama_cpp lib exists: {_lib_ok} at {_lib_path}")
+                logger.info(f"[SANITY] llama_cpp lib exists: {_lib_ok} at {_lib_path}")
+                if not _lib_ok:
+                    # On some PyInstaller builds the lib/ dir has a different name.
+                    # Log what IS present so we can diagnose:
+                    _pkg_dir = os.path.dirname(_llama_pkg.__file__)
+                    try:
+                        _pkg_contents = os.listdir(_pkg_dir)
+                    except Exception:
+                        _pkg_contents = ["<unreadable>"]
+                    dlog(f"[SANITY] llama_cpp package dir contents: {_pkg_contents}")
+                    logger.warning(f"[SANITY] llama_cpp lib/ not at expected path. Package dir: {_pkg_dir}, contents: {_pkg_contents}")
 
                 # Locate GGUF file: check MODELS_DIR first, then download
                 gguf_path = None
@@ -709,18 +730,54 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     dlog(f"[MODEL] GGUF load complete")
                     _gguf_loaded = True
                 else:
-                    dlog("[GGUF] No valid GGUF file available — falling through to transformers")
-                    logger.warning("[GGUF] No valid file found — falling through to transformers loader")
+                    # GGUF-only model: no file found AND download failed.
+                    # Do NOT fall through to transformers (it cannot load GGUF).
+                    # Surface a clear, actionable error instead.
+                    _err_msg = (
+                        f"[GGUF] FATAL: No valid .gguf file found for '{model_id}' and download failed. "
+                        f"Ensure network access and try again, or place the .gguf file manually in: {MODELS_DIR}"
+                    )
+                    dlog(_err_msg)
+                    logger.error(_err_msg)
+                    state.error   = _err_msg
+                    state.loading = False
+                    return  # Stop here — transformers cannot load GGUF models
 
             except ImportError:
-                dlog("[GGUF] llama-cpp-python not installed — falling through to transformers")
-                logger.info("[GGUF] llama-cpp-python not available — using transformers fallback")
+                # llama-cpp-python missing from the packaged EXE: clear error, no silent fallback.
+                _err_msg = (
+                    "[GGUF] FATAL: llama-cpp-python is not available in this build. "
+                    "The packaged runtime.exe must be rebuilt with: "
+                    "pyinstaller --collect-all llama_cpp (see 02-runtime-build.yml)."
+                )
+                dlog(_err_msg)
+                logger.error(_err_msg)
+                state.error   = _err_msg
+                state.loading = False
+                return  # Stop here — cannot load GGUF without llama-cpp-python
+
             except Exception as gguf_err:
-                dlog(f"[GGUF] Error during GGUF load: {gguf_err}")
-                logger.error(f"[GGUF] Load error: {gguf_err}")
+                # Generic GGUF load error (e.g. WinError 3 — lib dir missing in EXE).
+                # For GGUF-only models, do NOT fall through to transformers.
+                _err_msg = (
+                    f"[GGUF] FATAL: GGUF load failed for '{model_id}'. "
+                    f"Error: {gguf_err}. "
+                    f"If this is a WinError 3 (path not found), the EXE was built without "
+                    f"--collect-all llama_cpp — rebuild with updated 02-runtime-build.yml."
+                )
+                dlog(_err_msg)
+                logger.error(_err_msg)
+                state.error   = _err_msg
+                state.loading = False
+                return  # Stop here — GGUF-only models cannot use transformers
 
         if _gguf_loaded:
             return  # Done — skip transformers loading block below
+
+        if _is_gguf_model and not _gguf_loaded:
+            # Defensive guard: should have been caught above, but log if we somehow reach here.
+            dlog("[GGUF] WARN: _is_gguf_model=True but _gguf_loaded=False and no error state set — aborting transformers fallback")
+            return
 
         # ── Import torch / transformers ────────────────────────────────────
         dlog("Importing torch (may take 5-30s)...")

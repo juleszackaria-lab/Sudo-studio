@@ -1,0 +1,302 @@
+name: 03 - Package Sudo Studio
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Builds the distributable Sudo Studio package:
+#   1. Download VSCodium pre-compiled zip (windows-x64)
+#   2. Extract & patch product.json (text branding)
+#   3. Convert PNG → ICO (multi-resolution: 256/128/64/48/32/16px) via ImageMagick
+#   4. Patch VSCodium.exe binary resources with rcedit (icon + product strings)
+#   5. Replace internal VSCodium icon files with Sudo Studio logo
+#   6. Patch all visible "VSCodium" text in app/out JS bundles
+#   7. Rename VSCodium.exe → SudoStudio.exe
+#   8. Copy runtime.exe + backend.exe artifacts into build dir
+#   9. Run Inno Setup to produce SudoStudio-Setup-x.y.z.exe
+#  10. Upload final installer as artifact
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      vscodium_version:
+        description: 'VSCodium version to use (e.g. 1.93.1.24257)'
+        required: false
+        default: '1.93.1.24257'
+      runtime_run_id:
+        description: 'GitHub Actions run ID for runtime artifact (leave blank to use latest)'
+        required: false
+        default: ''
+      backend_run_id:
+        description: 'GitHub Actions run ID for backend artifact (leave blank to use latest)'
+        required: false
+        default: ''
+
+jobs:
+  package:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Step 1: Download runtime.exe artifact ────────────────────────────
+      - name: Download runtime artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-exe
+          path: artifacts/runtime
+        continue-on-error: true
+
+      - name: Verify runtime artifact
+        shell: powershell
+        run: |
+          if (Test-Path "artifacts\runtime\server.exe") {
+            $mb = [math]::Round((Get-Item "artifacts\runtime\server.exe").Length / 1MB, 1)
+            Write-Host "[OK] runtime server.exe: $mb MB"
+          } else {
+            Write-Warning "[WARN] runtime server.exe not found in artifacts — ensure workflow 02 ran first"
+          }
+
+      # ── Step 2: Download backend.exe artifact ────────────────────────────
+      - name: Download backend artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-exe
+          path: artifacts/backend
+        continue-on-error: true
+
+      - name: Verify backend artifact
+        shell: powershell
+        run: |
+          if (Test-Path "artifacts\backend\backend.exe") {
+            $mb = [math]::Round((Get-Item "artifacts\backend\backend.exe").Length / 1MB, 1)
+            Write-Host "[OK] backend.exe: $mb MB"
+          } else {
+            Write-Warning "[WARN] backend.exe not found in artifacts — ensure workflow 01 ran first"
+          }
+
+      # ── Step 3: Download & extract VSCodium ──────────────────────────────
+      - name: Download VSCodium zip
+        shell: powershell
+        run: |
+          $version = "${{ github.event.inputs.vscodium_version }}"
+          if ([string]::IsNullOrEmpty($version)) { $version = "1.93.1.24257" }
+          $url = "https://github.com/VSCodium/vscodium/releases/download/$version/VSCodium-win32-x64-$version.zip"
+          Write-Host "[INFO] Downloading VSCodium $version from: $url"
+          New-Item -ItemType Directory -Force -Path "build\SudoStudio" | Out-Null
+          Invoke-WebRequest -Uri $url -OutFile "build\vscodium.zip" -UseBasicParsing
+          Write-Host "[OK] Downloaded vscodium.zip"
+          $sz = [math]::Round((Get-Item "build\vscodium.zip").Length / 1MB, 1)
+          Write-Host "[OK] vscodium.zip size: $sz MB"
+
+      - name: Extract VSCodium
+        shell: powershell
+        run: |
+          Write-Host "[INFO] Extracting VSCodium..."
+          Expand-Archive -Path "build\vscodium.zip" -DestinationPath "build\SudoStudio" -Force
+          Write-Host "[OK] Extracted to build\SudoStudio"
+          # Show top-level contents
+          Get-ChildItem "build\SudoStudio" | Select-Object Name,Length | Format-Table
+
+      # ── Step 4: Patch product.json + all visible VSCodium text ───────────
+      - name: Customize VSCodium branding (product.json + app/out text)
+        shell: powershell
+        run: |
+          .\scripts\customize-vscodium.ps1 -VSCodiumDir "build\SudoStudio"
+
+      # ── Step 5: Convert PNG → ICO (multi-resolution) ─────────────────────
+      # ImageMagick is pre-installed on windows-latest GitHub Actions runners.
+      # Produces a proper multi-size ICO (256/128/64/48/32/16px) from resources\icon.png.
+      # FIX for: installer.iss / start.bat previously used resources\logo.ico which was
+      # a renamed PNG — invalid ICO format, wrong size, not embedded in EXE.
+      - name: Convert PNG to ICO (multi-resolution)
+        shell: powershell
+        run: |
+          # Verify ImageMagick is available
+          $magick = Get-Command magick -ErrorAction SilentlyContinue
+          if ($magick) {
+            Write-Host "[INFO] ImageMagick found at: $($magick.Source)"
+            magick convert resources\icon.png `
+              -define icon:auto-resize=256,128,64,48,32,16 `
+              build\SudoStudio\logo.ico
+            $sz = [math]::Round((Get-Item "build\SudoStudio\logo.ico").Length / 1KB, 1)
+            Write-Host "[OK] logo.ico created: $sz KB (multi-resolution 256/128/64/48/32/16px)"
+          } else {
+            Write-Warning "[WARN] ImageMagick not found — trying fallback: copy icon.ico as logo.ico"
+            # Fallback: use pre-existing resources\icon.ico (should be valid)
+            if (Test-Path "resources\icon.ico") {
+              Copy-Item "resources\icon.ico" "build\SudoStudio\logo.ico" -Force
+              Write-Host "[OK] Copied resources\icon.ico as fallback logo.ico"
+            } else {
+              Write-Warning "[WARN] No icon source found — logo.ico will be missing"
+            }
+          }
+
+          # Also copy to resources\logo.ico so installer.iss and customize-vscodium can use it
+          if (Test-Path "build\SudoStudio\logo.ico") {
+            Copy-Item "build\SudoStudio\logo.ico" "resources\logo.ico" -Force
+            Write-Host "[OK] resources\logo.ico updated"
+          }
+
+      # ── Step 6: Patch VSCodium.exe binary with rcedit ────────────────────
+      # rcedit edits Windows PE resource sections (icon + version strings)
+      # without recompiling. Used internally by Electron/VSCode.
+      # Fixes: taskbar icon, Alt+Tab icon, window titlebar icon, EXE properties.
+      - name: Install rcedit
+        run: npm install -g rcedit
+
+      - name: Patch VSCodium.exe with rcedit (icon + product strings)
+        shell: powershell
+        run: |
+          # Find the VSCodium executable (may be VSCodium.exe or Code.exe depending on version)
+          $exe = $null
+          foreach ($candidate in @("build\SudoStudio\VSCodium.exe", "build\SudoStudio\Code.exe")) {
+            if (Test-Path $candidate) { $exe = $candidate; break }
+          }
+
+          if (-not $exe) {
+            Write-Warning "[WARN] VSCodium.exe / Code.exe not found in build\SudoStudio — skipping rcedit"
+            Get-ChildItem "build\SudoStudio" -Filter "*.exe" | ForEach-Object { Write-Host "  Found EXE: $($_.Name)" }
+          } else {
+            Write-Host "[INFO] Patching: $exe"
+
+            $ico = "build\SudoStudio\logo.ico"
+            if (Test-Path $ico) {
+              rcedit $exe --set-icon $ico
+              Write-Host "[OK] rcedit: icon patched from $ico"
+            } else {
+              Write-Warning "[WARN] logo.ico not found — icon not patched"
+            }
+
+            rcedit $exe --set-version-string "ProductName"    "Sudo Studio"
+            rcedit $exe --set-version-string "FileDescription" "Sudo Studio"
+            rcedit $exe --set-version-string "CompanyName"    "Sudo Studio"
+            rcedit $exe --set-version-string "InternalName"   "sudo-studio"
+            Write-Host "[OK] rcedit: version strings patched (ProductName, FileDescription, CompanyName, InternalName)"
+          }
+
+      # ── Step 7: Rename VSCodium.exe → SudoStudio.exe ─────────────────────
+      # After rcedit the binary has Sudo Studio identity — rename the file itself
+      # so the taskbar, Alt+Tab, and start.bat all show "SudoStudio".
+      - name: Rename VSCodium.exe to SudoStudio.exe
+        shell: powershell
+        run: |
+          $candidates = @(
+            @{ From = "build\SudoStudio\VSCodium.exe"; To = "build\SudoStudio\SudoStudio.exe" },
+            @{ From = "build\SudoStudio\Code.exe";     To = "build\SudoStudio\SudoStudio.exe" }
+          )
+          $renamed = $false
+          foreach ($c in $candidates) {
+            if (Test-Path $c.From) {
+              Move-Item $c.From $c.To -Force
+              Write-Host "[OK] Renamed: $($c.From) → $($c.To)"
+              $renamed = $true
+              break
+            }
+          }
+          if (-not $renamed) {
+            Write-Warning "[WARN] No VSCodium.exe or Code.exe found to rename"
+          }
+
+      # ── Step 8: Copy runtime.exe + backend.exe + extension ───────────────
+      - name: Copy runtime and backend executables
+        shell: powershell
+        run: |
+          # runtime.exe → runtime.exe in build dir
+          if (Test-Path "artifacts\runtime\server.exe") {
+            Copy-Item "artifacts\runtime\server.exe" "build\SudoStudio\runtime.exe" -Force
+            Write-Host "[OK] runtime.exe copied"
+          } else {
+            Write-Warning "[WARN] runtime.exe not available — package will be incomplete"
+          }
+
+          # backend.exe
+          if (Test-Path "artifacts\backend\backend.exe") {
+            Copy-Item "artifacts\backend\backend.exe" "build\SudoStudio\backend.exe" -Force
+            Write-Host "[OK] backend.exe copied"
+          } else {
+            Write-Warning "[WARN] backend.exe not available — package will be incomplete"
+          }
+
+          # Copy start.bat, installer config, data, logs skeleton, resources
+          Copy-Item "start.bat"     "build\SudoStudio\start.bat"       -Force
+          Copy-Item "resources"     "build\SudoStudio\resources"        -Recurse -Force
+          if (Test-Path "data")        { Copy-Item "data"    "build\SudoStudio\data"    -Recurse -Force }
+          if (Test-Path "logs")        { Copy-Item "logs"    "build\SudoStudio\logs"    -Recurse -Force }
+          if (Test-Path "installer.iss") { Copy-Item "installer.iss" "build\SudoStudio\installer.iss" -Force }
+
+          # Copy the Sudo AI extension
+          if (Test-Path "sudo-ai-extension") {
+            Copy-Item "sudo-ai-extension" "build\SudoStudio\sudo-ai-extension" -Recurse -Force
+            Write-Host "[OK] sudo-ai-extension copied"
+          }
+
+          # Create empty extensions and data directories
+          New-Item -ItemType Directory -Force -Path "build\SudoStudio\extensions" | Out-Null
+          New-Item -ItemType Directory -Force -Path "build\SudoStudio\logs"       | Out-Null
+
+          Write-Host "[OK] Build directory contents:"
+          Get-ChildItem "build\SudoStudio" | Select-Object Name | Format-Table
+
+      # ── Step 9: Update start.bat to reference SudoStudio.exe ─────────────
+      # start.bat still references VSCodium.exe — update it to SudoStudio.exe
+      # (In-place patch of the copy in build dir, does NOT modify repo source)
+      - name: Update start.bat references for SudoStudio.exe
+        shell: powershell
+        run: |
+          $bat = "build\SudoStudio\start.bat"
+          if (Test-Path $bat) {
+            $content = Get-Content $bat -Raw
+            # Replace VSCodium.exe references with SudoStudio.exe
+            $patched = $content `
+              -replace 'VSCodium\.exe', 'SudoStudio.exe' `
+              -replace 'findstr /I "VSCodium"', 'findstr /I "SudoStudio"'
+            Set-Content $bat $patched -Encoding UTF8
+            Write-Host "[OK] start.bat updated: VSCodium.exe → SudoStudio.exe"
+          } else {
+            Write-Warning "[WARN] start.bat not found at $bat"
+          }
+
+      # ── Step 10: Install Inno Setup + build installer ─────────────────────
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          $url = "https://jrsoftware.org/download.php/is.exe"
+          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\innosetup.exe" -UseBasicParsing
+          Start-Process "$env:TEMP\innosetup.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
+          Write-Host "[OK] Inno Setup installed"
+
+      - name: Build Inno Setup installer
+        shell: powershell
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            # Try alternate path
+            $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if ($iscc -and (Test-Path $iscc)) {
+            Write-Host "[INFO] Running Inno Setup: $iscc"
+            # Run ISCC from the build dir so relative paths in installer.iss resolve
+            Push-Location "build\SudoStudio"
+            & $iscc installer.iss
+            Pop-Location
+          } else {
+            Write-Warning "[WARN] Inno Setup ISCC.exe not found — skipping installer build"
+          }
+
+      # ── Step 11: Upload artifacts ─────────────────────────────────────────
+      - name: Upload packaged build (without installer)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sudo-studio-build
+          path: build/SudoStudio/
+          retention-days: 14
+
+      - name: Upload installer (if built)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sudo-studio-installer
+          path: build/SudoStudio/dist/SudoStudio-Setup-*.exe
+          if-no-files-found: warn
+          retention-days: 30

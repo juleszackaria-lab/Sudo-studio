@@ -11,13 +11,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Setup Python
+      # ── Setup Python ──────────────────────────────────────────────────────
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # Verify folders
+      # ── Debug layout ─────────────────────────────────────────────────────
       - name: Debug folders
         run: dir
 
@@ -27,7 +27,7 @@ jobs:
       - name: Debug runtime folder
         run: dir backend\runtime
 
-      # Install dependencies
+      # ── Install Python dependencies ──────────────────────────────────────
       - name: Install Python dependencies
         working-directory: backend/runtime
         run: |
@@ -35,17 +35,63 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
 
-      # Build EXE
+      # ── Verify llama-cpp-python is importable (sanity pre-build) ─────────
+      - name: Verify llama-cpp-python import
+        working-directory: backend/runtime
+        shell: python
+        run: |
+          import llama_cpp, os
+          lib_path = os.path.join(os.path.dirname(llama_cpp.__file__), 'lib')
+          print(f"[SANITY] llama_cpp.__file__  = {llama_cpp.__file__}")
+          print(f"[SANITY] llama_cpp lib path  = {lib_path}")
+          print(f"[SANITY] lib dir exists      = {os.path.exists(lib_path)}")
+          if os.path.exists(lib_path):
+              print(f"[SANITY] lib contents: {os.listdir(lib_path)}")
+          else:
+              print("[SANITY][WARN] lib dir missing — PyInstaller collect-all will embed it from wheel")
+
+      # ── Build runtime EXE with full llama_cpp collection ─────────────────
+      #
+      # --collect-all llama_cpp  : Embeds ALL llama_cpp data files, binaries,
+      #                            and hidden imports (includes lib/*.dll on
+      #                            Windows and libllama.so on Linux).
+      #                            Fixes: [WinError 3] ...\_MEI...\llama_cpp\lib
+      # --hidden-import llama_cpp: Belt-and-suspenders: force-import the package
+      #                            even if auto-analysis misses it.
+      # --collect-binaries llama_cpp: Explicitly collect native .dll/.so files
+      #                            (redundant with collect-all but harmless; adds
+      #                            safety for edge-case wheel layouts).
+      # --onefile                : Single portable server.exe, no loose files.
+      # ─────────────────────────────────────────────────────────────────────
       - name: Build runtime executable
         working-directory: backend/runtime
-        run: |
-          pyinstaller --onefile --name server server.enterprise.py
+        run: >
+          pyinstaller
+          --onefile
+          --name server
+          --collect-all llama_cpp
+          --collect-binaries llama_cpp
+          --hidden-import llama_cpp
+          --hidden-import llama_cpp.llama
+          --hidden-import llama_cpp.llama_cpp
+          --hidden-import huggingface_hub
+          --hidden-import huggingface_hub.file_download
+          server.enterprise.py
 
-      # Verify build
+      # ── Verify build output ───────────────────────────────────────────────
       - name: Verify build
-        run: dir backend\runtime\dist
+        shell: powershell
+        run: |
+          $exe = "backend\runtime\dist\server.exe"
+          if (Test-Path $exe) {
+            $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+            Write-Host "[OK] server.exe built: $mb MB"
+          } else {
+            Write-Error "[FAIL] server.exe not found after build!"
+            exit 1
+          }
 
-      # Upload artifact
+      # ── Upload artifact ──────────────────────────────────────────────────
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v4
         with:

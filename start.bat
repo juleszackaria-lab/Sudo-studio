@@ -92,16 +92,19 @@ if exist "%APP%runtime.exe" (
     exit /b 1
 )
 
-:: --- VSCodium.exe ---
-if exist "%APP%VSCodium.exe" (
-    echo   [OK] VSCodium.exe found
-    echo   [OK] VSCodium.exe >> "%LOG_FILE%"
+:: --- SudoStudio.exe (new builds) or VSCodium.exe (legacy) ---
+if exist "%APP%SudoStudio.exe" (
+    echo   [OK] SudoStudio.exe found
+    echo   [OK] SudoStudio.exe >> "%LOG_FILE%"
+) else if exist "%APP%VSCodium.exe" (
+    echo   [OK] VSCodium.exe found (legacy build)
+    echo   [OK] VSCodium.exe (legacy) >> "%LOG_FILE%"
 ) else (
-    echo   [NOT FOUND] VSCodium.exe
-    echo   Expected at: %APP%VSCodium.exe
-    echo   [ERROR] VSCodium.exe not found >> "%LOG_FILE%"
+    echo   [NOT FOUND] SudoStudio.exe or VSCodium.exe
+    echo   Expected at: %APP%SudoStudio.exe
+    echo   [ERROR] Editor executable not found >> "%LOG_FILE%"
     echo.
-    echo [FATAL] VSCodium.exe is missing.
+    echo [FATAL] SudoStudio.exe (or VSCodium.exe) is missing.
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -115,7 +118,7 @@ if exist "%EXT%\extension.js" (
 ) else (
     echo   [WARNING] Sudo AI extension not found at:
     echo             %EXT%\extension.js
-    echo   [WARNING] Extension missing - VSCodium will open without Sudo AI >> "%LOG_FILE%"
+    echo   [WARNING] Extension missing - Sudo Studio will open without Sudo AI >> "%LOG_FILE%"
 )
 
 echo.
@@ -177,7 +180,7 @@ set "RUNTIME_WAIT=0"
 :runtime_timeout
     echo.
     echo   [OK] 600s elapsed. runtime.exe is STILL RUNNING and loading the model.
-    echo   [OK] VSCodium will open now. Chat will work once model finishes loading.
+    echo   [OK] Sudo Studio will open now. Chat will work once model finishes loading.
     echo   [OK] Watch SudoRuntime window for: Model Ready on cpu
     echo [PHASE 2] 600s timeout - runtime still loading >> "%LOG_FILE%"
     goto :runtime_done
@@ -236,9 +239,9 @@ set "BACKEND_WAIT=0"
 :backend_timeout
     echo.
     echo   [WARNING] Backend did not respond after 60 seconds.
-    echo   [WARNING] Backend timeout - continuing to launch VSCodium >> "%LOG_FILE%"
+    echo   [WARNING] Backend timeout - continuing to launch Sudo Studio >> "%LOG_FILE%"
     echo.
-    echo   Backend may still be starting. VSCodium will open.
+    echo   Backend may still be starting. Sudo Studio will open.
     echo   If backend is needed, check: %ROOT%logs\backend.log
     echo.
     goto :backend_done
@@ -264,12 +267,19 @@ echo.
 ::  PHASE 5 - LAUNCH VSCODIUM + SUDO AI EXTENSION (STEP 6)
 :: ============================================================
 echo DEBUG PHASE 5 START >> "%LOG_FILE%"
-echo [STEP 6] Opening Sudo Studio (VSCodium + Sudo AI)...
-echo [PHASE 5] Preparing VSCodium... >> "%LOG_FILE%"
+echo [STEP 6] Opening Sudo Studio (Editor + Sudo AI)...
+echo [PHASE 5] Preparing Sudo Studio... >> "%LOG_FILE%"
 echo.
 
 :: Chemins sans espaces dans les variables
-set "V_EXE=%ROOT%VSCodium.exe"
+:: Auto-detect editor executable: prefer SudoStudio.exe (new builds), fall back to VSCodium.exe
+if exist "%ROOT%SudoStudio.exe" (
+    set "V_EXE=%ROOT%SudoStudio.exe"
+    echo [PHASE 5] Using SudoStudio.exe >> "%LOG_FILE%"
+) else (
+    set "V_EXE=%ROOT%VSCodium.exe"
+    echo [PHASE 5] Using VSCodium.exe (legacy fallback) >> "%LOG_FILE%"
+)
 set "V_EXT=%ROOT%extensions"
 set "V_DAT=%ROOT%data"
 set "V_SRC=%ROOT%sudo-ai-extension"
@@ -300,14 +310,14 @@ if exist "%V_SRC%\package.json" (
     echo   [WARN] Extension source missing >> "%LOG_FILE%"
 )
 
-:: Verifier VSCodium.exe
+:: Verifier l'executable editor
 if not exist "%V_EXE%" (
-    echo [FATAL] VSCodium.exe not found >> "%LOG_FILE%"
-    echo [FATAL] VSCodium.exe introuvable : %V_EXE%
+    echo [FATAL] Editor executable not found: %V_EXE% >> "%LOG_FILE%"
+    echo [FATAL] Editor introuvable : %V_EXE%
     pause
     exit /b 1
 )
-echo [PHASE 5] VSCodium.exe found >> "%LOG_FILE%"
+echo [PHASE 5] Editor found: %V_EXE% >> "%LOG_FILE%"
 
 :: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption)
 set "LAUNCHER=%ROOT%launch.bat"
@@ -322,13 +332,13 @@ call "%LAUNCHER%"
 
 :: Attendre et verifier
 timeout /t 5 /nobreak >nul
-tasklist 2>nul | findstr /I "VSCodium" >nul 2>&1
+tasklist 2>nul | findstr /I "SudoStudio VSCodium" >nul 2>&1
 if not errorlevel 1 (
-    echo [PHASE 5] VSCodium running OK >> "%LOG_FILE%"
-    echo   [OK] VSCodium is running
+    echo [PHASE 5] Sudo Studio running OK >> "%LOG_FILE%"
+    echo   [OK] Sudo Studio is running
 ) else (
-    echo [PHASE 5] VSCodium not detected >> "%LOG_FILE%"
-    echo   [WARNING] VSCodium may have closed
+    echo [PHASE 5] Sudo Studio not detected >> "%LOG_FILE%"
+    echo   [WARNING] Sudo Studio may have closed
 )
 
 echo.
@@ -369,8 +379,8 @@ echo   AI Runtime: http://localhost:%RUNTIME_PORT%
 echo.
 echo   Logs      : %LOGS%\startup.log
 echo.
-echo   VSCodium should now be opening with Sudo AI loaded.
-echo   If VSCodium is not open yet, wait 5-10 seconds.
+echo   Sudo Studio should now be opening with Sudo AI loaded.
+    echo   If Sudo Studio is not open yet, wait 5-10 seconds.
 echo.
 echo ============================================================
 echo   Keep this window open to maintain services.
