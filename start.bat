@@ -23,6 +23,13 @@ set "RUNTIME_PORT=6000"
 set "EXT=%ROOT%extensions\sudo-ai"
 set "DATA=%ROOT%data"
 
+:: -- Editor EXE: single detection (set once, used everywhere) -
+:: Prefer SudoStudio.exe (packaged builds), fall back to VSCodium.exe (legacy).
+:: V_EXE is used in STEP 2 check AND PHASE 5 launch — never re-detected.
+set "V_EXE="
+if exist "%ROOT%SudoStudio.exe" set "V_EXE=%ROOT%SudoStudio.exe"
+if not defined V_EXE if exist "%ROOT%VSCodium.exe" set "V_EXE=%ROOT%VSCodium.exe"
+
 :: -- STEP 1: Confirm script is actually running ---------------
 echo.
 echo ============================================================
@@ -92,19 +99,17 @@ if exist "%APP%runtime.exe" (
     exit /b 1
 )
 
-:: --- SudoStudio.exe (new builds) or VSCodium.exe (legacy) ---
-if exist "%APP%SudoStudio.exe" (
-    echo   [OK] SudoStudio.exe found
-    echo   [OK] SudoStudio.exe >> "%LOG_FILE%"
-) else if exist "%APP%VSCodium.exe" (
-    echo   [OK] VSCodium.exe found (legacy build)
-    echo   [OK] VSCodium.exe (legacy) >> "%LOG_FILE%"
+:: --- Editor executable (SudoStudio.exe or VSCodium.exe) ---
+:: V_EXE was already resolved above in Global Variables section.
+if defined V_EXE (
+    echo   [OK] Editor found: %V_EXE%
+    echo   [OK] Editor: %V_EXE% >> "%LOG_FILE%"
 ) else (
-    echo   [NOT FOUND] SudoStudio.exe or VSCodium.exe
-    echo   Expected at: %APP%SudoStudio.exe
-    echo   [ERROR] Editor executable not found >> "%LOG_FILE%"
+    echo   [NOT FOUND] No editor executable found.
+    echo   Looked for SudoStudio.exe and VSCodium.exe in: %ROOT%
+    echo   [ERROR] Editor not found >> "%LOG_FILE%"
     echo.
-    echo [FATAL] SudoStudio.exe (or VSCodium.exe) is missing.
+    echo [FATAL] No editor executable found in install folder.
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -271,15 +276,8 @@ echo [STEP 6] Opening Sudo Studio (Editor + Sudo AI)...
 echo [PHASE 5] Preparing Sudo Studio... >> "%LOG_FILE%"
 echo.
 
-:: Chemins sans espaces dans les variables
-:: Auto-detect editor executable: prefer SudoStudio.exe (new builds), fall back to VSCodium.exe
-if exist "%ROOT%SudoStudio.exe" (
-    set "V_EXE=%ROOT%SudoStudio.exe"
-    echo [PHASE 5] Using SudoStudio.exe >> "%LOG_FILE%"
-) else (
-    set "V_EXE=%ROOT%VSCodium.exe"
-    echo [PHASE 5] Using VSCodium.exe (legacy fallback) >> "%LOG_FILE%"
-)
+:: V_EXE already set in Global Variables section — no re-detection needed.
+echo [PHASE 5] Editor exe: %V_EXE% >> "%LOG_FILE%"
 set "V_EXT=%ROOT%extensions"
 set "V_DAT=%ROOT%data"
 set "V_SRC=%ROOT%sudo-ai-extension"
@@ -310,14 +308,20 @@ if exist "%V_SRC%\package.json" (
     echo   [WARN] Extension source missing >> "%LOG_FILE%"
 )
 
-:: Verifier l'executable editor
-if not exist "%V_EXE%" (
-    echo [FATAL] Editor executable not found: %V_EXE% >> "%LOG_FILE%"
-    echo [FATAL] Editor introuvable : %V_EXE%
+:: Confirm V_EXE still valid (belt-and-suspenders, should always be set)
+if not defined V_EXE (
+    echo [FATAL] V_EXE undefined at launch time >> "%LOG_FILE%"
+    echo [FATAL] Editor path not set - cannot launch.
     pause
     exit /b 1
 )
-echo [PHASE 5] Editor found: %V_EXE% >> "%LOG_FILE%"
+if not exist "%V_EXE%" (
+    echo [FATAL] Editor not found at: %V_EXE% >> "%LOG_FILE%"
+    echo [FATAL] Editor not found at: %V_EXE%
+    pause
+    exit /b 1
+)
+echo [PHASE 5] Launching: %V_EXE% >> "%LOG_FILE%"
 
 :: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption)
 set "LAUNCHER=%ROOT%launch.bat"
