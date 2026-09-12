@@ -135,18 +135,25 @@ else {
 #
 # CRITICAL RULES:
 #  1. NEVER patch any file whose name starts with "nls" (nls.messages.json,
-#     nls.metadata.json, etc.) — these are Electron/Chromium i18n resources;
+#     nls.metadata.json, etc.) - these are Electron/Chromium i18n resources;
 #     a text-replacement will corrupt them and prevent the window from opening.
-#  2. NEVER patch .json files with raw string replacement — always use
+#  2. NEVER patch .json files with raw string replacement - always use
 #     ConvertFrom-Json / ConvertTo-Json to preserve valid JSON structure.
 #  3. Only .js files are patched with raw string replacement.
 #  4. After patching, validate every .json in app/out is still valid JSON.
+#  5. NEVER use non-ASCII punctuation (em-dash, curly quotes, box-drawing
+#     characters) inside LIVE CODE STRINGS - only inside comments. This
+#     script is parsed by Windows PowerShell 5.1 without a BOM, which can
+#     misdecode multi-byte UTF-8 punctuation as a stray quote character
+#     and silently corrupt the rest of the parse (this broke the build twice
+#     before this fix - once with an unescaped apostrophe, once with an
+#     em-dash in a Write-Warning string).
 # ============================================================
 $appOutDir = Join-Path $resolvedDir "resources\app\out"
 if (Test-Path $appOutDir) {
     Write-Host "[BRAND] Scanning app/out for VSCodium text in .js files..."
 
-    # ── JS files only (never JSON) ──────────────────────────────────────────
+    # -- JS files only (never JSON) ------------------------------------------
     $jsFiles = Get-ChildItem $appOutDir -Recurse -File |
         Where-Object { $_.Extension -eq ".js" } |
         Where-Object { $_.FullName -notmatch "node_modules" } |
@@ -180,7 +187,7 @@ if (Test-Path $appOutDir) {
     }
     Write-Host "[BRAND] JS files patched: $patchedJs / $totalJs scanned"
 
-    # ── JSON files: safe ConvertFrom-Json approach, SKIP nls*.json ──────────
+    # -- JSON files: safe ConvertFrom-Json approach, SKIP nls*.json ----------
     $jsonFiles = Get-ChildItem $appOutDir -Recurse -File |
         Where-Object { $_.Extension -eq ".json" } |
         Where-Object { $_.FullName -notmatch "node_modules" } |
@@ -196,20 +203,20 @@ if (Test-Path $appOutDir) {
             $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
             if ($raw -notmatch "VSCodium") { continue }
 
-            # Safe JSON round-trip: parse, modify string values, re-serialize
-            $obj  = $raw | ConvertFrom-Json
+            # Safe JSON round-trip: parse, modify string values, re-serialize.
             # Convert to JSON string, do the replacement only on string values by
-            # working through the serialized form — but use ConvertTo-Json depth 100
+            # working through the serialized form, but use ConvertTo-Json depth 100
             # so nested objects survive intact, then do targeted string replacement
             # on the re-serialized output (the only VSCodium refs in JSON values will
             # be quoted strings, not keys or URLs).
+            $obj  = $raw | ConvertFrom-Json
             $serialized = $obj | ConvertTo-Json -Depth 100
             $patched    = $serialized -replace '(?<![/\\.])VSCodium(?![/\\.])','Sudo Studio'
             if ($patched -ne $serialized) {
                 # Validate the patched result is still valid JSON before writing
                 try { $patched | ConvertFrom-Json | Out-Null }
                 catch {
-                    Write-Warning "[WARN] Post-patch JSON validation failed for $($file.Name) — skipping to avoid corruption: $($_.Exception.Message)"
+                    Write-Warning "[WARN] Post-patch JSON validation failed for $($file.Name) - skipping to avoid corruption: $($_.Exception.Message)"
                     continue
                 }
                 $rawBytes3 = [System.IO.File]::ReadAllBytes($file.FullName)
@@ -227,7 +234,7 @@ if (Test-Path $appOutDir) {
     }
     Write-Host "[BRAND] JSON files patched: $patchedJson / $totalJson scanned"
 
-    # ── POST-PATCH VALIDATION: verify ALL .json files in app/out are valid ──
+    # -- POST-PATCH VALIDATION: verify ALL .json files in app/out are valid -
     Write-Host "[VALIDATE] Validating all .json files in app/out..."
     $validCount   = 0
     $invalidCount = 0
@@ -244,7 +251,7 @@ if (Test-Path $appOutDir) {
     }
     Write-Host "[VALIDATE] Results: $validCount valid, $invalidCount corrupt"
     if ($invalidCount -gt 0) {
-        Write-Error "[VALIDATE] $invalidCount corrupt JSON file(s) detected — rebuild required!"
+        Write-Error "[VALIDATE] $invalidCount corrupt JSON file(s) detected - rebuild required!"
         exit 2
     }
     else {
