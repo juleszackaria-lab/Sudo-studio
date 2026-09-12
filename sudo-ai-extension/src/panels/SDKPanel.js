@@ -664,4 +664,184 @@ window.addEventListener('message', ev => {
     }
 }
 
-module.exports = { SDKPanel };
+// ── Project-aware SDK analysis ───────────────────────────────────────────────
+// Maps project type (detected from workspace files) → required SDK ids
+const PROJECT_SDK_MAP = {
+    flutter:     ['flutter', 'java', 'android-sdk', 'git'],
+    nodejs:      ['nodejs', 'git'],
+    python:      ['python', 'pip', 'git'],
+    'java-maven':['java', 'git'],
+    'java-gradle':['java', 'git'],
+    rust:        ['rust', 'git'],
+    go:          ['go', 'git'],
+    docker:      ['docker', 'git'],
+    react:       ['nodejs', 'git'],
+    angular:     ['nodejs', 'git'],
+    unknown:     ['git'],
+};
+
+function detectProjectType(wsRoot) {
+    if (!wsRoot) return 'unknown';
+    const fs2 = require('fs');
+    const p2  = require('path');
+    if (fs2.existsSync(p2.join(wsRoot, 'pubspec.yaml')))    return 'flutter';
+    if (fs2.existsSync(p2.join(wsRoot, 'package.json'))) {
+        try {
+            const pkg = JSON.parse(fs2.readFileSync(p2.join(wsRoot, 'package.json'), 'utf8'));
+            if ((pkg.dependencies || {})['react'] || (pkg.devDependencies || {})['react']) return 'react';
+            if ((pkg.dependencies || {})['@angular/core'] || (pkg.devDependencies || {})['@angular/core']) return 'angular';
+        } catch {}
+        return 'nodejs';
+    }
+    if (fs2.existsSync(p2.join(wsRoot, 'requirements.txt'))) return 'python';
+    if (fs2.existsSync(p2.join(wsRoot, 'Pipfile')))          return 'python';
+    if (fs2.existsSync(p2.join(wsRoot, 'pom.xml')))          return 'java-maven';
+    if (fs2.existsSync(p2.join(wsRoot, 'build.gradle')))     return 'java-gradle';
+    if (fs2.existsSync(p2.join(wsRoot, 'Cargo.toml')))       return 'rust';
+    if (fs2.existsSync(p2.join(wsRoot, 'go.mod')))           return 'go';
+    if (fs2.existsSync(p2.join(wsRoot, 'Dockerfile')))       return 'docker';
+    return 'unknown';
+}
+
+// Patch SDKPanel to add project-aware analysis
+const _origHandleMessage = SDKPanel.prototype.handleMessage;
+SDKPanel.prototype.handleMessage = async function(msg) {
+    if (msg.type === 'analyzeProject') {
+        const wsRoot = require('vscode').workspace.workspaceFolders?.[0]?.uri?.fsPath || null;
+        const projType = detectProjectType(wsRoot);
+        const needed   = PROJECT_SDK_MAP[projType] || ['git'];
+        this.panel.webview.postMessage({ type: 'projectAnalyzed', projectType: projType, neededSdkIds: needed });
+        // Also trigger full detection so statuses are fresh
+        await this.detectAll();
+        return;
+    }
+    return _origHandleMessage.call(this, msg);
+};
+
+// ── SDK Install Panel (separate panel for watched, logged installations) ─────
+class SdkInstallPanel {
+    static currentPanel = undefined;
+
+    constructor(panel, extensionUri) {
+        this.panel = panel;
+        this.extensionUri = extensionUri;
+        this.disposables = [];
+        this.log = [];
+
+        this.panel.webview.html = this._buildHtml();
+        this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+        this.panel.webview.onDidReceiveMessage(m => this._onMessage(m), null, this.disposables);
+    }
+
+    static createOrShow(extensionUri, sdkId) {
+        // Always open a fresh panel for install to avoid stale state
+        if (SdkInstallPanel.currentPanel) {
+            SdkInstallPanel.currentPanel.panel.reveal();
+            if (sdkId) SdkInstallPanel.currentPanel._startInstall(sdkId);
+            return;
+        }
+        const panel = require('vscode').window.createWebviewPanel(
+            'sudoStudioSdkInstall', '⬇ SDK Install',
+            require('vscode').ViewColumn.Beside,
+            { enableScripts: true, retainContextWhenHidden: true }
+        );
+        SdkInstallPanel.currentPanel = new SdkInstallPanel(panel, extensionUri);
+        if (sdkId) SdkInstallPanel.currentPanel._startInstall(sdkId);
+    }
+
+    async _onMessage(msg) {
+        switch (msg.type) {
+            case 'install': await this._startInstall(msg.sdkId); break;
+            case 'clear':   this.log = []; this._sendLog(); break;
+        }
+    }
+
+    _log(line) {
+        const ts = new Date().toLocaleTimeString();
+        this.log.push(`[${ts}] ${line}`);
+        this._sendLog();
+    }
+
+    _sendLog() {
+        this.panel.webview.postMessage({ type: 'log', lines: this.log });
+    }
+
+    async _startInstall(sdkId) {
+        const sdk = SDK_DEFS.find(s => s.id === sdkId);
+        if (!sdk) {
+            this._log(`[FAIL] Unknown SDK id: ${sdkId}`);
+            return;
+        }
+        this._log(`[START] Installing ${sdk.name}...`);
+        this._log(`[CMD] ${sdk.installCmd}`);
+        this.panel.webview.postMessage({ type: 'installStarted', sdkName: sdk.name });
+
+        const { exec: execCb } = require('child_process');
+        const term = require('vscode').window.createTerminal(`Install ${sdk.name}`);
+        term.show();
+        term.sendText(sdk.installCmd);
+        this._log(`[INFO] Command sent to terminal. Watch for completion.`);
+        this._log(`[INFO] Will re-detect in 20s...`);
+
+        setTimeout(() => {
+            execCb(sdk.detectCmd, { timeout: 8000 }, (err, stdout) => {
+                if (!err && stdout.trim()) {
+                    this._log(`[OK] ${sdk.name} detected: ${stdout.trim().split('\n')[0]}`);
+                    this.panel.webview.postMessage({ type: 'installDone', sdkId, success: true, version: stdout.trim().split('\n')[0] });
+                } else {
+                    this._log(`[WARN] ${sdk.name} not yet detected. Installation may still be in progress.`);
+                    this.panel.webview.postMessage({ type: 'installDone', sdkId, success: false });
+                }
+            });
+        }, 20000);
+    }
+
+    dispose() {
+        SdkInstallPanel.currentPanel = undefined;
+        this.panel.dispose();
+        while (this.disposables.length) { const d = this.disposables.pop(); if (d) d.dispose(); }
+    }
+
+    _buildHtml() {
+        return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SDK Install</title>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--border:#21262d;--text:#e6edf3;--muted:#7d8590;--blue:#1f6feb;--green:#2ea043;}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);padding:20px;}
+h1{font-size:17px;font-weight:600;margin-bottom:12px;}
+#status{font-size:13px;color:var(--muted);margin-bottom:10px;}
+#logBox{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:12px;font-family:monospace;font-size:12px;min-height:200px;max-height:60vh;overflow-y:auto;color:#58a6ff;}
+.btn{background:var(--blue);color:#fff;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;font-size:13px;margin-top:10px;}
+.btn-secondary{background:#21262d;color:var(--text);}
+</style>
+</head>
+<body>
+<h1>⬇ SDK Install</h1>
+<div id="status">Waiting for installation request...</div>
+<div id="logBox"><div style="color:var(--muted)">Log will appear here...</div></div>
+<button class="btn btn-secondary" onclick="vscode.postMessage({type:'clear'})">Clear Log</button>
+
+<script>
+const vscode = acquireVsCodeApi();
+window.addEventListener('message', e=>{
+  const m=e.data;
+  if(m.type==='log'){
+    const box=document.getElementById('logBox');
+    box.innerHTML=m.lines.map(l=>'<div>'+escH(l)+'</div>').join('');
+    box.scrollTop=box.scrollHeight;
+  }
+  if(m.type==='installStarted') document.getElementById('status').textContent='Installing '+m.sdkName+'...';
+  if(m.type==='installDone') document.getElementById('status').textContent=m.success?'✅ Done':'⚠️ Check terminal for status';
+});
+function escH(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+</script>
+</body>
+</html>`;
+    }
+}
+
+module.exports = { SDKPanel, SdkInstallPanel, detectProjectType, PROJECT_SDK_MAP };

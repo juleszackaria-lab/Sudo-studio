@@ -82,6 +82,26 @@
           "name": "🔒 Environment",
           "icon": "$(server-environment)",
           "contextualTitle": "Environment Manager"
+        },
+        {
+          "id": "sudoStudioSecurity",
+          "name": "🔒 Security",
+          "type": "webview"
+        },
+        {
+          "id": "sudoStudioDuplication",
+          "name": "📋 Duplication",
+          "type": "webview"
+        },
+        {
+          "id": "sudoStudioCentral",
+          "name": "⚙️ Central",
+          "type": "webview"
+        },
+        {
+          "id": "sudoStudioLicense",
+          "name": "🔑 License",
+          "type": "webview"
         }
       ]
     },
@@ -332,6 +352,41 @@
         "title": "Sudo Studio: View Logs Folder",
         "category": "Sudo Studio",
         "icon": "$(output)"
+      },
+      {
+        "command": "sudoStudio.openSecurityPanel",
+        "title": "🔒 Security Audit",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openDuplicationPanel",
+        "title": "📋 Enterprise Duplication",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openCentralMgmtPanel",
+        "title": "⚙️ Central Management",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openLicensePanel",
+        "title": "🔑 License Management",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.openSdkInstallPanel",
+        "title": "⬇ SDK Install",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.runSecurityAudit",
+        "title": "🔒 Run Security Audit",
+        "category": "Sudo Studio"
+      },
+      {
+        "command": "sudoStudio.cloneEnterprise",
+        "title": "📋 Clone Enterprise Env",
+        "category": "Sudo Studio"
       }
     ],
     "menus": {

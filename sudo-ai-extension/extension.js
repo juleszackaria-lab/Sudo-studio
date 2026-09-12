@@ -23,11 +23,16 @@ const { RuntimeProvider } = require('./src/providers/RuntimeProvider');
 // Panels
 const { ChatPanel }            = require('./src/panels/ChatPanel');
 const { DoctorPanel }          = require('./src/panels/DoctorPanel');
-const { SDKPanel }             = require('./src/panels/SDKPanel');
+const { SDKPanel, SdkInstallPanel } = require('./src/panels/SDKPanel');
 const { RuntimePanel }         = require('./src/panels/RuntimePanel');
 const { DevOpsPanel }          = require('./src/panels/DevOpsPanel');
 const { ProjectAnalysisPanel } = require('./src/panels/ProjectAnalysisPanel');
 const { EnvironmentPanel }     = require('./src/panels/EnvironmentPanel');
+// Enterprise Panels (Phase 2)
+const { SecurityPanel }        = require('./src/panels/SecurityPanel');
+const { DuplicationPanel }     = require('./src/panels/DuplicationPanel');
+const { CentralMgmtPanel }     = require('./src/panels/CentralMgmtPanel');
+const { LicensePanel }         = require('./src/panels/LicensePanel');
 
 // Agent Mode (Mission 2 — autonomous programming agent)
 const { AgentPanel }           = require('./src/agent/AgentPanel');
@@ -231,6 +236,15 @@ function registerCommands() {
 
         // Logs (Mission 3 — MISSION FINALE)
         ['sudoStudio.openLogsFolder',        openLogsFolder],
+
+        // Enterprise Panels (Phase 2)
+        ['sudoStudio.openSecurityPanel',     openSecurityPanel],
+        ['sudoStudio.openDuplicationPanel',  openDuplicationPanel],
+        ['sudoStudio.openCentralMgmtPanel',  openCentralMgmtPanel],
+        ['sudoStudio.openLicensePanel',      openLicensePanel],
+        ['sudoStudio.openSdkInstallPanel',   openSdkInstallPanel],
+        ['sudoStudio.runSecurityAudit',      openSecurityPanel],
+        ['sudoStudio.cloneEnterprise',       openDuplicationPanel],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -1511,6 +1525,28 @@ function openAgentPanel() {
         }, null, context.subscriptions);
         console.log('[EXT] AgentPanel openChat bridge wired');
     }
+}
+
+// ── Enterprise Panel Handlers ────────────────────────────────────────────────
+
+function openSecurityPanel() {
+    SecurityPanel.createOrShow(context.extensionUri);
+}
+
+function openDuplicationPanel() {
+    DuplicationPanel.createOrShow(context.extensionUri);
+}
+
+function openCentralMgmtPanel() {
+    CentralMgmtPanel.createOrShow(context.extensionUri);
+}
+
+function openLicensePanel() {
+    LicensePanel.createOrShow(context.extensionUri);
+}
+
+function openSdkInstallPanel(sdkId) {
+    SdkInstallPanel.createOrShow(context.extensionUri, sdkId || null);
 }
 
 // ── Open Logs Folder (Mission FINALE — Mission 2B) ───────────────────────────
