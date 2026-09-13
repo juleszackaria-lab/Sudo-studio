@@ -25,7 +25,6 @@ $productJsonPath = Join-Path $resolvedDir "resources\app\product.json"
 if (Test-Path $productJsonPath) {
     Write-Host "Found product.json at: $productJsonPath"
     try {
-        # Detect BOM so we preserve it on write
         $rawBytes = [System.IO.File]::ReadAllBytes($productJsonPath)
         $hasBom = ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF)
         $enc = if ($hasBom) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
@@ -42,7 +41,6 @@ if (Test-Path $productJsonPath) {
         $json | Add-Member -NotePropertyName "win32RegValueName"    -NotePropertyValue "SudoStudio"        -Force
         $json | Add-Member -NotePropertyName "darwinBundleIdentifier" -NotePropertyValue "com.sudostudio.app" -Force
 
-        # Remove checksums to prevent false "installation corrupted" warning after branding patch
         if ($json.PSObject.Properties.Name -contains 'checksums') {
             $json.PSObject.Properties.Remove('checksums')
             Write-Host "[OK] Removed 'checksums' field from product.json (STEP 1) to avoid false corruption warning"
@@ -136,30 +134,10 @@ else {
     Write-Host "[INFO] resources\icon.png not found - skipping PNG replacement"
 }
 
-# ============================================================
-# STEP 4 - Replace visible VSCodium text in .js bundles ONLY
-#
-# CRITICAL RULES:
-#  1. NEVER patch any file whose name starts with "nls" (nls.messages.json,
-#     nls.metadata.json, etc.) - these are Electron/Chromium i18n resources;
-#     a text-replacement will corrupt them and prevent the window from opening.
-#  2. NEVER patch .json files with raw string replacement - always use
-#     ConvertFrom-Json / ConvertTo-Json to preserve valid JSON structure.
-#  3. Only .js files are patched with raw string replacement.
-#  4. After patching, validate every .json in app/out is still valid JSON.
-#  5. NEVER use non-ASCII punctuation (em-dash, curly quotes, box-drawing
-#     characters) inside LIVE CODE STRINGS - only inside comments. This
-#     script is parsed by Windows PowerShell 5.1 without a BOM, which can
-#     misdecode multi-byte UTF-8 punctuation as a stray quote character
-#     and silently corrupt the rest of the parse (this broke the build twice
-#     before this fix - once with an unescaped apostrophe, once with an
-#     em-dash in a Write-Warning string).
-# ============================================================
 $appOutDir = Join-Path $resolvedDir "resources\app\out"
 if (Test-Path $appOutDir) {
     Write-Host "[BRAND] Scanning app/out for VSCodium text in .js files..."
 
-    # -- JS files only (never JSON) ------------------------------------------
     $jsFiles = Get-ChildItem $appOutDir -Recurse -File |
         Where-Object { $_.Extension -eq ".js" } |
         Where-Object { $_.FullName -notmatch "node_modules" } |
@@ -174,10 +152,8 @@ if (Test-Path $appOutDir) {
             $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
             if ($raw -notmatch "VSCodium") { continue }
 
-            # URL-safe replace: skip occurrences inside URL paths or file extensions
             $patched = $raw -replace '(?<![/\\.])VSCodium(?![/\\.])','Sudo Studio'
             if ($patched -ne $raw) {
-                # Preserve original encoding (BOM or not)
                 $rawBytes2 = [System.IO.File]::ReadAllBytes($file.FullName)
                 $hasBom2   = ($rawBytes2.Length -ge 3 -and $rawBytes2[0] -eq 0xEF -and $rawBytes2[1] -eq 0xBB -and $rawBytes2[2] -eq 0xBF)
                 $enc2      = if ($hasBom2) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
@@ -193,12 +169,11 @@ if (Test-Path $appOutDir) {
     }
     Write-Host "[BRAND] JS files patched: $patchedJs / $totalJs scanned"
 
-    # -- JSON files: safe ConvertFrom-Json approach, SKIP nls*.json ----------
     $jsonFiles = Get-ChildItem $appOutDir -Recurse -File |
         Where-Object { $_.Extension -eq ".json" } |
         Where-Object { $_.FullName -notmatch "node_modules" } |
         Where-Object { $_.Length -lt 5MB } |
-        Where-Object { $_.Name -notmatch "^nls" }   # <-- CRITICAL: skip nls.messages.json, nls.metadata.json, etc.
+        Where-Object { $_.Name -notmatch "^nls" }
 
     $patchedJson = 0
     $totalJson   = @($jsonFiles).Count
@@ -209,17 +184,10 @@ if (Test-Path $appOutDir) {
             $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
             if ($raw -notmatch "VSCodium") { continue }
 
-            # Safe JSON round-trip: parse, modify string values, re-serialize.
-            # Convert to JSON string, do the replacement only on string values by
-            # working through the serialized form, but use ConvertTo-Json depth 100
-            # so nested objects survive intact, then do targeted string replacement
-            # on the re-serialized output (the only VSCodium refs in JSON values will
-            # be quoted strings, not keys or URLs).
             $obj  = $raw | ConvertFrom-Json
             $serialized = $obj | ConvertTo-Json -Depth 100
             $patched    = $serialized -replace '(?<![/\\.])VSCodium(?![/\\.])','Sudo Studio'
             if ($patched -ne $serialized) {
-                # Validate the patched result is still valid JSON before writing
                 try { $patched | ConvertFrom-Json | Out-Null }
                 catch {
                     Write-Warning "[WARN] Post-patch JSON validation failed for $($file.Name) - skipping to avoid corruption: $($_.Exception.Message)"
@@ -240,7 +208,6 @@ if (Test-Path $appOutDir) {
     }
     Write-Host "[BRAND] JSON files patched: $patchedJson / $totalJson scanned"
 
-    # -- POST-PATCH VALIDATION: verify ALL .json files in app/out are valid -
     Write-Host "[VALIDATE] Validating all .json files in app/out..."
     $validCount   = 0
     $invalidCount = 0
@@ -270,8 +237,6 @@ else {
 
 # ============================================================
 # STEP 4b - Scan Walkthrough JSON/JS files for residual VSCodium text
-# Walkthrough contributions are often in separate files outside app/out
-# e.g. extensions/*/walkthroughs*.json, walkthrough*.js, package.json
 # ============================================================
 $walkthroughDirs = @(
     (Join-Path $resolvedDir "resources\app\extensions"),
@@ -281,7 +246,6 @@ foreach ($wtDir in $walkthroughDirs) {
     if (-not (Test-Path $wtDir)) { continue }
     Write-Host "[WALKTHROUGH] Scanning for VSCodium text in walkthrough files under: $wtDir"
 
-    # JS walkthrough files
     $wtJsFiles = Get-ChildItem $wtDir -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -eq ".js" } |
         Where-Object { $_.FullName -match 'walkthrough' -or $_.FullName -match 'getting.started' -or $_.FullName -match 'welcome' } |
@@ -307,7 +271,6 @@ foreach ($wtDir in $walkthroughDirs) {
         }
     }
 
-    # JSON walkthrough files (safe round-trip, skip nls*)
     $wtJsonFiles = Get-ChildItem $wtDir -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -eq ".json" } |
         Where-Object { $_.FullName -notmatch 'node_modules' } |
@@ -320,14 +283,13 @@ foreach ($wtDir in $walkthroughDirs) {
         try {
             $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
             if ($raw -notmatch 'VSCodium') { continue }
-            # Safe JSON round-trip
             $obj        = $raw | ConvertFrom-Json
             $serialized = $obj | ConvertTo-Json -Depth 100
             $patched    = $serialized -replace '(?<![/\.])VSCodium(?![/\.])','Sudo Studio'
             if ($patched -ne $serialized) {
                 try { $patched | ConvertFrom-Json | Out-Null }
                 catch {
-                    Write-Warning "[WARN] Post-patch JSON validation failed for $($file.Name) — skipping: $($_.Exception.Message)"
+                    Write-Warning "[WARN] Post-patch JSON validation failed for $($file.Name) - skipping: $($_.Exception.Message)"
                     continue
                 }
                 $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName)
@@ -355,14 +317,12 @@ if (Test-Path $appProductJson) {
         $enc5      = if ($hasBom5) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
 
         $json5 = [System.IO.File]::ReadAllText($appProductJson, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-        # Ensure nameShort/nameLong are correct (idempotent)
         if ($json5.nameShort -ne "Sudo Studio") {
             $json5 | Add-Member -NotePropertyName "nameShort" -NotePropertyValue "Sudo Studio" -Force
         }
         if ($json5.nameLong -ne "Sudo Studio") {
             $json5 | Add-Member -NotePropertyName "nameLong" -NotePropertyValue "Sudo Studio" -Force
         }
-        # Remove checksums to prevent false "installation corrupted" warning after branding patch
         if ($json5.PSObject.Properties.Name -contains 'checksums') {
             $json5.PSObject.Properties.Remove('checksums')
             Write-Host "[OK] Removed 'checksums' field from product.json (STEP 5) to avoid false corruption warning"
