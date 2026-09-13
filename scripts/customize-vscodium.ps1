@@ -42,6 +42,12 @@ if (Test-Path $productJsonPath) {
         $json | Add-Member -NotePropertyName "win32RegValueName"    -NotePropertyValue "SudoStudio"        -Force
         $json | Add-Member -NotePropertyName "darwinBundleIdentifier" -NotePropertyValue "com.sudostudio.app" -Force
 
+        # Remove checksums to prevent false "installation corrupted" warning after branding patch
+        if ($json.PSObject.Properties.Name -contains 'checksums') {
+            $json.PSObject.Properties.Remove('checksums')
+            Write-Host "[OK] Removed 'checksums' field from product.json (STEP 1) to avoid false corruption warning"
+        }
+
         $patched = $json | ConvertTo-Json -Depth 20
         [System.IO.File]::WriteAllText($productJsonPath, $patched, $enc)
         Write-Host "[OK] product.json updated with Sudo Studio branding"
@@ -263,6 +269,82 @@ else {
 }
 
 # ============================================================
+# STEP 4b - Scan Walkthrough JSON/JS files for residual VSCodium text
+# Walkthrough contributions are often in separate files outside app/out
+# e.g. extensions/*/walkthroughs*.json, walkthrough*.js, package.json
+# ============================================================
+$walkthroughDirs = @(
+    (Join-Path $resolvedDir "resources\app\extensions"),
+    (Join-Path $resolvedDir "resources\app")
+)
+foreach ($wtDir in $walkthroughDirs) {
+    if (-not (Test-Path $wtDir)) { continue }
+    Write-Host "[WALKTHROUGH] Scanning for VSCodium text in walkthrough files under: $wtDir"
+
+    # JS walkthrough files
+    $wtJsFiles = Get-ChildItem $wtDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -eq ".js" } |
+        Where-Object { $_.FullName -match 'walkthrough' -or $_.FullName -match 'getting.started' -or $_.FullName -match 'welcome' } |
+        Where-Object { $_.FullName -notmatch 'node_modules' } |
+        Where-Object { $_.Length -lt 5MB }
+
+    $patchedWtJs = 0
+    foreach ($file in $wtJsFiles) {
+        try {
+            $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
+            if ($raw -notmatch 'VSCodium') { continue }
+            $patched = $raw -replace '(?<![/\.])VSCodium(?![/\.])','Sudo Studio'
+            if ($patched -ne $raw) {
+                $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                $hasBom   = ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF)
+                $enc      = if ($hasBom) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
+                [System.IO.File]::WriteAllText($file.FullName, $patched, $enc)
+                Write-Host "[OK] Patched walkthrough JS: $($file.FullName.Substring($resolvedDir.Length))"
+                $patchedWtJs++
+            }
+        } catch {
+            Write-Warning "[WARN] Could not patch walkthrough JS $($file.Name): $($_.Exception.Message)"
+        }
+    }
+
+    # JSON walkthrough files (safe round-trip, skip nls*)
+    $wtJsonFiles = Get-ChildItem $wtDir -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -eq ".json" } |
+        Where-Object { $_.FullName -notmatch 'node_modules' } |
+        Where-Object { $_.Name -notmatch '^nls' } |
+        Where-Object { $_.Length -lt 5MB } |
+        Where-Object { $_.Name -match 'walkthrough' -or $_.Name -match 'getting.started' -or $_.Name -match 'package' }
+
+    $patchedWtJson = 0
+    foreach ($file in $wtJsonFiles) {
+        try {
+            $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
+            if ($raw -notmatch 'VSCodium') { continue }
+            # Safe JSON round-trip
+            $obj        = $raw | ConvertFrom-Json
+            $serialized = $obj | ConvertTo-Json -Depth 100
+            $patched    = $serialized -replace '(?<![/\.])VSCodium(?![/\.])','Sudo Studio'
+            if ($patched -ne $serialized) {
+                try { $patched | ConvertFrom-Json | Out-Null }
+                catch {
+                    Write-Warning "[WARN] Post-patch JSON validation failed for $($file.Name) — skipping: $($_.Exception.Message)"
+                    continue
+                }
+                $rawBytes = [System.IO.File]::ReadAllBytes($file.FullName)
+                $hasBom   = ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF)
+                $enc      = if ($hasBom) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
+                [System.IO.File]::WriteAllText($file.FullName, $patched, $enc)
+                Write-Host "[OK] Patched walkthrough JSON: $($file.FullName.Substring($resolvedDir.Length))"
+                $patchedWtJson++
+            }
+        } catch {
+            Write-Warning "[WARN] Could not patch walkthrough JSON $($file.Name): $($_.Exception.Message)"
+        }
+    }
+    Write-Host "[WALKTHROUGH] Patched: $patchedWtJs JS + $patchedWtJson JSON files in $wtDir"
+}
+
+# ============================================================
 # STEP 5 - Re-confirm product.json display names (safe JSON patch)
 # ============================================================
 $appProductJson = Join-Path $resolvedDir "resources\app\product.json"
@@ -279,6 +361,11 @@ if (Test-Path $appProductJson) {
         }
         if ($json5.nameLong -ne "Sudo Studio") {
             $json5 | Add-Member -NotePropertyName "nameLong" -NotePropertyValue "Sudo Studio" -Force
+        }
+        # Remove checksums to prevent false "installation corrupted" warning after branding patch
+        if ($json5.PSObject.Properties.Name -contains 'checksums') {
+            $json5.PSObject.Properties.Remove('checksums')
+            Write-Host "[OK] Removed 'checksums' field from product.json (STEP 5) to avoid false corruption warning"
         }
         $patched5 = $json5 | ConvertTo-Json -Depth 20
         [System.IO.File]::WriteAllText($appProductJson, $patched5, $enc5)

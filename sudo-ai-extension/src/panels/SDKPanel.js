@@ -295,14 +295,76 @@ class SDKPanel {
         }
     }
 
-    // Detect a single SDK
+    // Build expanded PATH for Windows Electron processes (PATH not inherited from system)
+    _buildExpandedEnv() {
+        const env = Object.assign({}, process.env);
+        if (IS_WIN) {
+            const lAppData  = process.env.LOCALAPPDATA  || '';
+            const progFiles = process.env.PROGRAMFILES  || 'C:\\Program Files';
+            const progF86   = process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+            const appData   = process.env.APPDATA       || '';
+            const userProf  = process.env.USERPROFILE   || '';
+            const sysRoot   = process.env.SYSTEMROOT    || 'C:\\Windows';
+            const extraPaths = [
+                // Node.js
+                `${lAppData}\\Programs\\nodejs`,
+                `${progFiles}\\nodejs`,
+                `${appData}\\npm`,
+                // Python
+                `${lAppData}\\Programs\\Python\\Python311`,
+                `${lAppData}\\Programs\\Python\\Python312`,
+                `${lAppData}\\Programs\\Python\\Python310`,
+                `${lAppData}\\Programs\\Python\\Python39`,
+                `${progFiles}\\Python311`,
+                `${progFiles}\\Python312`,
+                `${lAppData}\\Programs\\Python\\Python311\\Scripts`,
+                `${lAppData}\\Programs\\Python\\Python312\\Scripts`,
+                // pip / pipx
+                `${appData}\\Python\\Scripts`,
+                `${userProf}\\AppData\\Local\\Programs\\Python\\Launcher`,
+                // Git
+                `${progFiles}\\Git\\cmd`,
+                `${progFiles}\\Git\\bin`,
+                `${progF86}\\Git\\cmd`,
+                // Docker
+                `${progFiles}\\Docker\\Docker\\resources\\bin`,
+                // Flutter
+                `${userProf}\\flutter\\bin`,
+                `C:\\flutter\\bin`,
+                `${progFiles}\\flutter\\bin`,
+                // Java
+                `${progFiles}\\Java\\jdk-17\\bin`,
+                `${progFiles}\\Java\\jdk-21\\bin`,
+                `${progFiles}\\Eclipse Adoptium\\jdk-17.0.0.0-hotspot\\bin`,
+                `${progFiles}\\Eclipse Adoptium\\jdk-21.0.0.0-hotspot\\bin`,
+                // Rust
+                `${userProf}\\.cargo\\bin`,
+                // Go
+                `${progFiles}\\Go\\bin`,
+                `C:\\Go\\bin`,
+                `${userProf}\\go\\bin`,
+                // System
+                `${sysRoot}\\System32`,
+                `${sysRoot}\\System32\\WindowsPowerShell\\v1.0`,
+            ].filter(p => p && p.length > 3);
+            const existing = env.PATH || '';
+            env.PATH = extraPaths.join(';') + (existing ? ';' + existing : '');
+        }
+        return env;
+    }
+
+    // Detect a single SDK with expanded PATH
     detectSDK(sdk) {
         return new Promise(resolve => {
-            exec(sdk.detectCmd, { timeout: 5000 }, (err, stdout) => {
+            const env = this._buildExpandedEnv();
+            exec(sdk.detectCmd, { timeout: 8000, env }, (err, stdout, stderr) => {
                 if (!err && stdout.trim()) {
                     const version = stdout.trim().split('\n')[0].replace(/^v/, '');
                     resolve({ id: sdk.id, installed: true, version });
                 } else {
+                    // Log detection failure for debugging
+                    const reason = err ? err.message.split('\n')[0] : 'empty output';
+                    console.log(`[SDK] detectSDK(${sdk.id}) FAILED: ${reason}`);
                     resolve({ id: sdk.id, installed: false, version: null });
                 }
             });
@@ -360,8 +422,87 @@ class SDKPanel {
             if (sel === 'Re-detect After') this.detectAll();
         });
 
-        // Auto re-detect after 15s
-        setTimeout(() => this.detectAll(), 15000);
+        // Auto re-detect after 15s, then auto-configure PATH after install
+        setTimeout(() => {
+            this.detectAll();
+            if (action === 'install' && IS_WIN) {
+                this._autoConfigurePathAfterInstall(sdk);
+            }
+        }, 15000);
+    }
+
+    /**
+     * After a Windows SDK install, find the new binary and persist its directory
+     * to the User PATH via PowerShell / registry so new terminals pick it up
+     * immediately — without any manual user action.
+     */
+    _autoConfigurePathAfterInstall(sdk) {
+        if (!IS_WIN) return; // Only needed on Windows (PATH fully inherited on macOS/Linux)
+
+        const env = this._buildExpandedEnv();
+
+        // Re-run detection with expanded env to find where the binary landed
+        exec(sdk.detectCmd, { timeout: 8000, env }, (err, stdout) => {
+            if (err || !stdout.trim()) {
+                console.log(`[SDK][PATH] ${sdk.id}: binary not found after install — skipping PATH update`);
+                return;
+            }
+
+            // Locate the executable to discover the directory
+            const whichCmd = sdk.id === 'python'
+                ? 'where python'
+                : sdk.id === 'nodejs'
+                    ? 'where node'
+                    : `where ${sdk.detectCmd.split(' ')[0]}`;
+
+            exec(whichCmd, { timeout: 5000, env }, (e2, out2) => {
+                if (e2 || !out2.trim()) {
+                    console.log(`[SDK][PATH] ${sdk.id}: 'where' failed — cannot determine install dir`);
+                    return;
+                }
+                // First line is the actual path
+                const binPath = out2.trim().split('\n')[0].trim();
+                const binDir  = require('path').dirname(binPath);
+
+                // Read current User PATH from registry
+                const psReadCmd = `[System.Environment]::GetEnvironmentVariable('PATH','User')`;
+                exec(`powershell -NoProfile -Command "${psReadCmd}"`, { timeout: 5000 }, (e3, currentPath) => {
+                    const existing = (currentPath || '').trim();
+                    if (existing.split(';').some(p => p.toLowerCase() === binDir.toLowerCase())) {
+                        console.log(`[SDK][PATH] ${sdk.id}: '${binDir}' already in User PATH — no change needed`);
+                        return;
+                    }
+
+                    // Append new dir to User PATH via registry (persists for new terminals)
+                    const newPath = existing ? existing + ';' + binDir : binDir;
+                    // Escape single-quotes in path for PS string
+                    const escapedPath = newPath.replace(/'/g, "''");
+                    const psWriteCmd  = `[System.Environment]::SetEnvironmentVariable('PATH','${escapedPath}','User')`;
+
+                    exec(`powershell -NoProfile -Command "${psWriteCmd}"`, { timeout: 10000 }, (e4) => {
+                        if (e4) {
+                            console.error(`[SDK][PATH] ${sdk.id}: registry write FAILED: ${e4.message}`);
+                            // Fallback: try setx (limited to 1024 chars but simpler)
+                            if (newPath.length < 1000) {
+                                exec(`setx PATH "${newPath}"`, { timeout: 10000 }, (e5) => {
+                                    if (e5) {
+                                        console.error(`[SDK][PATH] ${sdk.id}: setx fallback ALSO failed: ${e5.message}`);
+                                    } else {
+                                        console.log(`[SDK][PATH] ${sdk.id}: PATH updated via setx (fallback) — new dir: ${binDir}`);
+                                        vscode.window.showInformationMessage(`✅ ${sdk.name} ajouté au PATH système. Ouvrez un nouveau terminal pour l'utiliser.`);
+                                    }
+                                });
+                            }
+                        } else {
+                            console.log(`[SDK][PATH] ${sdk.id}: PATH updated via registry — new dir: '${binDir}'`);
+                            vscode.window.showInformationMessage(
+                                `✅ ${sdk.name} installé et ajouté au PATH. Ouvrez un nouveau terminal pour utiliser '${sdk.detectCmd.split(' ')[0]}'.`
+                            );
+                        }
+                    });
+                });
+            });
+        });
     }
 
     dispose() {

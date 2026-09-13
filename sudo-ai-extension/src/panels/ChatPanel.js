@@ -828,6 +828,12 @@ body {
     <div class="dl-track"><div class="dl-fill" id="dlFill"></div></div>
 </div>
 
+<div id="mockBanner" style="display:none;padding:8px 14px;background:#5a2d00;border-bottom:2px solid #d29922;color:#f0c060;font-size:12px;font-weight:600;flex-shrink:0;align-items:center;gap:8px;">
+    <span style="font-size:16px">⚠️</span>
+    <span id="mockBannerText">Modèle non chargé — réponses simulées (mode mock)</span>
+    <button id="mockBannerBtn" style="margin-left:auto;padding:3px 10px;font-size:11px;background:#d29922;color:#000;border:none;border-radius:4px;cursor:pointer;font-weight:600">Ouvrir Runtime</button>
+</div>
+
 <div id="chat">
     <div class="empty" id="emptyState">
         <div class="empty-icon">🤖</div>
@@ -993,6 +999,15 @@ if (dlBtnEl) {
     dlBtnEl.addEventListener('click', function() { downloadModel(); });
 }
 
+// Mock banner "Ouvrir Runtime" button
+const mockBannerBtnEl = document.getElementById('mockBannerBtn');
+if (mockBannerBtnEl) {
+    mockBannerBtnEl.addEventListener('click', function() {
+        vscPost({ type: 'openRuntime' });
+    });
+    console.log('[CHAT] mockBannerBtn listener attached');
+}
+
 // Quick-action buttons — use data attributes, delegate via event bubbling
 function bindQuickGrid(container) {
     container.querySelectorAll('.qb').forEach(function(btn) {
@@ -1133,40 +1148,61 @@ function updateStatus(data) {
     const dlBar = document.getElementById('dlBar');
     const dlFill = document.getElementById('dlFill');
     const dlLabel = document.getElementById('dlLabel');
+    const mockBanner = document.getElementById('mockBanner');
+    const mockBannerText = document.getElementById('mockBannerText');
+
+    // Helper: show/hide mock banner
+    function setMockBanner(show, reason) {
+        if (!mockBanner) return;
+        if (show) {
+            mockBanner.style.display = 'flex';
+            if (mockBannerText) mockBannerText.textContent = reason || '⚠️ Modèle non chargé — réponses simulées (mode mock)';
+        } else {
+            mockBanner.style.display = 'none';
+        }
+    }
 
     if (!data || data.status === 'offline') {
         dot.className = 'dot offline';
         txt.textContent = 'Runtime hors ligne - lancez runtime.exe';
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
+        setMockBanner(false);
         return;
     }
     if (data.status === 'starting') {
         dot.className = 'dot loading';
-        txt.textContent = 'Runtime en demarrage... (3-5 min pour TinyLlama)';
+        txt.textContent = 'Runtime en demarrage... (3-5 min)';
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
+        setMockBanner(true, '⏳ Runtime en démarrage — réponses simulées en attendant le chargement du modèle');
         return;
     }
     const m = data.model || {};
+    const isMockMode = data.mock_mode === true || (!m.loaded && !m.loading);
+
     if (m.loading) {
         dot.className = 'dot loading';
         const pct = m.download_progress || 0;
         txt.textContent = '⬇ Chargement modèle ' + pct + '%...';
         dlBar.classList.add('show');
         dlFill.style.width = pct + '%';
-        dlLabel.textContent = 'Chargement: ' + (m.name || 'TinyLlama') + ' — ' + pct + '%';
+        dlLabel.textContent = 'Chargement: ' + (m.name || 'Qwen2.5-Coder') + ' — ' + pct + '%';
         dlBtn.style.display = 'none';
+        setMockBanner(true, '⏳ Modèle en cours de chargement (' + pct + '%) — réponses simulées en attendant');
     } else if (m.loaded) {
         dot.className = 'dot online';
         txt.textContent = '\u2705 IA pr\u00eate \u00b7 ' + (m.name || 'mod\u00e8le') + ' \u00b7 ' + (m.device || 'cpu');
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
+        setMockBanner(false);  // Model loaded — hide banner
     } else {
         dot.className = 'dot offline';
-        txt.textContent = '⚠ Aucun modèle — cliquez Download';
+        txt.textContent = '⚠ Aucun modèle chargé';
         dlBtn.style.display = 'inline-block';
         dlBar.classList.remove('show');
+        const errMsg = m.error ? ' — ' + m.error.slice(0, 80) : '';
+        setMockBanner(true, '⚠️ Modèle non chargé — réponses simulées' + errMsg + '. Cliquez "Ouvrir Runtime" pour télécharger un modèle.');
     }
 }
 
@@ -1212,9 +1248,9 @@ window.addEventListener('message', ev => {
             if (msg.model) meta += msg.model;
             if (msg.latency && msg.latency > 0) meta += (meta ? ' · ' : '') + msg.latency + 'ms';
             if (msg.mock && msg.loading) {
-                meta += '<span class="badge" style="background:rgba(33,150,243,.2);color:#2196f3">Chargement modele...</span>';
+                meta += '<span class="badge" style="background:rgba(33,150,243,.2);color:#2196f3">⏳ Chargement modele...</span>';
             } else if (msg.mock) {
-                meta += '<span class="badge">Mode basique</span>';
+                meta += '<span class="badge" style="background:rgba(210,153,34,.25);color:#d29922">⚠️ Réponse simulée (mock)</span>';
             }
             if (msg.progress !== undefined && msg.progress > 0 && msg.progress < 100) {
                 meta += (meta ? ' · ' : '') + msg.progress + '%';

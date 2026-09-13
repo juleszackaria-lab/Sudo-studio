@@ -169,14 +169,159 @@ STATE_FILE = MODELS_DIR / "model_state.json"
 
 # RAM requirements per model (GB)
 MODEL_RAM_REQUIREMENTS = {
-    "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF":    1.5,  # Q4_K_M GGUF ≈ 1GB on disk, ~1.5GB RAM
-    "TinyLlama/TinyLlama-1.1B-Chat-v1.0":        2.5,
-    "deepseek-ai/deepseek-coder-1.3b-instruct":  3.0,
-    "meta-llama/Llama-3.2-1B-Instruct":          2.5,
-    "Qwen/Qwen2.5-Coder-1.5B-Instruct":          3.5,
-    "microsoft/phi-2":                            6.0,
-    "mistralai/Mistral-7B-Instruct-v0.2":         16.0,
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF":           1.5,  # Q4_K_M GGUF ≈ 1GB on disk, ~1.5GB RAM
+    "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF":         3.0,
+    "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF":         5.5,
+    "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF":        10.0,
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0":               2.5,
+    "deepseek-ai/deepseek-coder-1.3b-instruct":         3.0,
+    "meta-llama/Llama-3.2-1B-Instruct":                 2.5,
+    "meta-llama/Llama-3.2-3B-Instruct":                 4.0,
+    "bartowski/Llama-3.2-8B-Instruct-GGUF":             7.0,
+    "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF":        7.0,
+    "bartowski/Meta-Llama-3.1-13B-Instruct-GGUF":       10.0,
+    "bartowski/mistral-7b-instruct-v0.2-GGUF":          6.0,
+    "bartowski/CodeLlama-7b-Instruct-GGUF":             6.0,
+    "bartowski/CodeLlama-13b-Instruct-GGUF":            10.0,
+    "bartowski/deepseek-coder-v2-lite-instruct-GGUF":   9.0,
+    "microsoft/phi-2":                                   6.0,
+    "bartowski/phi-3-mini-4k-instruct-GGUF":             4.0,
+    "mistralai/Mistral-7B-Instruct-v0.2":                16.0,
 }
+
+# ─── Full model catalogue with sizes and descriptions (for UI display) ──────────
+MODEL_CATALOGUE = [
+    {
+        "id":          "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+        "name":        "Qwen2.5 Coder 1.5B Q4 (GGUF)",
+        "filename":    "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+        "size_gb":     1.0,
+        "ram_gb":      1.5,
+        "type":        "gguf",
+        "description": "⭐ Recommandé — Spécialisé code, très léger, CPU uniquement",
+        "recommended": True,
+    },
+    {
+        "id":          "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF",
+        "name":        "Qwen2.5 Coder 3B Q4 (GGUF)",
+        "filename":    "Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf",
+        "size_gb":     2.0,
+        "ram_gb":      3.0,
+        "type":        "gguf",
+        "description": "Qwen 3B — Meilleure qualité code, 3GB RAM",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/phi-3-mini-4k-instruct-GGUF",
+        "name":        "Phi-3 Mini 4K (GGUF)",
+        "filename":    "Phi-3-mini-4k-instruct-Q4_K_M.gguf",
+        "size_gb":     2.2,
+        "ram_gb":      4.0,
+        "type":        "gguf",
+        "description": "Microsoft Phi-3 Mini — rapide et capable, 4GB RAM",
+        "recommended": False,
+    },
+    {
+        "id":          "meta-llama/Llama-3.2-3B-Instruct",
+        "name":        "Llama 3.2 3B Instruct",
+        "filename":    None,
+        "size_gb":     3.0,
+        "ram_gb":      4.0,
+        "type":        "transformers",
+        "description": "Meta Llama 3.2 3B — usage général, bon équilibre",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+        "name":        "Qwen2.5 Coder 7B Q4 (GGUF)",
+        "filename":    "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+        "size_gb":     4.7,
+        "ram_gb":      5.5,
+        "type":        "gguf",
+        "description": "Qwen 7B code — haute qualité, 6GB RAM recommandée",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/CodeLlama-7b-Instruct-GGUF",
+        "name":        "CodeLlama 7B Instruct (GGUF)",
+        "filename":    "CodeLlama-7b-Instruct-Q4_K_M.gguf",
+        "size_gb":     3.8,
+        "ram_gb":      6.0,
+        "type":        "gguf",
+        "description": "Meta CodeLlama 7B — excellent pour refactoring",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/mistral-7b-instruct-v0.2-GGUF",
+        "name":        "Mistral 7B v0.2 (GGUF)",
+        "filename":    "mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+        "size_gb":     4.1,
+        "ram_gb":      6.0,
+        "type":        "gguf",
+        "description": "Mistral 7B — usage général haute qualité, 6GB RAM",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        "name":        "Llama 3.1 8B Instruct (GGUF)",
+        "filename":    "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "size_gb":     4.9,
+        "ram_gb":      7.0,
+        "type":        "gguf",
+        "description": "Meta Llama 3.1 8B — très polyvalent, 8GB RAM",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/deepseek-coder-v2-lite-instruct-GGUF",
+        "name":        "DeepSeek Coder V2 Lite (GGUF)",
+        "filename":    "deepseek-coder-v2-lite-instruct-Q4_K_M.gguf",
+        "size_gb":     8.0,
+        "ram_gb":      9.0,
+        "type":        "gguf",
+        "description": "DeepSeek Coder V2 Lite — top code completion, 10GB RAM",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/Meta-Llama-3.1-13B-Instruct-GGUF",
+        "name":        "Llama 3.1 13B Instruct (GGUF)",
+        "filename":    "Meta-Llama-3.1-13B-Instruct-Q4_K_M.gguf",
+        "size_gb":     7.9,
+        "ram_gb":      10.0,
+        "type":        "gguf",
+        "description": "Meta Llama 3.1 13B — puissant, 12GB RAM requise",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/CodeLlama-13b-Instruct-GGUF",
+        "name":        "CodeLlama 13B Instruct (GGUF)",
+        "filename":    "CodeLlama-13b-Instruct-Q4_K_M.gguf",
+        "size_gb":     7.3,
+        "ram_gb":      10.0,
+        "type":        "gguf",
+        "description": "Meta CodeLlama 13B — meilleur code possible sans GPU, 12GB RAM",
+        "recommended": False,
+    },
+    {
+        "id":          "bartowski/Qwen2.5-Coder-14B-Instruct-GGUF",
+        "name":        "Qwen2.5 Coder 14B Q4 (GGUF)",
+        "filename":    "Qwen2.5-Coder-14B-Instruct-Q4_K_M.gguf",
+        "size_gb":     9.0,
+        "ram_gb":      10.0,
+        "type":        "gguf",
+        "description": "Qwen 14B code — top tier, 12GB RAM minimum",
+        "recommended": False,
+    },
+    {
+        "id":          "mistralai/Mistral-7B-Instruct-v0.2",
+        "name":        "Mistral 7B v0.2 (transformers)",
+        "filename":    None,
+        "size_gb":     14.0,
+        "ram_gb":      16.0,
+        "type":        "transformers",
+        "description": "Mistral 7B HF format — 16GB RAM nécessaire",
+        "recommended": False,
+    },
+]
 
 # Priority order: GGUF Qwen coder first (lightest + best code quality)
 MODEL_PRIORITY = [
@@ -662,14 +807,21 @@ def load_model_thread(model_id: str, force_download: bool = False):
                         break
 
                 # If not found locally, download from HuggingFace Hub
+                # NOTE: This is the ONLY place where network access is explicitly
+                # permitted — triggered only when no local file exists AND this is
+                # the startup auto-download path (not an offline-first boot).
+                # The /download API endpoint uses the same controlled exception.
                 if not gguf_path:
                     dlog(f"[GGUF] Not found locally — downloading {DEFAULT_MODEL_FILENAME} from {DEFAULT_MODEL_HF_REPO}...")
-                    logger.info(f"[GGUF] Downloading {DEFAULT_MODEL_FILENAME} from {DEFAULT_MODEL_HF_REPO}")
+                    logger.info(f"[GGUF] *** NETWORK REQUIRED *** Downloading {DEFAULT_MODEL_FILENAME}")
+                    logger.info(f"[GGUF] This is the only network operation allowed at startup (first run only)")
                     state.download_progress = 5
                     try:
                         # Temporarily re-enable network for the download
+                        # This is the ONLY sanctioned network exception in this file.
                         os.environ.pop("TRANSFORMERS_OFFLINE", None)
                         os.environ.pop("HF_HUB_OFFLINE", None)
+                        dlog("[GGUF] Offline env vars TEMPORARILY removed for download")
                         from huggingface_hub import hf_hub_download
                         local_path = hf_hub_download(
                             repo_id=DEFAULT_MODEL_HF_REPO,
@@ -685,9 +837,10 @@ def load_model_thread(model_id: str, force_download: bool = False):
                         logger.warning(f"[GGUF] Download failed: {dl_err}")
                         gguf_path = None
                     finally:
-                        # Re-apply offline mode
+                        # ALWAYS re-apply offline mode after download attempt
                         os.environ["TRANSFORMERS_OFFLINE"] = "1"
                         os.environ["HF_HUB_OFFLINE"] = "1"
+                        dlog("[GGUF] Offline env vars RESTORED after download")
 
                 if gguf_path and os.path.isfile(gguf_path):
                     dlog(f"[GGUF] Loading Llama model from: {gguf_path}")
@@ -872,9 +1025,14 @@ def load_model_thread(model_id: str, force_download: bool = False):
 
         dlog(f"Loading tokenizer from: {load_path} (local={is_local})")
         logger.info(f"[MODEL] Loading tokenizer from: {load_path}")
+        # OFFLINE ENFORCEMENT: always use local_files_only=True for transformers models.
+        # The offline env vars (TRANSFORMERS_OFFLINE / HF_HUB_OFFLINE) are set at startup
+        # and only temporarily removed during explicit /download calls.
+        # Passing local_files_only=True here provides a second layer of protection
+        # to prevent any silent fallback network call from transformers internals.
         tokenizer = AutoTokenizer.from_pretrained(
             load_path,
-            local_files_only=is_local,   # never contact internet when loading local
+            local_files_only=True,       # HARD OFFLINE: never contact internet for tokenizer
             trust_remote_code=False,     # safe default; avoid arbitrary remote code
         )
         state.download_progress = 40
@@ -925,7 +1083,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
         _load_kwargs_base = dict(
             cache_dir      = cache_dir if model_load_path == model_id else None,
             trust_remote_code = False,
-            local_files_only  = is_local,
+            local_files_only  = True,    # HARD OFFLINE: never allow transformers to hit network
         )
         dlog(f"from_pretrained base kwargs: {_load_kwargs_base}")
 
@@ -1593,14 +1751,19 @@ def infer_stream():
 
 @app.route('/models', methods=['GET'])
 def models():
+    """Legacy /models endpoint — redirects to catalogue data for backward compat."""
     avail = get_available_ram_gb()
+    # Build simplified list from catalogue
     available_models = [
-        {"id": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",      "name": "TinyLlama 1.1B (Default)", "size": "~600MB",  "ram_required_gb": 2.5,  "can_load": avail >= 2.5},
-        {"id": "deepseek-ai/deepseek-coder-1.3b-instruct", "name": "DeepSeek Coder 1.3B",      "size": "~1.3GB",  "ram_required_gb": 3.0,  "can_load": avail >= 3.0},
-        {"id": "meta-llama/Llama-3.2-1B-Instruct",         "name": "Llama 3.2 1B",             "size": "~1.2GB",  "ram_required_gb": 2.5,  "can_load": avail >= 2.5},
-        {"id": "Qwen/Qwen2.5-Coder-1.5B-Instruct",         "name": "Qwen2.5 Coder 1.5B",       "size": "~1.5GB",  "ram_required_gb": 3.5,  "can_load": avail >= 3.5},
-        {"id": "microsoft/phi-2",                          "name": "Phi-2 2.7B",               "size": "~2.7GB",  "ram_required_gb": 6.0,  "can_load": avail >= 6.0},
-        {"id": "mistralai/Mistral-7B-Instruct-v0.2",       "name": "Mistral 7B",               "size": "~7GB",    "ram_required_gb": 16.0, "can_load": avail >= 16.0},
+        {
+            "id":              m["id"],
+            "name":            m["name"],
+            "size":            f"~{m['size_gb']}GB",
+            "ram_required_gb": m["ram_gb"],
+            "can_load":        avail >= m["ram_gb"],
+            "recommended":     m.get("recommended", False),
+        }
+        for m in MODEL_CATALOGUE
     ]
     return jsonify({
         "current":              state.model_name or DEFAULT_MODEL,
@@ -1610,6 +1773,7 @@ def models():
         "available":            available_models,
         "system_ram_available_gb": round(avail, 2),
         "from_local_cache":     state.detected_local,
+        "mock_mode":            not state.loaded,
     })
 
 
@@ -1637,7 +1801,11 @@ def reload_model():
 
 @app.route('/download', methods=['POST'])
 def download_model():
-    """Force download/reload a specific model (bypasses local detection)."""
+    """
+    Force download/reload a specific model (bypasses local detection).
+    This is one of the two explicit user-initiated network actions allowed.
+    The other is SDK installation (handled by the extension, not this runtime).
+    """
     data     = request.get_json(silent=True) or {}
     model_id = data.get('model', DEFAULT_MODEL)
     if state.loading:
@@ -1645,11 +1813,14 @@ def download_model():
     ok, avail, req, msg = check_ram_for_model(model_id)
     if not ok:
         logger.warning(f"[DOWNLOAD] {msg}")
+    logger.info(f"[DOWNLOAD] *** USER-INITIATED DOWNLOAD *** model={model_id}")
+    logger.info(f"[DOWNLOAD] This is an explicit user action — network access is permitted")
     state.loaded    = False
     state.model     = None
     state.tokenizer = None
     gc.collect()
-    # force_download=True bypasses local detection
+    # force_download=True bypasses local detection and triggers network access
+    # The load_model_thread will temporarily remove OFFLINE env vars and restore them
     start_model_load(model_id, force_download=True)
     return jsonify({
         "status":           "downloading",
@@ -1657,6 +1828,7 @@ def download_model():
         "ram_available_gb": round(avail, 2),
         "ram_required_gb":  req,
         "ram_warning":      None if ok else msg,
+        "note":             "User-initiated download — network access active during download only",
     })
 
 
@@ -1684,12 +1856,96 @@ def scan_models():
     })
 
 
+@app.route('/models/catalogue', methods=['GET'])
+def models_catalogue():
+    """
+    Return the full model catalogue with local-scan status.
+    For each model: is it already downloaded locally?
+    This is 100% offline — no network call. Only /download triggers network access.
+    """
+    avail_ram = get_available_ram_gb()
+    total_ram = get_total_ram_gb()
+
+    # Scan local GGUF files (offline, fast)
+    hf_hub_dir = Path(os.environ.get("HF_HOME", str(Path.home() / ".sudo_studio"))) / "hub"
+    search_roots = [MODELS_DIR]
+    if hf_hub_dir.exists() and hf_hub_dir != MODELS_DIR:
+        search_roots.append(hf_hub_dir)
+
+    local_gguf_files = []
+    for root in search_roots:
+        try:
+            local_gguf_files.extend(root.rglob("*.gguf"))
+        except Exception:
+            pass
+
+    local_gguf_names = {gf.name.lower() for gf in local_gguf_files if gf.stat().st_size > 100 * 1024 * 1024}
+
+    # Also scan HF transformers cache for non-GGUF models
+    local_hf_models = set()
+    try:
+        from huggingface_hub import scan_cache_dir
+        cache_info = scan_cache_dir()
+        for repo in cache_info.repos:
+            if repo.repo_type == 'model' and repo.size_on_disk > 50 * 1024 * 1024:
+                local_hf_models.add(repo.repo_id)
+    except Exception:
+        pass
+
+    catalogue = []
+    best_local_id = None
+    best_local_ram = 0.0
+
+    for model in MODEL_CATALOGUE:
+        downloaded = False
+        local_path = None
+
+        if model["type"] == "gguf" and model.get("filename"):
+            # Check if GGUF file exists locally
+            fn_lower = model["filename"].lower()
+            if fn_lower in local_gguf_names:
+                downloaded = True
+                # Find actual path
+                for gf in local_gguf_files:
+                    if gf.name.lower() == fn_lower:
+                        local_path = str(gf)
+                        break
+        elif model["type"] == "transformers":
+            downloaded = (model["id"] in local_hf_models)
+
+        can_load = avail_ram >= model["ram_gb"]
+
+        if downloaded and can_load and model["ram_gb"] > best_local_ram:
+            best_local_ram = model["ram_gb"]
+            best_local_id  = model["id"]
+
+        catalogue.append({
+            **model,
+            "downloaded":  downloaded,
+            "local_path":  local_path,
+            "can_load":    can_load,
+            "currently_loaded": (state.loaded and state.model_name and model["id"] in state.model_name),
+        })
+
+    return jsonify({
+        "catalogue":         catalogue,
+        "ram_available_gb":  round(avail_ram, 2),
+        "ram_total_gb":      round(total_ram, 2),
+        "best_local_model":  best_local_id,
+        "current_model":     state.model_name or DEFAULT_MODEL,
+        "model_loaded":      state.loaded,
+        "model_loading":     state.loading,
+        "mock_mode":         not state.loaded,
+        "models_dir":        str(MODELS_DIR),
+    })
+
+
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
         "name":         "Sudo Studio AI Runtime",
-        "version":      "2.2.0",
-        "endpoints":    ["/health", "/infer", "/infer-stream", "/chat", "/models", "/reload", "/download", "/scan"],
+        "version":      "2.3.0",
+        "endpoints":    ["/health", "/infer", "/infer-stream", "/chat", "/models", "/models/catalogue", "/reload", "/download", "/scan"],
         "model_status": "loaded" if state.loaded else ("loading" if state.loading else "not_loaded"),
         "smart_detection": True,
     })

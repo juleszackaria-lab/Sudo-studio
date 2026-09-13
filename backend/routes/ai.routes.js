@@ -24,34 +24,8 @@ const MODEL_ROUTES = {
     port: PYTHON_RUNTIME_PORT,
     modelId: 'Qwen/Qwen2.5-Coder-1.5B-Instruct'
   },
-  'qwen-coder': {
-    url: `${PYTHON_RUNTIME_URL}/infer`,
-    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
-    type: 'python-runtime',
-    port: PYTHON_RUNTIME_PORT,
-    modelId: 'Qwen/Qwen2.5-Coder-1.5B-Instruct'
-  },
-  'deepseek-coder': {
-    url: `${PYTHON_RUNTIME_URL}/infer`,
-    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
-    type: 'python-runtime',
-    port: PYTHON_RUNTIME_PORT,
-    modelId: 'deepseek-ai/deepseek-coder-1.3b-instruct'
-  },
-  'phi-2': {
-    url: `${PYTHON_RUNTIME_URL}/infer`,
-    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
-    type: 'python-runtime',
-    port: PYTHON_RUNTIME_PORT,
-    modelId: 'microsoft/phi-2'
-  },
-  'qwen2-chat': {
-    url: `${PYTHON_RUNTIME_URL}/infer`,
-    healthUrl: `${PYTHON_RUNTIME_URL}/health`,
-    type: 'python-runtime',
-    port: PYTHON_RUNTIME_PORT,
-    modelId: 'Qwen/Qwen2-1.5B-Instruct'
-  },
+  // NOTE: stale aliases (qwen-coder, deepseek-coder, phi-2, qwen2-chat) removed
+  // to prevent unnecessary health-check polling. Only active routes remain.
   'default': {
     url: `${PYTHON_RUNTIME_URL}/infer`,
     healthUrl: `${PYTHON_RUNTIME_URL}/health`,
@@ -124,7 +98,8 @@ async function checkModelAvailability(modelName, modelConfig) {
 }
 
 // Fallback chain pour les modèles - Python runtime models
-const FALLBACK_CHAIN = ['default', 'qwen2.5-coder', 'phi-2', 'qwen2-chat'];
+// Fallback chain: only routes that actually exist in MODEL_ROUTES
+const FALLBACK_CHAIN = ['default', 'qwen2.5-coder'];
 
 /**
  * POST /api/ai/chat

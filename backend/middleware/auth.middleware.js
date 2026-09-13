@@ -66,7 +66,12 @@ function verifyToken(req, res, next) {
     }
     
     if (error.name === 'JsonWebTokenError') {
-      logger.warn('Invalid token provided', { error: error.message });
+      // Demote to debug in dev mode — malformed tokens are expected during local development
+      if (process.env.NODE_ENV !== 'production') {
+        logger.debug('Invalid token provided (dev mode — allowing through)', { error: error.message });
+      } else {
+        logger.warn('Invalid token provided', { error: error.message });
+      }
       
       // In development, allow requests with invalid tokens
       if (process.env.NODE_ENV !== 'production') {
