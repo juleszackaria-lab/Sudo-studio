@@ -689,4 +689,4 @@ console.log('[RUNTIME] Script init complete');
     }
 }
 
-module.exports = RuntimePanel;
+module.exports = { RuntimePanel };
