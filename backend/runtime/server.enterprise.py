@@ -145,7 +145,13 @@ class State:
     loading      = False
     error        = None
     device       = 'cpu'
-    download_progress = 0   # 0-100
+    download_progress    = 0      # 0-100 (percentage)
+    download_bytes       = 0      # bytes downloaded so far
+    download_total_bytes = 0      # total file size in bytes (0 = unknown)
+    download_speed_mbps  = 0.0    # current download speed MB/s
+    download_eta_seconds = 0      # estimated seconds remaining
+    download_model_id    = None   # which model is being downloaded
+    download_error       = None   # last explicit download failure reason
     startup_time = time.time()
     requests     = 0
     backend      = 'transformers'   # 'llama_cpp' or 'transformers'
@@ -703,6 +709,190 @@ def _check_model_in_hf_cache(model_id: str) -> dict | None:
         pass
     return None
 
+# ─── Streaming download helper ──────────────────────────────────────────────────
+
+def _streaming_download_gguf(repo_id: str, filename: str, dest_dir: str) -> str:
+    """
+    Download a GGUF file from HuggingFace Hub using streaming HTTP with real
+    byte-level progress tracking.  Updates state.download_* fields every ~5 %
+    or every 10 seconds, whichever comes first.  Logs progress to runtime_debug.log.
+
+    Returns the absolute path to the downloaded file on success.
+    Raises RuntimeError with an explicit reason on failure.
+
+    Progress mapping inside the download phase:
+        5 %  — connection established, Content-Length known
+        5-30 % — proportional to bytes received
+    After this function returns the caller bumps to 30 % before model loading.
+    """
+    import requests
+
+    # Build the direct-download URL (HuggingFace CDN resolve endpoint)
+    url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+    dlog(f"[DL] Streaming download: {url}")
+    logger.info(f"[DL] Streaming {filename} from {repo_id}")
+
+    dest_path = os.path.join(dest_dir, filename)
+    os.makedirs(dest_dir, exist_ok=True)
+
+    # Reset download state
+    state.download_bytes       = 0
+    state.download_total_bytes = 0
+    state.download_speed_mbps  = 0.0
+    state.download_eta_seconds = 0
+    state.download_model_id    = f"{repo_id}/{filename}"
+    state.download_error       = None
+
+    try:
+        resp = requests.get(url, stream=True, timeout=60)
+    except requests.exceptions.ConnectionError as e:
+        msg = f"Connection lost or refused: {e}"
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        raise RuntimeError(msg)
+    except requests.exceptions.Timeout:
+        msg = "Connection timed out (60s) while establishing download"
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        raise RuntimeError(msg)
+
+    if resp.status_code == 404:
+        msg = f"File not found on HuggingFace (404): {url}"
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        raise RuntimeError(msg)
+    if resp.status_code == 401 or resp.status_code == 403:
+        msg = f"Access denied (HTTP {resp.status_code}) — model may require authentication"
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        raise RuntimeError(msg)
+    if resp.status_code != 200:
+        msg = f"HuggingFace server returned HTTP {resp.status_code}"
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        raise RuntimeError(msg)
+
+    total_bytes = int(resp.headers.get('Content-Length', 0))
+    state.download_total_bytes = total_bytes
+    total_mb = total_bytes / (1024 * 1024) if total_bytes else 0
+    dlog(f"[DL] Content-Length: {total_bytes} bytes ({total_mb:.1f} MB)")
+    logger.info(f"[DL] File size: {total_mb:.1f} MB")
+
+    # Check disk space before writing
+    if total_bytes > 0:
+        try:
+            import shutil
+            free_bytes = shutil.disk_usage(dest_dir).free
+            if free_bytes < total_bytes * 1.1:  # need 110% to be safe
+                msg = (f"Insufficient disk space: need {total_mb:.0f} MB, "
+                       f"only {free_bytes//(1024*1024)} MB free in {dest_dir}")
+                state.download_error = msg
+                dlog(f"[DL] ERROR — {msg}")
+                logger.error(f"[DL] {msg}")
+                raise RuntimeError(msg)
+        except (ImportError, OSError):
+            pass  # non-fatal if disk check fails
+
+    # --- Streaming write with progress tracking ---
+    CHUNK_SIZE        = 256 * 1024   # 256 KB chunks for smooth progress
+    LOG_EVERY_PCT     = 5            # log every 5 % change
+    LOG_EVERY_SECONDS = 10.0         # or every 10 s, whichever comes first
+    # Progress is mapped from 5 % to 30 % during the download phase.
+    PROGRESS_MIN = 5
+    PROGRESS_MAX = 30
+
+    bytes_done       = 0
+    last_logged_pct  = -1
+    last_logged_time = time.time()
+    dl_start_time    = time.time()
+    tmp_path         = dest_path + ".part"
+
+    try:
+        with open(tmp_path, 'wb') as f:
+            for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                bytes_done += len(chunk)
+                state.download_bytes = bytes_done
+
+                now = time.time()
+                elapsed = now - dl_start_time
+                if elapsed > 0:
+                    speed_bps = bytes_done / elapsed
+                    state.download_speed_mbps = round(speed_bps / (1024 * 1024), 2)
+                    if total_bytes > 0 and speed_bps > 0:
+                        state.download_eta_seconds = int((total_bytes - bytes_done) / speed_bps)
+
+                # Compute display progress (5 → 30 %)
+                if total_bytes > 0:
+                    file_pct = bytes_done / total_bytes          # 0.0 – 1.0
+                    display_pct = int(PROGRESS_MIN + file_pct * (PROGRESS_MAX - PROGRESS_MIN))
+                else:
+                    display_pct = PROGRESS_MIN                   # unknown size — stay at 5
+                state.download_progress = display_pct
+
+                # Log every LOG_EVERY_PCT % or LOG_EVERY_SECONDS seconds
+                pct_int = int(file_pct * 100) if total_bytes > 0 else 0
+                time_since_log = now - last_logged_time
+                if (pct_int >= last_logged_pct + LOG_EVERY_PCT) or (time_since_log >= LOG_EVERY_SECONDS):
+                    mb_done  = bytes_done / (1024 * 1024)
+                    speed_mb = state.download_speed_mbps
+                    eta_s    = state.download_eta_seconds
+                    msg = (f"[DL] Progress: {pct_int}% — {mb_done:.1f}/{total_mb:.1f} MB "
+                           f"@ {speed_mb:.2f} MB/s — ETA {eta_s}s")
+                    dlog(msg)
+                    logger.info(msg)
+                    last_logged_pct  = pct_int
+                    last_logged_time = now
+
+    except requests.exceptions.ChunkedEncodingError as e:
+        msg = f"Connection dropped during download (ChunkedEncodingError): {e}"
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise RuntimeError(msg)
+    except OSError as e:
+        msg = f"Disk write error (OSError {e.errno}): {e.strerror} — check disk space"
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise RuntimeError(msg)
+
+    # Rename .part → final file only if download completed
+    if total_bytes > 0 and bytes_done < total_bytes * 0.99:
+        msg = (f"Download truncated: received {bytes_done} / {total_bytes} bytes "
+               f"({bytes_done*100//total_bytes}%). Connection may have dropped.")
+        state.download_error = msg
+        dlog(f"[DL] ERROR — {msg}")
+        logger.error(f"[DL] {msg}")
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        raise RuntimeError(msg)
+
+    os.replace(tmp_path, dest_path)
+    total_time = time.time() - dl_start_time
+    avg_speed  = (bytes_done / (1024 * 1024)) / max(total_time, 0.001)
+    dlog(f"[DL] Complete: {bytes_done//(1024*1024)} MB in {total_time:.1f}s (avg {avg_speed:.2f} MB/s) -> {dest_path}")
+    logger.info(f"[DL] Download complete: {bytes_done//(1024*1024)} MB in {total_time:.1f}s -> {dest_path}")
+    return dest_path
+
+
 # ─── Model loading ──────────────────────────────────────────────────────────────
 def load_model_thread(model_id: str, force_download: bool = False):
     """
@@ -816,25 +1006,33 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     logger.info(f"[GGUF] *** NETWORK REQUIRED *** Downloading {DEFAULT_MODEL_FILENAME}")
                     logger.info(f"[GGUF] This is the only network operation allowed at startup (first run only)")
                     state.download_progress = 5
+                    state.download_model_id = f"{DEFAULT_MODEL_HF_REPO}/{DEFAULT_MODEL_FILENAME}"
+                    state.download_error    = None
                     try:
                         # Temporarily re-enable network for the download
                         # This is the ONLY sanctioned network exception in this file.
                         os.environ.pop("TRANSFORMERS_OFFLINE", None)
                         os.environ.pop("HF_HUB_OFFLINE", None)
                         dlog("[GGUF] Offline env vars TEMPORARILY removed for download")
-                        from huggingface_hub import hf_hub_download
-                        local_path = hf_hub_download(
+                        # Use streaming download for real byte-level progress tracking
+                        local_path = _streaming_download_gguf(
                             repo_id=DEFAULT_MODEL_HF_REPO,
                             filename=DEFAULT_MODEL_FILENAME,
-                            cache_dir=str(MODELS_DIR),
-                            local_files_only=False,
+                            dest_dir=str(MODELS_DIR),
                         )
                         gguf_path = local_path
                         dlog(f"[GGUF] Downloaded to: {gguf_path}")
                         logger.info(f"[GGUF] Downloaded to: {gguf_path}")
-                    except Exception as dl_err:
+                    except RuntimeError as dl_err:
                         dlog(f"[GGUF] Download failed: {dl_err}")
                         logger.warning(f"[GGUF] Download failed: {dl_err}")
+                        state.download_error = str(dl_err)
+                        gguf_path = None
+                    except Exception as dl_err:
+                        msg = f"{type(dl_err).__name__}: {dl_err}"
+                        dlog(f"[GGUF] Download failed (unexpected): {msg}")
+                        logger.warning(f"[GGUF] Download failed: {msg}")
+                        state.download_error = msg
                         gguf_path = None
                     finally:
                         # ALWAYS re-apply offline mode after download attempt
@@ -1829,6 +2027,67 @@ def download_model():
         "ram_required_gb":  req,
         "ram_warning":      None if ok else msg,
         "note":             "User-initiated download — network access active during download only",
+    })
+
+
+@app.route('/models/download-status', methods=['GET'])
+def download_status():
+    """
+    Real-time download progress endpoint.
+    Clients (RuntimePanel) poll this every 2s during an active download.
+
+    Returns:
+        active        : bool   — True while download is in progress
+        progress      : int    — 0-100 percentage (5-30 during download, 30-100 during load)
+        bytes_done    : int    — bytes received so far
+        total_bytes   : int    — total file size (0 if unknown)
+        speed_mbps    : float  — current MB/s
+        eta_seconds   : int    — estimated remaining seconds
+        model_id      : str    — e.g. "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/filename.gguf"
+        error         : str|null — explicit failure reason (null if none)
+        phase         : str    — "idle" | "downloading" | "loading" | "ready" | "error"
+    """
+    is_downloading = (
+        state.loading and
+        state.download_progress >= 5 and
+        state.download_progress < 30 and
+        state.download_total_bytes > 0
+    )
+    is_loading_model = (
+        state.loading and
+        state.download_progress >= 30
+    )
+
+    if state.loaded:
+        phase = "ready"
+    elif state.error and not state.loading:
+        phase = "error"
+    elif is_downloading:
+        phase = "downloading"
+    elif is_loading_model:
+        phase = "loading"
+    elif state.loading:
+        phase = "downloading"   # no byte info yet but download is starting
+    else:
+        phase = "idle"
+
+    mb_done  = round(state.download_bytes / (1024 * 1024), 2)
+    mb_total = round(state.download_total_bytes / (1024 * 1024), 2)
+
+    return jsonify({
+        "active":       state.loading,
+        "progress":     state.download_progress,
+        "bytes_done":   state.download_bytes,
+        "total_bytes":  state.download_total_bytes,
+        "mb_done":      mb_done,
+        "mb_total":     mb_total,
+        "speed_mbps":   state.download_speed_mbps,
+        "eta_seconds":  state.download_eta_seconds,
+        "model_id":     state.download_model_id,
+        "error":        state.download_error,
+        "phase":        phase,
+        "loaded":       state.loaded,
+        "model_name":   state.model_name,
     })
 
 

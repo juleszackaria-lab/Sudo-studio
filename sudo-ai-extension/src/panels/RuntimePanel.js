@@ -39,6 +39,9 @@ class RuntimePanel {
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
         this.panel.webview.onDidReceiveMessage(m => this.handleMessage(m), null, this.disposables);
 
+        this._downloadPollTimer = null;   // 2s poll during active download
+        this._downloadingModelId = null;  // modelId being downloaded
+
         // Initial status fetch + poll every 4s
         setTimeout(() => this.fetchStatus(), 400);
         this._pollTimer = setInterval(() => this.fetchStatus(), 4000);
@@ -148,14 +151,85 @@ class RuntimePanel {
         try {
             const r = await axios.post('http://localhost:6000/download',
                 { model: modelId }, { timeout: 5000 });
+            this._downloadingModelId = modelId;
             this.panel.webview.postMessage({ type: 'downloadStarted', modelId });
             vscode.window.showInformationMessage(
-                `⬇️ Téléchargement démarré: ${modelId}. Progression dans le panneau.`
+                `⬇️ Téléchargement démarré: ${modelId}. Progression visible dans le panneau.`
             );
+            // Start 2s polling of /models/download-status for real progress
+            this._startDownloadPoll(modelId);
         } catch (e) {
             const msg = e.response?.data?.detail || e.message;
             this.panel.webview.postMessage({ type: 'error', text: `Erreur téléchargement: ${msg}` });
             vscode.window.showErrorMessage(`Erreur téléchargement ${modelId}: ${msg}`);
+        }
+    }
+
+    /** Start polling /models/download-status every 2s. Auto-stops when download completes. */
+    _startDownloadPoll(modelId) {
+        this._stopDownloadPoll();   // clear any previous poll
+        console.log('[RUNTIME] Starting download poll for:', modelId);
+        this._downloadPollTimer = setInterval(() => this._pollDownloadStatus(modelId), 2000);
+        // Also do an immediate first poll after 500ms
+        setTimeout(() => this._pollDownloadStatus(modelId), 500);
+    }
+
+    _stopDownloadPoll() {
+        if (this._downloadPollTimer) {
+            clearInterval(this._downloadPollTimer);
+            this._downloadPollTimer = null;
+        }
+    }
+
+    async _pollDownloadStatus(modelId) {
+        try {
+            const r = await axios.get('http://localhost:6000/models/download-status', { timeout: 3000 });
+            const ds = r.data;
+            console.log('[RUNTIME] download-status:', ds.phase, ds.progress + '%',
+                ds.mb_done + '/' + ds.mb_total + 'MB');
+
+            // Send rich progress to webview
+            this.panel.webview.postMessage({
+                type:      'downloadProgress',
+                modelId,
+                progress:  ds.progress  || 0,
+                mbDone:    ds.mb_done   || 0,
+                mbTotal:   ds.mb_total  || 0,
+                speedMbps: ds.speed_mbps || 0,
+                etaSec:    ds.eta_seconds || 0,
+                phase:     ds.phase,
+                error:     ds.error,
+                loaded:    ds.loaded,
+            });
+
+            // Stop polling when done or errored
+            if (ds.phase === 'ready' || ds.loaded) {
+                console.log('[RUNTIME] Download+load complete — stopping poll');
+                this._stopDownloadPoll();
+                this._downloadingModelId = null;
+                // Refresh catalogue after a short delay
+                setTimeout(() => this.fetchStatus(), 1000);
+                vscode.window.showInformationMessage(`✅ Modèle ${modelId} téléchargé et chargé !`);
+            } else if (ds.phase === 'error' && ds.error) {
+                console.error('[RUNTIME] Download error:', ds.error);
+                this._stopDownloadPoll();
+                this._downloadingModelId = null;
+                vscode.window.showErrorMessage(`Erreur téléchargement: ${ds.error}`);
+                setTimeout(() => this.fetchStatus(), 1000);
+            } else if (!ds.active && !ds.loaded && ds.phase === 'idle') {
+                // Not active anymore and not loaded — stale state, stop polling
+                console.warn('[RUNTIME] Download poll: idle state, stopping');
+                this._stopDownloadPoll();
+                this._downloadingModelId = null;
+                setTimeout(() => this.fetchStatus(), 500);
+            }
+        } catch (e) {
+            // Endpoint not available (older server) — stop poll gracefully
+            console.warn('[RUNTIME] download-status poll failed:', e.message);
+            if (e.code === 'ECONNREFUSED') {
+                this._stopDownloadPoll();
+                this._downloadingModelId = null;
+            }
         }
     }
 
@@ -272,6 +346,7 @@ class RuntimePanel {
     dispose() {
         RuntimePanel.currentPanel = undefined;
         clearInterval(this._pollTimer);
+        this._stopDownloadPoll();
         this.panel.dispose();
         this.disposables.forEach(d => d && d.dispose());
     }
@@ -341,9 +416,12 @@ h2 { font-size:15px; font-weight:700; margin-bottom:12px; display:flex; align-it
 .badge-canload { background:rgba(46,160,67,.1); color:var(--success); }
 .badge-noram  { background:rgba(248,81,73,.1); color:var(--red); }
 .badge-gguf { background:rgba(88,166,255,.1); color:var(--accent); }
-.dl-bar { height:4px; background:var(--border); border-radius:2px; margin-bottom:8px; overflow:hidden; display:none; }
+.dl-bar { height:8px; background:var(--border); border-radius:4px; margin-bottom:4px; overflow:hidden; display:none; }
 .dl-bar.show { display:block; }
-.dl-fill { height:100%; background:var(--green); transition:width .3s; width:0; }
+.dl-fill { height:100%; background:var(--blue); transition:width .4s ease; width:0; border-radius:4px; }
+.dl-fill.phase-downloading { background: linear-gradient(90deg, var(--blue) 0%, var(--accent) 100%); }
+.dl-fill.phase-loading { background: linear-gradient(90deg, var(--green) 0%, var(--success) 100%); }
+.dl-fill.phase-ready { background:var(--green); }
 #logsBox { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-family:monospace; font-size:11px; color:var(--muted); max-height:300px; overflow-y:auto; white-space:pre-wrap; word-break:break-all; display:none; margin-top:10px; }
 #logsBox.show { display:block; }
 .spin { display:inline-block; animation:spin 1s linear infinite; }
@@ -370,8 +448,10 @@ h2 { font-size:15px; font-weight:700; margin-bottom:12px; display:flex; align-it
         <span id="statusBadge" class="offline">⚫ Hors ligne</span>
         <span id="modelName" style="font-size:12px;color:var(--muted)">—</span>
     </div>
+    <!-- Download progress bar (hidden by default, shown during active download) -->
     <div id="dlBar" class="dl-bar"><div id="dlFill" class="dl-fill"></div></div>
     <div id="dlLabel" style="font-size:10px;color:var(--muted);display:none;margin-bottom:6px"></div>
+    <div id="dlDetail" style="font-size:10px;color:var(--accent);display:none;margin-bottom:6px"></div>
     <div class="btn-row">
         <button class="btn btn-primary" id="btnRefresh">🔄 Rafraîchir</button>
         <button class="btn btn-secondary" id="btnAutoSelect" title="Sélectionner automatiquement le meilleur modèle local">⚡ Auto-sélect</button>
@@ -474,13 +554,17 @@ document.getElementById('btnCache').addEventListener('click', function() {
 
 console.log('[RUNTIME] All button listeners attached');
 
+// ── Download state (updated by downloadProgress messages) ─────────────────
+var _activeDownload = null;  // { modelId, progress, mbDone, mbTotal, speedMbps, etaSec, phase }
+
 // ── Status update renderer ────────────────────────────────────────────────
 function updateRuntime(data) {
-    const badge = document.getElementById('statusBadge');
+    const badge    = document.getElementById('statusBadge');
     const modelName = document.getElementById('modelName');
-    const dlBar   = document.getElementById('dlBar');
-    const dlFill  = document.getElementById('dlFill');
-    const dlLabel = document.getElementById('dlLabel');
+    const dlBar    = document.getElementById('dlBar');
+    const dlFill   = document.getElementById('dlFill');
+    const dlLabel  = document.getElementById('dlLabel');
+    const dlDetail = document.getElementById('dlDetail');
     const mockWarn = document.getElementById('mockWarning');
     const mockText = document.getElementById('mockWarningText');
     const reqStat  = document.getElementById('reqStat');
@@ -488,35 +572,81 @@ function updateRuntime(data) {
     if (!data) {
         badge.className = 'offline'; badge.textContent = '⚫ Hors ligne';
         modelName.textContent = 'Runtime non joignable (port 6000)';
+        if (dlBar) dlBar.classList.remove('show');
         if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Runtime hors ligne. Lancez start.bat pour démarrer le runtime.'; }
         return;
     }
 
     const m = data.model || {};
-    if (m.loading) {
-        badge.className = 'loading'; badge.textContent = '🔄 Chargement';
+
+    // If we have active download progress from the 2s poll, use it
+    if (_activeDownload && m.loading) {
+        const ds = _activeDownload;
+        badge.className = 'loading';
+        const pct = ds.progress || m.download_progress || 0;
+
+        if (ds.phase === 'downloading') {
+            badge.textContent = '\u23EC Telechargement ' + pct + '%';
+        } else if (ds.phase === 'loading') {
+            badge.textContent = '\u25B6 Chargement modele ' + pct + '%';
+        } else {
+            badge.textContent = '\u{1F504} ' + pct + '%';
+        }
+
+        modelName.textContent = (ds.modelId || m.name || 'modele') + ' \u2014 ' + pct + '%';
+
+        if (dlBar) {
+            dlBar.classList.add('show');
+            dlFill.style.width = pct + '%';
+            dlFill.className = 'dl-fill phase-' + (ds.phase || 'downloading');
+        }
+        if (dlLabel) {
+            dlLabel.style.display = 'block';
+            if (ds.phase === 'downloading' && ds.mbTotal > 0) {
+                dlLabel.textContent = pct + '% \u2014 ' + ds.mbDone.toFixed(1) + ' MB / ' + ds.mbTotal.toFixed(1) + ' MB';
+            } else if (ds.phase === 'loading') {
+                dlLabel.textContent = 'Chargement en memoire: ' + pct + '%';
+            } else {
+                dlLabel.textContent = 'Progression: ' + pct + '%...';
+            }
+        }
+        if (dlDetail) {
+            if (ds.phase === 'downloading' && ds.speedMbps > 0) {
+                var etaStr = ds.etaSec > 0 ? ' \u2014 ETA ' + (ds.etaSec < 60 ? ds.etaSec + 's' : Math.round(ds.etaSec/60) + 'min') : '';
+                dlDetail.textContent = ds.speedMbps.toFixed(2) + ' MB/s' + etaStr;
+                dlDetail.style.display = 'block';
+            } else {
+                dlDetail.style.display = 'none';
+            }
+        }
+        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Telechargement en cours (' + pct + '%) \u2014 reponses simulees en attendant.'; }
+    } else if (m.loading) {
+        // Fallback: no download-status data yet — use health progress
+        badge.className = 'loading'; badge.textContent = '\u{1F504} Chargement';
         const pct = m.download_progress || 0;
-        modelName.textContent = (m.name || 'modèle') + ' — ' + pct + '%';
-        dlBar.classList.add('show');
-        dlFill.style.width = pct + '%';
-        dlLabel.style.display = 'block';
-        dlLabel.textContent = 'Chargement en cours: ' + pct + '%...';
-        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Modèle en cours de chargement (' + pct + '%) — réponses simulées en attendant.'; }
+        modelName.textContent = (m.name || 'modele') + ' \u2014 ' + pct + '%';
+        if (dlBar) { dlBar.classList.add('show'); dlFill.style.width = pct + '%'; dlFill.className = 'dl-fill'; }
+        if (dlLabel) { dlLabel.style.display = 'block'; dlLabel.textContent = 'En cours: ' + pct + '%...'; }
+        if (dlDetail) dlDetail.style.display = 'none';
+        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Modele en cours de chargement (' + pct + '%) \u2014 reponses simulees en attendant.'; }
     } else if (m.loaded) {
-        badge.className = 'online'; badge.textContent = '🟢 En ligne';
-        modelName.textContent = (m.name || m.model || 'modèle chargé') + ' · ' + (m.device || 'cpu');
-        dlBar.classList.remove('show');
-        dlLabel.style.display = 'none';
+        badge.className = 'online'; badge.textContent = '\u{1F7E2} En ligne';
+        modelName.textContent = (m.name || m.model || 'modele charge') + ' \u00B7 ' + (m.device || 'cpu');
+        if (dlBar) dlBar.classList.remove('show');
+        if (dlLabel) dlLabel.style.display = 'none';
+        if (dlDetail) dlDetail.style.display = 'none';
+        _activeDownload = null;  // clear download state once loaded
         if (mockWarn) mockWarn.classList.remove('show');
     } else {
-        badge.className = 'mock'; badge.textContent = '⚠️ Mock Mode';
-        const errTxt = m.error ? m.error.slice(0, 80) : 'Aucun modèle chargé';
+        badge.className = 'mock'; badge.textContent = '\u26A0\uFE0F Mock Mode';
+        const errTxt = m.error ? m.error.slice(0, 80) : 'Aucun modele charge';
         modelName.textContent = errTxt;
-        dlBar.classList.remove('show');
-        dlLabel.style.display = 'none';
+        if (dlBar) dlBar.classList.remove('show');
+        if (dlLabel) dlLabel.style.display = 'none';
+        if (dlDetail) dlDetail.style.display = 'none';
         if (mockWarn) {
             mockWarn.classList.add('show');
-            if (mockText) mockText.textContent = 'Aucun modèle chargé. ' + (m.error ? 'Erreur: ' + m.error.slice(0,100) : 'Téléchargez et chargez un modèle depuis le catalogue ci-dessous.');
+            if (mockText) mockText.textContent = 'Aucun modele charge. ' + (m.error ? 'Erreur: ' + m.error.slice(0,100) : 'Telechargez et chargez un modele depuis le catalogue ci-dessous.');
         }
     }
     if (reqStat) reqStat.textContent = data.requests_served || 0;
@@ -657,9 +787,116 @@ window.addEventListener('message', function(ev) {
             document.getElementById('btnCache').textContent = '💾 Cache Info';
             break;
         }
-        case 'downloadStarted':
+        case 'downloadStarted': {
             console.log('[RUNTIME] Download started for', msg.modelId);
+            // Show bar immediately with 0% until first poll arrives
+            const dlBar0 = document.getElementById('dlBar');
+            const dlFill0 = document.getElementById('dlFill');
+            const dlLabel0 = document.getElementById('dlLabel');
+            const dlDetail0 = document.getElementById('dlDetail');
+            if (dlBar0) { dlBar0.classList.add('show'); dlFill0.style.width = '5%'; dlFill0.className = 'dl-fill phase-downloading'; }
+            if (dlLabel0) { dlLabel0.style.display = 'block'; dlLabel0.textContent = 'Connexion au serveur HuggingFace...'; }
+            if (dlDetail0) dlDetail0.style.display = 'none';
+            const badge0 = document.getElementById('statusBadge');
+            if (badge0) { badge0.className = 'loading'; badge0.textContent = '\u23EC Telechargement 5%...'; }
+            const mn0 = document.getElementById('modelName');
+            if (mn0) mn0.textContent = msg.modelId + ' \u2014 5%';
+            // Mark button as downloading in catalogue
+            document.querySelectorAll('.btn-dl[data-id="' + msg.modelId + '"]').forEach(function(b) {
+                b.disabled = true; b.textContent = '\u23EC 5%...';
+            });
             break;
+        }
+        case 'downloadProgress': {
+            // Real-time progress update from 2s download-status poll
+            const ds = msg;
+            _activeDownload = ds;
+            console.log('[RUNTIME] downloadProgress:', ds.phase, ds.progress + '%', ds.mbDone + '/' + ds.mbTotal + 'MB');
+
+            const pct = ds.progress || 0;
+            const dlBarP = document.getElementById('dlBar');
+            const dlFillP = document.getElementById('dlFill');
+            const dlLabelP = document.getElementById('dlLabel');
+            const dlDetailP = document.getElementById('dlDetail');
+            const badgeP = document.getElementById('statusBadge');
+            const mnP = document.getElementById('modelName');
+
+            if (ds.phase === 'ready' || ds.loaded) {
+                // Download + load complete
+                _activeDownload = null;
+                if (dlBarP) { dlFillP.style.width = '100%'; dlFillP.className = 'dl-fill phase-ready'; }
+                if (dlLabelP) { dlLabelP.textContent = 'Modele charge avec succes !'; }
+                if (dlDetailP) dlDetailP.style.display = 'none';
+                if (badgeP) { badgeP.className = 'online'; badgeP.textContent = '\u{1F7E2} En ligne'; }
+                if (mnP) mnP.textContent = '\u2705 ' + ds.modelId;
+                // Update catalogue button to show downloaded
+                document.querySelectorAll('.btn-dl[data-id="' + ds.modelId + '"]').forEach(function(b) {
+                    b.textContent = '\u2705 Telecharge'; b.disabled = true;
+                });
+                // Hide bar after 3s
+                setTimeout(function() {
+                    if (dlBarP) dlBarP.classList.remove('show');
+                    if (dlLabelP) dlLabelP.style.display = 'none';
+                }, 3000);
+            } else if (ds.phase === 'error' && ds.error) {
+                _activeDownload = null;
+                if (dlBarP) dlBarP.classList.remove('show');
+                if (dlLabelP) { dlLabelP.style.display = 'block'; dlLabelP.textContent = 'Erreur: ' + ds.error.slice(0,100); }
+                if (dlDetailP) dlDetailP.style.display = 'none';
+                if (badgeP) { badgeP.className = 'mock'; badgeP.textContent = '\u26A0\uFE0F Erreur'; }
+                if (mnP) mnP.textContent = 'Erreur: ' + (ds.error || 'inconnue').slice(0,80);
+                document.querySelectorAll('.btn-dl[data-id="' + ds.modelId + '"]').forEach(function(b) {
+                    b.disabled = false; b.textContent = '\u21D3 Retry';
+                });
+            } else {
+                // Active download or loading — update progress display
+                if (dlBarP) {
+                    dlBarP.classList.add('show');
+                    dlFillP.style.width = pct + '%';
+                    dlFillP.className = 'dl-fill phase-' + (ds.phase || 'downloading');
+                }
+                if (badgeP) {
+                    badgeP.className = 'loading';
+                    if (ds.phase === 'loading') {
+                        badgeP.textContent = '\u25B6 Chargement ' + pct + '%';
+                    } else {
+                        badgeP.textContent = '\u23EC ' + pct + '%...';
+                    }
+                }
+                if (mnP) {
+                    mnP.textContent = (ds.modelId || 'modele') + ' \u2014 ' + pct + '%';
+                }
+                if (dlLabelP) {
+                    dlLabelP.style.display = 'block';
+                    if (ds.phase === 'downloading' && ds.mbTotal > 0) {
+                        dlLabelP.textContent = pct + '% \u2014 ' + ds.mbDone.toFixed(1) + ' MB / ' + ds.mbTotal.toFixed(1) + ' MB';
+                    } else if (ds.phase === 'loading') {
+                        dlLabelP.textContent = 'Chargement en memoire: ' + pct + '%';
+                    } else {
+                        dlLabelP.textContent = 'Progression: ' + pct + '%';
+                    }
+                }
+                if (dlDetailP) {
+                    if (ds.phase === 'downloading' && ds.speedMbps > 0) {
+                        var etaStr = ds.etaSec > 0 ? ' \u2014 ETA ' + (ds.etaSec < 60 ? ds.etaSec + 's' : Math.round(ds.etaSec/60) + 'min') : '';
+                        dlDetailP.textContent = ds.speedMbps.toFixed(2) + ' MB/s' + etaStr;
+                        dlDetailP.style.display = 'block';
+                    } else {
+                        dlDetailP.style.display = 'none';
+                    }
+                }
+                // Update catalogue button text during download
+                document.querySelectorAll('.btn-dl[data-id="' + ds.modelId + '"]').forEach(function(b) {
+                    if (ds.phase === 'downloading' && ds.mbTotal > 0) {
+                        b.textContent = '\u23EC ' + pct + '% (' + ds.mbDone.toFixed(0) + '/' + ds.mbTotal.toFixed(0) + ' MB)';
+                    } else {
+                        b.textContent = '\u23EC ' + pct + '%...';
+                    }
+                    b.disabled = true;
+                });
+            }
+            break;
+        }
         case 'actionDone':
             console.log('[RUNTIME] Action done:', msg.action);
             if (msg.action === 'restart') {
@@ -670,7 +907,7 @@ window.addEventListener('message', function(ev) {
         case 'autoSelectDone':
             console.log('[RUNTIME] Auto-selected:', msg.modelId);
             document.getElementById('btnAutoSelect').disabled = false;
-            document.getElementById('btnAutoSelect').textContent = '⚡ Auto-sélect';
+            document.getElementById('btnAutoSelect').textContent = '\u26A1 Auto-select';
             break;
         case 'error':
             console.error('[RUNTIME] Error:', msg.text);
