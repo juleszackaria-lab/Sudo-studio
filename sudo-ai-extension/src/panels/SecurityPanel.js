@@ -72,11 +72,37 @@ class SecurityPanel {
 
     // ── Message handler ──────────────────────────────────────────────────────
     async _onMessage(msg) {
+        // Input validation: all incoming webview messages are untrusted
+        if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
-            case 'refresh':    this._runAudit(); break;
-            case 'openFile':   this._openFile(msg.filePath, msg.line); break;
-            case 'openUrl':    vscode.env.openExternal(vscode.Uri.parse(msg.url)); break;
-            case 'fixGitignore': this._addToGitignore(msg.entry); break;
+            case 'refresh':
+                this._runAudit();
+                break;
+            case 'openFile': {
+                // Validate filePath: must be a non-empty string, no path traversal
+                const fp = msg.filePath;
+                if (typeof fp !== 'string' || fp.length === 0 || fp.length > 512) return;
+                if (/(\.\.|[\x00-\x1f])/.test(fp)) return;
+                const ln = Number.isInteger(msg.line) ? msg.line : 0;
+                this._openFile(fp, ln);
+                break;
+            }
+            case 'openUrl': {
+                // Validate URL: must be http(s) only
+                const u = msg.url;
+                if (typeof u !== 'string') return;
+                if (!/^https?:\/\//i.test(u)) return;
+                vscode.env.openExternal(vscode.Uri.parse(u));
+                break;
+            }
+            case 'fixGitignore': {
+                // Validate entry: must be a short safe filename pattern
+                const entry = msg.entry;
+                if (typeof entry !== 'string' || entry.length === 0 || entry.length > 64) return;
+                if (/[\x00-\x1f\/\\]/.test(entry)) return;
+                this._addToGitignore(entry);
+                break;
+            }
         }
     }
 
@@ -186,11 +212,15 @@ class SecurityPanel {
                 lines.forEach((line, idx) => {
                     for (const { label, re } of SECRET_PATTERNS) {
                         if (re.test(line)) {
+                            // Redact the match itself — show only surrounding context
+                            const redacted = line.trim()
+                                .replace(re, '[REDACTED]')
+                                .slice(0, 100);
                             hits.push({
                                 label,
                                 file: path.relative(root, full),
                                 line: idx + 1,
-                                snippet: line.trim().slice(0, 80),
+                                snippet: redacted,
                             });
                         }
                     }
@@ -217,31 +247,50 @@ class SecurityPanel {
     // ── Add entry to .gitignore ──────────────────────────────────────────────
     _addToGitignore(entry) {
         const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
-        if (!wsRoot) return;
+        if (!wsRoot) {
+            vscode.window.showWarningMessage('Aucun dossier de projet ouvert — impossible de modifier .gitignore');
+            return;
+        }
         const gi = path.join(wsRoot, '.gitignore');
         try {
             const existing = fs.existsSync(gi) ? fs.readFileSync(gi, 'utf8') : '';
-            if (!existing.includes(entry)) {
+            if (!existing.split('\n').map(l => l.trim()).includes(entry)) {
                 fs.appendFileSync(gi, `\n${entry}\n`, 'utf8');
-                vscode.window.showInformationMessage(`✅ Added "${entry}" to .gitignore`);
+                vscode.window.showInformationMessage(`✅ "${entry}" ajouté à .gitignore`);
                 this._runAudit();
+            } else {
+                vscode.window.showInformationMessage(`"${entry}" est déjà dans .gitignore`);
             }
-        } catch (e) {
-            vscode.window.showErrorMessage(`Failed to update .gitignore: ${e.message}`);
+        } catch {
+            // Never expose raw OS error messages — they can leak absolute paths or system info
+            vscode.window.showErrorMessage('Impossible de modifier .gitignore — vérifiez que le fichier n\'est pas en lecture seule.');
         }
     }
 
     _openFile(filePath, line) {
         const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath || '';
+        if (!wsRoot) {
+            vscode.window.showWarningMessage('Aucun dossier de projet ouvert.');
+            return;
+        }
+        // Absolute paths allowed only if they are under wsRoot (no jail escape)
         const full = path.isAbsolute(filePath) ? filePath : path.join(wsRoot, filePath);
-        vscode.workspace.openTextDocument(full).then(doc => {
+        const resolved = path.resolve(full);
+        const resolvedWs = path.resolve(wsRoot);
+        if (!resolved.startsWith(resolvedWs + path.sep) && resolved !== resolvedWs) {
+            // Attempted path traversal — silently ignore
+            return;
+        }
+        vscode.workspace.openTextDocument(resolved).then(doc => {
             vscode.window.showTextDocument(doc).then(editor => {
-                if (line) {
+                if (line && line > 0) {
                     const pos = new vscode.Position(line - 1, 0);
                     editor.selection = new vscode.Selection(pos, pos);
                     editor.revealRange(new vscode.Range(pos, pos));
                 }
             });
+        }, () => {
+            vscode.window.showWarningMessage('Fichier introuvable ou inaccessible.');
         });
     }
 

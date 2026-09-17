@@ -66,14 +66,32 @@ class EnvironmentPanel {
     }
 
     async handleMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
-            case 'scan':         await this.scanEnvironment(); break;
-            case 'exportEnv':    await this.exportEnvironment(); break;
-            case 'importEnv':    await this.importEnvironment(); break;
-            case 'syncCheck':    await this.syncCheck(msg.profile); break;
-            case 'fixTool':      await this.fixTool(msg.tool); break;
-            case 'openUrl':      vscode.env.openExternal(vscode.Uri.parse(msg.url)); break;
-            case 'copyToClip':   await vscode.env.clipboard.writeText(msg.text); vscode.window.showInformationMessage('📋 Copié!'); break;
+            case 'scan':       await this.scanEnvironment(); break;
+            case 'exportEnv':  await this.exportEnvironment(); break;
+            case 'importEnv':  await this.importEnvironment(); break;
+            case 'syncCheck': {
+                if (!msg.profile || typeof msg.profile !== 'object') return;
+                await this.syncCheck(msg.profile);
+                break;
+            }
+            case 'fixTool': {
+                if (typeof msg.tool !== 'string' || msg.tool.length > 64) return;
+                await this.fixTool(msg.tool);
+                break;
+            }
+            case 'openUrl': {
+                if (typeof msg.url !== 'string' || !/^https?:\/\//.test(msg.url)) return;
+                vscode.env.openExternal(vscode.Uri.parse(msg.url));
+                break;
+            }
+            case 'copyToClip': {
+                if (typeof msg.text !== 'string' || msg.text.length > 100000) return;
+                await vscode.env.clipboard.writeText(msg.text);
+                vscode.window.showInformationMessage('📋 Copié!');
+                break;
+            }
         }
     }
 
@@ -188,21 +206,35 @@ class EnvironmentPanel {
         if (!uris || !uris.length) return;
 
         try {
-            const content = fs.readFileSync(uris[0].fsPath, 'utf8');
-            const profile = JSON.parse(content);
+            // Reject oversized files (DoS protection — max 512 KB)
+            const stat = fs.statSync(uris[0].fsPath);
+            if (stat.size > 512 * 1024) {
+                vscode.window.showErrorMessage('Le fichier de profil est trop volumineux (max 512 KB).');
+                return;
+            }
 
-            if (!profile.tools) {
-                vscode.window.showErrorMessage('Fichier invalide — pas de champ "tools"');
+            const content = fs.readFileSync(uris[0].fsPath, 'utf8');
+            let profile;
+            try {
+                profile = JSON.parse(content);
+            } catch {
+                vscode.window.showErrorMessage('Fichier invalide — le JSON est malformé. Vérifiez le contenu du fichier.');
+                return;
+            }
+
+            if (!profile || typeof profile !== 'object' || !Array.isArray(profile.tools)) {
+                vscode.window.showErrorMessage('Fichier invalide — champ "tools" manquant ou incorrect.');
                 return;
             }
 
             this.panel.webview.postMessage({ type: 'profileImported', profile });
-            vscode.window.showInformationMessage(`✅ Profil importé: ${path.basename(uris[0].fsPath)}`);
+            vscode.window.showInformationMessage(`✅ Profil importé : ${path.basename(uris[0].fsPath)}`);
 
             // Auto-sync check
             await this.syncCheck(profile);
-        } catch (e) {
-            vscode.window.showErrorMessage(`Import failed: ${e.message}`);
+        } catch {
+            // Never expose raw OS errors — they can leak file system paths
+            vscode.window.showErrorMessage('Impossible de lire le fichier — vérifiez les permissions.');
         }
     }
 
@@ -263,6 +295,8 @@ class EnvironmentPanel {
 
     // ── Fix individual tool ───────────────────────────────────────────────
     async fixTool(toolName) {
+        // Whitelist: only exact known tool names are accepted
+        // This prevents command injection via spoofed webview messages
         const installCmds = {
             'Node.js':  IS_WIN ? 'winget install OpenJS.NodeJS.LTS' : IS_MAC ? 'brew install node' : 'sudo apt-get install -y nodejs npm',
             'Python':   IS_WIN ? 'winget install Python.Python.3.11' : IS_MAC ? 'brew install python@3.11' : 'sudo apt-get install -y python3 python3-pip',
@@ -274,9 +308,10 @@ class EnvironmentPanel {
             'Go':       IS_WIN ? 'winget install GoLang.Go' : IS_MAC ? 'brew install go' : 'sudo apt-get install -y golang-go',
         };
 
-        const cmd = installCmds[toolName];
+        // Strict whitelist check using hasOwnProperty to avoid prototype pollution
+        const cmd = Object.prototype.hasOwnProperty.call(installCmds, toolName) ? installCmds[toolName] : null;
         if (!cmd) {
-            vscode.window.showInformationMessage(`Installation manuelle requise pour: ${toolName}`);
+            vscode.window.showInformationMessage(`Installation manuelle requise pour : ${toolName}`);
             return;
         }
 

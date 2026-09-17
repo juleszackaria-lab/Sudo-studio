@@ -106,15 +106,39 @@ class LicensePanel {
     }
 
     async _onMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
             case 'load':       this._load(); break;
-            case 'activate':   this._activate(msg.key); break;
+            case 'activate': {
+                // Validate key: must be a string in expected format
+                const key = msg.key;
+                if (typeof key !== 'string' || key.length === 0 || key.length > 64) return;
+                // Only allow expected characters
+                if (!/^[A-Za-z0-9\-\s]+$/.test(key)) return;
+                this._activate(key);
+                break;
+            }
             case 'deactivate': this._deactivate(); break;
-            case 'addSeat':    this._addSeat(msg.email); break;
-            case 'removeSeat': this._removeSeat(msg.email); break;
-            case 'export':     this._exportLicense(); break;
-            case 'import':     this._importLicense(); break;
-            case 'openUrl':    vscode.env.openExternal(vscode.Uri.parse(msg.url)); break;
+            case 'addSeat': {
+                const email = msg.email;
+                if (typeof email !== 'string' || email.length === 0 || email.length > 128) return;
+                if (!/^[^@\s]+@[^@\s]+$/.test(email)) return;
+                this._addSeat(email);
+                break;
+            }
+            case 'removeSeat': {
+                const email = msg.email;
+                if (typeof email !== 'string' || email.length > 128) return;
+                this._removeSeat(email);
+                break;
+            }
+            case 'export':  this._exportLicense(); break;
+            case 'import':  this._importLicense(); break;
+            case 'openUrl': {
+                if (typeof msg.url !== 'string' || !/^https?:\/\//.test(msg.url)) return;
+                vscode.env.openExternal(vscode.Uri.parse(msg.url));
+                break;
+            }
         }
     }
 
@@ -127,7 +151,8 @@ class LicensePanel {
         const result = validateKey(key);
         if (!result.valid) {
             this.panel.webview.postMessage({ type: 'activateError', msg: result.reason });
-            vscode.window.showErrorMessage(`[LICENSE] Activation failed: ${result.reason}`);
+            // Never expose raw reason in showErrorMessage (could contain key details)
+            vscode.window.showErrorMessage('Activation échouée — clé invalide ou non reconnue.');
             return;
         }
         const lic = {
@@ -137,8 +162,13 @@ class LicensePanel {
                 allocated: [],
             },
         };
-        writeLicense(lic);
-        vscode.window.showInformationMessage(`✅ Sudo Studio ${result.editionLabel} activated for ${result.company}`);
+        try {
+            writeLicense(lic);
+        } catch {
+            vscode.window.showErrorMessage('Activation échouée — impossible de sauvegarder la licence. Vérifiez les permissions.');
+            return;
+        }
+        vscode.window.showInformationMessage(`✅ Sudo Studio ${result.editionLabel} activé pour ${result.company}`);
         this._load();
     }
 
@@ -146,31 +176,32 @@ class LicensePanel {
         try {
             const p = getLicensePath();
             if (fs.existsSync(p)) fs.unlinkSync(p);
-            vscode.window.showInformationMessage('License deactivated. Reverted to Community edition.');
+            vscode.window.showInformationMessage('Licence désactivée. Retour à l\'édition Community.');
             this._load();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Deactivate: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Désactivation échouée — vérifiez les permissions.');
         }
     }
 
     _addSeat(email) {
         try {
             const lic = readLicense();
-            if (!lic) { vscode.window.showWarningMessage('No active license.'); return; }
+            if (!lic) { vscode.window.showWarningMessage('Aucune licence active.'); return; }
+            if (!lic.seats?.allocated) lic.seats = { max: lic.seats?.max || 1, allocated: [] };
             if (lic.seats.allocated.includes(email)) {
-                vscode.window.showWarningMessage(`${email} already has a seat.`);
+                vscode.window.showWarningMessage(`${email} a déjà un siège.`);
                 return;
             }
             if (lic.seats.allocated.length >= lic.seats.max) {
-                vscode.window.showErrorMessage(`[LICENSE] Seat limit reached (${lic.seats.max}). Upgrade your license.`);
+                vscode.window.showErrorMessage(`Limite de sièges atteinte (${lic.seats.max}). Passez à une édition supérieure.`);
                 return;
             }
             lic.seats.allocated.push(email);
             writeLicense(lic);
-            vscode.window.showInformationMessage(`✅ Seat allocated to ${email}`);
+            vscode.window.showInformationMessage(`✅ Siège alloué à ${email}`);
             this._load();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Add seat: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Attribution du siège échouée — réessayez.');
         }
     }
 
@@ -178,28 +209,29 @@ class LicensePanel {
         try {
             const lic = readLicense();
             if (!lic) return;
+            if (!lic.seats?.allocated) return;
             lic.seats.allocated = lic.seats.allocated.filter(e => e !== email);
             writeLicense(lic);
-            vscode.window.showInformationMessage(`✅ Seat released for ${email}`);
+            vscode.window.showInformationMessage(`✅ Siège libéré pour ${email}`);
             this._load();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Remove seat: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Libération du siège échouée — réessayez.');
         }
     }
 
     async _exportLicense() {
         try {
             const lic = readLicense();
-            if (!lic) { vscode.window.showWarningMessage('No active license to export.'); return; }
+            if (!lic) { vscode.window.showWarningMessage('Aucune licence active à exporter.'); return; }
             const saveUri = await vscode.window.showSaveDialog({
                 defaultUri: vscode.Uri.file(path.join(os.homedir(), 'sudo-studio-license.json')),
                 filters: { 'License File': ['json'] }
             });
             if (!saveUri) return;
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(lic, null, 2), 'utf8');
-            vscode.window.showInformationMessage(`✅ License exported to ${path.basename(saveUri.fsPath)}`);
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Export: ${e.message}`);
+            vscode.window.showInformationMessage(`✅ Licence exportée : ${path.basename(saveUri.fsPath)}`);
+        } catch {
+            vscode.window.showErrorMessage('Export échoué — vérifiez les permissions du dossier.');
         }
     }
 
@@ -207,13 +239,46 @@ class LicensePanel {
         try {
             const uris = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: false, filters: { 'License File': ['json'] } });
             if (!uris || !uris.length) return;
-            const raw = JSON.parse(fs.readFileSync(uris[0].fsPath, 'utf8'));
-            if (!raw.key || !raw.edition) throw new Error('Not a valid Sudo Studio license file.');
-            writeLicense(raw);
-            vscode.window.showInformationMessage(`✅ License imported: ${raw.editionLabel} for ${raw.company}`);
+
+            // Size guard (license files should be tiny)
+            const stat = fs.statSync(uris[0].fsPath);
+            if (stat.size > 64 * 1024) {
+                vscode.window.showErrorMessage('Fichier de licence invalide — trop volumineux.');
+                return;
+            }
+
+            let raw;
+            try {
+                raw = JSON.parse(fs.readFileSync(uris[0].fsPath, 'utf8'));
+            } catch {
+                vscode.window.showErrorMessage('Fichier de licence invalide — le JSON est malformé.');
+                return;
+            }
+
+            // Re-validate the imported license key against our known keys
+            // (Never trust the edition/features stored in the file — always re-derive from the key)
+            if (!raw || typeof raw.key !== 'string') {
+                vscode.window.showErrorMessage('Fichier de licence invalide — clé manquante.');
+                return;
+            }
+            const validated = validateKey(raw.key);
+            if (!validated.valid) {
+                vscode.window.showErrorMessage('Fichier de licence invalide — clé non reconnue.');
+                return;
+            }
+            // Build clean license from validated data (ignore file-supplied edition/features)
+            const cleanLic = {
+                ...validated,
+                seats: {
+                    max: validated.seats,
+                    allocated: Array.isArray(raw.seats?.allocated) ? raw.seats.allocated.filter(e => typeof e === 'string' && e.length < 128) : [],
+                },
+            };
+            writeLicense(cleanLic);
+            vscode.window.showInformationMessage(`✅ Licence importée : ${validated.editionLabel} pour ${validated.company}`);
             this._load();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Import: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Import échoué — vérifiez le fichier et les permissions.');
         }
     }
 

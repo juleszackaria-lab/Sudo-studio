@@ -103,6 +103,55 @@ jobs:
         run: |
           .\scripts\customize-vscodium.ps1 -VSCodiumDir "build\SudoStudio"
 
+      # ── Step 4b: Verify product.json branding AFTER customize script ──────
+      # This step is the definitive proof that branding was applied correctly.
+      # If nameShort/nameLong are not "Sudo Studio", the build fails immediately
+      # rather than silently shipping a misbranded product.
+      - name: Verify product.json branding (hard fail if not patched)
+        shell: powershell
+        run: |
+          # Locate product.json — it may be at different depths depending on VSCodium version
+          $candidates = @(
+            "build\SudoStudio\resources\app\product.json",
+            "build\SudoStudio\product.json"
+          )
+          $pjPath = $null
+          foreach ($c in $candidates) {
+            if (Test-Path $c) { $pjPath = $c; break }
+          }
+          if (-not $pjPath) {
+            # Last resort: recursive search
+            $pjPath = Get-ChildItem "build\SudoStudio" -Filter "product.json" -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $pjPath) {
+            Write-Error "[FAIL] product.json not found anywhere under build\SudoStudio — branding check aborted"
+            exit 1
+          }
+          Write-Host "[VERIFY] product.json found at: $pjPath"
+          $pj = Get-Content $pjPath -Raw | ConvertFrom-Json
+          Write-Host "[VERIFY] nameShort   : $($pj.nameShort)"
+          Write-Host "[VERIFY] nameLong    : $($pj.nameLong)"
+          Write-Host "[VERIFY] applicationName: $($pj.applicationName)"
+          Write-Host "[VERIFY] dataFolderName : $($pj.dataFolderName)"
+
+          $ok = $true
+          if ($pj.nameShort -ne "Sudo Studio") {
+            Write-Error "[FAIL] product.json nameShort = '$($pj.nameShort)' — expected 'Sudo Studio'"
+            $ok = $false
+          }
+          if ($pj.nameLong -ne "Sudo Studio") {
+            Write-Error "[FAIL] product.json nameLong = '$($pj.nameLong)' — expected 'Sudo Studio'"
+            $ok = $false
+          }
+          if (-not $ok) {
+            Write-Error "[FAIL] Branding patch did NOT apply correctly. Check customize-vscodium.ps1 output above."
+            Write-Host "--- FULL product.json DUMP ---"
+            Get-Content $pjPath
+            exit 1
+          }
+          Write-Host "[OK] product.json branding verified: nameShort='Sudo Studio', nameLong='Sudo Studio'"
+
       # ── Step 5: Convert PNG → ICO (multi-resolution) ─────────────────────
       # ImageMagick is pre-installed on windows-latest GitHub Actions runners.
       # Produces a proper multi-size ICO (256/128/64/48/32/16px) from resources\icon.png.

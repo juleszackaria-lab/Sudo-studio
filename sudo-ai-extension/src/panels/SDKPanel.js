@@ -286,12 +286,25 @@ class SDKPanel {
     }
 
     async handleMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
-            case 'refresh':    await this.detectAll(); break;
-            case 'install':    await this.runAction(msg.sdkId, 'install'); break;
-            case 'repair':     await this.runAction(msg.sdkId, 'repair'); break;
-            case 'uninstall':  await this.runAction(msg.sdkId, 'uninstall'); break;
-            case 'openUrl':    vscode.env.openExternal(vscode.Uri.parse(msg.url)); break;
+            case 'refresh':   await this.detectAll(); break;
+            case 'install': {
+                if (typeof msg.sdkId !== 'string' || !/^[a-z0-9\-]+$/.test(msg.sdkId)) return;
+                await this.runAction(msg.sdkId, 'install'); break;
+            }
+            case 'repair': {
+                if (typeof msg.sdkId !== 'string' || !/^[a-z0-9\-]+$/.test(msg.sdkId)) return;
+                await this.runAction(msg.sdkId, 'repair'); break;
+            }
+            case 'uninstall': {
+                if (typeof msg.sdkId !== 'string' || !/^[a-z0-9\-]+$/.test(msg.sdkId)) return;
+                await this.runAction(msg.sdkId, 'uninstall'); break;
+            }
+            case 'openUrl': {
+                if (typeof msg.url !== 'string' || !/^https?:\/\//.test(msg.url)) return;
+                vscode.env.openExternal(vscode.Uri.parse(msg.url)); break;
+            }
         }
     }
 
@@ -475,11 +488,17 @@ class SDKPanel {
 
                     // Append new dir to User PATH via registry (persists for new terminals)
                     const newPath = existing ? existing + ';' + binDir : binDir;
-                    // Escape single-quotes in path for PS string
-                    const escapedPath = newPath.replace(/'/g, "''");
-                    const psWriteCmd  = `[System.Environment]::SetEnvironmentVariable('PATH','${escapedPath}','User')`;
+                    // Strict safety: only proceed if binDir contains no shell-special characters
+                    // (prevents command injection via adversarial PATH component)
+                    if (/[`$&|;"']/.test(binDir)) {
+                        console.error(`[SDK][PATH] ${sdk.id}: binDir contains shell-special chars — PATH update skipped for safety`);
+                        return;
+                    }
+                    // Use -EncodedCommand to avoid any quoting injection in PowerShell
+                    const psScript = `[System.Environment]::SetEnvironmentVariable('PATH',[System.Environment]::GetEnvironmentVariable('PATH','User') + ';' + '${binDir.replace(/'/g, "''")}'  ,'User')`;
+                    const encoded  = Buffer.from(psScript, 'utf16le').toString('base64');
 
-                    exec(`powershell -NoProfile -Command "${psWriteCmd}"`, { timeout: 10000 }, (e4) => {
+                    exec(`powershell -NoProfile -EncodedCommand ${encoded}`, { timeout: 10000 }, (e4) => {
                         if (e4) {
                             console.error(`[SDK][PATH] ${sdk.id}: registry write FAILED: ${e4.message}`);
                             // Fallback: try setx (limited to 1024 chars but simpler)

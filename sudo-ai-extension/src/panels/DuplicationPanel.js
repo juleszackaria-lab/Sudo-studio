@@ -125,13 +125,18 @@ class DuplicationPanel {
     }
 
     async _onMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
             case 'scanLocal':      await this._scanLocal(); break;
             case 'exportProfile':  await this._exportProfile(); break;
             case 'importProfile':  await this._importProfile(); break;
             case 'createTemplate': await this._createTemplate(); break;
             case 'deployTemplate': await this._deployTemplate(); break;
-            case 'openUrl':        vscode.env.openExternal(vscode.Uri.parse(msg.url)); break;
+            case 'openUrl': {
+                if (typeof msg.url !== 'string' || !/^https?:\/\//.test(msg.url)) return;
+                vscode.env.openExternal(vscode.Uri.parse(msg.url));
+                break;
+            }
         }
     }
 
@@ -140,8 +145,8 @@ class DuplicationPanel {
         try {
             this.localProfile = await buildEnvProfile('local');
             this.panel.webview.postMessage({ type: 'localReady', profile: this.localProfile });
-        } catch (e) {
-            this.panel.webview.postMessage({ type: 'error', msg: `Scan failed: ${e.message}` });
+        } catch {
+            this.panel.webview.postMessage({ type: 'error', msg: 'Scan de l\'environnement échoué. Réessayez.' });
         }
     }
 
@@ -155,13 +160,13 @@ class DuplicationPanel {
             if (!saveUri) return;
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(profile, null, 2), 'utf8');
             vscode.window.showInformationMessage(
-                `✅ Profile exported: ${path.basename(saveUri.fsPath)}`,
-                'Open'
-            ).then(s => { if (s === 'Open') vscode.workspace.openTextDocument(saveUri.fsPath).then(d => vscode.window.showTextDocument(d)); });
+                `✅ Profil exporté : ${path.basename(saveUri.fsPath)}`,
+                'Ouvrir'
+            ).then(s => { if (s === 'Ouvrir') vscode.workspace.openTextDocument(saveUri.fsPath).then(d => vscode.window.showTextDocument(d)); });
             this.panel.webview.postMessage({ type: 'exportDone', file: saveUri.fsPath });
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Export failed: ${e.message}`);
-            this.panel.webview.postMessage({ type: 'error', msg: `[FAIL] Export: ${e.message}` });
+        } catch {
+            vscode.window.showErrorMessage('Export échoué — vérifiez les permissions du dossier de destination.');
+            this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Export échoué — vérifiez les permissions.' });
         }
     }
 
@@ -172,10 +177,27 @@ class DuplicationPanel {
                 filters: { 'Environment Profile': ['json'] }
             });
             if (!uris || !uris.length) return;
-            const raw      = fs.readFileSync(uris[0].fsPath, 'utf8');
-            const imported = JSON.parse(raw);
-            if (!imported.tools || !imported.createdAt) {
-                throw new Error('File does not appear to be a valid Sudo Studio environment profile (missing tools or createdAt).');
+
+            // Reject oversized files (DoS protection)
+            const stat = fs.statSync(uris[0].fsPath);
+            if (stat.size > 512 * 1024) {
+                vscode.window.showErrorMessage('Le fichier de profil est trop volumineux (max 512 KB).');
+                return;
+            }
+
+            const raw = fs.readFileSync(uris[0].fsPath, 'utf8');
+            let imported;
+            try {
+                imported = JSON.parse(raw);
+            } catch {
+                vscode.window.showErrorMessage('Fichier invalide — le JSON est malformé.');
+                this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] JSON malformé dans le fichier de profil.' });
+                return;
+            }
+            if (!imported || typeof imported !== 'object' || !Array.isArray(imported.tools)) {
+                vscode.window.showErrorMessage('Fichier invalide — champ "tools" manquant.');
+                this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Profil invalide — champ "tools" manquant.' });
+                return;
             }
             // Compute diff against local profile
             const local = this.localProfile || await buildEnvProfile('local');
@@ -184,9 +206,9 @@ class DuplicationPanel {
                 type: 'diffResult', imported, local, diffs,
                 file: path.basename(uris[0].fsPath)
             });
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Import failed: ${e.message}`);
-            this.panel.webview.postMessage({ type: 'error', msg: `[FAIL] Import: ${e.message}` });
+        } catch {
+            vscode.window.showErrorMessage('Import échoué — vérifiez les permissions du fichier.');
+            this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Import échoué — vérifiez les permissions.' });
         }
     }
 
@@ -215,17 +237,17 @@ class DuplicationPanel {
                 zipCmd = `cd "${wsRoot}" && zip -r "${outFile}" . --exclude '.git/*' --exclude 'node_modules/*' --exclude '.dart_tool/*'`;
             }
 
-            this.panel.webview.postMessage({ type: 'templateProgress', msg: 'Creating template zip...' });
+            this.panel.webview.postMessage({ type: 'templateProgress', msg: 'Création du ZIP en cours...' });
             await execAsync(zipCmd, { timeout: 60000 });
 
             const stat    = fs.statSync(outFile);
             const sizeMb  = (stat.size / 1024 / 1024).toFixed(1);
-            vscode.window.showInformationMessage(`✅ Template "${name}" created (${sizeMb} MB)`, 'Open Folder')
-                .then(s => { if (s === 'Open Folder') vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(outDir)); });
+            vscode.window.showInformationMessage(`✅ Template "${name}" créé (${sizeMb} MB)`, 'Ouvrir le dossier')
+                .then(s => { if (s === 'Ouvrir le dossier') vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(outDir)); });
             this.panel.webview.postMessage({ type: 'templateCreated', name, file: outFile, sizeMb });
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Template creation failed: ${e.message}`);
-            this.panel.webview.postMessage({ type: 'error', msg: `[FAIL] Template: ${e.message}` });
+        } catch {
+            vscode.window.showErrorMessage('Création du template échouée — vérifiez les permissions du dossier.');
+            this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Création du template échouée — vérifiez les permissions.' });
         }
     }
 
@@ -251,21 +273,21 @@ class DuplicationPanel {
                 extractCmd = `unzip -o "${uris[0].fsPath}" -d "${destUri.fsPath}"`;
             }
 
-            this.panel.webview.postMessage({ type: 'templateProgress', msg: 'Extracting template...' });
+            this.panel.webview.postMessage({ type: 'templateProgress', msg: 'Extraction du template...' });
             await execAsync(extractCmd, { timeout: 60000 });
 
             vscode.window.showInformationMessage(
-                `✅ Template deployed to ${path.basename(destUri.fsPath)}`,
-                'Open Folder'
+                `✅ Template déployé dans ${path.basename(destUri.fsPath)}`,
+                'Ouvrir le dossier'
             ).then(s => {
-                if (s === 'Open Folder') {
+                if (s === 'Ouvrir le dossier') {
                     vscode.commands.executeCommand('vscode.openFolder', destUri, true);
                 }
             });
             this.panel.webview.postMessage({ type: 'deployDone', dest: destUri.fsPath });
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Deploy failed: ${e.message}`);
-            this.panel.webview.postMessage({ type: 'error', msg: `[FAIL] Deploy: ${e.message}` });
+        } catch {
+            vscode.window.showErrorMessage('Déploiement échoué — vérifiez que le fichier ZIP est valide et les permissions du dossier.');
+            this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Déploiement échoué — ZIP invalide ou permissions insuffisantes.' });
         }
     }
 

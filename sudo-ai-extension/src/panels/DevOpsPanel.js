@@ -549,7 +549,15 @@ server {
             const code = codeMatch ? codeMatch[1] : content;
             this.panel.webview.postMessage({ type: 'aiResult', content: code, fileType: type });
         } catch (e) {
-            this.panel.webview.postMessage({ type: 'aiError', text: e.message });
+            // Never expose raw axios/system error messages — they can contain internal IPs or stack traces
+            const isOffline = e.code === 'ECONNREFUSED';
+            const isTimeout = e.code === 'ECONNABORTED' || (e.message || '').includes('timeout');
+            const friendly = isOffline
+                ? 'Le modèle IA n\'est pas démarré. Lancez d\'abord le Runtime dans le panneau Runtime.'
+                : isTimeout
+                    ? 'La génération a pris trop de temps. Réessayez avec une demande plus courte.'
+                    : 'Génération IA indisponible. Vérifiez que le Runtime est actif (port 6000).';
+            this.panel.webview.postMessage({ type: 'aiError', text: friendly });
         }
     }
 

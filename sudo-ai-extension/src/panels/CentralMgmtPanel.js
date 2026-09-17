@@ -147,18 +147,61 @@ class CentralMgmtPanel {
     }
 
     async _onMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
-            case 'load':          this._loadAll(); break;
-            case 'addUser':       this._addUser(msg.user); break;
-            case 'removeUser':    this._removeUser(msg.id); break;
-            case 'toggleUser':    this._toggleUser(msg.id); break;
-            case 'addPolicy':     this._addPolicy(msg.policy); break;
-            case 'removePolicy':  this._removePolicy(msg.id); break;
-            case 'togglePolicy':  this._togglePolicy(msg.id); break;
+            case 'load':           this._loadAll(); break;
+            case 'addUser': {
+                // Validate user object before passing to storage layer
+                const u = msg.user;
+                if (!u || typeof u.name !== 'string' || typeof u.email !== 'string' ||
+                    u.name.length > 64 || u.email.length > 128) return;
+                if (!/^[^@\s]+@[^@\s]+$/.test(u.email)) return;
+                const validRoles = ['admin','developer','viewer','tester','devops'];
+                if (!validRoles.includes(u.role)) return;
+                this._addUser(u); break;
+            }
+            case 'removeUser': {
+                if (typeof msg.id !== 'string' || msg.id.length > 32) return;
+                this._removeUser(msg.id); break;
+            }
+            case 'toggleUser': {
+                if (typeof msg.id !== 'string' || msg.id.length > 32) return;
+                this._toggleUser(msg.id); break;
+            }
+            case 'addPolicy': {
+                const p = msg.policy;
+                if (!p || typeof p.name !== 'string' || p.name.length > 64) return;
+                if (typeof p.tool !== 'string'    || p.tool.length > 32) return;
+                if (typeof p.version !== 'string' || p.version.length > 16) return;
+                if (!/^[\d.]+$/.test(p.version)) return;
+                const validOps = ['>=','>','=='];
+                if (!validOps.includes(p.operator)) return;
+                const validSev = ['error','warn','info'];
+                if (!validSev.includes(p.severity)) return;
+                this._addPolicy(p); break;
+            }
+            case 'removePolicy': {
+                if (typeof msg.id !== 'string' || msg.id.length > 32) return;
+                this._removePolicy(msg.id); break;
+            }
+            case 'togglePolicy': {
+                if (typeof msg.id !== 'string' || msg.id.length > 32) return;
+                this._togglePolicy(msg.id); break;
+            }
             case 'runPolicyCheck': this._runPolicyCheck(); break;
-            case 'addConfig':     this._addConfig(msg.config); break;
-            case 'removeConfig':  this._removeConfig(msg.id); break;
-            case 'applyConfig':   this._applyConfig(msg.id); break;
+            case 'addConfig': {
+                const c = msg.config;
+                if (!c || typeof c.name !== 'string' || c.name.length > 64) return;
+                this._addConfig(c); break;
+            }
+            case 'removeConfig': {
+                if (typeof msg.id !== 'string' || msg.id.length > 32) return;
+                this._removeConfig(msg.id); break;
+            }
+            case 'applyConfig': {
+                if (typeof msg.id !== 'string' || msg.id.length > 32) return;
+                this._applyConfig(msg.id); break;
+            }
             case 'exportAll':     this._exportAll(); break;
             case 'importAll':     this._importAll(); break;
         }
@@ -186,32 +229,35 @@ class CentralMgmtPanel {
         try {
             const users = getUsers();
             if (users.find(u => u.email === user.email)) {
-                this.panel.webview.postMessage({ type: 'error', msg: `User ${user.email} already exists.` });
+                this.panel.webview.postMessage({ type: 'error', msg: `Un utilisateur avec l\'email ${user.email} existe déjà.` });
                 return;
             }
             user.id = Date.now().toString();
             user.addedAt = new Date().toISOString();
             user.active  = true;
             users.push(user);
-            if (!writeJson('users.json', users)) throw new Error('Failed to write users.json');
+            if (!writeJson('users.json', users)) {
+                vscode.window.showErrorMessage('Impossible de sauvegarder la liste des utilisateurs — vérifiez les permissions.');
+                return;
+            }
             appendAudit('ADD_USER', `Added ${user.email} (${user.role})`);
-            vscode.window.showInformationMessage(`✅ User ${user.name} added.`);
+            vscode.window.showInformationMessage(`✅ Utilisateur ${user.name} ajouté.`);
             this._loadAll();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Add user: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Ajout de l\'utilisateur échoué — réessayez.');
         }
     }
 
     _removeUser(id) {
         try {
-            const users = getUsers().filter(u => u.id !== id);
-            const removed = getUsers().find(u => u.id === id);
-            writeJson('users.json', users);
-            appendAudit('REMOVE_USER', `Removed user id=${id} (${removed?.email || '?'})`);
-            vscode.window.showInformationMessage('✅ User removed.');
+            const existing = getUsers();
+            const removed  = existing.find(u => u.id === id);
+            writeJson('users.json', existing.filter(u => u.id !== id));
+            appendAudit('REMOVE_USER', `Removed user id=${id}`);
+            vscode.window.showInformationMessage(`✅ Utilisateur supprimé.`);
             this._loadAll();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Remove user: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Suppression de l\'utilisateur échouée — réessayez.');
         }
     }
 
@@ -220,10 +266,10 @@ class CentralMgmtPanel {
             const users = getUsers().map(u => u.id === id ? { ...u, active: !u.active } : u);
             const u = users.find(x => x.id === id);
             writeJson('users.json', users);
-            appendAudit('TOGGLE_USER', `User ${u?.email} → active=${u?.active}`);
+            appendAudit('TOGGLE_USER', `User toggled → active=${u?.active}`);
             this._loadAll();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Toggle user: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Modification de l\'utilisateur échouée.');
         }
     }
 
@@ -235,10 +281,10 @@ class CentralMgmtPanel {
             policies.push(policy);
             writeJson('policies.json', policies);
             appendAudit('ADD_POLICY', `Added policy: ${policy.name}`);
-            vscode.window.showInformationMessage(`✅ Policy "${policy.name}" added.`);
+            vscode.window.showInformationMessage(`✅ Policy "${policy.name}" ajoutée.`);
             this._loadAll();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Add policy: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Ajout de la policy échoué — réessayez.');
         }
     }
 
@@ -269,10 +315,10 @@ class CentralMgmtPanel {
             configs.push(config);
             writeJson('configs.json', configs);
             appendAudit('ADD_CONFIG', `Added config profile: ${config.name}`);
-            vscode.window.showInformationMessage(`✅ Config "${config.name}" saved.`);
+            vscode.window.showInformationMessage(`✅ Profil "${config.name}" sauvegardé.`);
             this._loadAll();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Add config: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Sauvegarde du profil échouée — réessayez.');
         }
     }
 
@@ -286,15 +332,14 @@ class CentralMgmtPanel {
     _applyConfig(id) {
         const config = getConfigs().find(c => c.id === id);
         if (!config) return;
-        // Apply VS Code workspace settings
         const cfg = vscode.workspace.getConfiguration('sudoStudio');
         try {
-            if (config.model)        cfg.update('ai.model', config.model, vscode.ConfigurationTarget.Global);
-            if (config.agentMode !== undefined) cfg.update('agent.enabled', config.agentMode, vscode.ConfigurationTarget.Global);
+            if (config.model)                     cfg.update('ai.model',       config.model,       vscode.ConfigurationTarget.Global);
+            if (config.agentMode !== undefined)   cfg.update('agent.enabled',  config.agentMode,   vscode.ConfigurationTarget.Global);
             appendAudit('APPLY_CONFIG', `Applied config profile: ${config.name}`);
-            vscode.window.showInformationMessage(`✅ Config "${config.name}" applied to workspace.`);
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Apply config: ${e.message}`);
+            vscode.window.showInformationMessage(`✅ Profil "${config.name}" appliqué.`);
+        } catch {
+            vscode.window.showErrorMessage('Application du profil échouée — réessayez.');
         }
     }
 
@@ -302,7 +347,7 @@ class CentralMgmtPanel {
         try {
             const data = {
                 exportedAt: new Date().toISOString(),
-                users:   getUsers(),
+                users:    getUsers(),
                 policies: getPolicies(),
                 configs:  getConfigs(),
             };
@@ -312,10 +357,10 @@ class CentralMgmtPanel {
             });
             if (!saveUri) return;
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(data, null, 2), 'utf8');
-            appendAudit('EXPORT_ALL', `Exported to ${saveUri.fsPath}`);
-            vscode.window.showInformationMessage(`✅ Central config exported.`);
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Export: ${e.message}`);
+            appendAudit('EXPORT_ALL', `Config exporté`);
+            vscode.window.showInformationMessage('✅ Configuration centrale exportée.');
+        } catch {
+            vscode.window.showErrorMessage('Export échoué — vérifiez les permissions du dossier de destination.');
         }
     }
 
@@ -323,15 +368,35 @@ class CentralMgmtPanel {
         try {
             const uris = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: false, filters: { 'Central Config': ['json'] } });
             if (!uris || !uris.length) return;
-            const data = JSON.parse(fs.readFileSync(uris[0].fsPath, 'utf8'));
-            if (data.users)    writeJson('users.json',    data.users);
-            if (data.policies) writeJson('policies.json', data.policies);
-            if (data.configs)  writeJson('configs.json',  data.configs);
-            appendAudit('IMPORT_ALL', `Imported from ${path.basename(uris[0].fsPath)}`);
-            vscode.window.showInformationMessage('✅ Central config imported.');
+
+            // Size guard
+            const stat = fs.statSync(uris[0].fsPath);
+            if (stat.size > 512 * 1024) {
+                vscode.window.showErrorMessage('Le fichier est trop volumineux (max 512 KB).');
+                return;
+            }
+
+            let data;
+            try {
+                data = JSON.parse(fs.readFileSync(uris[0].fsPath, 'utf8'));
+            } catch {
+                vscode.window.showErrorMessage('Fichier invalide — le JSON est malformé.');
+                return;
+            }
+
+            if (!data || typeof data !== 'object') {
+                vscode.window.showErrorMessage('Fichier invalide — structure inattendue.');
+                return;
+            }
+
+            if (Array.isArray(data.users))    writeJson('users.json',    data.users);
+            if (Array.isArray(data.policies)) writeJson('policies.json', data.policies);
+            if (Array.isArray(data.configs))  writeJson('configs.json',  data.configs);
+            appendAudit('IMPORT_ALL', `Config importé depuis ${path.basename(uris[0].fsPath)}`);
+            vscode.window.showInformationMessage('✅ Configuration centrale importée.');
             this._loadAll();
-        } catch (e) {
-            vscode.window.showErrorMessage(`[FAIL] Import: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Import échoué — vérifiez les permissions du fichier.');
         }
     }
 
