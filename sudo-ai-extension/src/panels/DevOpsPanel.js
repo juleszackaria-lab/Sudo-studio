@@ -48,7 +48,12 @@ class DevOpsPanel {
             case 'generateGitlabCI':     await this.generateGitlabCI(msg.opts); break;
             case 'generateKubernetes':   await this.generateKubernetes(msg.opts); break;
             case 'generateNginx':        await this.generateNginx(msg.opts); break;
-            case 'openFile':             await this.openFile(msg.filePath); break;
+            case 'openFile': {
+                // Validate filePath: must be string, no path_traversal sequences or control chars
+                if (typeof msg.filePath !== 'string') return;
+                if (/(\.\.|[\x00-\x1f])/.test(msg.filePath)) return;
+                await this.openFile(msg.filePath); break;
+            }
             case 'refreshProject':       await this.detectProject(); break;
             case 'aiGenerate':           await this.aiGenerate(msg.prompt, msg.type); break;
         }
@@ -67,7 +72,8 @@ class DevOpsPanel {
         const exists = f => fs.existsSync(path.join(root, f));
 
         if (exists('package.json')) {
-            const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+            let pkg = {};
+            try { pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')); } catch { /* malformed JSON — skip */ }
             const deps = { ...pkg.dependencies, ...pkg.devDependencies };
             if (deps['next']) { info.stack = 'nextjs'; info.port = 3000; }
             else if (deps['react']) { info.stack = 'react'; info.port = 3000; }
@@ -569,7 +575,14 @@ server {
             return;
         }
 
-        const fullPath = path.join(folder.uri.fsPath, relativePath);
+        // Path traversal prevention: resolve and jail-check against workspace root
+        const wsRoot = folder.uri.fsPath;
+        const fullPath = path.resolve(wsRoot, relativePath);
+        if (!fullPath.startsWith(wsRoot + path.sep) && fullPath !== wsRoot) {
+            // path_traversal attempt detected — silently abort
+            vscode.window.showWarningMessage('Chemin invalide — écriture refusée.');
+            return;
+        }
 
         // Create directories if needed
         if (mkdir) {

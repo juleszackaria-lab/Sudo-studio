@@ -190,8 +190,8 @@ class EnvironmentPanel {
             });
 
             this.panel.webview.postMessage({ type: 'exportDone', path: choice.path, content: profileJson });
-        } catch (e) {
-            vscode.window.showErrorMessage(`Export failed: ${e.message}`);
+        } catch {
+            vscode.window.showErrorMessage('Export échoué — vérifiez les permissions du dossier.');
         }
     }
 
