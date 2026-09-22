@@ -301,7 +301,7 @@ class EnvironmentPanel {
             'Node.js':  IS_WIN ? 'winget install OpenJS.NodeJS.LTS' : IS_MAC ? 'brew install node' : 'sudo apt-get install -y nodejs npm',
             'Python':   IS_WIN ? 'winget install Python.Python.3.11' : IS_MAC ? 'brew install python@3.11' : 'sudo apt-get install -y python3 python3-pip',
             'Git':      IS_WIN ? 'winget install Git.Git' : IS_MAC ? 'brew install git' : 'sudo apt-get install -y git',
-            'Docker':   IS_WIN ? 'start https://www.docker.com/products/docker-desktop' : IS_MAC ? 'brew install --cask docker' : 'curl -fsSL https://get.docker.com | sh',
+            'Docker':   IS_WIN ? 'winget install Docker.DockerDesktop --silent --accept-package-agreements --accept-source-agreements' : IS_MAC ? 'brew install --cask docker' : 'curl -fsSL https://get.docker.com | sh',
             'Flutter':  IS_WIN ? 'winget install Google.Flutter' : IS_MAC ? 'brew install --cask flutter' : 'sudo snap install flutter --classic',
             'Java':     IS_WIN ? 'winget install Microsoft.OpenJDK.21' : IS_MAC ? 'brew install openjdk@21' : 'sudo apt-get install -y openjdk-21-jdk',
             'Rust':     IS_WIN ? 'winget install Rustlang.Rustup' : 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y',

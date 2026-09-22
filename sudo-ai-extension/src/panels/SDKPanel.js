@@ -89,12 +89,12 @@ const SDK_DEFS = [
         description: 'Container platform for building and running applications.',
         detectCmd: 'docker --version',
         installCmd: IS_WIN
-            ? 'start https://www.docker.com/products/docker-desktop'
+            ? 'winget install Docker.DockerDesktop --silent --accept-package-agreements --accept-source-agreements'
             : IS_MAC
                 ? 'brew install --cask docker'
                 : 'curl -fsSL https://get.docker.com | sh',
         repairCmd: IS_WIN
-            ? 'start https://www.docker.com/products/docker-desktop'
+            ? 'winget install Docker.DockerDesktop --silent --accept-package-agreements --accept-source-agreements'
             : IS_MAC
                 ? 'brew reinstall --cask docker'
                 : 'sudo systemctl restart docker',
@@ -232,17 +232,17 @@ const SDK_DEFS = [
             ? 'sdkmanager --version 2>nul'
             : 'sdkmanager --version 2>/dev/null',
         installCmd: IS_WIN
-            ? 'start https://developer.android.com/studio#command-tools'
+            ? 'winget install Google.AndroidStudio --silent --accept-package-agreements --accept-source-agreements'
             : IS_MAC
                 ? 'brew install --cask android-commandlinetools'
                 : 'sudo apt-get install -y android-sdk && yes | sdkmanager --licenses',
         repairCmd: IS_WIN
-            ? 'start https://developer.android.com/studio#command-tools'
+            ? 'winget install Google.AndroidStudio --silent --accept-package-agreements --accept-source-agreements'
             : IS_MAC
                 ? 'brew reinstall --cask android-commandlinetools'
                 : 'sudo apt-get install --reinstall -y android-sdk',
         uninstallCmd: IS_WIN
-            ? 'start https://developer.android.com/studio'
+            ? 'winget uninstall Google.AndroidStudio'
             : IS_MAC
                 ? 'brew uninstall --cask android-commandlinetools'
                 : 'sudo apt-get remove -y android-sdk',

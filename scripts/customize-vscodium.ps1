@@ -172,8 +172,10 @@ if (Test-Path $appOutDir) {
     $jsonFiles = Get-ChildItem $appOutDir -Recurse -File |
         Where-Object { $_.Extension -eq ".json" } |
         Where-Object { $_.FullName -notmatch "node_modules" } |
-        Where-Object { $_.Length -lt 5MB } |
-        Where-Object { $_.Name -notmatch "^nls" }
+        Where-Object { $_.Length -lt 5MB }
+        # NOTE: nls* JSON files are intentionally INCLUDED now — they contain
+        # "Get Started with VSCodium" strings that must be patched.
+        # These are flat key→value maps, safe to patch with a raw string replace.
 
     $patchedJson = 0
     $totalJson   = @($jsonFiles).Count
@@ -274,9 +276,8 @@ foreach ($wtDir in $walkthroughDirs) {
     $wtJsonFiles = Get-ChildItem $wtDir -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -eq ".json" } |
         Where-Object { $_.FullName -notmatch 'node_modules' } |
-        Where-Object { $_.Name -notmatch '^nls' } |
         Where-Object { $_.Length -lt 5MB } |
-        Where-Object { $_.Name -match 'walkthrough' -or $_.Name -match 'getting.started' -or $_.Name -match 'package' }
+        Where-Object { $_.Name -match 'walkthrough' -or $_.Name -match 'getting.started' -or $_.Name -match 'package' -or $_.Name -match '^nls' }
 
     $patchedWtJson = 0
     foreach ($file in $wtJsonFiles) {
@@ -307,6 +308,38 @@ foreach ($wtDir in $walkthroughDirs) {
 }
 
 # ============================================================
+# ============================================================
+# STEP 4c - Exhaustive branding sweep: nls.messages.js + any remaining file
+# This is a safety net for any file missed by the targeted sweeps above.
+# Patches ALL text files (JS/JSON/NLS) under resources\app that still
+# contain "VSCodium" or the literal string "Get Started with VSCodium".
+# ============================================================
+Write-Host "[STEP 4c] Exhaustive final branding sweep (nls.messages.js + all remaining)..."
+$allTextFiles = Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @('.js','.json','.nls','.ts') } |
+    Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.Length -lt 8MB }
+
+$step4cPatched = 0
+foreach ($file in $allTextFiles) {
+    try {
+        $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
+        if ($raw -notmatch 'VSCodium') { continue }
+        $patched = $raw -replace '(?<![/\.])VSCodium(?![/\.])','Sudo Studio'
+        if ($patched -ne $raw) {
+            $rawBytes4c = [System.IO.File]::ReadAllBytes($file.FullName)
+            $hasBom4c   = ($rawBytes4c.Length -ge 3 -and $rawBytes4c[0] -eq 0xEF -and $rawBytes4c[1] -eq 0xBB -and $rawBytes4c[2] -eq 0xBF)
+            $enc4c      = if ($hasBom4c) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
+            [System.IO.File]::WriteAllText($file.FullName, $patched, $enc4c)
+            Write-Host "[OK] [4c] Patched: $($file.FullName.Substring($resolvedDir.Length))"
+            $step4cPatched++
+        }
+    } catch {
+        Write-Warning "[WARN] [4c] Could not patch $($file.Name): $($_.Exception.Message)"
+    }
+}
+Write-Host "[STEP 4c] Final sweep patched $step4cPatched additional file(s)"
+
 # STEP 5 - Re-confirm product.json display names (safe JSON patch)
 # ============================================================
 $appProductJson = Join-Path $resolvedDir "resources\app\product.json"

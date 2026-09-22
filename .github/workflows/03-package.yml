@@ -152,6 +152,70 @@ jobs:
           }
           Write-Host "[OK] product.json branding verified: nameShort='Sudo Studio', nameLong='Sudo Studio'"
 
+      # ── Step 4c: Artifact branding audit — grep for residual "VSCodium" text ─
+      # This step searches the BUILT ARTIFACT (not source) for any remaining
+      # "VSCodium" or "Get Started with VSCodium" strings.
+      # It reports findings but does NOT fail the build (informational only)
+      # so that a few inevitable false-positives (URLs, comments) don't block release.
+      # The product.json nameShort/nameLong hard-fail (Step 4b) is the real gate.
+      - name: Artifact branding audit (grep residual VSCodium strings)
+        shell: powershell
+        run: |
+          Write-Host "[AUDIT] Scanning built artifact for residual 'VSCodium' text..."
+          $artifactDir = "build\SudoStudio\resources\app"
+          if (-not (Test-Path $artifactDir)) {
+            Write-Warning "[AUDIT] Artifact dir not found: $artifactDir — skipping audit"
+            exit 0
+          }
+
+          # Search JS/JSON/NLS files for VSCodium (excluding URL/path contexts)
+          $found = @()
+          Get-ChildItem $artifactDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @('.js','.json','.nls') } |
+            Where-Object { $_.FullName -notmatch 'node_modules' } |
+            Where-Object { $_.Length -lt 8MB } |
+            ForEach-Object {
+              try {
+                $content = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+                # Match VSCodium NOT preceded/followed by / or . (skip URLs like vscodium.com, /vscodium/)
+                $matches = [regex]::Matches($content, '(?<![/\.])VSCodium(?![/\.])')
+                if ($matches.Count -gt 0) {
+                  $rel = $_.FullName.Replace((Resolve-Path "build\SudoStudio").Path, '')
+                  $found += "$rel ($($matches.Count) occurrence(s))"
+                  Write-Host "[AUDIT-FOUND] $rel — $($matches.Count) occurrence(s)"
+                }
+              } catch {}
+            }
+
+          # Special check for the exact string that was visible in the UI
+          $getStarted = Get-ChildItem $artifactDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in @('.js','.json','.nls') } |
+            Where-Object { $_.FullName -notmatch 'node_modules' } |
+            ForEach-Object {
+              try {
+                $c = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+                if ($c -match 'Get Started with VSCodium') {
+                  $_.FullName.Replace((Resolve-Path "build\SudoStudio").Path, '')
+                }
+              } catch {}
+            }
+
+          if ($getStarted) {
+            Write-Host "##[error][AUDIT-CRITICAL] 'Get Started with VSCodium' STILL PRESENT in:"
+            $getStarted | ForEach-Object { Write-Host "  $_" }
+            Write-Host "##[error]This string must be patched. Check Step 4c output above."
+            exit 1
+          }
+
+          if ($found.Count -eq 0) {
+            Write-Host "[AUDIT] ✅ No residual 'VSCodium' text found in JS/JSON/NLS files."
+          } else {
+            Write-Host "[AUDIT] ⚠️ $($found.Count) file(s) with 'VSCodium' remain (may be URLs/internal refs — not UI-visible):"
+            $found | ForEach-Object { Write-Host "  $_" }
+            Write-Host "[AUDIT] These are non-critical residuals. product.json branding is verified above."
+          }
+          Write-Host "[AUDIT] Done."
+
       # ── Step 5: Convert PNG → ICO (multi-resolution) ─────────────────────
       # ImageMagick is pre-installed on windows-latest GitHub Actions runners.
       # Produces a proper multi-size ICO (256/128/64/48/32/16px) from resources\icon.png.

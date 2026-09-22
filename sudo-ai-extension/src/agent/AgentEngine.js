@@ -58,6 +58,41 @@ const DANGEROUS_PATTERNS = [
     /mkfs/i,
 ];
 
+// ─── TOOL-CALL SANITIZERS ─────────────────────────────────────────────────────
+/**
+ * PROB 1 FIX: Small models (1.5B) sometimes copy the label "CMD: " or "cmd: "
+ * verbatim into the value when generating a run_command tool call.
+ * This strips those residual prefixes before execution.
+ *
+ * Examples of what gets caught:
+ *   "CMD: python main.py"    → "python main.py"
+ *   "cmd:python main.py"     → "python main.py"
+ *   "COMMAND: node index.js" → "node index.js"
+ */
+function _sanitizeCmd(cmd) {
+    if (!cmd || typeof cmd !== 'string') return '';
+    // Strip leading CMD:/cmd:/COMMAND: prefixes (case-insensitive, optional space)
+    cmd = cmd.replace(/^(?:CMD|cmd|COMMAND|command)\s*:\s*/i, '').trim();
+    return cmd;
+}
+
+/**
+ * PROB 1 FIX: Small models sometimes copy "file: " prefix into the FILE: value.
+ *
+ * Examples:
+ *   "file: calculator.py"  → "calculator.py"
+ *   "FILE:calculator.py"   → "calculator.py"
+ *   "file:"                → '' (empty → will be rejected upstream)
+ */
+function _sanitizeFilePath(fp) {
+    if (!fp || typeof fp !== 'string') return '';
+    // Strip leading file:/FILE: prefix
+    fp = fp.replace(/^(?:file|FILE)\s*:\s*/i, '').trim();
+    // Reject obviously invalid paths (pure 'file:' with nothing after, or just ':')
+    if (fp === '' || fp === ':') return '';
+    return fp;
+}
+
 // ─── HALLUCINATION GUARD ──────────────────────────────────────────────────────
 /**
  * Detects git clone commands pointing to URLs that are clearly unrelated to
@@ -680,15 +715,18 @@ const AGENT_SYSTEM_PROMPT = `Tu es Sudo Agent v3.0, un agent de programmation au
 
 Tu travailles en mode agentique : chaque étape produit une ACTION CONCRÈTE que tu exécutes, observes, puis adaptes si nécessaire.
 
-OUTILS DISPONIBLES (utilise EXACTEMENT ces formats) :
+OUTILS DISPONIBLES (utilise EXACTEMENT ces formats JSON — PAS de préfixe texte dans les valeurs) :
 
 OUTILS STANDARD :
-1. TOOL: write_file\nFILE: <chemin relatif>\nCONTENT:\n<contenu complet>
-2. TOOL: run_command\nCMD: <commande shell exacte>
-3. TOOL: read_file\nFILE: <chemin>
-4. TOOL: edit_file\nFILE: <chemin>\nOLD: <texte exact>\nNEW: <remplacement>
-5. TOOL: search_code\nPATTERN: <regex>\nDIR: <répertoire>
-6. TOOL: git\nCMD: <sous-commande git>
+1. TOOL: write_file\nFILE: calculator.py\nCONTENT:\ndef add(a, b):\n    return a + b
+2. TOOL: run_command\nCMD: python calculator.py
+3. TOOL: read_file\nFILE: main.py
+4. TOOL: edit_file\nFILE: app.py\nOLD: old_text\nNEW: new_text
+5. TOOL: search_code\nPATTERN: def main\nDIR: .
+6. TOOL: git\nCMD: status
+
+ATTENTION: Dans CMD, écris la commande DIRECTEMENT, pas "CMD: python..." mais juste "python..."
+ATTENTION: Dans FILE, écris le chemin DIRECTEMENT, pas "file: calculator.py" mais juste "calculator.py"
 
 OUTILS SUDO STUDIO (fonctionnalités propriétaires) :
 7. TOOL: sdk_analyze\nPROJECT: <type_projet ou auto>
@@ -2029,8 +2067,19 @@ class AgentEngine extends EventEmitter {
             }
 
             if (stepFailed && iteration < MAX_ITERATIONS) {
+                // PROB 3: Stop early if _diagnoseAndRepair already set status to 'failed' (identical error loop)
                 await this._diagnoseAndRepair();
+                if (this.state.finalStatus === 'failed') return;
             } else if (!stepFailed) {
+                // PROB 2 FIX: Don't declare SUCCESS if all commands failed (even if no stepFailed flag)
+                // This happens when run_command returns ok=false but the step is marked done anyway
+                const allCmdsFailed = this.state.commandsExecuted.length > 0 &&
+                    this.state.commandsExecuted.every(c => !c.ok);
+                if (allCmdsFailed && this.state.filesModified.length === 0) {
+                    this.state.finalStatus = 'failed';
+                    this.state.errors.push(`Toutes les commandes ont échoué (${this.state.commandsExecuted.length} commandes, 0 fichier créé)`);
+                    return;
+                }
                 this.state.finalStatus = 'success';
                 return;
             }
@@ -2058,12 +2107,12 @@ class AgentEngine extends EventEmitter {
                     return await this._toolAIEdit(step.description);
 
                 case 'run_command': {
-                    let cmd = parsed.arg;
+                    let cmd = parsed.arg ? _sanitizeCmd(parsed.arg) : null;
                     if (!cmd || cmd.length < 3 || /^(la|les|le|des|un|une|the|a|an)\s/i.test(cmd)) {
                         const gen = await this.aiProvider.generateCommand(step.description, this.state._projectContext, this.state.getToolResultContext());
                         if (gen.ok && gen.reply) {
                             const cmdMatch = gen.reply.match(/CMD:\s*(.+)/);
-                            cmd = cmdMatch ? cmdMatch[1].trim() : null;
+                            cmd = cmdMatch ? _sanitizeCmd(cmdMatch[1].trim()) : null;
                             if (!cmd && gen.reply.includes('TOOL: write_file')) {
                                 return await this._toolWriteFileFromAIReply(gen.reply, step.description);
                             }
@@ -2188,7 +2237,10 @@ class AgentEngine extends EventEmitter {
         const fileMatch    = aiReply.match(/FILE:\s*(.+)/);
         const contentMatch = aiReply.match(/CONTENT:\n([\s\S]+)/);
         if (!fileMatch) return { ok: false, error: 'AI reply missing FILE: field' };
-        const fp      = fileMatch[1].trim();
+        // PROB 1 FIX: Strip literal 'file:' prefix if small model copied the label verbatim
+        let fp = fileMatch[1].trim();
+        fp = _sanitizeFilePath(fp);
+        if (!fp) return { ok: false, error: 'AI reply FILE: field is empty or invalid after sanitization' };
         let   content = contentMatch ? contentMatch[1].trim() : '';
         content = content.replace(/^```[\w]*\n?/, '').replace(/\n?```\s*$/, '').trim();
         if (!content) return await this._toolWriteFileFromAI(fp, stepDescription);
@@ -2196,6 +2248,10 @@ class AgentEngine extends EventEmitter {
     }
 
     async _toolRunCommand(cmd, options = {}) {
+        // PROB 1 FIX: Strip 'CMD: ' literal prefix if small model echoed the label verbatim
+        cmd = _sanitizeCmd(cmd);
+        if (!cmd) return { ok: false, error: 'Commande vide après sanitisation — le modèle a généré une commande invalide.' };
+
         // PROB 1: Hallucination guard
         if (this.state) {
             const guard = hallucinationGuard(cmd, this.state.task);
@@ -2312,7 +2368,7 @@ Si aucune modification : NO_EDIT_NEEDED`;
         const reply = gen.reply.trim();
         if (reply.includes('TOOL: run_command') || reply.includes('CMD:')) {
             const cmdMatch = reply.match(/CMD:\s*(.+)/);
-            if (cmdMatch) return await this._toolRunCommand(cmdMatch[1].trim());
+            if (cmdMatch) return await this._toolRunCommand(_sanitizeCmd(cmdMatch[1].trim()));
         }
         if (reply.includes('TOOL: write_file') || reply.includes('FILE:')) {
             return await this._toolWriteFileFromAIReply(reply, stepDescription);
@@ -2442,14 +2498,44 @@ Si aucune modification : NO_EDIT_NEEDED`;
     // ── Verify ────────────────────────────────────────────────────────────────
 
     async _verify() {
-        this._emit('step', { phase: 'verify', message: '✅ Vérification du résultat...' });
+        this._emit('step', { phase: 'verify', message: '🔍 Vérification du résultat...' });
 
+        // PROB 2 FIX (a): All files listed in state.filesModified must exist on disk
         const filesOk = this.state.filesModified.every(f => {
             const r = this.fileTool.readFile(f);
-            if (!r.ok) { this.state.log(`VERIFY FAIL: file not found: ${f}`); return false; }
+            if (!r.ok) { this.state.log(`VERIFY FAIL: file not found on disk: ${f}`); return false; }
             return true;
         });
-        if (!filesOk) return false;
+        if (!filesOk) {
+            this._emit('step', { phase: 'verify', message: '❌ Vérification ÉCHEC — un ou plusieurs fichiers censés avoir été créés sont absents du disque.' });
+            return false;
+        }
+
+        // PROB 2 FIX (b): Extract explicit filenames from the user's task and verify they exist
+        const taskFileMentions = (this.state.task.match(/[\w./\\-]+\.(?:py|js|ts|dart|go|rs|java|cs|cpp|rb|php|html|css|json|yaml|yml|md|txt|sh|ps1)/gi) || []);
+        for (const mention of taskFileMentions) {
+            const basename = path.basename(mention);
+            const r = this.fileTool.readFile(basename);
+            if (!r.ok) {
+                // Also try as a path relative to root
+                const r2 = this.fileTool.readFile(mention.replace(/\\/g, '/'));
+                if (!r2.ok) {
+                    this.state.log(`VERIFY FAIL: task mentioned '${mention}' but it does not exist on disk`);
+                    this._emit('step', {
+                        phase: 'verify',
+                        message: `❌ Vérification ÉCHEC — le fichier '${mention}' demandé dans la tâche n'existe pas sur le disque.`
+                    });
+                    return false;
+                }
+            }
+        }
+
+        // PROB 2 FIX (c): If there are critical command failures AND no files were created → fail
+        const criticalErrors = this.state.errors.filter(e => e.exitCode !== 0);
+        if (criticalErrors.length > 0 && this.state.filesModified.length === 0) {
+            this._emit('step', { phase: 'verify', message: `❌ Vérification ÉCHEC — ${criticalErrors.length} erreur(s) de commande et aucun fichier créé.` });
+            return false;
+        }
 
         // Run npm test if available
         const pkg = this.fileTool.readFile('package.json');
@@ -2464,9 +2550,7 @@ Si aucune modification : NO_EDIT_NEEDED`;
             } catch (_) {}
         }
 
-        const criticalErrors = this.state.errors.filter(e => e.exitCode !== 0);
-        if (criticalErrors.length > 0 && this.state.filesModified.length === 0) return false;
-        this._emit('step', { phase: 'verify', message: '✅ Vérification OK' });
+        this._emit('step', { phase: 'verify', message: '✅ Vérification OK — fichiers présents sur disque' });
         return true;
     }
 
@@ -2476,6 +2560,25 @@ Si aucune modification : NO_EDIT_NEEDED`;
         this._emit('step', { phase: 'diagnose', message: '🔬 Diagnostic automatique...' });
         const lastErrors = this.state.errors.slice(-3);
         if (!lastErrors.length) return;
+
+        // PROB 3 FIX: Detect identical consecutive errors — avoid cosmetic-variation loop
+        if (lastErrors.length >= 2) {
+            const last  = lastErrors[lastErrors.length - 1];
+            const prev  = lastErrors[lastErrors.length - 2];
+            // Same stderr (trimmed) = same error, different cmd escape = cosmetic fix that didn't work
+            const sameStderr = last.stderr && prev.stderr &&
+                last.stderr.trim().slice(0, 120) === prev.stderr.trim().slice(0, 120);
+            if (sameStderr) {
+                this._emit('step', {
+                    phase: 'diagnose',
+                    message: '⚠️ L\'erreur est identique à la tentative précédente — la correction n\'a rien changé. Abandon de la boucle de réparation.'
+                });
+                // Don't loop endlessly — mark as failed so the outer loop stops cleanly
+                this.state.finalStatus = 'failed';
+                this.state.errors.push('Auto-repair aborted: consecutive identical errors detected. Check the command syntax manually.');
+                return;
+            }
+        }
 
         const errorContext = lastErrors.map(e =>
             `CMD: ${e.cmd}\nEXIT CODE: ${e.exitCode}\nSTDERR:\n${e.stderr}\nSTDOUT:\n${e.stdout || ''}`
