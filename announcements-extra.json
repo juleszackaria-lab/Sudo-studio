@@ -1,0 +1,22 @@
+[
+  {
+    "id": "sudo-studio-welcome",
+    "title": "Welcome to Sudo Studio — 100% local AI, your code never leaves your machine",
+    "url": "https://github.com/juleszackaria-lab/Sudo-studio"
+  },
+  {
+    "id": "sudo-studio-agent",
+    "title": "Try the autonomous Agent: scaffold apps and automate tasks from a single prompt",
+    "url": "https://github.com/juleszackaria-lab/Sudo-studio"
+  },
+  {
+    "id": "sudo-studio-doctor",
+    "title": "System Doctor detects your SDKs and keeps your dev environment healthy",
+    "url": "https://github.com/juleszackaria-lab/Sudo-studio"
+  },
+  {
+    "id": "sudo-studio-install",
+    "title": "New here? Follow the installation guide to get started",
+    "url": "https://github.com/juleszackaria-lab/Sudo-studio/blob/main/INSTALLATION.md"
+  }
+]
