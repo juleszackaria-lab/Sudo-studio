@@ -340,6 +340,60 @@ foreach ($file in $allTextFiles) {
 }
 Write-Host "[STEP 4c] Final sweep patched $step4cPatched additional file(s)"
 
+# ============================================================
+# STEP 4d - Repoint Welcome-page Announcements feed to Sudo Studio repo
+# ROOT CAUSE (Probleme 3): the Welcome page "Announcements" are NOT a local
+# JSON file - the built gettingStarted bundle FETCHES them at runtime from:
+#   https://raw.githubusercontent.com/VSCodium/vscodium/<master|insider>/announcements-extra.json
+# (see vscodium/patches/feat-announcements.patch + vscodium/docs/telemetry.md).
+# That is why "Securing VSCodium" / "minReleaseAge" survive all local sweeps:
+# the content comes from VSCodium's server, live.
+# FIX: precise literal swap of the feed base URL to our own repository.
+# This only changes a string literal inside the JS bundle - it cannot break
+# JS syntax. If our repo has no matching file yet, the app falls back to the
+# (empty) builtin list and shows "There are no current announcements."
+# ============================================================
+Write-Host "[STEP 4d] Repointing announcements feed VSCodium -> Sudo Studio..."
+$feedOld = "raw.githubusercontent.com/VSCodium/vscodium"
+$feedNew = "raw.githubusercontent.com/juleszackaria-lab/Sudo-studio"
+$feedFiles = Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -eq ".js" } |
+    Where-Object { $_.FullName -notmatch "node_modules" } |
+    Where-Object { $_.Length -lt 8MB }
+$step4dPatched = 0
+foreach ($file in $feedFiles) {
+    try {
+        $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
+        if ($raw -notmatch [regex]::Escape($feedOld)) { continue }
+        $patched = $raw.Replace($feedOld, $feedNew)
+        if ($patched -ne $raw) {
+            $rb = [System.IO.File]::ReadAllBytes($file.FullName)
+            $bom = ($rb.Length -ge 3 -and $rb[0] -eq 0xEF -and $rb[1] -eq 0xBB -and $rb[2] -eq 0xBF)
+            $enc = if ($bom) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
+            [System.IO.File]::WriteAllText($file.FullName, $patched, $enc)
+            Write-Host "[OK] [4d] Repointed announcements feed in: $($file.FullName.Substring($resolvedDir.Length))"
+            $step4dPatched++
+        }
+    } catch {
+        Write-Warning "[WARN] [4d] Could not patch $($file.Name): $($_.Exception.Message)"
+    }
+}
+Write-Host "[STEP 4d] Feed repointed in $step4dPatched file(s)"
+# Verify: old feed URL must be gone from the whole artifact (warning only)
+$feedLeftovers = @(Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in @(".js",".json") } |
+    Where-Object { $_.FullName -notmatch "node_modules" } |
+    Where-Object { $_.Length -lt 8MB } |
+    Where-Object {
+        try { [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8) -match [regex]::Escape($feedOld) }
+        catch { $false }
+    })
+if ($feedLeftovers.Count -gt 0) {
+    Write-Warning "[WARN] [4d] Old announcements feed URL still present in $($feedLeftovers.Count) file(s):"
+    $feedLeftovers | ForEach-Object { Write-Host "  $($_.FullName.Substring($resolvedDir.Length))" }
+} else {
+    Write-Host "[OK] [4d] Verified: no reference to the VSCodium announcements feed remains" }
+
 # STEP 5 - Re-confirm product.json display names (safe JSON patch)
 # ============================================================
 $appProductJson = Join-Path $resolvedDir "resources\app\product.json"

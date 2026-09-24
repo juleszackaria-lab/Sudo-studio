@@ -85,23 +85,19 @@
         },
         {
           "id": "sudoStudioSecurity",
-          "name": "🔒 Security",
-          "type": "webview"
+          "name": "🔒 Security"
         },
         {
           "id": "sudoStudioDuplication",
-          "name": "📋 Duplication",
-          "type": "webview"
+          "name": "📋 Duplication"
         },
         {
           "id": "sudoStudioCentral",
-          "name": "⚙️ Central",
-          "type": "webview"
+          "name": "⚙️ Central"
         },
         {
           "id": "sudoStudioLicense",
-          "name": "🔑 License",
-          "type": "webview"
+          "name": "🔑 License"
         }
       ]
     },
@@ -356,22 +352,26 @@
       {
         "command": "sudoStudio.openSecurityPanel",
         "title": "🔒 Security Audit",
-        "category": "Sudo Studio"
+        "category": "Sudo Studio",
+        "icon": "$(shield)"
       },
       {
         "command": "sudoStudio.openDuplicationPanel",
         "title": "📋 Enterprise Duplication",
-        "category": "Sudo Studio"
+        "category": "Sudo Studio",
+        "icon": "$(copy)"
       },
       {
         "command": "sudoStudio.openCentralMgmtPanel",
         "title": "⚙️ Central Management",
-        "category": "Sudo Studio"
+        "category": "Sudo Studio",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "sudoStudio.openLicensePanel",
         "title": "🔑 License Management",
-        "category": "Sudo Studio"
+        "category": "Sudo Studio",
+        "icon": "$(key)"
       },
       {
         "command": "sudoStudio.openSdkInstallPanel",
@@ -381,12 +381,14 @@
       {
         "command": "sudoStudio.runSecurityAudit",
         "title": "🔒 Run Security Audit",
-        "category": "Sudo Studio"
+        "category": "Sudo Studio",
+        "icon": "$(play)"
       },
       {
         "command": "sudoStudio.cloneEnterprise",
         "title": "📋 Clone Enterprise Env",
-        "category": "Sudo Studio"
+        "category": "Sudo Studio",
+        "icon": "$(repo-clone)"
       }
     ],
     "menus": {
@@ -507,6 +509,36 @@
           "command": "sudoStudio.restoreEnvironment",
           "when": "view == sudoStudioEnvironment",
           "group": "navigation@4"
+        },
+        {
+          "command": "sudoStudio.openSecurityPanel",
+          "when": "view == sudoStudioSecurity",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sudoStudio.runSecurityAudit",
+          "when": "view == sudoStudioSecurity",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sudoStudio.openDuplicationPanel",
+          "when": "view == sudoStudioDuplication",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sudoStudio.cloneEnterprise",
+          "when": "view == sudoStudioDuplication",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sudoStudio.openCentralMgmtPanel",
+          "when": "view == sudoStudioCentral",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sudoStudio.openLicensePanel",
+          "when": "view == sudoStudioLicense",
+          "group": "navigation@1"
         }
       ],
       "view/item/context": [

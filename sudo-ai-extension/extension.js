@@ -19,6 +19,10 @@ const { SDKProvider } = require('./src/providers/SDKProvider');
 const { DevOpsProvider } = require('./src/providers/DevOpsProvider');
 const { EnvironmentProvider } = require('./src/providers/EnvironmentProvider');
 const { RuntimeProvider } = require('./src/providers/RuntimeProvider');
+const { SecurityProvider } = require('./src/providers/SecurityProvider');
+const { DuplicationProvider } = require('./src/providers/DuplicationProvider');
+const { CentralProvider } = require('./src/providers/CentralProvider');
+const { LicenseProvider } = require('./src/providers/LicenseProvider');
 
 // Panels
 const { ChatPanel }            = require('./src/panels/ChatPanel');
@@ -160,6 +164,22 @@ function registerProviders() {
     // Runtime Provider
     providers.runtime = new RuntimeProvider();
     vscode.window.registerTreeDataProvider('sudoStudioRuntime', providers.runtime);
+
+    // Security Provider (sidebar quick actions -> SecurityPanel)
+    providers.security = new SecurityProvider();
+    vscode.window.registerTreeDataProvider('sudoStudioSecurity', providers.security);
+
+    // Duplication Provider (sidebar quick actions -> DuplicationPanel)
+    providers.duplication = new DuplicationProvider();
+    vscode.window.registerTreeDataProvider('sudoStudioDuplication', providers.duplication);
+
+    // Central Provider (sidebar quick actions -> CentralMgmtPanel)
+    providers.central = new CentralProvider();
+    vscode.window.registerTreeDataProvider('sudoStudioCentral', providers.central);
+
+    // License Provider (sidebar quick actions -> LicensePanel)
+    providers.license = new LicenseProvider();
+    vscode.window.registerTreeDataProvider('sudoStudioLicense', providers.license);
     
     console.log('✅ All providers registered');
 }
