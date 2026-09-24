@@ -244,6 +244,21 @@ jobs:
             }
           }
 
+          # HARD GATE: logo.ico must exist and be a REAL ICO (magic bytes 00 00 01 00).
+          # A renamed PNG here would silently ship the wrong taskbar/window icon.
+          $logoIco = "build\SudoStudio\logo.ico"
+          if (-not (Test-Path $logoIco)) {
+            Write-Error "[FAIL] logo.ico missing at $logoIco — cannot brand the executable icon"
+            exit 1
+          }
+          $magic = [System.IO.File]::ReadAllBytes($logoIco)[0..3]
+          if (!($magic[0] -eq 0x00 -and $magic[1] -eq 0x00 -and $magic[2] -eq 0x01 -and $magic[3] -eq 0x00)) {
+            Write-Error "[FAIL] $logoIco is NOT a valid ICO file (bad magic bytes) — refusing to continue"
+            exit 1
+          }
+          $icoSz = [math]::Round((Get-Item $logoIco).Length / 1KB, 1)
+          Write-Host "[OK] logo.ico verified: real ICO format, $icoSz KB"
+
           # Also copy to resources\logo.ico so installer.iss and customize-vscodium can use it
           if (Test-Path "build\SudoStudio\logo.ico") {
             Copy-Item "build\SudoStudio\logo.ico" "resources\logo.ico" -Force
@@ -267,25 +282,34 @@ jobs:
           }
 
           if (-not $exe) {
-            Write-Warning "[WARN] VSCodium.exe / Code.exe not found in build\SudoStudio — skipping rcedit"
+            Write-Error "[FAIL] VSCodium.exe / Code.exe not found in build\SudoStudio — cannot brand executable icon"
             Get-ChildItem "build\SudoStudio" -Filter "*.exe" | ForEach-Object { Write-Host "  Found EXE: $($_.Name)" }
-          } else {
-            Write-Host "[INFO] Patching: $exe"
-
-            $ico = "build\SudoStudio\logo.ico"
-            if (Test-Path $ico) {
-              rcedit $exe --set-icon $ico
-              Write-Host "[OK] rcedit: icon patched from $ico"
-            } else {
-              Write-Warning "[WARN] logo.ico not found — icon not patched"
-            }
-
-            rcedit $exe --set-version-string "ProductName"    "Sudo Studio"
-            rcedit $exe --set-version-string "FileDescription" "Sudo Studio"
-            rcedit $exe --set-version-string "CompanyName"    "Sudo Studio"
-            rcedit $exe --set-version-string "InternalName"   "sudo-studio"
-            Write-Host "[OK] rcedit: version strings patched (ProductName, FileDescription, CompanyName, InternalName)"
+            exit 1
           }
+
+          Write-Host "[INFO] Patching: $exe"
+
+          $ico = "build\SudoStudio\logo.ico"
+          if (-not (Test-Path $ico)) {
+            Write-Error "[FAIL] logo.ico not found at $ico — cannot patch executable icon"
+            exit 1
+          }
+          rcedit $exe --set-icon $ico
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "[FAIL] rcedit --set-icon failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+          Write-Host "[OK] rcedit: icon patched from $ico"
+
+          rcedit $exe --set-version-string "ProductName"    "Sudo Studio"
+          if ($LASTEXITCODE -ne 0) { Write-Error "[FAIL] rcedit ProductName failed (exit $LASTEXITCODE)"; exit 1 }
+          rcedit $exe --set-version-string "FileDescription" "Sudo Studio"
+          if ($LASTEXITCODE -ne 0) { Write-Error "[FAIL] rcedit FileDescription failed (exit $LASTEXITCODE)"; exit 1 }
+          rcedit $exe --set-version-string "CompanyName"    "Sudo Studio"
+          if ($LASTEXITCODE -ne 0) { Write-Error "[FAIL] rcedit CompanyName failed (exit $LASTEXITCODE)"; exit 1 }
+          rcedit $exe --set-version-string "InternalName"   "sudo-studio"
+          if ($LASTEXITCODE -ne 0) { Write-Error "[FAIL] rcedit InternalName failed (exit $LASTEXITCODE)"; exit 1 }
+          Write-Host "[OK] rcedit: version strings patched (ProductName, FileDescription, CompanyName, InternalName)"
 
       # ── Step 7: Rename VSCodium.exe → SudoStudio.exe ─────────────────────
       # After rcedit the binary has Sudo Studio identity — rename the file itself
@@ -309,6 +333,33 @@ jobs:
           if (-not $renamed) {
             Write-Warning "[WARN] No VSCodium.exe or Code.exe found to rename"
           }
+
+      # ── Step 7b: Verify exe branding stuck (hard fail otherwise) ─────────
+      # Reads back the PE version resources AFTER rcedit + rename.
+      # If rcedit silently failed, the taskbar/window/file icon would still be
+      # VSCodium's — this gate fails the build instead of shipping it.
+      - name: Verify SudoStudio.exe branding (hard fail if rcedit did not stick)
+        shell: powershell
+        run: |
+          $exe = "build\SudoStudio\SudoStudio.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "[FAIL] $exe not found after rename — packaging cannot continue"
+            exit 1
+          }
+          $vi = (Get-Item $exe).VersionInfo
+          Write-Host "[VERIFY] ProductName    : $($vi.ProductName)"
+          Write-Host "[VERIFY] FileDescription: $($vi.FileDescription)"
+          Write-Host "[VERIFY] CompanyName    : $($vi.CompanyName)"
+          Write-Host "[VERIFY] InternalName   : $($vi.InternalName)"
+          $ok = $true
+          if ($vi.ProductName -ne "Sudo Studio")     { Write-Error "[FAIL] ProductName = '$($vi.ProductName)' (expected 'Sudo Studio')"; $ok = $false }
+          if ($vi.FileDescription -ne "Sudo Studio") { Write-Error "[FAIL] FileDescription = '$($vi.FileDescription)' (expected 'Sudo Studio')"; $ok = $false }
+          if ($vi.CompanyName -ne "Sudo Studio")     { Write-Error "[FAIL] CompanyName = '$($vi.CompanyName)' (expected 'Sudo Studio')"; $ok = $false }
+          if (-not $ok) {
+            Write-Error "[FAIL] rcedit branding did NOT stick on SudoStudio.exe — refusing to ship a misbranded binary"
+            exit 1
+          }
+          Write-Host "[OK] SudoStudio.exe branding verified (icon + version strings applied by rcedit)"
 
       # ── Step 8: Copy runtime.exe + backend.exe + extension ───────────────
       - name: Copy runtime and backend executables
