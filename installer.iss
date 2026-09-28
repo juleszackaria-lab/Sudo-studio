@@ -8,7 +8,7 @@
 #define MyAppVersion      "5.0.0"
 #define MyAppPublisher    "Sudo Studio"
 #define MyAppURL          "https://sudostudio.app"
-#define MyAppExeName      "Code.exe"
+#define MyAppExeName      "SudoStudio.exe"
 #define MyAppMutex        "sudostudio"
 #define MyAppIcon         "resources\icon.ico"
 
@@ -48,9 +48,11 @@ LZMAUseSeparateProcess        = yes
 
 ; ── UI ────────────────────────────────────────────────────────────────────────
 WizardStyle                   = modern
-WizardSmallImageFile          = resources\icon.ico
-; Wizard background / header (optional — comment out if files not present)
-; WizardImageFile             = resources\installer-banner.bmp
+; Wizard bitmaps are pre-generated from resources\icon.png (logo on white).
+; If the logo changes, regenerate: wizard-small.bmp (55x58) and
+; installer-banner.bmp (164x314), uncompressed 24-bit BMP.
+WizardSmallImageFile          = resources\wizard-small.bmp
+WizardImageFile               = resources\installer-banner.bmp
 ShowLanguageDialog            = no
 LanguageDetectionMethod       = locale
 

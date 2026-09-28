@@ -18,9 +18,9 @@ on:
   workflow_dispatch:
     inputs:
       vscodium_version:
-        description: 'VSCodium version to use (e.g. 1.93.1.24257)'
+        description: 'VSCodium version to use (e.g. 1.135.06055)'
         required: false
-        default: '1.93.1.24257'
+        default: '1.135.06055'
       runtime_run_id:
         description: 'GitHub Actions run ID for runtime artifact (leave blank to use latest)'
         required: false
@@ -79,7 +79,7 @@ jobs:
         shell: powershell
         run: |
           $version = "${{ github.event.inputs.vscodium_version }}"
-          if ([string]::IsNullOrEmpty($version)) { $version = "1.93.1.24257" }
+          if ([string]::IsNullOrEmpty($version)) { $version = "1.135.06055" }
           $url = "https://github.com/VSCodium/vscodium/releases/download/$version/VSCodium-win32-x64-$version.zip"
           Write-Host "[INFO] Downloading VSCodium $version from: $url"
           New-Item -ItemType Directory -Force -Path "build\SudoStudio" | Out-Null
@@ -443,7 +443,13 @@ jobs:
             # Run ISCC from the build dir so relative paths in installer.iss resolve
             Push-Location "build\SudoStudio"
             & $iscc installer.iss
+            $isccCode = $LASTEXITCODE
             Pop-Location
+            if ($isccCode -ne 0) {
+              Write-Error "[FAIL] Inno Setup (ISCC) failed with exit code $isccCode — no installer produced"
+              exit 1
+            }
+            Write-Host "[OK] Inno Setup installer built successfully"
           } else {
             Write-Warning "[WARN] Inno Setup ISCC.exe not found — skipping installer build"
           }

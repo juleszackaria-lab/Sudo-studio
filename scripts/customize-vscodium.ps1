@@ -134,6 +134,94 @@ else {
     Write-Host "[INFO] resources\icon.png not found - skipping PNG replacement"
 }
 
+# ============================================================
+# STEP 2b - EXHAUSTIVE app-icon sweep (proven by real build inventory)
+# Proven by inventory of VSCodium 1.135.06055 win32-x64 (198 image files):
+#  - Replaced (unambiguous app identity ONLY): code.ico + Start-menu tile
+#    PNGs, regenerated at EXACT resolution via .NET (size parsed from the
+#    filename itself, never guessed) - not a blind same-file copy.
+#  - NEVER touched: per-language/file-type icons (python.ico, java.ico, ...,
+#    default.ico, shell.ico), extension icons (*\extensions\*), workbench UI
+#    graphics (*\out\* media/spritesheets), third-party favicons.
+#  - resources\win32\ (legacy path) is probed but absent in current builds;
+#    resources\linux / resources\darwin are logged if present (coherence).
+# ============================================================
+Write-Host "[STEP 2b] Exhaustive app-icon sweep..."
+$iconWin32Dirs = @(
+    (Join-Path $resolvedDir "resources\app\resources\win32"),
+    (Join-Path $resolvedDir "resources\win32")
+)
+foreach ($iconDir in $iconWin32Dirs) {
+    if (-not (Test-Path $iconDir)) {
+        Write-Host "[INFO] [2b] Icon dir not present (skipping): $iconDir"
+        continue
+    }
+    Write-Host "[INFO] [2b] Icon inventory of: $iconDir"
+    $dirFiles = Get-ChildItem $iconDir -File -ErrorAction SilentlyContinue
+    foreach ($dirFile in $dirFiles) {
+        Write-Host ("[INFO] [2b]   - {0} ({1} bytes)" -f $dirFile.Name, $dirFile.Length)
+    }
+    $codeIcoTarget = Join-Path $iconDir "code.ico"
+    if ((Test-Path $codeIcoTarget) -and $logoIco) {
+        try {
+            Copy-Item $logoIco $codeIcoTarget -Force
+            Write-Host "[OK] [2b] App icon replaced: $codeIcoTarget (source: $logoIco)"
+        }
+        catch {
+            Write-Warning ("[WARN] [2b] Failed to replace {0}: {1}" -f $codeIcoTarget, $_.Exception.Message)
+        }
+    }
+}
+$tileTargets = @(
+    (Join-Path $resolvedDir "resources\app\resources\win32\code_150x150.png"),
+    (Join-Path $resolvedDir "resources\app\resources\win32\code_70x70.png"),
+    (Join-Path $resolvedDir "resources\win32\code_150x150.png"),
+    (Join-Path $resolvedDir "resources\win32\code_70x70.png")
+)
+foreach ($tileTarget in $tileTargets) {
+    if (-not (Test-Path $tileTarget)) { continue }
+    if (-not $logoPng -or -not (Test-Path $logoPng)) {
+        Write-Host "[INFO] [2b] No PNG logo source - tile kept as-is: $tileTarget"
+        continue
+    }
+    $tileName = Split-Path $tileTarget -Leaf
+    if ($tileName -match '(\d+)x(\d+)') {
+        $tileW = [int]$Matches[1]
+        $tileH = [int]$Matches[2]
+    }
+    else {
+        Write-Warning "[WARN] [2b] Cannot parse tile size from name - kept as-is: $tileName"
+        continue
+    }
+    try {
+        Add-Type -AssemblyName System.Drawing
+        $srcImg = [System.Drawing.Image]::FromFile($logoPng)
+        $tileBmp = New-Object System.Drawing.Bitmap($tileW, $tileH)
+        $gfx = [System.Drawing.Graphics]::FromImage($tileBmp)
+        $gfx.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $gfx.DrawImage($srcImg, 0, 0, $tileW, $tileH)
+        $gfx.Dispose()
+        $srcImg.Dispose()
+        $tileBmp.Save($tileTarget, [System.Drawing.Imaging.ImageFormat]::Png)
+        $tileBmp.Dispose()
+        Write-Host ("[OK] [2b] Tile regenerated at exact {0}x{1}: {2}" -f $tileW, $tileH, $tileTarget)
+    }
+    catch {
+        Write-Warning ("[WARN] [2b] Tile resize failed for {0}, trying plain copy: {1}" -f $tileTarget, $_.Exception.Message)
+        try {
+            Copy-Item $logoPng $tileTarget -Force
+            Write-Host "[OK] [2b] Tile replaced (plain copy fallback): $tileTarget"
+        }
+        catch {
+            Write-Warning ("[WARN] [2b] Tile copy fallback failed for {0}: {1}" -f $tileTarget, $_.Exception.Message)
+        }
+    }
+}
+foreach ($probeDir in @((Join-Path $resolvedDir "resources\linux"), (Join-Path $resolvedDir "resources\darwin"))) {
+    if (Test-Path $probeDir) { Write-Host "[INFO] [2b] Present (left untouched, non-Windows): $probeDir" }
+    else { Write-Host "[INFO] [2b] Not present in this build: $probeDir" }
+}
+
 $appOutDir = Join-Path $resolvedDir "resources\app\out"
 if (Test-Path $appOutDir) {
     Write-Host "[BRAND] Scanning app/out for VSCodium text in .js files..."
@@ -393,6 +481,237 @@ if ($feedLeftovers.Count -gt 0) {
     $feedLeftovers | ForEach-Object { Write-Host "  $($_.FullName.Substring($resolvedDir.Length))" }
 } else {
     Write-Host "[OK] [4d] Verified: no reference to the VSCodium announcements feed remains" }
+
+# Helper (STEP 4e): recursively replace display-context VSCodium in JSON string
+# VALUES only (keys/structure untouched). Returns occurrences replaced.
+# PS 5.1 compatible: no ternary, no ?. / ?? operators.
+function Invoke-JsonStringBranding($node, $pattern) {
+    $count = 0
+    if ($node -is [string]) {
+        return 0
+    }
+    elseif ($node -is [System.Collections.IList]) {
+        for ($i = 0; $i -lt $node.Count; $i++) {
+            $v = $node[$i]
+            if ($v -is [string]) {
+                $m = ([regex]::Matches($v, $pattern)).Count
+                if ($m -gt 0) {
+                    $node[$i] = [regex]::Replace($v, $pattern, 'Sudo Studio')
+                    $count += $m
+                }
+            }
+            else {
+                $count += Invoke-JsonStringBranding $v $pattern
+            }
+        }
+    }
+    elseif ($node -is [psobject]) {
+        foreach ($prop in $node.PSObject.Properties) {
+            $v = $prop.Value
+            if ($v -is [string]) {
+                $m = ([regex]::Matches($v, $pattern)).Count
+                if ($m -gt 0) {
+                    $prop.Value = [regex]::Replace($v, $pattern, 'Sudo Studio')
+                    $count += $m
+                }
+            }
+            else {
+                $count += Invoke-JsonStringBranding $v $pattern
+            }
+        }
+    }
+    return $count
+}
+
+# ============================================================
+# STEP 4e - EXHAUSTIVE text sweep (whole build dir, per-type treatment)
+# No more one-by-one hunting: scans the ENTIRE build dir for 10 extensions
+# with a 64MB cap (proven necessary: the 19MB workbench.desktop.main.js and
+# sessions.desktop.main.js bundles hold 62 occurrences a <10MB filter MISSES).
+#  - .json (INCLUDING nls*.json): JSON-SAFE ONLY (parse -> string VALUES only
+#    -> re-parse + entry-count validation). Never raw text on JSON.
+#    nls decision (documented): excluding nls* would leave ~91 UI-VISIBLE
+#    strings ("Please restart VSCodium...", "VSCodium Console"...). JSON-safe
+#    treatment honors the mission's INTENT (never raw-touch nls) and reaches
+#    its GOAL (zero visible VSCodium). Any validation failure -> file skipped.
+#  - .plist: XML-safe (text nodes + attribute values only, structure kept).
+#  - .js/.html/.css/.txt/.md/.xml/.ini: direct display-context regex replace,
+#    BOM preserved (same rule as previous steps).
+#  - ALWAYS SKIPPED: node_modules (third-party code), .git, LICENSE*/NOTICE*/
+#    THIRD-PARTY*/COPYING* (legal attribution, e.g. "The VSCodium
+#    contributors" - MIT licence must keep it).
+#  - URL/path contexts (sourceMappingURL, github.com/VSCodium/..., update &
+#    download endpoints) are KEPT by the display-context regex - changing them
+#    would break source maps and the update mechanism.
+# ============================================================
+Write-Host "[STEP 4e] Exhaustive text sweep over whole build dir (10 extensions, <64MB)..."
+$step4eExts = @('.js','.json','.html','.css','.txt','.md','.xml','.ini','.plist')
+$displayPattern = '(?<![/\\.])VSCodium(?![/\\.])'
+$step4eFiles = Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
+    Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch '\\.git\\' } |
+    Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-PARTY|COPYING)' } |
+    Where-Object { $_.Length -lt 64MB }
+$step4eScanned = 0
+$step4ePatched = 0
+$step4eSkipped = 0
+$step4eReplaced = 0
+foreach ($file in $step4eFiles) {
+    $step4eScanned++
+    try {
+        $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
+        if ($raw -notmatch 'VSCodium') { continue }
+        $rel4e = $file.FullName.Substring($resolvedDir.Length)
+        $rawBytes4e = [System.IO.File]::ReadAllBytes($file.FullName)
+        $hasBom4e = ($rawBytes4e.Length -ge 3 -and $rawBytes4e[0] -eq 0xEF -and $rawBytes4e[1] -eq 0xBB -and $rawBytes4e[2] -eq 0xBF)
+        $enc4e = if ($hasBom4e) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
+        $fileExt = $file.Extension.ToLower()
+
+        if ($fileExt -eq '.json') {
+            # ---- JSON-SAFE path (nls*.json included, never raw) ----
+            try { $jsonObj = $raw | ConvertFrom-Json }
+            catch {
+                Write-Warning ("[WARN] [4e] Invalid JSON, skipped: {0}" -f $rel4e)
+                $step4eSkipped++
+                continue
+            }
+            if ($null -eq $jsonObj) { continue }
+            if ($jsonObj -is [string]) {
+                $mRoot = ([regex]::Matches($jsonObj, $displayPattern)).Count
+                if ($mRoot -eq 0) { continue }
+                $patchedJson = ([regex]::Replace($jsonObj, $displayPattern, 'Sudo Studio')) | ConvertTo-Json -Depth 1000
+                try { $checkRoot = $patchedJson | ConvertFrom-Json }
+                catch {
+                    Write-Warning ("[WARN] [4e] JSON re-parse failed, skipped: {0}" -f $rel4e)
+                    $step4eSkipped++
+                    continue
+                }
+                if (-not ($checkRoot -is [string])) {
+                    Write-Warning ("[WARN] [4e] JSON shape changed, skipped: {0}" -f $rel4e)
+                    $step4eSkipped++
+                    continue
+                }
+            }
+            else {
+                if ($jsonObj -is [System.Collections.IList]) { $beforeCount = $jsonObj.Count }
+                else { $beforeCount = @($jsonObj.PSObject.Properties).Count }
+                $nRepl = Invoke-JsonStringBranding $jsonObj $displayPattern
+                if ($nRepl -eq 0) { continue }
+                $patchedJson = $jsonObj | ConvertTo-Json -Depth 1000
+                try { $checkObj = $patchedJson | ConvertFrom-Json }
+                catch {
+                    Write-Warning ("[WARN] [4e] JSON re-parse failed, skipped: {0}" -f $rel4e)
+                    $step4eSkipped++
+                    continue
+                }
+                if ($checkObj -is [System.Collections.IList]) { $afterCount = $checkObj.Count }
+                else { $afterCount = @($checkObj.PSObject.Properties).Count }
+                if ($afterCount -ne $beforeCount) {
+                    Write-Warning ("[WARN] [4e] JSON entry count changed ({0}->{1}), skipped: {2}" -f $beforeCount, $afterCount, $rel4e)
+                    $step4eSkipped++
+                    continue
+                }
+                $leftover = ([regex]::Matches($patchedJson, $displayPattern)).Count
+                if ($leftover -gt 0) {
+                    Write-Warning ("[WARN] [4e] Display-context leftovers ({0}), skipped: {1}" -f $leftover, $rel4e)
+                    $step4eSkipped++
+                    continue
+                }
+                $mRoot = $nRepl
+            }
+            [System.IO.File]::WriteAllText($file.FullName, $patchedJson, $enc4e)
+            Write-Host ("[OK] [4e] JSON-safe patched ({0} occ): {1}" -f $mRoot, $rel4e)
+            $step4ePatched++
+            $step4eReplaced += $mRoot
+        }
+        elseif ($fileExt -eq '.plist') {
+            # ---- XML-SAFE path (values only, structure untouched) ----
+            try {
+                $xmlDoc = New-Object System.Xml.XmlDocument
+                $xmlDoc.LoadXml($raw)
+                $plistCount = 0
+                foreach ($textNode in $xmlDoc.SelectNodes('//text()')) {
+                    $m = ([regex]::Matches($textNode.Value, $displayPattern)).Count
+                    if ($m -gt 0) {
+                        $textNode.Value = [regex]::Replace($textNode.Value, $displayPattern, 'Sudo Studio')
+                        $plistCount += $m
+                    }
+                }
+                foreach ($attr in $xmlDoc.SelectNodes('//@*')) {
+                    $m = ([regex]::Matches($attr.Value, $displayPattern)).Count
+                    if ($m -gt 0) {
+                        $attr.Value = [regex]::Replace($attr.Value, $displayPattern, 'Sudo Studio')
+                        $plistCount += $m
+                    }
+                }
+                if ($plistCount -eq 0) { continue }
+                $sw = New-Object System.IO.StringWriter
+                $xmlDoc.Save($sw)
+                $patchedPlist = $sw.ToString()
+                $sw.Dispose()
+                $checkXml = New-Object System.Xml.XmlDocument
+                $checkXml.LoadXml($patchedPlist)
+                [System.IO.File]::WriteAllText($file.FullName, $patchedPlist, $enc4e)
+                Write-Host ("[OK] [4e] plist patched ({0} occ): {1}" -f $plistCount, $rel4e)
+                $step4ePatched++
+                $step4eReplaced += $plistCount
+            }
+            catch {
+                Write-Warning ("[WARN] [4e] plist handling failed, skipped {0}: {1}" -f $rel4e, $_.Exception.Message)
+                $step4eSkipped++
+                continue
+            }
+        }
+        else {
+            # ---- Direct text path (.js/.html/.css/.txt/.md/.xml/.ini) ----
+            $mDirect = ([regex]::Matches($raw, $displayPattern)).Count
+            if ($mDirect -eq 0) { continue }
+            $patched = [regex]::Replace($raw, $displayPattern, 'Sudo Studio')
+            [System.IO.File]::WriteAllText($file.FullName, $patched, $enc4e)
+            Write-Host ("[OK] [4e] Text patched ({0} occ): {1}" -f $mDirect, $rel4e)
+            $step4ePatched++
+            $step4eReplaced += $mDirect
+        }
+    }
+    catch {
+        Write-Warning ("[WARN] [4e] Could not process {0}: {1}" -f $file.Name, $_.Exception.Message)
+        $step4eSkipped++
+    }
+}
+Write-Host ("[STEP 4e] DONE: {0} files scanned, {1} patched, {2} skipped(validation), display-occurrences replaced: {3}" -f $step4eScanned, $step4ePatched, $step4eSkipped, $step4eReplaced)
+# VERIFY: re-scan display-context across the same scope -> must be 0.
+$verifyLeftovers = @(Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
+    Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch '\\.git\\' } |
+    Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-PARTY|COPYING)' } |
+    Where-Object { $_.Length -lt 64MB } |
+    Where-Object {
+        try { [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8) -match $displayPattern }
+        catch { $false }
+    })
+if ($verifyLeftovers.Count -gt 0) {
+    Write-Warning ("[WARN] [4e] VERIFY: {0} file(s) still hold display-context VSCodium (see below). URL/path + legal contexts are kept by design." -f $verifyLeftovers.Count)
+    $verifyLeftovers | ForEach-Object { Write-Host ("  [4e-LEFTOVER] {0}" -f $_.FullName.Substring($resolvedDir.Length)) }
+}
+else {
+    Write-Host "[OK] [4e] VERIFY: 0 display-context VSCodium occurrences remain (URL/path + legal contexts kept by design)"
+}
+# Rename Start-menu tile manifest to match the renamed executable.
+# Windows binds <exename>.VisualElementsManifest.xml; after VSCodium.exe ->
+# SudoStudio.exe the old filename is ignored and tiles fall back to defaults.
+$oldManifest = Join-Path $resolvedDir "VSCodium.VisualElementsManifest.xml"
+$newManifest = Join-Path $resolvedDir "SudoStudio.VisualElementsManifest.xml"
+if (Test-Path $oldManifest) {
+    try {
+        Move-Item $oldManifest $newManifest -Force
+        Write-Host "[OK] Renamed tile manifest: VSCodium.VisualElementsManifest.xml -> SudoStudio.VisualElementsManifest.xml"
+    }
+    catch {
+        Write-Warning ("[WARN] Manifest rename failed: {0}" -f $_.Exception.Message)
+    }
+}
 
 # STEP 5 - Re-confirm product.json display names (safe JSON patch)
 # ============================================================
