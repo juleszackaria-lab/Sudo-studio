@@ -119,13 +119,15 @@ class RuntimePanel {
         } catch (e) {
             console.warn('[RUNTIME] fetchStatus /models/catalogue failed:', e.message);
             // Build local catalogue from static list + system RAM
+            // Same 1.3 safety margin as the runtime (server.enterprise.py)
             const freeGb = sysInfo.freeMem / 1024;
+            const RAM_MARGIN_OFFLINE = 1.3;
             this._catalogue = MODEL_CATALOGUE.map(m => ({
                 ...m,
                 size_gb: m.sizeGb,
                 ram_gb:  m.ramGb,
                 downloaded: false,
-                can_load: freeGb >= m.ramGb,
+                can_load: freeGb >= (m.ramGb * RAM_MARGIN_OFFLINE),
                 currently_loaded: false,
             }));
         }
@@ -139,6 +141,8 @@ class RuntimePanel {
             catalogueMeta: catalogueData ? {
                 ramAvailableGb: catalogueData.ram_available_gb,
                 bestLocalModel: catalogueData.best_local_model,
+                recommendedDownload: catalogueData.recommended_download,
+                recommendedDownloadName: catalogueData.recommended_download_name,
                 mockMode:       catalogueData.mock_mode,
                 modelsDir:      catalogueData.models_dir,
             } : null,
@@ -245,6 +249,8 @@ class RuntimePanel {
         } catch (e) {
             const msg = e.response?.data?.error || e.message;
             this.panel.webview.postMessage({ type: 'error', text: `Erreur chargement modèle: ${msg}` });
+            // Surface RAM refusals (HTTP 507) as a visible popup, not just webview text
+            vscode.window.showErrorMessage('Chargement refuse: ' + msg);
         }
     }
 
@@ -403,6 +409,8 @@ h2 { font-size:15px; font-weight:700; margin-bottom:12px; display:flex; align-it
 .model-card { background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:8px; }
 .model-card.recommended { border-color:rgba(46,160,67,.4); }
 .model-card.loaded { border-color:var(--success); background:rgba(63,185,80,.05); }
+.model-card.noram { opacity:.55; filter:grayscale(60%); }
+.model-card.noram .model-name { color:var(--muted); }
 .model-header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; }
 .model-name { font-weight:700; font-size:13px; display:flex; align-items:center; gap:6px; }
 .model-size { font-size:11px; color:var(--muted); }
@@ -691,17 +699,23 @@ function renderCatalogue(catalogue, meta) {
         infoEl.textContent = downloaded > 0
             ? downloaded + ' modèle(s) téléchargé(s) · RAM disponible: ' + (ramAvailGb || '?') + ' GB · 100% offline'
             : 'Aucun modèle téléchargé · RAM disponible: ' + (ramAvailGb || '?') + ' GB · Téléchargez pour utiliser hors ligne';
+        // Low-RAM guard: surface the runtime safe pick when nothing fits the request
+        if (meta && meta.recommendedDownloadName) {
+            infoEl.textContent += ' - Conseil RAM: ' + meta.recommendedDownloadName;
+        }
     }
 
     list.innerHTML = catalogue.map(function(m) {
         const isLoaded   = m.currently_loaded || false;
         const isDl       = m.downloaded       || false;
-        const canLoad    = m.can_load !== undefined ? m.can_load : (ramAvailGb >= (m.ram_gb || m.ramGb || 99));
+        const canLoad    = m.can_load !== undefined ? m.can_load : (ramAvailGb >= ((m.ram_gb || m.ramGb || 99) * 1.3));
         const isBest     = m.id === bestLocal;
         const sizeGb     = m.size_gb || m.sizeGb || 0;
         const ramGb      = m.ram_gb  || m.ramGb  || 0;
 
-        const cardClass = isLoaded ? 'model-card loaded' : (m.recommended ? 'model-card recommended' : 'model-card');
+        let cardClass = isLoaded ? 'model-card loaded' : (m.recommended ? 'model-card recommended' : 'model-card');
+        // Low-RAM guard: grey out the whole card when the model cannot load
+        if (!canLoad && !isLoaded) cardClass += ' noram';
 
         let badges = '';
         if (m.recommended) badges += '<span class="badge badge-rec">⭐ Recommandé</span>';
@@ -715,9 +729,14 @@ function renderCatalogue(catalogue, meta) {
 
         let actionBtns = '';
         if (!isDl) {
-            actionBtns = '<button class="btn btn-primary btn-dl" data-id="' + m.id + '" title="Nécessite une connexion internet">⬇ Télécharger (' + sizeGb + 'GB)</button>';
+            if (canLoad) {
+                actionBtns = '<button class="btn btn-primary btn-dl" data-id="' + m.id + '" title="Necessite une connexion internet">Telecharger (' + sizeGb + 'GB)</button>';
+            } else {
+                // Low-RAM guard: no btn-dl class so no click handler is attached
+                actionBtns = '<button class="btn btn-primary" data-id="' + m.id + '" disabled title="RAM insuffisante : ' + (ramAvailGb || '?') + ' Go disponibles, ' + ramGb + ' Go requis minimum">RAM insuffisante</button>';
+            }
         } else if (!isLoaded) {
-            actionBtns = '<button class="btn btn-success btn-load" data-id="' + m.id + '" ' + (!canLoad ? 'disabled title="RAM insuffisante"' : '') + '>▶ Charger</button>';
+            actionBtns = '<button class="btn btn-success btn-load" data-id="' + m.id + '" ' + (!canLoad ? 'disabled title="RAM insuffisante : ' + (ramAvailGb || '?') + ' Go disponibles, ' + ramGb + ' Go requis minimum"' : '') + '> Charger</button>';
         } else {
             actionBtns = '<button class="btn btn-secondary" disabled>✅ Chargé</button>';
         }
