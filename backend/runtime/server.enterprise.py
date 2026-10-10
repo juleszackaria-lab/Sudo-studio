@@ -341,16 +341,28 @@ MODEL_PRIORITY = [
 ]
 
 # ─── RAM helpers ────────────────────────────────────────────────────────────────
+# --- Low-RAM safety layer -----------------------------------------------------
+# Sits ON TOP of the detection logic: detect_existing_model() and
+# select_best_local_model() are intentionally NOT modified. Every load path
+# (boot, /reload, /download, load_model_thread) must pass this gate first.
+RAM_SAFETY_MARGIN   = 1.3   # required_ram x margin must fit in available RAM
+RAM_CRITICAL_MIN_GB = 0.3   # abort load if available RAM drops below ~300MB
+
+_RAM_SOURCE = "unknown"     # set by get_available_ram_gb(): psutil|proc|ctypes|fallback
+
 def get_available_ram_gb() -> float:
+    global _RAM_SOURCE
     try:
-        with open('/proc/meminfo') as f:
-            info = dict(line.split()[:2] for line in f if len(line.split()) >= 2)
-        return int(info.get('MemAvailable:', 0)) / 1024 / 1024
+        import psutil
+        _RAM_SOURCE = "psutil"
+        return psutil.virtual_memory().available / 1e9
     except Exception:
         pass
     try:
-        import psutil
-        return psutil.virtual_memory().available / 1e9
+        with open('/proc/meminfo') as f:
+            info = dict(line.split()[:2] for line in f if len(line.split()) >= 2)
+        _RAM_SOURCE = "proc"
+        return int(info.get('MemAvailable:', 0)) / 1024 / 1024
     except Exception:
         pass
     try:
@@ -368,8 +380,10 @@ def get_available_ram_gb() -> float:
         ms = MEMSTATUS()
         ms.dwLength = ctypes.sizeof(MEMSTATUS)
         ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(ms))
+        _RAM_SOURCE = "ctypes"
         return ms.ullAvailPhys / 1e9
     except Exception:
+        _RAM_SOURCE = "fallback"
         return 4.0
 
 def get_total_ram_gb() -> float:
@@ -385,14 +399,127 @@ def get_total_ram_gb() -> float:
     except Exception:
         return 4.0
 
+def required_with_margin(required_gb: float) -> float:
+    """RAM requirement inflated by the safety margin."""
+    try:
+        return float(required_gb) * RAM_SAFETY_MARGIN
+    except Exception:
+        return 3.0 * RAM_SAFETY_MARGIN
+
+
+def ram_fits(required_gb: float, avail_gb: float = None) -> bool:
+    """True if required_gb (with safety margin) fits in available RAM."""
+    if avail_gb is None:
+        avail_gb = get_available_ram_gb()
+    return avail_gb >= required_with_margin(required_gb)
+
+
 def check_ram_for_model(model_id: str):
-    required  = MODEL_RAM_REQUIREMENTS.get(model_id, 3.0)
-    available = get_available_ram_gb()
-    if available < required:
-        msg = (f"Insufficient RAM: {available:.1f}GB available, "
-               f"{required:.1f}GB required for {model_id}.")
+    required   = MODEL_RAM_REQUIREMENTS.get(model_id, 3.0)
+    with_margin = required_with_margin(required)
+    available  = get_available_ram_gb()
+    if available < with_margin:
+        msg = (f"RAM insuffisante : {available:.1f} Go disponibles, "
+               f"{with_margin:.1f} Go requis minimum "
+               f"(base {required:.1f} Go x marge {RAM_SAFETY_MARGIN}) "
+               f"pour {model_id}.")
         return False, available, required, msg
     return True, available, required, "OK"
+
+
+def select_safe_catalogue_model(avail_gb: float = None):
+    """
+    Return the smallest catalogue model (by ram_gb) whose margined requirement
+    fits in avail_gb. Recommended model wins ties. Returns None if nothing fits.
+    Used ONLY when no model is downloaded/selected yet (boot path).
+    """
+    if avail_gb is None:
+        avail_gb = get_available_ram_gb()
+    fitting = [m for m in MODEL_CATALOGUE
+               if ram_fits(m.get("ram_gb", 99.0), avail_gb)]
+    if not fitting:
+        return None
+    fitting.sort(key=lambda m: (not m.get("recommended", False),
+                                m.get("ram_gb", 99.0)))
+    return fitting[0]
+
+
+def _refuse_load_for_ram(model_id: str, avail: float, req: float, where: str) -> str:
+    """
+    Central refusal: logs proof lines (dlog + logger) with exact figures,
+    sets UI-visible error state, and returns the user-facing message.
+    Called INSTEAD of any detection/download/load attempt.
+    """
+    with_margin = required_with_margin(req)
+    msg = (f"RAM insuffisante : {avail:.1f} Go disponibles, "
+           f"{with_margin:.1f} Go requis minimum pour {model_id}. "
+           f"Liberez de la RAM ou choisissez un modele plus petit.")
+    dlog(f"[RAM-REFUSE][{where}] model={model_id} avail={avail:.2f}GB "
+         f"required={req:.2f}GB with_margin={with_margin:.2f}GB")
+    logger.warning(f"[RAM-REFUSE][{where}] {msg}")
+    _log_detect(f"[RAM-REFUSE] {msg}")
+    state.error = msg
+    state.download_error = msg
+    state.loading = False
+    state.loaded = False
+    state.download_progress = 0
+    gc.collect()
+    return msg
+
+
+class _RamWatchdog(threading.Thread):
+    """
+    Polls available RAM during a blocking model load. Llama()/from_pretrained
+    cannot be interrupted mid-call from Python, so on critical RAM the watchdog
+    trips: the load is then NOT reported as success - the model is released
+    immediately and an explicit failure is surfaced instead (no fake success).
+    Self-stops when state.loading becomes False or when disarmed.
+    """
+    def __init__(self, model_id: str, poll_seconds: float = 0.5):
+        super().__init__(daemon=True, name="RamWatchdog")
+        self.model_id = model_id
+        self.poll_seconds = poll_seconds
+        self.tripped = False
+        self.trip_avail = None
+        self.samples = 0
+        self.lowest_avail = None
+        self._disarmed = False
+
+    def disarm(self):
+        self._disarmed = True
+
+    def run(self):
+        dlog(f"[RAM-WD] watchdog armed for {self.model_id} "
+             f"(critical below {RAM_CRITICAL_MIN_GB}GB)")
+        try:
+            while not self._disarmed and state.loading:
+                try:
+                    avail = get_available_ram_gb()
+                except Exception:
+                    break
+                self.samples += 1
+                if self.lowest_avail is None or avail < self.lowest_avail:
+                    self.lowest_avail = avail
+                if avail < RAM_CRITICAL_MIN_GB and not self.tripped:
+                    self.tripped = True
+                    self.trip_avail = avail
+                    msg = (f"[RAM-WD] CRITICAL: available RAM fell to {avail:.2f}GB "
+                           f"during load of {self.model_id} "
+                           f"(threshold {RAM_CRITICAL_MIN_GB}GB). "
+                           f"Load will be aborted, model will NOT be kept.")
+                    dlog(msg)
+                    logger.error(msg)
+                    state.download_error = (
+                        f"Echec chargement : RAM critique pendant le chargement "
+                        f"({avail:.2f} Go restants). Modele non charge.")
+                    break
+                if self.samples % 40 == 0:
+                    dlog(f"[RAM-WD] load in progress: {avail:.2f}GB available "
+                         f"(lowest {self.lowest_avail:.2f}GB)")
+                time.sleep(self.poll_seconds)
+        finally:
+            dlog(f"[RAM-WD] watchdog stopped for {self.model_id} "
+                 f"(tripped={self.tripped} samples={self.samples})")
 
 # ─── State persistence ──────────────────────────────────────────────────────────
 def load_model_state() -> dict:
@@ -909,11 +1036,16 @@ def load_model_thread(model_id: str, force_download: bool = False):
 
     try:
         # ── RAM pre-check ─────────────────────────────────────────────────
-        dlog("RAM pre-check...")
+        # -- RAM pre-check (HARD GATE - refuses the load, never "loads anyway") --
+        dlog("RAM pre-check (hard gate)...")
         ok, avail, req, msg = check_ram_for_model(model_id)
+        dlog(f"[RAM] Pre-check for {model_id}: avail={avail:.2f}GB "
+             f"required={req:.2f}GB margin=x{RAM_SAFETY_MARGIN}")
+        logger.info(f"[RAM] Pre-check {model_id}: {avail:.1f}GB available / "
+                    f"{required_with_margin(req):.1f}GB required (margin x{RAM_SAFETY_MARGIN})")
         if not ok:
-            logger.warning(f"[MODEL] RAM warning: {msg}")
-            state.error = f"Low RAM ({avail:.1f}GB available, {req:.1f}GB recommended). Loading anyway..."
+            _refuse_load_for_ram(model_id, avail, req, where="load_model_thread")
+            return
 
         # ── Detect existing local model ────────────────────────────────────
         local_model = None
@@ -1050,15 +1182,41 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     n_threads = max(2, multiprocessing.cpu_count() - 1)
                     dlog(f"[GGUF] n_threads={n_threads}")
 
-                    llm = Llama(
-                        model_path=gguf_path,
-                        n_ctx=4096,
-                        n_threads=n_threads,
-                        n_gpu_layers=0,   # CPU only (no CUDA required)
-                        verbose=False,
-                        use_mlock=False,  # don't lock RAM — safer on low-RAM machines
-                    )
+                    _wd = _RamWatchdog(model_id)
+                    _wd.start()
+                    try:
+                        llm = Llama(
+                            model_path=gguf_path,
+                            n_ctx=4096,
+                            n_threads=n_threads,
+                            n_gpu_layers=0,   # CPU only (no CUDA required)
+                            verbose=False,
+                            use_mlock=False,  # don't lock RAM - safer on low-RAM machines
+                        )
+                    finally:
+                        _wd.disarm()
                     state.download_progress = 90
+
+                    # -- Watchdog trip check: never report success after critical RAM --
+                    if _wd.tripped:
+                        _err = (f"Echec chargement {model_id} : RAM critique pendant "
+                                f"le chargement ({(_wd.trip_avail or 0):.2f} Go restants, "
+                                f"seuil {RAM_CRITICAL_MIN_GB} Go). "
+                                f"Modele decharge, aucun faux succes.")
+                        dlog(f"[RAM-WD] {_err}")
+                        logger.error(f"[RAM-WD] {_err}")
+                        try:
+                            del llm
+                        except Exception:
+                            pass
+                        gc.collect()
+                        state.model = None
+                        state.loaded = False
+                        state.loading = False
+                        state.error = _err
+                        state.download_error = _err
+                        state.download_progress = 0
+                        return
 
                     ram_after_load = get_available_ram_gb()
                     ram_used       = ram_before_load - ram_after_load
@@ -1288,6 +1446,10 @@ def load_model_thread(model_id: str, force_download: bool = False):
         model = None  # will be set by whichever attempt succeeds
 
         # ── Attempt A: float32 + low_cpu_mem_usage=True ───────────────────
+        # -- RAM watchdog around the blocking weight loads --
+        _wd2 = _RamWatchdog(model_id)
+        _wd2.start()
+
         dlog("from_pretrained ATTEMPT A: dtype=float32 low_cpu_mem_usage=True ...")
         try:
             model = AutoModelForCausalLM.from_pretrained(
@@ -1339,6 +1501,31 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 import traceback as _trc_bb
                 dlog(_trc_bb.format_exc())
                 model = None
+
+        _wd2.disarm()
+
+        # -- Watchdog trip check: abort instead of reporting a fake success --
+        if model is not None and _wd2.tripped:
+            _err2 = (f"Echec chargement {model_id} : RAM critique pendant "
+                     f"le chargement ({(_wd2.trip_avail or 0):.2f} Go restants, "
+                     f"seuil {RAM_CRITICAL_MIN_GB} Go). "
+                     f"Modele decharge, aucun faux succes.")
+            dlog(f"[RAM-WD] {_err2}")
+            logger.error(f"[RAM-WD] {_err2}")
+            try:
+                del model
+            except Exception:
+                pass
+            model = None
+            gc.collect()
+            state.tokenizer = None
+            state.model = None
+            state.loaded = False
+            state.loading = False
+            state.error = _err2
+            state.download_error = _err2
+            state.download_progress = 0
+            return
 
         # ── All attempts failed → mock mode, Flask stays alive ────────────
         if model is None:
@@ -1736,7 +1923,7 @@ def health():
         "system": {
             "ram_available_gb":  round(avail_ram, 2),
             "ram_total_gb":      round(total_ram, 2),
-            "ram_sufficient":    avail_ram >= MODEL_RAM_REQUIREMENTS.get(DEFAULT_MODEL, 2.5),
+            "ram_sufficient":    ram_fits(MODEL_RAM_REQUIREMENTS.get(DEFAULT_MODEL, 2.5), avail_ram),
         },
         "requests_served": state.requests,
         "mock_mode":       not state.loaded,
@@ -1958,7 +2145,7 @@ def models():
             "name":            m["name"],
             "size":            f"~{m['size_gb']}GB",
             "ram_required_gb": m["ram_gb"],
-            "can_load":        avail >= m["ram_gb"],
+            "can_load":        ram_fits(m["ram_gb"], avail),
             "recommended":     m.get("recommended", False),
         }
         for m in MODEL_CATALOGUE
@@ -1982,7 +2169,17 @@ def reload_model():
     force    = data.get('force_download', False)
     ok, avail, req, msg = check_ram_for_model(model_id)
     if not ok:
-        logger.warning(f"[RELOAD] {msg}")
+        _refuse_load_for_ram(model_id, avail, req, where="reload")
+        return jsonify({
+            "status":   "refused",
+            "model":    model_id,
+            "error":    state.error,
+            "reason":   state.error,
+            "detail":   state.error,
+            "ram_available_gb":            round(avail, 2),
+            "ram_required_gb":             req,
+            "ram_required_with_margin_gb": round(required_with_margin(req), 2),
+        }), 507
     state.loaded    = False
     state.model     = None
     state.tokenizer = None
@@ -2010,7 +2207,17 @@ def download_model():
         return jsonify({"status": "already_loading", "model": state.model_name}), 409
     ok, avail, req, msg = check_ram_for_model(model_id)
     if not ok:
-        logger.warning(f"[DOWNLOAD] {msg}")
+        _refuse_load_for_ram(model_id, avail, req, where="download")
+        return jsonify({
+            "status":   "refused",
+            "model":    model_id,
+            "error":    state.error,
+            "reason":   state.error,
+            "detail":   state.error,
+            "ram_available_gb":            round(avail, 2),
+            "ram_required_gb":             req,
+            "ram_required_with_margin_gb": round(required_with_margin(req), 2),
+        }), 507
     logger.info(f"[DOWNLOAD] *** USER-INITIATED DOWNLOAD *** model={model_id}")
     logger.info(f"[DOWNLOAD] This is an explicit user action — network access is permitted")
     state.loaded    = False
@@ -2172,7 +2379,7 @@ def models_catalogue():
         elif model["type"] == "transformers":
             downloaded = (model["id"] in local_hf_models)
 
-        can_load = avail_ram >= model["ram_gb"]
+        can_load = ram_fits(model["ram_gb"], avail_ram)
 
         if downloaded and can_load and model["ram_gb"] > best_local_ram:
             best_local_ram = model["ram_gb"]
@@ -2186,11 +2393,19 @@ def models_catalogue():
             "currently_loaded": (state.loaded and state.model_name and model["id"] in state.model_name),
         })
 
+    # Smallest catalogue model that fits current RAM (with margin).
+    # Used by the UI + boot path when nothing is downloaded/selected yet.
+    safe_pick = select_safe_catalogue_model(avail_ram)
+
     return jsonify({
         "catalogue":         catalogue,
         "ram_available_gb":  round(avail_ram, 2),
         "ram_total_gb":      round(total_ram, 2),
+        "ram_margin":        RAM_SAFETY_MARGIN,
+        "ram_critical_min_gb": RAM_CRITICAL_MIN_GB,
         "best_local_model":  best_local_id,
+        "recommended_download":      safe_pick["id"] if safe_pick else None,
+        "recommended_download_name": safe_pick["name"] if safe_pick else None,
         "current_model":     state.model_name or DEFAULT_MODEL,
         "model_loaded":      state.loaded,
         "model_loading":     state.loading,
@@ -2236,16 +2451,46 @@ if __name__ == '__main__':
     print(f"  Detection  : {'FORCED DOWNLOAD' if args.force_download else 'Smart (local-first)'}")
     print("=" * 60)
 
+    dlog(f"[RAM] Startup detection: {avail_ram:.2f}GB available / {total_ram:.2f}GB total (source: {_RAM_SOURCE})")
+    logger.info(f"[RAM] Detected {avail_ram:.1f}GB available RAM / {total_ram:.1f}GB total (source: {_RAM_SOURCE})")
+
     dlog(f"no_auto_download={args.no_auto_download} model={args.model} force_download={args.force_download}")
     if not args.no_auto_download:
         ok, avail, req, msg = check_ram_for_model(args.model)
+        _boot_model = args.model
         if not ok:
-            logger.warning(f"[BOOT] RAM WARNING: {msg}")
-            dlog(f"RAM WARNING: {msg}")
-            logger.info("[BOOT] Attempting to load anyway (page file may help on Windows)...")
-        dlog("Calling start_model_load()...")
-        start_model_load(args.model, force_download=args.force_download)
-        dlog("start_model_load() spawned (daemon=False thread)")
+            logger.warning(f"[BOOT] {msg}")
+            dlog(f"[BOOT] Requested model refused: {msg}")
+            # Requested model does not fit: fall back to the smallest catalogue
+            # model that fits (with margin). This only changes the requested id;
+            # local-first detection below is untouched.
+            _safe = select_safe_catalogue_model(avail)
+            if _safe is not None:
+                _boot_model = _safe["id"]
+                logger.info(f"[BOOT] Auto-selecting safe model for {avail:.1f}GB RAM: {_boot_model}")
+                dlog(f"[BOOT] Safe auto-select: {_boot_model} "
+                     f"(needs {required_with_margin(_safe['ram_gb']):.2f}GB with margin)")
+            else:
+                _nomsg = (f"RAM insuffisante : {avail:.1f} Go disponibles, "
+                          f"{required_with_margin(req):.1f} Go requis minimum. "
+                          f"Aucun modele du catalogue ne passe. "
+                          f"Chargement annule, mode mock actif.")
+                print(f"  [BOOT] {_nomsg}")
+                logger.error(f"[BOOT] {_nomsg}")
+                dlog(f"[RAM-REFUSE][boot] avail={avail:.2f}GB required={req:.2f}GB "
+                     f"with_margin={required_with_margin(req):.2f}GB - no catalogue model fits")
+                state.error = _nomsg
+                state.download_error = _nomsg
+                _boot_model = None
+        else:
+            logger.info(f"[BOOT] RAM OK for {args.model}: {avail:.1f}GB available / "
+                        f"{required_with_margin(req):.1f}GB required")
+            dlog(f"[RAM] Boot check OK: {args.model} avail={avail:.2f}GB "
+                 f"required_margin={required_with_margin(req):.2f}GB")
+        if _boot_model is not None:
+            dlog("Calling start_model_load()...")
+            start_model_load(_boot_model, force_download=args.force_download)
+            dlog("start_model_load() spawned (daemon=False thread)")
     else:
         logger.info("[BOOT] Mock mode — no model will be loaded")
         dlog("Mock mode: no model load")
