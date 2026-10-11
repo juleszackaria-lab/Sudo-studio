@@ -76,7 +76,7 @@ jobs:
                "import sys; sys.path.insert(0, 'llama_variants/compat'); "
                "import llama_cpp; "
                "print('[VARIANT] llama_cpp file:', llama_cpp.__file__); "
-               "llama_cpp.llama_print_system_info()"],
+               "print(llama_cpp.llama_print_system_info().decode('utf-8'))"],
               capture_output=True, text=True)
           print(p.stdout)
           print(p.stderr, file=sys.stderr)
@@ -95,7 +95,7 @@ jobs:
                "import sys; sys.path.insert(0, 'llama_variants/avx2'); "
                "import llama_cpp; "
                "print('[VARIANT] llama_cpp file:', llama_cpp.__file__); "
-               "llama_cpp.llama_print_system_info()"],
+               "print(llama_cpp.llama_print_system_info().decode('utf-8'))"],
               capture_output=True, text=True)
           print(p.stdout)
           print(p.stderr, file=sys.stderr)
