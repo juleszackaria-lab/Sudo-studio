@@ -158,6 +158,7 @@ class State:
     # Detection result info
     detected_local = False   # True if model was found locally
     detection_log  = []      # Messages from the scan phase
+    current_job    = None    # Active load job {model, force_download, started_at} or None
 
 state = State()
 
@@ -427,6 +428,11 @@ def check_ram_for_model(model_id: str):
     return True, available, required, "OK"
 
 
+def gguf_catalogue():
+    """Catalogue restricted to GGUF models (TASK 3c: transformers hidden)."""
+    return [m for m in MODEL_CATALOGUE if m.get("type") == "gguf"]
+
+
 def select_safe_catalogue_model(avail_gb: float = None):
     """
     Return the smallest catalogue model (by ram_gb) whose margined requirement
@@ -435,7 +441,7 @@ def select_safe_catalogue_model(avail_gb: float = None):
     """
     if avail_gb is None:
         avail_gb = get_available_ram_gb()
-    fitting = [m for m in MODEL_CATALOGUE
+    fitting = [m for m in gguf_catalogue()
                if ram_fits(m.get("ram_gb", 99.0), avail_gb)]
     if not fitting:
         return None
@@ -692,6 +698,11 @@ def scan_sudo_models_dir() -> list:
             if not weight_files:
                 _log_detect(f"[SCAN] Skipping {model_dir.name}: config.json present but no weights")
                 continue
+            # TASK 3b: a transformers model is valid only with a tokenizer too.
+            if not ((model_dir / "tokenizer.json").exists()
+                    or (model_dir / "tokenizer_config.json").exists()):
+                _log_detect(f"[SCAN] Skipping {model_dir.name}: no tokenizer (incomplete model)")
+                continue
             model_id   = _extract_model_id_from_config(candidate)
             total_size = sum(f.stat().st_size for f in model_dir.rglob("*") if f.is_file())
             size_mb    = round(total_size / (1024 * 1024), 1)
@@ -823,6 +834,43 @@ def select_best_local_model(all_found: list,
     m['resolved_id'] = m['model_id']
     return m
 
+def _ids_match(a: str, b: str) -> bool:
+    """Fuzzy model-id match (same rule as select_best_local_model)."""
+    try:
+        x, y = (a or '').lower(), (b or '').lower()
+        return bool(x and y) and (x in y or y in x)
+    except Exception:
+        return False
+
+
+def _gguf_complete(path) -> bool:
+    """A GGUF model is complete if a >100MB .gguf file exists (file or dir)."""
+    try:
+        if path.is_file():
+            return path.suffix.lower() == '.gguf' and path.stat().st_size > 100 * 1024 * 1024
+        if path.is_dir():
+            return any(f.stat().st_size > 100 * 1024 * 1024 for f in path.glob('*.gguf') if f.is_file())
+    except Exception:
+        pass
+    return False
+
+
+def _transformers_complete(model_dir) -> bool:
+    """A transformers model is complete with config + tokenizer + weights."""
+    try:
+        if not model_dir.is_dir():
+            return False
+        has_config = (model_dir / 'config.json').is_file()
+        has_tokenizer = ((model_dir / 'tokenizer.json').is_file()
+                         or (model_dir / 'tokenizer_config.json').is_file())
+        has_weights = (any(model_dir.glob('*.safetensors'))
+                       or any(model_dir.glob('pytorch_model*.bin'))
+                       or any(model_dir.glob('*.bin')))
+        return has_config and has_tokenizer and has_weights
+    except Exception:
+        return False
+
+
 def detect_existing_model(requested_model: str) -> dict | None:
     """
     Main detection function. Returns the best model to use or None.
@@ -841,25 +889,33 @@ def detect_existing_model(requested_model: str) -> dict | None:
         saved_id = saved['model_id']
         saved_path = saved.get('cache_path', '')
         _log_detect(f"[DETECT] State file: last model = {saved_id}")
-        # Quick validation: accept config.json (transformers) OR .gguf file (llama-cpp)
-        if saved_path and Path(saved_path).exists():
+        # TASK 3b: the REQUESTED model wins. Ignore a state file that points
+        # to a different model, or to an incomplete one (config without
+        # tokenizer/weights, small GGUF, ...).
+        _use_saved = False
+        if requested_model and not _ids_match(saved_id, requested_model):
+            _log_detect(f"[DETECT] State file ignored: points to '{saved_id}' "
+                        f"but '{requested_model}' was requested.")
+        elif saved_path and Path(saved_path).exists():
             p = Path(saved_path)
-            is_valid = (
-                (p / "config.json").exists()      # transformers model dir
-                or p.suffix.lower() == '.gguf'    # GGUF file path directly
-                or bool(list(p.glob("*.gguf")))   # dir containing .gguf
-            )
-            if is_valid:
-                _log_detect(f"[DETECT] Existing model found (state file validated: {saved_path}).")
-                return {
-                    'model_id':    saved_id,
-                    'resolved_id': saved_id,
-                    'cache_dir':   saved_path,
-                    'source':      'state_file',
-                    'valid':       True,
-                    'size_mb':     0,
-                }
-        _log_detect(f"[DETECT] State file path no longer valid, running full scan...")
+            if _gguf_complete(p) or _transformers_complete(p):
+                _use_saved = True
+            else:
+                _log_detect(f"[DETECT] State file ignored: '{saved_path}' is incomplete "
+                            f"(missing tokenizer/weights or GGUF too small).")
+        else:
+            _log_detect(f"[DETECT] State file path no longer exists: {saved_path}")
+        if _use_saved:
+            _log_detect(f"[DETECT] Existing model found (state file validated: {saved_path}).")
+            return {
+                'model_id':    saved_id,
+                'resolved_id': saved_id,
+                'cache_dir':   saved_path,
+                'source':      'state_file',
+                'valid':       True,
+                'size_mb':     0,
+            }
+        _log_detect(f"[DETECT] State file ignored, running full scan...")
 
     # ── Step 2: if a specific model was requested, check it first ───────────
     if requested_model:
@@ -1109,6 +1165,23 @@ def _streaming_download_gguf(repo_id: str, filename: str, dest_dir: str) -> str:
 
 
 # ─── Model loading ──────────────────────────────────────────────────────────────
+def resolve_gguf_wanted(model_id: str):
+    """Return (repo_id, filename) for the REQUESTED GGUF (TASK 3d).
+
+    Matched from the GGUF catalogue; falls back to the default Qwen files
+    when the requested id is unknown.
+    """
+    try:
+        t = (model_id or '').lower()
+        for m in gguf_catalogue():
+            mid = (m.get('id') or '').lower()
+            if t and (t in mid or mid in t) and m.get('filename'):
+                return m['id'], m['filename']
+    except Exception:
+        pass
+    return DEFAULT_MODEL_HF_REPO, DEFAULT_MODEL_FILENAME
+
+
 def load_model_thread(model_id: str, force_download: bool = False):
     """
     Load model in background thread.
@@ -1194,7 +1267,11 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 # Locate GGUF file: check MODELS_DIR first, then download
                 gguf_path = None
 
-                # Search in MODELS_DIR (and HF hub cache) for any matching .gguf file
+                # TASK 3d: resolve the REQUESTED .gguf file (repo + filename).
+                wanted_repo, wanted_file = resolve_gguf_wanted(model_id)
+                dlog(f"[GGUF] Wanted file: {wanted_file} from {wanted_repo}")
+
+                # Search in MODELS_DIR (and HF hub cache) for the requested .gguf file
                 # hf_hub_download stores files under HF_HOME/hub/models--Owner--Repo/snapshots/HASH/
                 hf_hub_dir = Path(os.environ.get("HF_HOME", str(Path.home() / ".sudo_studio"))) / "hub"
                 search_roots = [MODELS_DIR]
@@ -1210,9 +1287,10 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     except OSError:
                         continue
                     dlog(f"[GGUF]   candidate: {gf} ({sz // (1024*1024)}MB)")
-                    if sz > 100 * 1024 * 1024:  # > 100MB → valid model
+                    if sz > 100 * 1024 * 1024 and gf.name.lower() == wanted_file.lower():
                         gguf_path = str(gf)
-                        dlog(f"[GGUF] Using existing file: {gguf_path}")
+                        dlog(f"[GGUF] Requested file already present, no download: {gguf_path}")
+                        logger.info(f"[GGUF] Requested file already present, no download: {gguf_path}")
                         break
 
                 # If not found locally, download from HuggingFace Hub
@@ -1221,11 +1299,11 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 # the startup auto-download path (not an offline-first boot).
                 # The /download API endpoint uses the same controlled exception.
                 if not gguf_path:
-                    dlog(f"[GGUF] Not found locally — downloading {DEFAULT_MODEL_FILENAME} from {DEFAULT_MODEL_HF_REPO}...")
-                    logger.info(f"[GGUF] *** NETWORK REQUIRED *** Downloading {DEFAULT_MODEL_FILENAME}")
+                    dlog(f"[GGUF] Requested file not found locally - downloading {wanted_file} from {wanted_repo}...")
+                    logger.info(f"[GGUF] *** NETWORK REQUIRED *** Downloading {wanted_file}")
                     logger.info(f"[GGUF] This is the only network operation allowed at startup (first run only)")
                     state.download_progress = 5
-                    state.download_model_id = f"{DEFAULT_MODEL_HF_REPO}/{DEFAULT_MODEL_FILENAME}"
+                    state.download_model_id = f"{wanted_repo}/{wanted_file}"
                     state.download_error    = None
                     try:
                         # Temporarily re-enable network for the download
@@ -1235,8 +1313,8 @@ def load_model_thread(model_id: str, force_download: bool = False):
                         dlog("[GGUF] Offline env vars TEMPORARILY removed for download")
                         # Use streaming download for real byte-level progress tracking
                         local_path = _streaming_download_gguf(
-                            repo_id=DEFAULT_MODEL_HF_REPO,
-                            filename=DEFAULT_MODEL_FILENAME,
+                            repo_id=wanted_repo,
+                            filename=wanted_file,
                             dest_dir=str(MODELS_DIR),
                         )
                         gguf_path = local_path
@@ -1730,6 +1808,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
 
     finally:
         state.loading = False
+        _release_load_lock()
         dlog(f"load_model_thread DONE: loaded={state.loaded} error={state.error}")
 
 
@@ -1756,22 +1835,62 @@ def _model_thread_target(model_id: str, force_download: bool):
         state.error   = _msg
         state.download_progress = 0
         gc.collect()
+        _release_load_lock()  # belt-and-braces: finally above normally did this
         dlog("Thread wrapper: mock mode active, Flask unaffected")
 
 
+# --- Single-flight load lock (TASK 3a) -----------------------------------------
+# Only ONE model load/download job may run at a time. A second request gets
+# HTTP 409 with the current job status instead of spawning another thread.
+_load_lock = threading.Lock()
+
+def _current_job_status():
+    """Snapshot of the running load job (for HTTP 409 responses)."""
+    job = getattr(state, 'current_job', None) or {}
+    return {
+        "model":             job.get("model") or state.download_model_id or state.model_name,
+        "force_download":    job.get("force_download", False),
+        "started_at":        job.get("started_at"),
+        "loading":           state.loading,
+        "loaded":            state.loaded,
+        "download_progress": state.download_progress,
+    }
+
+def _release_load_lock():
+    state.current_job = None
+    try:
+        _load_lock.release()
+    except RuntimeError:
+        pass  # already released
+
 def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False):
+    """Spawn the ModelLoader thread unless a job is already running.
+
+    Returns True if this call started the job, False if a job is already
+    running (caller must answer HTTP 409 with _current_job_status()).
+    """
+    if not _load_lock.acquire(blocking=False):
+        dlog(f"start_model_load REFUSED (busy): model={model_id} current={state.current_job}")
+        logger.warning(f"[LOCK] Load refused, job already running: {state.current_job}")
+        return False
+    state.current_job = {
+        "model":          model_id,
+        "force_download": force_download,
+        "started_at":     time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
     dlog(f"start_model_load: spawning ModelLoader thread daemon=False model={model_id}")
     t = threading.Thread(
         target=_model_thread_target,
         args=(model_id, force_download),
-        # CRITICAL: daemon=False — thread MUST NOT die when main thread ends.
+        # CRITICAL: daemon=False - thread MUST NOT die when main thread ends.
         # With daemon=True, if Flask's internal thread finishes first on Windows,
-        # all daemon threads are killed immediately → runtime exits silently.
+        # all daemon threads are killed immediately -> runtime exits silently.
         daemon=False,
         name="ModelLoader"
     )
     t.start()
     dlog(f"ModelLoader thread started: ident={t.ident} alive={t.is_alive()}")
+    return True
 
 
 # ─── Inference ──────────────────────────────────────────────────────────────────
@@ -2246,7 +2365,7 @@ def models():
             "can_load":        ram_fits(m["ram_gb"], avail),
             "recommended":     m.get("recommended", False),
         }
-        for m in MODEL_CATALOGUE
+        for m in gguf_catalogue()
     ]
     return jsonify({
         "current":              state.model_name or DEFAULT_MODEL,
@@ -2282,7 +2401,12 @@ def reload_model():
     state.model     = None
     state.tokenizer = None
     gc.collect()
-    start_model_load(model_id, force_download=force)
+    if not start_model_load(model_id, force_download=force):
+        return jsonify({
+            "status":      "already_loading",
+            "model":       model_id,
+            "current_job": _current_job_status(),
+        }), 409
     return jsonify({
         "status":           "reloading",
         "model":            model_id,
@@ -2301,8 +2425,6 @@ def download_model():
     """
     data     = request.get_json(silent=True) or {}
     model_id = data.get('model', DEFAULT_MODEL)
-    if state.loading:
-        return jsonify({"status": "already_loading", "model": state.model_name}), 409
     ok, avail, req, msg = check_ram_for_model(model_id)
     if not ok:
         _refuse_load_for_ram(model_id, avail, req, where="download")
@@ -2324,7 +2446,12 @@ def download_model():
     gc.collect()
     # force_download=True bypasses local detection and triggers network access
     # The load_model_thread will temporarily remove OFFLINE env vars and restore them
-    start_model_load(model_id, force_download=True)
+    if not start_model_load(model_id, force_download=True):
+        return jsonify({
+            "status":      "already_loading",
+            "model":       model_id,
+            "current_job": _current_job_status(),
+        }), 409
     return jsonify({
         "status":           "downloading",
         "model":            model_id,
@@ -2460,7 +2587,7 @@ def models_catalogue():
     best_local_id = None
     best_local_ram = 0.0
 
-    for model in MODEL_CATALOGUE:
+    for model in gguf_catalogue():
         downloaded = False
         local_path = None
 

@@ -122,7 +122,8 @@ class RuntimePanel {
             // Same 1.3 safety margin as the runtime (server.enterprise.py)
             const freeGb = sysInfo.freeMem / 1024;
             const RAM_MARGIN_OFFLINE = 1.3;
-            this._catalogue = MODEL_CATALOGUE.map(m => ({
+            // TASK 3c: mask non-GGUF models even in the offline fallback list.
+            this._catalogue = MODEL_CATALOGUE.filter(m => m.type === 'gguf').map(m => ({
                 ...m,
                 size_gb: m.sizeGb,
                 ram_gb:  m.ramGb,
