@@ -52,6 +52,8 @@ class AgentPanel {
             case 'approveAction': this.approveAction(true);  break;
             case 'rejectAction':  this.approveAction(false); break;
             case 'clearLog':    this.post({ type: 'clear' }); break;
+            // TASK 4b: the no-model button in the WebView posts this message.
+            case 'openRuntimePanel': vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
         }
     }
 
@@ -537,6 +539,8 @@ window.addEventListener('message', function(ev) {
 
         case 'agentError':
             setRunning(false);
+            // TASK 4b: no-model failure --- message + button to open Runtime & Models.
+            if (msg.noModel) { addNoModelItem(msg.message); break; }
             addFeedItem('done-failed', '❌', 'Erreur agent [' + (msg.phase||'?') + ']: ' + msg.message);
             break;
 
@@ -565,6 +569,30 @@ window.addEventListener('message', function(ev) {
         if (s.step !== undefined) updatePlanStep(s.step, s.status || 'running');
     }
 });
+
+// TASK 4b: no-model error item with an "Ouvrir Runtime & Models" button.
+function addNoModelItem(message) {
+    removeEmpty();
+    const item = document.createElement('div');
+    item.className = 'feed-item done-failed';
+    const icon = document.createElement('span');
+    icon.className = 'feed-icon';
+    icon.textContent = '\u274C';
+    const body = document.createElement('div');
+    body.className = 'feed-content';
+    body.textContent = message || 'Aucun mod\u00e8le charg\u00e9.';
+    const btn = document.createElement('button');
+    btn.textContent = 'Ouvrir Runtime & Models';
+    btn.className = 'btn btn-secondary';
+    btn.style.marginTop = '8px';
+    btn.addEventListener('click', function() { vscPost({ type: 'openRuntimePanel' }); });
+    body.appendChild(document.createElement('br'));
+    body.appendChild(btn);
+    item.appendChild(icon);
+    item.appendChild(body);
+    feed.appendChild(item);
+    feed.scrollTop = feed.scrollHeight;
+}
 
 function phaseIcon(phase) {
     const icons = { start:'🚀', analyze:'🔍', plan:'📋', step:'▶', verify:'✅', diagnose:'🩺', iterate:'🔄', stop:'⏹' };

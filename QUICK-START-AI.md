@@ -85,7 +85,7 @@ node test-ai-flow.js
 
 **1. Check Python Runtime**
 ```bash
-curl http://localhost:6000/health
+curl http://127.0.0.1:6000/health
 ```
 Should return: `{ "status": "healthy", "model": { "loaded": true } }`
 
@@ -101,7 +101,7 @@ If not running: Go back to Step 2
 
 **3. Test Direct Inference**
 ```bash
-curl -X POST http://localhost:6000/infer \
+curl -X POST http://127.0.0.1:6000/infer \
   -H "Content-Type: application/json" \
   -d '{"message":"Hello world","max_tokens":50}'
 ```

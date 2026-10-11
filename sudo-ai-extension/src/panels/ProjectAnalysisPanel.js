@@ -250,13 +250,15 @@ class ProjectAnalysisPanel {
 
         this.panel.webview.postMessage({ type: 'aiLoading' });
         try {
-            const r = await axios.post('http://localhost:6000/infer', {
+            const r = await axios.post('http://127.0.0.1:6000/infer', {
                 message: `Analyse ce projet et donne 5 recommandations concrètes pour améliorer la qualité, sécurité et maintenabilité. Répertoire: ${path.basename(folder.uri.fsPath)}. Soit concis et actionnable.`,
                 max_tokens: 400
             }, { timeout: 60000 });
             this.panel.webview.postMessage({ type: 'aiRecommendations', text: r.data.reply });
         } catch (e) {
-            this.panel.webview.postMessage({ type: 'aiError', text: 'Runtime IA non disponible' });
+            // TASK 4a: runtime up but no model loaded (503 no_model_loaded).
+            const isNoModel = e.response && e.response.status === 503;
+            this.panel.webview.postMessage({ type: 'aiError', text: isNoModel ? 'Aucun modele charge - ouvrez Runtime & Models pour charger un modele' : 'Runtime IA non disponible' });
         }
     }
 

@@ -228,7 +228,7 @@ console.log('\n🔌 Testing Backend...\n');
 const aiRoutesPath = path.join(__dirname, 'backend/routes/ai.routes.js');
 const aiRoutesContent = fs.readFileSync(aiRoutesPath, 'utf8');
 
-test('AI routes point to Python runtime', aiRoutesContent.includes('localhost:6000'));
+test('AI routes point to Python runtime', aiRoutesContent.includes('127.0.0.1:6000'));
 test('AI routes have /infer endpoint', aiRoutesContent.includes('/infer'));
 test('AI routes have error handling', aiRoutesContent.includes('catch'));
 

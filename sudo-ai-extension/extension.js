@@ -532,7 +532,7 @@ async function autoStartRuntimeDirect() {
  */
 async function checkPort(port, timeoutMs = 3000) {
     try {
-        const urls = [`http://localhost:${port}/health`, `http://localhost:${port}/`];
+        const urls = [`http://127.0.0.1:${port}/health`, `http://127.0.0.1:${port}/`];
         for (const url of urls) {
             try {
                 await axios.get(url, { timeout: timeoutMs });
@@ -661,7 +661,7 @@ const _OFFLINE_THRESHOLD = 3; // show "hors ligne" only after 3 consecutive fail
 async function pollRuntimeStatus() {
     if (!statusBarItem) return;
     try {
-        const r = await axios.get('http://localhost:6000/health', { timeout: 2500 });
+        const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 2500 });
         _runtimeOfflineCount = 0; // reset on success
         const d = r.data;
         const m = d.model || {};
@@ -706,11 +706,11 @@ async function pollRuntimeStatus() {
  */
 async function autoEnsureModelDownload() {
     try {
-        const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+        const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
         const m = r.data.model || {};
         if (!m.loaded && !m.loading) {
             // Runtime is up but no model — auto-trigger download
-            await axios.post('http://localhost:6000/download',
+            await axios.post('http://127.0.0.1:6000/download',
                 { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' },
                 { timeout: 5000 }
             );
@@ -1444,7 +1444,12 @@ async function viewRuntimeLogs() {
 async function checkRuntimeHealth() {
     try {
         const health = await backend.checkRuntimeHealth();
-        const status = health.status || 'unknown';
+        // During runtime startup the backend may report no status yet:
+        // show a startup message instead of "unknown".
+        let status = health.status;
+        if (!status || status === 'unknown') {
+            status = 'demarrage / chargement du modele...';
+        }
         const modelLoaded = health.model_loaded || health.model?.loaded || false;
         const modelName = health.loaded_model || health.model?.name || 'none';
         

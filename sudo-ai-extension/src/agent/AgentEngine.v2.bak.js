@@ -412,7 +412,7 @@ class SudoTools {
      */
     async runDoctor() {
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 5000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 5000 });
             return {
                 ok: true,
                 status:  r.data.status,
@@ -451,7 +451,7 @@ class SudoTools {
 // ─── AI PROVIDER ──────────────────────────────────────────────────────────────
 class AIProvider {
     constructor(options = {}) {
-        this.runtimeUrl = options.runtimeUrl || 'http://localhost:6000';
+        this.runtimeUrl = options.runtimeUrl || 'http://127.0.0.1:6000';
         this.backendUrl = options.backendUrl  || 'http://localhost:5000';
     }
 

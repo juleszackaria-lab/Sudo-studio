@@ -361,7 +361,7 @@ This is a huge advantage over cloud AI tools that send every keystroke to server
 **Data flow:**
 1. You select code in VSCode
 2. Extension sends it to `localhost:5000` (your computer)
-3. Backend forwards to `localhost:6000` (still your computer)
+3. Backend forwards to `127.0.0.1:6000` (still your computer)
 4. Python runtime processes with local AI model
 5. Response returns to extension
 6. **No network traffic outside your machine**

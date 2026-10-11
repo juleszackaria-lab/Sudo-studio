@@ -101,7 +101,7 @@ class RuntimePanel {
         let runtimeError = null;
 
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
             runtimeData = r.data;
             this._lastHealth = r.data;
         } catch (e) {
@@ -113,7 +113,7 @@ class RuntimePanel {
 
         // Try to get catalogue (includes local scan)
         try {
-            const rc = await axios.get('http://localhost:6000/models/catalogue', { timeout: 5000 });
+            const rc = await axios.get('http://127.0.0.1:6000/models/catalogue', { timeout: 5000 });
             catalogueData = rc.data;
             this._catalogue = catalogueData.catalogue || [];
         } catch (e) {
@@ -122,7 +122,8 @@ class RuntimePanel {
             // Same 1.3 safety margin as the runtime (server.enterprise.py)
             const freeGb = sysInfo.freeMem / 1024;
             const RAM_MARGIN_OFFLINE = 1.3;
-            this._catalogue = MODEL_CATALOGUE.map(m => ({
+            // TASK 3c: mask non-GGUF models even in the offline fallback list.
+            this._catalogue = MODEL_CATALOGUE.filter(m => m.type === 'gguf').map(m => ({
                 ...m,
                 size_gb: m.sizeGb,
                 ram_gb:  m.ramGb,
@@ -153,7 +154,7 @@ class RuntimePanel {
         if (!modelId) return;
         console.log('[RUNTIME] downloadModel:', modelId);
         try {
-            const r = await axios.post('http://localhost:6000/download',
+            const r = await axios.post('http://127.0.0.1:6000/download',
                 { model: modelId }, { timeout: 5000 });
             this._downloadingModelId = modelId;
             this.panel.webview.postMessage({ type: 'downloadStarted', modelId });
@@ -187,7 +188,7 @@ class RuntimePanel {
 
     async _pollDownloadStatus(modelId) {
         try {
-            const r = await axios.get('http://localhost:6000/models/download-status', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/models/download-status', { timeout: 3000 });
             const ds = r.data;
             console.log('[RUNTIME] download-status:', ds.phase, ds.progress + '%',
                 ds.mb_done + '/' + ds.mb_total + 'MB');
@@ -241,7 +242,7 @@ class RuntimePanel {
         if (!modelId) return;
         console.log('[RUNTIME] switchModel:', modelId);
         try {
-            await axios.post('http://localhost:6000/reload',
+            await axios.post('http://127.0.0.1:6000/reload',
                 { model: modelId, force_download: false }, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'actionDone', action: 'switch', modelId });
             vscode.window.showInformationMessage(`🔄 Chargement modèle: ${modelId}`);
@@ -258,7 +259,7 @@ class RuntimePanel {
         console.log('[RUNTIME] autoSelectBestModel');
         try {
             // Try /models/catalogue first (it finds best local model)
-            const rc = await axios.get('http://localhost:6000/models/catalogue', { timeout: 5000 });
+            const rc = await axios.get('http://127.0.0.1:6000/models/catalogue', { timeout: 5000 });
             const best = rc.data.best_local_model;
             if (best) {
                 await this.switchModel(best);
@@ -275,7 +276,7 @@ class RuntimePanel {
         console.log('[RUNTIME] restartRuntime');
         try {
             // Reload current model
-            await axios.post('http://localhost:6000/reload', {}, { timeout: 5000 });
+            await axios.post('http://127.0.0.1:6000/reload', {}, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'actionDone', action: 'restart' });
             vscode.window.showInformationMessage('🔄 Runtime en cours de redémarrage...');
             setTimeout(() => this.fetchStatus(), 2000);
@@ -288,7 +289,7 @@ class RuntimePanel {
         console.log('[RUNTIME] fetchLogs');
         try {
             // Try to get logs from health endpoint
-            const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
             const logs = r.data.detection_log || [];
             const modelInfo = r.data.model || {};
             const logText = [
@@ -319,7 +320,7 @@ class RuntimePanel {
     async fetchCacheInfo() {
         console.log('[RUNTIME] fetchCacheInfo');
         try {
-            const r = await axios.get('http://localhost:6000/scan', { timeout: 8000 });
+            const r = await axios.get('http://127.0.0.1:6000/scan', { timeout: 8000 });
             const d = r.data;
             const lines = [
                 `=== Cache Info ===`,
@@ -444,8 +445,8 @@ h2 { font-size:15px; font-weight:700; margin-bottom:12px; display:flex; align-it
 <div class="mock-warning" id="mockWarning">
     <span style="font-size:18px">⚠️</span>
     <div>
-        <div style="font-weight:700">Mode Mock actif</div>
-        <div id="mockWarningText" style="font-size:11px;margin-top:2px">Aucun modèle chargé — le Chat retourne des réponses simulées.</div>
+        <div style="font-weight:700">Etat du runtime</div>
+        <div id="mockWarningText" style="font-size:11px;margin-top:2px">Aucun modele charge. Chargez un modele depuis le catalogue pour activer Chat et Agent.</div>
     </div>
 </div>
 
@@ -627,7 +628,7 @@ function updateRuntime(data) {
                 dlDetail.style.display = 'none';
             }
         }
-        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Telechargement en cours (' + pct + '%) \u2014 reponses simulees en attendant.'; }
+        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Telechargement en cours (' + pct + '%) \u2014 chat et agent disponibles a la fin du chargement.'; }
     } else if (m.loading) {
         // Fallback: no download-status data yet — use health progress
         badge.className = 'loading'; badge.textContent = '\u{1F504} Chargement';
@@ -636,7 +637,7 @@ function updateRuntime(data) {
         if (dlBar) { dlBar.classList.add('show'); dlFill.style.width = pct + '%'; dlFill.className = 'dl-fill'; }
         if (dlLabel) { dlLabel.style.display = 'block'; dlLabel.textContent = 'En cours: ' + pct + '%...'; }
         if (dlDetail) dlDetail.style.display = 'none';
-        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Modele en cours de chargement (' + pct + '%) \u2014 reponses simulees en attendant.'; }
+        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Modele en cours de chargement (' + pct + '%) \u2014 chat et agent disponibles a la fin du chargement.'; }
     } else if (m.loaded) {
         badge.className = 'online'; badge.textContent = '\u{1F7E2} En ligne';
         modelName.textContent = (m.name || m.model || 'modele charge') + ' \u00B7 ' + (m.device || 'cpu');
@@ -646,15 +647,23 @@ function updateRuntime(data) {
         _activeDownload = null;  // clear download state once loaded
         if (mockWarn) mockWarn.classList.remove('show');
     } else {
-        badge.className = 'mock'; badge.textContent = '\u26A0\uFE0F Mock Mode';
-        const errTxt = m.error ? m.error.slice(0, 80) : 'Aucun modele charge';
-        modelName.textContent = errTxt;
+        // TASK 4c: real /health state --- error (+ last_error) or no model. Never a mock badge.
+        const lastErr = data.last_error || m.error || null;
+        if (lastErr) {
+            badge.className = 'offline'; badge.textContent = '\u274C Erreur';
+            modelName.textContent = 'Erreur: ' + String(lastErr).slice(0, 120);
+        } else {
+            badge.className = 'offline'; badge.textContent = '\u26A0\uFE0F Aucun mod\u00e8le charg\u00e9';
+            modelName.textContent = 'Aucun mod\u00e8le charg\u00e9';
+        }
         if (dlBar) dlBar.classList.remove('show');
         if (dlLabel) dlLabel.style.display = 'none';
         if (dlDetail) dlDetail.style.display = 'none';
         if (mockWarn) {
             mockWarn.classList.add('show');
-            if (mockText) mockText.textContent = 'Aucun modele charge. ' + (m.error ? 'Erreur: ' + m.error.slice(0,100) : 'Telechargez et chargez un modele depuis le catalogue ci-dessous.');
+            if (mockText) mockText.textContent = lastErr
+                ? 'Erreur chargement: ' + String(lastErr).slice(0, 150)
+                : 'Aucun modele charge. Telechargez et chargez un modele depuis le catalogue ci-dessous.';
         }
     }
     if (reqStat) reqStat.textContent = data.requests_served || 0;

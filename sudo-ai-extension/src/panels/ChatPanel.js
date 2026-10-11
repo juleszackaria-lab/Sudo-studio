@@ -207,6 +207,14 @@ class ChatPanel {
             this.panel.webview.postMessage({ type: 'generating', show: false });
             if (e.name === 'AbortError' || e.message === 'STOPPED') {
                 this.panel.webview.postMessage({ type: 'aiMessage', text: '⏹ Génération arrêtée.', model: 'system' });
+            } else if (e.noModel) {
+                // TASK 4a: no model loaded --- guide the user to Runtime & Models.
+                this.panel.webview.postMessage({
+                    type: 'aiMessage',
+                    text: '\u274C Aucun mod\u00e8le charg\u00e9.\n\nOuvrez le panneau Runtime & Models pour t\u00e9l\u00e9charger et charger un mod\u00e8le.',
+                    model: 'system',
+                    mock: false
+                });
             } else {
                 this.panel.webview.postMessage({
                     type: 'aiMessage',
@@ -287,7 +295,7 @@ class ChatPanel {
 
     async sendStatus() {
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
             this.panel.webview.postMessage({ type: 'status', data: r.data });
         } catch (_) {
             // Don't immediately show offline - runtime may still be starting
@@ -301,7 +309,7 @@ class ChatPanel {
 
     async downloadModel(modelId) {
         try {
-            await axios.post('http://localhost:6000/download',
+            await axios.post('http://127.0.0.1:6000/download',
                 { model: modelId || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'downloadStarted' });
             vscode.window.showInformationMessage(`⬇️ Downloading ${modelId}... Check status bar.`);
@@ -324,7 +332,7 @@ class ChatPanel {
             });
 
             const options = {
-                hostname: 'localhost',
+                hostname: '127.0.0.1',
                 port:     6000,
                 path:     '/infer-stream',
                 method:   'POST',
@@ -578,7 +586,7 @@ class ChatPanel {
 
     async _sendToAI(text) {
         // PRIMARY PATH: Direct call to Python runtime on port 6000
-        console.log('[EXT] _sendToAI — calling http://localhost:6000/infer');
+        console.log('[EXT] _sendToAI - calling http://127.0.0.1:6000/infer');
         // This is always tried first — no auth required, most reliable
         // max_tokens: 128 — keeps CPU inference under ~30-60s for TinyLlama (was 512 → 120s+ timeout)
         const payload = { message: text, prompt: text, input: text, max_tokens: 128, temperature: 0.7 };
@@ -588,7 +596,7 @@ class ChatPanel {
         const signal = this.abortCtrl ? this.abortCtrl.signal : undefined;
 
         try {
-            const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 300000, signal });
+            const r = await axios.post('http://127.0.0.1:6000/infer', payload, { timeout: 300000, signal });
             console.log('[EXT] /infer response — status:', r.status, '| reply[:60]:', (r.data.reply||'').slice(0,60));
             return r.data;
         } catch (e) {
@@ -599,6 +607,12 @@ class ChatPanel {
                 throw err;
             }
             console.warn('[EXT] /infer error — code:', e.code, '| msg:', e.message);
+            // TASK 4a: runtime is up but no model is loaded (503 no_model_loaded).
+            if (e.response && e.response.status === 503) {
+                const noModel = new Error('NO_MODEL_LOADED');
+                noModel.noModel = true;
+                throw noModel;
+            }
             if (e.code !== 'ECONNREFUSED' && e.code !== 'ENOTFOUND') {
                 // Runtime is up but returned an error — still return what we got
                 if (e.response && e.response.data) return e.response.data;
@@ -830,7 +844,7 @@ body {
 
 <div id="mockBanner" style="display:none;padding:8px 14px;background:#5a2d00;border-bottom:2px solid #d29922;color:#f0c060;font-size:12px;font-weight:600;flex-shrink:0;align-items:center;gap:8px;">
     <span style="font-size:16px">⚠️</span>
-    <span id="mockBannerText">Modèle non chargé — réponses simulées (mode mock)</span>
+    <span id="mockBannerText">Modele non charge - ouvrez Runtime pour charger un modele.</span>
     <button id="mockBannerBtn" style="margin-left:auto;padding:3px 10px;font-size:11px;background:#d29922;color:#000;border:none;border-radius:4px;cursor:pointer;font-weight:600">Ouvrir Runtime</button>
 </div>
 
@@ -1156,7 +1170,7 @@ function updateStatus(data) {
         if (!mockBanner) return;
         if (show) {
             mockBanner.style.display = 'flex';
-            if (mockBannerText) mockBannerText.textContent = reason || '⚠️ Modèle non chargé — réponses simulées (mode mock)';
+            if (mockBannerText) mockBannerText.textContent = reason || '\u26A0\uFE0F Mod\u00e8le non charg\u00e9 \u2014 ouvrez Runtime pour charger un mod\u00e8le';
         } else {
             mockBanner.style.display = 'none';
         }
@@ -1175,7 +1189,7 @@ function updateStatus(data) {
         txt.textContent = 'Runtime en demarrage... (3-5 min)';
         dlBtn.style.display = 'none';
         dlBar.classList.remove('show');
-        setMockBanner(true, '⏳ Runtime en démarrage — réponses simulées en attendant le chargement du modèle');
+        setMockBanner(true, '⏳ Runtime en démarrage — le chat sera disponible apr\u00e8s le chargement du mod\u00e8le');
         return;
     }
     const m = data.model || {};
@@ -1189,7 +1203,7 @@ function updateStatus(data) {
         dlFill.style.width = pct + '%';
         dlLabel.textContent = 'Chargement: ' + (m.name || 'Qwen2.5-Coder') + ' — ' + pct + '%';
         dlBtn.style.display = 'none';
-        setMockBanner(true, '⏳ Modèle en cours de chargement (' + pct + '%) — réponses simulées en attendant');
+        setMockBanner(true, '⏳ Modèle en cours de chargement (' + pct + '%) \u2014 patientez, chat disponible \u00e0 la fin du chargement');
     } else if (m.loaded) {
         dot.className = 'dot online';
         txt.textContent = '\u2705 IA pr\u00eate \u00b7 ' + (m.name || 'mod\u00e8le') + ' \u00b7 ' + (m.device || 'cpu');
@@ -1202,7 +1216,7 @@ function updateStatus(data) {
         dlBtn.style.display = 'inline-block';
         dlBar.classList.remove('show');
         const errMsg = m.error ? ' — ' + m.error.slice(0, 80) : '';
-        setMockBanner(true, '⚠️ Modèle non chargé — réponses simulées' + errMsg + '. Cliquez "Ouvrir Runtime" pour télécharger un modèle.');
+        setMockBanner(true, '⚠️ Modèle non chargé \u2014 chat indisponible' + errMsg + '. Cliquez "Ouvrir Runtime" pour t\u00e9l\u00e9charger un mod\u00e8le.');
     }
 }
 

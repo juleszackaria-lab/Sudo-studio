@@ -1036,7 +1036,7 @@ class SudoTools {
         const issues = [];
         const logs   = [];
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 5000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 5000 });
             logs.push(`[DOCTOR] Runtime: ${r.data.status}`);
             logs.push(`[DOCTOR] Model loaded: ${r.data.model?.loaded}`);
             logs.push(`[DOCTOR] RAM available: ${r.data.system?.ram_available_gb} GB`);
@@ -1321,7 +1321,7 @@ class SudoTools {
         const logs = [];
         logs.push(`[CHAT] Querying AI: ${question.slice(0, 100)}...`);
         try {
-            const r = await axios.post('http://localhost:6000/infer', {
+            const r = await axios.post('http://127.0.0.1:6000/infer', {
                 message: question, max_tokens: 512, temperature: 0.2
             }, { timeout: AI_TIMEOUT_MS });
             const reply = r.data.reply || r.data.response || '';
@@ -1560,7 +1560,7 @@ spec:
 // ─── AI PROVIDER ──────────────────────────────────────────────────────────────
 class AIProvider {
     constructor(options = {}) {
-        this.runtimeUrl = options.runtimeUrl || 'http://localhost:6000';
+        this.runtimeUrl = options.runtimeUrl || 'http://127.0.0.1:6000';
     }
 
     async query(prompt, systemContext = '', options = {}) {
@@ -1583,11 +1583,22 @@ class AIProvider {
             if (e.code === 'ECONNABORTED' || (e.message || '').includes('timeout')) {
                 return { ok: false, error: `Timeout after ${AI_TIMEOUT_MS}ms`, reply: null };
             }
+            // TASK 4b: /infer without a loaded model answers 503 no_model_loaded.
+            if (e.response && e.response.status === 503) {
+                return { ok: false, noModel: true, error: 'NO_MODEL_LOADED', reply: null };
+            }
             return { ok: false, error: e.message, reply: null };
         }
     }
 
     async plan(task, projectContext, mcpContext = '') {
+        // TASK 4b: fast no-model pre-check --- fail in <5s instead of a long inference wait.
+        try {
+            const h = await axios.get(`${this.runtimeUrl}/health`, { timeout: 2500 });
+            if (h.data && h.data.model && h.data.model.loaded === false) {
+                return { ok: false, noModel: true, error: 'NO_MODEL_LOADED', reply: null };
+            }
+        } catch (_) { /* health unreachable --- fall through to query() (offline path unchanged) */ }
         const prompt = `TÂCHE À ACCOMPLIR : ${task}
 
 CONTEXTE DU PROJET :
@@ -1816,7 +1827,8 @@ class AgentEngine extends EventEmitter {
         } catch (e) {
             this.state.log(`FATAL: ${e.message}`);
             console.error('[AGENT] Fatal error:', e.stack);
-            this._emit('error', { message: e.message, phase: 'execute' });
+            // TASK 4b: no-model errors were already emitted (with flag) by _phase_plan.
+            if (!e.noModel) this._emit('error', { message: e.message, phase: 'execute' });
             return this._finish('failed');
         }
 
@@ -1929,6 +1941,14 @@ class AgentEngine extends EventEmitter {
             this.state._projectContext,
             this.mcpClient.getToolSummary()
         );
+
+        // TASK 4b: no model loaded - fail fast with a clear message (no fallback plan).
+        if (aiResult && aiResult.noModel) {
+            const msg = 'Aucun mod\u00e8le charg\u00e9. Ouvrez Runtime & Models pour t\u00e9l\u00e9charger et charger un mod\u00e8le.';
+            this.state.log('FATAL: no model loaded (NO_MODEL_LOADED)');
+            this._emit('error', { message: msg, phase: 'plan', noModel: true });
+            throw Object.assign(new Error(msg), { noModel: true });
+        }
 
         let plan = [];
         if (aiResult.ok && aiResult.reply) {

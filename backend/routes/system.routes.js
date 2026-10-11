@@ -319,7 +319,7 @@ router.post('/api/system/doctor', async (req, res) => {
 
   // Check runtime
   try {
-    await axios.get('http://localhost:6000/health', { timeout: 2000 });
+    await axios.get('http://127.0.0.1:6000/health', { timeout: 2000 });
     results.push({ name: 'AI Runtime (port 6000)', status: 'ok', value: 'Running' });
   } catch (_) {
     results.push({ name: 'AI Runtime (port 6000)', status: 'error', value: 'Not running', fix: 'startRuntime' });
@@ -346,7 +346,7 @@ router.post('/api/system/autofix', async (req, res) => {
 
   if (issueType === 'downloadModel') {
     try {
-      await axios.post('http://localhost:6000/download',
+      await axios.post('http://127.0.0.1:6000/download',
         { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
       return res.json({ success: true, message: 'Model download started on runtime' });
     } catch (e) {

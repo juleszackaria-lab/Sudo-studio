@@ -25,13 +25,8 @@ class ChatProvider {
         if (!element) {
             return [
                 this.createNewChatItem(),
-                this.createModelSection(),
                 this.createHistorySection()
             ];
-        }
-
-        if (element.contextValue === 'modelSection') {
-            return this.getAvailableModels();
         }
 
         if (element.contextValue === 'historySection') {
@@ -52,15 +47,6 @@ class ChatProvider {
         return item;
     }
 
-    createModelSection() {
-        const chatState = this.state.getChatState();
-        const item = new vscode.TreeItem('AI Models', vscode.TreeItemCollapsibleState.Expanded);
-        item.iconPath = new vscode.ThemeIcon('symbol-misc');
-        item.description = chatState.currentModel || 'default';
-        item.contextValue = 'modelSection';
-        return item;
-    }
-
     createHistorySection() {
         const chatState = this.state.getChatState();
         const count = chatState.history?.length || 0;
@@ -69,29 +55,6 @@ class ChatProvider {
         item.description = `${count} messages`;
         item.contextValue = 'historySection';
         return item;
-    }
-
-    async getAvailableModels() {
-        try {
-            const models = await this.backend.listModels();
-            return models.map(model => {
-                const item = new vscode.TreeItem(model.name, vscode.TreeItemCollapsibleState.None);
-                item.description = model.size || 'Local';
-                item.iconPath = new vscode.ThemeIcon('symbol-class');
-                item.command = {
-                    command: 'sudoStudio.selectModel',
-                    title: 'Select Model',
-                    arguments: [model.name]
-                };
-                item.contextValue = 'model';
-                return item;
-            });
-        } catch (error) {
-            const item = new vscode.TreeItem('default', vscode.TreeItemCollapsibleState.None);
-            item.iconPath = new vscode.ThemeIcon('symbol-class');
-            item.contextValue = 'model';
-            return [item];
-        }
     }
 
     getChatHistory() {

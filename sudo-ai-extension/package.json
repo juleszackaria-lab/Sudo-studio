@@ -471,24 +471,9 @@
           "group": "navigation@1"
         },
         {
-          "command": "sudoStudio.refreshSDKs",
-          "when": "view == sudoStudioSDK",
-          "group": "navigation@2"
-        },
-        {
           "command": "sudoStudio.openDevOpsPanel",
           "when": "view == sudoStudioDevOps",
           "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.generateDocker",
-          "when": "view == sudoStudioDevOps",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.generateCICD",
-          "when": "view == sudoStudioDevOps",
-          "group": "navigation@3"
         },
         {
           "command": "sudoStudio.exportEnvironment",
@@ -551,11 +536,6 @@
           "command": "sudoStudio.reloadModel",
           "when": "view == sudoStudioRuntime && viewItem == model",
           "group": "inline@1"
-        },
-        {
-          "command": "sudoStudio.installSDK",
-          "when": "view == sudoStudioSDK",
-          "group": "inline@1"
         }
       ],
       "commandPalette": [
@@ -591,7 +571,7 @@
         },
         "sudoStudio.runtimeUrl": {
           "type": "string",
-          "default": "http://localhost:6000",
+          "default": "http://127.0.0.1:6000",
           "description": "URL of the Python AI runtime server"
         },
         "sudoStudio.defaultModel": {

@@ -10,11 +10,11 @@ sentencepiece
 requests
 
 # ── GGUF / llama-cpp-python (Qwen2.5-Coder-1.5B-Instruct-GGUF) ──────────────
-# Pre-built CPU wheel — no compiler needed.  Pins to a known-good build.
-# PyInstaller note: llama_cpp ships a compiled .so/.dll that PyInstaller
-# picks up automatically via the collect_dynamic_libs() hook shipped with
-# llama-cpp-python >= 0.2.  No extra spec tweaks needed for CPU-only build.
-llama-cpp-python==0.3.9
+# Built from source in 02-runtime-build.yml (NOT installed here).
+# Two CPU variants (compat + avx2) are compiled with pinned CMAKE_ARGS and
+# embedded under llama_variants/. The prebuilt wheel is INTENTIONALLY absent:
+# it may use AVX2/FMA and crash old CPUs with 0xc000001d, and it would shadow
+# the variant trees at runtime. Pinned source version: llama-cpp-python==0.3.9.
 
 # Required by load_model_thread() to download the GGUF from HuggingFace Hub
 # the first time runtime.exe runs (or when the model file is missing).

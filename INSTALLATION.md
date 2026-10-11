@@ -365,7 +365,7 @@ curl -X POST http://localhost:5000/api/ai/chat \
 
 **Check Health:**
 ```bash
-curl http://localhost:6000/health
+curl http://127.0.0.1:6000/health
 ```
 
 **Expected response:**
@@ -379,7 +379,7 @@ curl http://localhost:6000/health
 
 **Test Inference:**
 ```bash
-curl -X POST http://localhost:6000/infer \
+curl -X POST http://127.0.0.1:6000/infer \
   -H "Content-Type: application/json" \
   -d '{"input":"Write a hello world function"}'
 ```
@@ -494,7 +494,7 @@ python download_models.py
 // File → Preferences → Settings → Sudo Studio
 {
   "sudoStudio.backendUrl": "http://localhost:5000",
-  "sudoStudio.runtimeUrl": "http://localhost:6000"
+  "sudoStudio.runtimeUrl": "http://127.0.0.1:6000"
 }
 ```
 

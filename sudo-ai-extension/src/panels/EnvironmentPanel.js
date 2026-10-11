@@ -16,6 +16,7 @@ const { exec } = require('child_process');
 const os   = require('os');
 const fs   = require('fs');
 const path = require('path');
+const { appendAudit } = require('../utils/auditLog');
 
 const IS_WIN = process.platform === 'win32';
 const IS_MAC = process.platform === 'darwin';
@@ -121,6 +122,7 @@ class EnvironmentPanel {
             type: 'scanResult',
             snapshot: this.currentSnapshot
         });
+        appendAudit('ENV_SCAN', `scan: ${this.currentSnapshot.tools.filter(t => t.installed).length}/${this.currentSnapshot.tools.length} tools installed`, { result: 'ok', verified: true });
     }
 
     _detectTool(def) {
@@ -291,6 +293,7 @@ class EnvironmentPanel {
             synced: diffs.length === 0 && systemDiffs.length === 0,
             profile
         });
+        appendAudit('ENV_SYNC_CHECK', `sync check: ${diffs.length} tool diff(s), ${systemDiffs.length} system diff(s)`, { result: diffs.length === 0 && systemDiffs.length === 0 ? 'in-sync' : 'diffs-found', verified: true });
     }
 
     // ── Fix individual tool ───────────────────────────────────────────────
@@ -323,10 +326,19 @@ class EnvironmentPanel {
             `⚡ Installation de ${toolName} lancée dans le terminal.`
         );
 
+        // TASK 7g: terminal-delegated - audit start as NOT verified, verify after re-scan.
+        appendAudit('ENV_FIX_TOOL', `Install started for ${toolName} (terminal)`, { result: 'started', verified: false });
+        const beforeFix = this.currentSnapshot?.tools?.find(t => t.name === toolName);
+        const wasInstalled = beforeFix ? beforeFix.installed : null;
         this.panel.webview.postMessage({ type: 'fixStarted', tool: toolName });
 
-        // Re-scan after 20s
-        setTimeout(() => this.scanEnvironment(), 20000);
+        // Re-scan after 20s, then verify the end state and audit it.
+        setTimeout(async () => {
+            await this.scanEnvironment();
+            const after = this.currentSnapshot?.tools?.find(t => t.name === toolName);
+            const ok = after ? after.installed === true : false;
+            appendAudit('ENV_FIX_TOOL_VERIFY', `${toolName}: installed before=${wasInstalled} after=${after?.installed} version=${after?.version || 'n/a'}`, { result: ok ? 'ok' : 'not-confirmed', verified: ok });
+        }, 20000);
     }
 
     dispose() {

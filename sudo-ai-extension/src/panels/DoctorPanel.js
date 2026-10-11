@@ -83,7 +83,7 @@ class DoctorPanel {
 
         // Runtime check
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 2000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 2000 });
             const m = r.data.model || {};
             const label = m.loaded ? `Running · ${m.name || 'model'}` : (m.loading ? `Loading (${m.download_progress||0}%)` : 'Running (no model)');
             results.push({ name: 'AI Runtime (port 6000)', status: m.loaded || m.loading ? 'ok' : 'warn', value: label, fix: m.loaded ? null : 'downloadModel' });
@@ -139,7 +139,7 @@ class DoctorPanel {
                 break;
             case 'downloadModel':
                 try {
-                    await axios.post('http://localhost:6000/download',
+                    await axios.post('http://127.0.0.1:6000/download',
                         { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
                     msg = '⬇ Téléchargement du modèle démarré...';
                 } catch (e) {

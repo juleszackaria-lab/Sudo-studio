@@ -12,7 +12,7 @@ const { verifyToken } = require('../middleware/auth.middleware');
 
 // Configuration des routes de modèles - Python Runtime (port 6000)
 // All models use the same Python Flask runtime with transformers
-const PYTHON_RUNTIME_URL = 'http://localhost:6000';
+const PYTHON_RUNTIME_URL = 'http://127.0.0.1:6000';
 const PYTHON_RUNTIME_PORT = 6000;
 
 const MODEL_ROUTES = {
@@ -62,7 +62,7 @@ function detectMode(message, context = '') {
 // Vérifier si un modèle est disponible
 async function checkModelAvailability(modelName, modelConfig) {
   try {
-    const checkUrl = modelConfig.healthUrl || `http://localhost:${modelConfig.port}/health`;
+    const checkUrl = modelConfig.healthUrl || `http://127.0.0.1:${modelConfig.port}/health`;
     
     logger.info('Checking model availability', { 
       model: modelName, 
@@ -260,6 +260,9 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
           throw new Error(`Python runtime not running on port ${modelConfig.port}. Please start runtime.exe`);
         } else if (error.code === 'ETIMEDOUT') {
           throw new Error('Python runtime timeout - model inference took too long');
+        } else if (error.response && error.response.status === 503) {
+          // TASK 4a: forward the runtime no-model signal instead of a generic 500.
+          throw Object.assign(new Error('NO_MODEL_LOADED'), { statusCode: 503 });
         } else {
           throw error;
         }
@@ -305,7 +308,7 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
       latency
     });
     
-    res.status(500).json({ 
+    res.status(error.statusCode || 500).json({
       error: 'AI processing failed',
       message: error.message,
       latency: `${latency}ms`,
