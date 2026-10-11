@@ -286,6 +286,15 @@ set "V_DEV=%ROOT%extensions\sudo-ai"
 :: Creer dossiers necessaires
 if not exist "%V_DAT%" mkdir "%V_DAT%" 2>nul
 if not exist "%V_EXT%" mkdir "%V_EXT%" 2>nul
+if not exist "%V_DAT%\User" mkdir "%V_DAT%\User" 2>nul
+
+:: -- Seed default settings on FIRST run only (never overwrite user settings) --
+:: The custom titlebar shows no product name by default ("Welcome" only), so
+:: seed an explicit window title ending with Sudo Studio.
+if not exist "%V_DAT%\User\settings.json" (
+    echo {"window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}Sudo Studio"}>"%V_DAT%\User\settings.json"
+    echo [PHASE 5] Default settings seeded - window title set
+)
 
 :: -- Sync extension to extensions\sudo-ai (production mode, no [Extension Development Host]) --
 :: This replaces --extensionDevelopmentPath (dev/debug mode) with proper extension installation.
