@@ -384,7 +384,7 @@ router.post('/api/devops/generate', verifyToken, async (req, res) => {
         break;
       case 'env':
         filename = '.env.example';
-        content = `# Sudo Studio Environment Variables\nNODE_ENV=development\nPORT=5000\nJWT_SECRET=your-secret-key-change-in-production\nPYTHON_RUNTIME_URL=http://localhost:6000`;
+        content = `# Sudo Studio Environment Variables\nNODE_ENV=development\nPORT=5000\nJWT_SECRET=your-secret-key-change-in-production\nPYTHON_RUNTIME_URL=http://127.0.0.1:6000`;
         break;
       default:
         return res.status(400).json({ error: `Unknown type: ${type}` });

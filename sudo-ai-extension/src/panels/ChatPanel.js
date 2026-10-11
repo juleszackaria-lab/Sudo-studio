@@ -287,7 +287,7 @@ class ChatPanel {
 
     async sendStatus() {
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
             this.panel.webview.postMessage({ type: 'status', data: r.data });
         } catch (_) {
             // Don't immediately show offline - runtime may still be starting
@@ -301,7 +301,7 @@ class ChatPanel {
 
     async downloadModel(modelId) {
         try {
-            await axios.post('http://localhost:6000/download',
+            await axios.post('http://127.0.0.1:6000/download',
                 { model: modelId || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'downloadStarted' });
             vscode.window.showInformationMessage(`⬇️ Downloading ${modelId}... Check status bar.`);
@@ -324,7 +324,7 @@ class ChatPanel {
             });
 
             const options = {
-                hostname: 'localhost',
+                hostname: '127.0.0.1',
                 port:     6000,
                 path:     '/infer-stream',
                 method:   'POST',
@@ -578,7 +578,7 @@ class ChatPanel {
 
     async _sendToAI(text) {
         // PRIMARY PATH: Direct call to Python runtime on port 6000
-        console.log('[EXT] _sendToAI — calling http://localhost:6000/infer');
+        console.log('[EXT] _sendToAI - calling http://127.0.0.1:6000/infer');
         // This is always tried first — no auth required, most reliable
         // max_tokens: 128 — keeps CPU inference under ~30-60s for TinyLlama (was 512 → 120s+ timeout)
         const payload = { message: text, prompt: text, input: text, max_tokens: 128, temperature: 0.7 };
@@ -588,7 +588,7 @@ class ChatPanel {
         const signal = this.abortCtrl ? this.abortCtrl.signal : undefined;
 
         try {
-            const r = await axios.post('http://localhost:6000/infer', payload, { timeout: 300000, signal });
+            const r = await axios.post('http://127.0.0.1:6000/infer', payload, { timeout: 300000, signal });
             console.log('[EXT] /infer response — status:', r.status, '| reply[:60]:', (r.data.reply||'').slice(0,60));
             return r.data;
         } catch (e) {

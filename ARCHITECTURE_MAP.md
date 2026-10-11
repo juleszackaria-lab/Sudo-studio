@@ -379,7 +379,7 @@ Request arrives at Backend
   │    ├─ Available? → Use vLLM
   │    └─ Unavailable? → Continue
   │
-  ├─ Check Python Runtime (localhost:6000)
+  |- Check Python Runtime (127.0.0.1:6000)
   │    ├─ Available? → Use Runtime
   │    └─ Unavailable? → Continue
   │

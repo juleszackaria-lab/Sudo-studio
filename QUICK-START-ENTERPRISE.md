@@ -101,7 +101,7 @@ curl http://localhost:5000/api/health
 
 ### Runtime Health
 ```bash
-curl http://localhost:6000/health
+curl http://127.0.0.1:6000/health
 ```
 ✅ Should return: `{"status":"healthy","model_loaded":true}`
 
@@ -144,7 +144,7 @@ curl http://localhost:6000/health
 
 **Key Settings:**
 - Backend URL: `http://localhost:5000` (default)
-- Runtime URL: `http://localhost:6000` (default)
+- Runtime URL: `http://127.0.0.1:6000` (default)
 - Default Model: `default`
 - Enable Streaming: `true`
 - Enable AutoFix: `true`

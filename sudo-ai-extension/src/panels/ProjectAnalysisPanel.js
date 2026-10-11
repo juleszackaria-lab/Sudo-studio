@@ -250,7 +250,7 @@ class ProjectAnalysisPanel {
 
         this.panel.webview.postMessage({ type: 'aiLoading' });
         try {
-            const r = await axios.post('http://localhost:6000/infer', {
+            const r = await axios.post('http://127.0.0.1:6000/infer', {
                 message: `Analyse ce projet et donne 5 recommandations concrètes pour améliorer la qualité, sécurité et maintenabilité. Répertoire: ${path.basename(folder.uri.fsPath)}. Soit concis et actionnable.`,
                 max_tokens: 400
             }, { timeout: 60000 });

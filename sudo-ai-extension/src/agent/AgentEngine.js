@@ -1036,7 +1036,7 @@ class SudoTools {
         const issues = [];
         const logs   = [];
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 5000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 5000 });
             logs.push(`[DOCTOR] Runtime: ${r.data.status}`);
             logs.push(`[DOCTOR] Model loaded: ${r.data.model?.loaded}`);
             logs.push(`[DOCTOR] RAM available: ${r.data.system?.ram_available_gb} GB`);
@@ -1321,7 +1321,7 @@ class SudoTools {
         const logs = [];
         logs.push(`[CHAT] Querying AI: ${question.slice(0, 100)}...`);
         try {
-            const r = await axios.post('http://localhost:6000/infer', {
+            const r = await axios.post('http://127.0.0.1:6000/infer', {
                 message: question, max_tokens: 512, temperature: 0.2
             }, { timeout: AI_TIMEOUT_MS });
             const reply = r.data.reply || r.data.response || '';
@@ -1560,7 +1560,7 @@ spec:
 // ─── AI PROVIDER ──────────────────────────────────────────────────────────────
 class AIProvider {
     constructor(options = {}) {
-        this.runtimeUrl = options.runtimeUrl || 'http://localhost:6000';
+        this.runtimeUrl = options.runtimeUrl || 'http://127.0.0.1:6000';
     }
 
     async query(prompt, systemContext = '', options = {}) {

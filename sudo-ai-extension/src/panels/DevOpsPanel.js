@@ -546,7 +546,7 @@ server {
     async aiGenerate(prompt, type) {
         this.panel.webview.postMessage({ type: 'aiGenerating', fileType: type });
         try {
-            const r = await axios.post('http://localhost:6000/infer', {
+            const r = await axios.post('http://127.0.0.1:6000/infer', {
                 message: prompt, max_tokens: 512
             }, { timeout: 60000 });
             const content = r.data.reply || '';

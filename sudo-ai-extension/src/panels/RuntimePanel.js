@@ -101,7 +101,7 @@ class RuntimePanel {
         let runtimeError = null;
 
         try {
-            const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
             runtimeData = r.data;
             this._lastHealth = r.data;
         } catch (e) {
@@ -113,7 +113,7 @@ class RuntimePanel {
 
         // Try to get catalogue (includes local scan)
         try {
-            const rc = await axios.get('http://localhost:6000/models/catalogue', { timeout: 5000 });
+            const rc = await axios.get('http://127.0.0.1:6000/models/catalogue', { timeout: 5000 });
             catalogueData = rc.data;
             this._catalogue = catalogueData.catalogue || [];
         } catch (e) {
@@ -153,7 +153,7 @@ class RuntimePanel {
         if (!modelId) return;
         console.log('[RUNTIME] downloadModel:', modelId);
         try {
-            const r = await axios.post('http://localhost:6000/download',
+            const r = await axios.post('http://127.0.0.1:6000/download',
                 { model: modelId }, { timeout: 5000 });
             this._downloadingModelId = modelId;
             this.panel.webview.postMessage({ type: 'downloadStarted', modelId });
@@ -187,7 +187,7 @@ class RuntimePanel {
 
     async _pollDownloadStatus(modelId) {
         try {
-            const r = await axios.get('http://localhost:6000/models/download-status', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/models/download-status', { timeout: 3000 });
             const ds = r.data;
             console.log('[RUNTIME] download-status:', ds.phase, ds.progress + '%',
                 ds.mb_done + '/' + ds.mb_total + 'MB');
@@ -241,7 +241,7 @@ class RuntimePanel {
         if (!modelId) return;
         console.log('[RUNTIME] switchModel:', modelId);
         try {
-            await axios.post('http://localhost:6000/reload',
+            await axios.post('http://127.0.0.1:6000/reload',
                 { model: modelId, force_download: false }, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'actionDone', action: 'switch', modelId });
             vscode.window.showInformationMessage(`🔄 Chargement modèle: ${modelId}`);
@@ -258,7 +258,7 @@ class RuntimePanel {
         console.log('[RUNTIME] autoSelectBestModel');
         try {
             // Try /models/catalogue first (it finds best local model)
-            const rc = await axios.get('http://localhost:6000/models/catalogue', { timeout: 5000 });
+            const rc = await axios.get('http://127.0.0.1:6000/models/catalogue', { timeout: 5000 });
             const best = rc.data.best_local_model;
             if (best) {
                 await this.switchModel(best);
@@ -275,7 +275,7 @@ class RuntimePanel {
         console.log('[RUNTIME] restartRuntime');
         try {
             // Reload current model
-            await axios.post('http://localhost:6000/reload', {}, { timeout: 5000 });
+            await axios.post('http://127.0.0.1:6000/reload', {}, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'actionDone', action: 'restart' });
             vscode.window.showInformationMessage('🔄 Runtime en cours de redémarrage...');
             setTimeout(() => this.fetchStatus(), 2000);
@@ -288,7 +288,7 @@ class RuntimePanel {
         console.log('[RUNTIME] fetchLogs');
         try {
             // Try to get logs from health endpoint
-            const r = await axios.get('http://localhost:6000/health', { timeout: 3000 });
+            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
             const logs = r.data.detection_log || [];
             const modelInfo = r.data.model || {};
             const logText = [
@@ -319,7 +319,7 @@ class RuntimePanel {
     async fetchCacheInfo() {
         console.log('[RUNTIME] fetchCacheInfo');
         try {
-            const r = await axios.get('http://localhost:6000/scan', { timeout: 8000 });
+            const r = await axios.get('http://127.0.0.1:6000/scan', { timeout: 8000 });
             const d = r.data;
             const lines = [
                 `=== Cache Info ===`,

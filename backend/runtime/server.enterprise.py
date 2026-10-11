@@ -2528,7 +2528,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Sudo Studio AI Runtime v2.2 — Smart Model Detection')
     parser.add_argument('--port',              type=int, default=6000)
-    parser.add_argument('--host',              default='0.0.0.0')
+    parser.add_argument('--host',              default='127.0.0.1')
     parser.add_argument('--model',             default=DEFAULT_MODEL,
                         help='Model to use (will check local cache first)')
     parser.add_argument('--no-auto-download',  action='store_true',

@@ -12,7 +12,7 @@ const { verifyToken } = require('../middleware/auth.middleware');
 
 // Configuration des routes de modèles - Python Runtime (port 6000)
 // All models use the same Python Flask runtime with transformers
-const PYTHON_RUNTIME_URL = 'http://localhost:6000';
+const PYTHON_RUNTIME_URL = 'http://127.0.0.1:6000';
 const PYTHON_RUNTIME_PORT = 6000;
 
 const MODEL_ROUTES = {
@@ -62,7 +62,7 @@ function detectMode(message, context = '') {
 // Vérifier si un modèle est disponible
 async function checkModelAvailability(modelName, modelConfig) {
   try {
-    const checkUrl = modelConfig.healthUrl || `http://localhost:${modelConfig.port}/health`;
+    const checkUrl = modelConfig.healthUrl || `http://127.0.0.1:${modelConfig.port}/health`;
     
     logger.info('Checking model availability', { 
       model: modelName, 

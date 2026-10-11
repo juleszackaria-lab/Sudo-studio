@@ -99,7 +99,7 @@ scripts/
 
 ```
 User → VSCode Extension (Node.js)
-         ↓ HTTP (localhost:6000)
+         v HTTP (127.0.0.1:6000)
        Python Runtime (HuggingFace Transformers)
          ↓
        Local AI Model (GGUF / HF format)

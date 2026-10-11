@@ -9,7 +9,7 @@ const axios = require('axios');
 const colors = require('colors');
 
 const BACKEND_URL = 'http://localhost:5000';
-const RUNTIME_URL = 'http://localhost:6000';
+const RUNTIME_URL = 'http://127.0.0.1:6000';
 
 // Test results
 let results = {

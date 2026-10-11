@@ -120,7 +120,7 @@ function scanHFCache() {
  */
 async function checkRuntimeStatus() {
   try {
-    const r = await axios.get('http://localhost:6000/health', { timeout: 2000 });
+    const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 2000 });
     return { running: true, model: r.data.model || {} };
   } catch (_) {
     return { running: false, model: {} };
@@ -196,7 +196,7 @@ router.post('/api/models/download', verifyToken, async (req, res) => {
 
     // Delegate to Python runtime
     try {
-      const r = await axios.post('http://localhost:6000/download',
+      const r = await axios.post('http://127.0.0.1:6000/download',
         { model },
         { timeout: 10000 }
       );
@@ -249,7 +249,7 @@ router.post('/api/models/switch', verifyToken, async (req, res) => {
     });
 
     try {
-      const r = await axios.post('http://localhost:6000/reload',
+      const r = await axios.post('http://127.0.0.1:6000/reload',
         { model },
         { timeout: 10000 }
       );

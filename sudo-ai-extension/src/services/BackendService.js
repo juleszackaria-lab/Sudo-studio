@@ -9,7 +9,7 @@ const vscode = require('vscode');
 class BackendService {
     constructor() {
         this.baseUrl = 'http://localhost:5000';
-        this.runtimeUrl = 'http://localhost:6000';
+        this.runtimeUrl = 'http://127.0.0.1:6000';
         this.authToken = null;
         this.connected = false;
         this.statusCallbacks = [];
@@ -70,19 +70,30 @@ class BackendService {
     }
 
     /**
-     * Check AI runtime health
+     * Check AI runtime health (10s timeout, 3 tries with backoff).
+     * Retries tolerate backend/runtime startup time; returns 'offline'
+     * only after all attempts fail.
      */
     async checkRuntimeHealth() {
-        try {
-            const response = await axios.get(`${this.baseUrl}/api/ai/health`, {
-                headers: this.getHeaders(),
-                timeout: 3000,
-                validateStatus: () => true
-            });
-            return response.data;
-        } catch (error) {
-            return { status: 'offline', error: error.message };
+        const url = `${this.baseUrl}/api/ai/health`;
+        let lastError = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+                const response = await axios.get(url, {
+                    headers: this.getHeaders(),
+                    timeout: 10000,
+                    validateStatus: () => true
+                });
+                return response.data;
+            } catch (error) {
+                lastError = error;
+                // Linear backoff: wait 1s, then 2s before retrying.
+                if (attempt < 3) {
+                    await new Promise(r => setTimeout(r, 1000 * attempt));
+                }
+            }
         }
+        return { status: 'offline', error: lastError ? lastError.message : 'health check failed' };
     }
 
     /**
