@@ -558,7 +558,11 @@ server {
             // Never expose raw axios/system error messages — they can contain internal IPs or stack traces
             const isOffline = e.code === 'ECONNREFUSED';
             const isTimeout = e.code === 'ECONNABORTED' || (e.message || '').includes('timeout');
-            const friendly = isOffline
+            // TASK 4a: runtime up but no model loaded (503 no_model_loaded).
+            const isNoModel = e.response && e.response.status === 503;
+            const friendly = isNoModel
+                ? 'Aucun modele charge. Ouvrez le panneau Runtime & Models pour charger un modele.'
+                : isOffline
                 ? 'Le modèle IA n\'est pas démarré. Lancez d\'abord le Runtime dans le panneau Runtime.'
                 : isTimeout
                     ? 'La génération a pris trop de temps. Réessayez avec une demande plus courte.'

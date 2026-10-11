@@ -1985,11 +1985,20 @@ def _build_prompt(user_message: str) -> str:
     return _build_chatml_prompt(user_message)
 
 
+def _demo_mock_enabled() -> bool:
+    # TASK 4a: mock replies are served ONLY when SUDO_DEMO_MOCK=1 (demo/test override).
+    return os.environ.get('SUDO_DEMO_MOCK') == '1'
+
+
 def run_inference(prompt: str, max_tokens: int = DEFAULT_MAX_TOKENS,
                   temperature: float = DEFAULT_TEMPERATURE) -> dict:
     start = time.time()
 
     if not state.loaded or state.model is None:
+        # TASK 4a: no model -> 503 no_model_loaded, unless the demo override is set.
+        if not _demo_mock_enabled():
+            dlog("[INFER] Rejected: no model loaded (503 no_model_loaded)")
+            return {"error": "no_model_loaded"}
         mock_reply = generate_mock_reply(prompt)
         return {
             "reply":             mock_reply,
@@ -2142,7 +2151,7 @@ def health():
             "ram_sufficient":    ram_fits(MODEL_RAM_REQUIREMENTS.get(DEFAULT_MODEL, 2.5), avail_ram),
         },
         "requests_served": state.requests,
-        "mock_mode":       not state.loaded,
+        "mock_mode":       _demo_mock_enabled() and not state.loaded,
         "last_error":      state.error,
         "detection_log":   state.detection_log,
     })
@@ -2164,6 +2173,9 @@ def infer():
     max_tokens  = min(int(data.get('max_tokens', DEFAULT_MAX_TOKENS)), 512)  # cap 512 for code
     temperature = float(data.get('temperature', DEFAULT_TEMPERATURE))
     result = run_inference(prompt, max_tokens, temperature)
+    # TASK 4a: surface the no-model signal as HTTP 503 (and only that case).
+    if result.get("error") == "no_model_loaded":
+        return jsonify(result), 503
     return jsonify(result)
 
 
@@ -2179,7 +2191,7 @@ def infer_stream():
     SSE streaming endpoint — yields tokens one-by-one as they are generated.
     Client receives: data: {"token": "..."}\n\n  during generation
               then:  data: {"done": true, "reply": "<full>", "model": "...", "latency_ms": N}\n\n
-    Falls back to full /infer-style JSON if model not loaded (mock mode).
+    Returns 503 no_model_loaded if no model is loaded (demo mock only with SUDO_DEMO_MOCK=1).
     """
     import json as _json
     state.requests += 1
@@ -2196,13 +2208,16 @@ def infer_stream():
 
     max_tokens  = min(int(data.get('max_tokens', DEFAULT_MAX_TOKENS)), 512)
     temperature = float(data.get('temperature', DEFAULT_TEMPERATURE))
+    # TASK 4a: no model -> 503 JSON (not SSE) so clients fall back to /infer.
+    if (not state.loaded or state.model is None) and not _demo_mock_enabled():
+        return jsonify({"error": "no_model_loaded"}), 503
     # Build ChatML prompt for streaming path
     full_prompt = _build_chatml_prompt(prompt)
 
     def generate_sse():
         start = time.time()
 
-        # ── Mock mode (model not loaded yet) ───────────────────────────────
+        # ------ Demo mock (reachable only when SUDO_DEMO_MOCK=1, see guard above)
         if not state.loaded or state.model is None:
             mock_reply = generate_mock_reply(prompt)
             # Stream word-by-word so the UI still shows progressive output
@@ -2375,7 +2390,7 @@ def models():
         "available":            available_models,
         "system_ram_available_gb": round(avail, 2),
         "from_local_cache":     state.detected_local,
-        "mock_mode":            not state.loaded,
+        "mock_mode":            _demo_mock_enabled() and not state.loaded,
     })
 
 
@@ -2634,7 +2649,7 @@ def models_catalogue():
         "current_model":     state.model_name or DEFAULT_MODEL,
         "model_loaded":      state.loaded,
         "model_loading":     state.loading,
-        "mock_mode":         not state.loaded,
+        "mock_mode":         _demo_mock_enabled() and not state.loaded,
         "models_dir":        str(MODELS_DIR),
     })
 

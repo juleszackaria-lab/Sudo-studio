@@ -256,7 +256,9 @@ class ProjectAnalysisPanel {
             }, { timeout: 60000 });
             this.panel.webview.postMessage({ type: 'aiRecommendations', text: r.data.reply });
         } catch (e) {
-            this.panel.webview.postMessage({ type: 'aiError', text: 'Runtime IA non disponible' });
+            // TASK 4a: runtime up but no model loaded (503 no_model_loaded).
+            const isNoModel = e.response && e.response.status === 503;
+            this.panel.webview.postMessage({ type: 'aiError', text: isNoModel ? 'Aucun modele charge - ouvrez Runtime & Models pour charger un modele' : 'Runtime IA non disponible' });
         }
     }
 

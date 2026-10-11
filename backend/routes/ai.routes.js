@@ -260,6 +260,9 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
           throw new Error(`Python runtime not running on port ${modelConfig.port}. Please start runtime.exe`);
         } else if (error.code === 'ETIMEDOUT') {
           throw new Error('Python runtime timeout - model inference took too long');
+        } else if (error.response && error.response.status === 503) {
+          // TASK 4a: forward the runtime no-model signal instead of a generic 500.
+          throw Object.assign(new Error('NO_MODEL_LOADED'), { statusCode: 503 });
         } else {
           throw error;
         }
@@ -305,7 +308,7 @@ router.post('/api/ai/chat', verifyToken, async (req, res) => {
       latency
     });
     
-    res.status(500).json({ 
+    res.status(error.statusCode || 500).json({
       error: 'AI processing failed',
       message: error.message,
       latency: `${latency}ms`,
