@@ -440,6 +440,11 @@ Write-Host "[STEP 4c] Final sweep patched $step4cPatched additional file(s)"
 # This only changes a string literal inside the JS bundle - it cannot break
 # JS syntax. If our repo has no matching file yet, the app falls back to the
 # (empty) builtin list and shows "There are no current announcements."
+# SIZE CAP WARNING (bugfix Oct 2026): the feed URL lives ONLY in
+# workbench.desktop.main.js (12.7 MB in VSCodium 1.97.2). A <8MB filter
+# silently skipped it, so the repoint NEVER happened ("Securing VSCodium"
+# kept showing). Both the patch loop and the verify loop now use <64MB
+# (same cap as STEP 4e), and 0 patched files raises a loud warning.
 # ============================================================
 Write-Host "[STEP 4d] Repointing announcements feed VSCodium -> Sudo Studio..."
 $feedOld = "raw.githubusercontent.com/VSCodium/vscodium"
@@ -447,7 +452,7 @@ $feedNew = "raw.githubusercontent.com/juleszackaria-lab/Sudo-studio"
 $feedFiles = Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -eq ".js" } |
     Where-Object { $_.FullName -notmatch "node_modules" } |
-    Where-Object { $_.Length -lt 8MB }
+    Where-Object { $_.Length -lt 64MB }
 $step4dPatched = 0
 foreach ($file in $feedFiles) {
     try {
@@ -467,11 +472,14 @@ foreach ($file in $feedFiles) {
     }
 }
 Write-Host "[STEP 4d] Feed repointed in $step4dPatched file(s)"
+if ($step4dPatched -eq 0) {
+    Write-Warning "[WARN] [4d] Old feed URL found in 0 files - expected at least workbench.desktop.main.js. Check the size filter; future VSCodium versions may have moved the URL."
+}
 # Verify: old feed URL must be gone from the whole artifact (warning only)
 $feedLeftovers = @(Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -in @(".js",".json") } |
     Where-Object { $_.FullName -notmatch "node_modules" } |
-    Where-Object { $_.Length -lt 8MB } |
+    Where-Object { $_.Length -lt 64MB } |
     Where-Object {
         try { [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8) -match [regex]::Escape($feedOld) }
         catch { $false }
