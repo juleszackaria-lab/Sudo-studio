@@ -19,6 +19,7 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const { promisify } = require('util');
+const { appendAudit } = require('../utils/auditLog');
 const execAsync = promisify(exec);
 
 const IS_WIN = process.platform === 'win32';
@@ -97,7 +98,44 @@ function diffProfiles(local, imported) {
     return diffs;
 }
 
-// ── Panel class ───────────────────────────────────────────────────────────────
+// -- TASK 7 verification helpers ----------------------------------------------
+function countZipEntries(zipPath) {
+    return new Promise(resolve => {
+        if (IS_WIN) {
+            const cmd = `powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::OpenRead('${zipPath}').Entries.Count"`;
+            exec(cmd, { timeout: 15000 }, (err, stdout) => {
+                if (err || !stdout) { resolve(-1); return; }
+                const n = parseInt(stdout.trim(), 10);
+                resolve(Number.isFinite(n) ? n : -1);
+            });
+        } else {
+            exec(`unzip -l "${zipPath}"`, { timeout: 15000 }, (err, stdout) => {
+                if (err || !stdout) { resolve(-1); return; }
+                const m = stdout.match(/(\d+)\s+files?/);
+                resolve(m ? parseInt(m[1], 10) : -1);
+            });
+        }
+    });
+}
+
+function countFilesRecursive(dir, cap = 5000) {
+    let n = 0;
+    const walk = d => {
+        if (n >= cap) return;
+        let entries;
+        try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+        for (const e of entries) {
+            if (n >= cap) return;
+            const full = path.join(d, e.name);
+            if (e.isDirectory()) walk(full);
+            else n++;
+        }
+    };
+    walk(dir);
+    return n;
+}
+
+// -- Panel class ---------------------------------------------------------------
 class DuplicationPanel {
     static currentPanel = undefined;
 
@@ -145,6 +183,7 @@ class DuplicationPanel {
         try {
             this.localProfile = await buildEnvProfile('local');
             this.panel.webview.postMessage({ type: 'localReady', profile: this.localProfile });
+            appendAudit('DUP_SCAN', `local scan: ${(this.localProfile.tools || []).filter(t => t.installed).length}/${(this.localProfile.tools || []).length} tools installed`, { result: 'ok', verified: true });
         } catch {
             this.panel.webview.postMessage({ type: 'error', msg: 'Scan de l\'environnement échoué. Réessayez.' });
         }
@@ -159,6 +198,10 @@ class DuplicationPanel {
             });
             if (!saveUri) return;
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(profile, null, 2), 'utf8');
+            // TASK 7: post-condition - parse the file back.
+            const back = JSON.parse(fs.readFileSync(saveUri.fsPath, 'utf8'));
+            if (!back || !Array.isArray(back.tools)) throw new Error('verify-mismatch');
+            appendAudit('DUP_EXPORT', `profile exported to ${path.basename(saveUri.fsPath)} (${back.tools.length} tools)`, { result: 'ok', verified: true });
             vscode.window.showInformationMessage(
                 `✅ Profil exporté : ${path.basename(saveUri.fsPath)}`,
                 'Ouvrir'
@@ -206,6 +249,7 @@ class DuplicationPanel {
                 type: 'diffResult', imported, local, diffs,
                 file: path.basename(uris[0].fsPath)
             });
+            appendAudit('DUP_IMPORT', `profile compared from ${path.basename(uris[0].fsPath)}: ${diffs.length} diff(s)`, { result: 'ok', verified: true });
         } catch {
             vscode.window.showErrorMessage('Import échoué — vérifiez les permissions du fichier.');
             this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Import échoué — vérifiez les permissions.' });
@@ -241,10 +285,14 @@ class DuplicationPanel {
             await execAsync(zipCmd, { timeout: 60000 });
 
             const stat    = fs.statSync(outFile);
+            // TASK 7: post-condition - the ZIP must list at least one entry.
+            const entries = await countZipEntries(outFile);
+            if (entries === 0) throw new Error('empty-archive');
             const sizeMb  = (stat.size / 1024 / 1024).toFixed(1);
             vscode.window.showInformationMessage(`✅ Template "${name}" créé (${sizeMb} MB)`, 'Ouvrir le dossier')
                 .then(s => { if (s === 'Ouvrir le dossier') vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(outDir)); });
             this.panel.webview.postMessage({ type: 'templateCreated', name, file: outFile, sizeMb });
+            appendAudit('DUP_TEMPLATE_CREATE', `template "${name}" (${sizeMb} MB, ${entries < 0 ? 'entries unknown' : entries + ' entries'})`, { result: 'ok', verified: entries > 0 });
         } catch {
             vscode.window.showErrorMessage('Création du template échouée — vérifiez les permissions du dossier.');
             this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Création du template échouée — vérifiez les permissions.' });
@@ -275,6 +323,9 @@ class DuplicationPanel {
 
             this.panel.webview.postMessage({ type: 'templateProgress', msg: 'Extraction du template...' });
             await execAsync(extractCmd, { timeout: 60000 });
+            // TASK 7: post-condition - destination must contain extracted files.
+            const extracted = countFilesRecursive(destUri.fsPath);
+            if (extracted < 1) throw new Error('empty-dest');
 
             vscode.window.showInformationMessage(
                 `✅ Template déployé dans ${path.basename(destUri.fsPath)}`,
@@ -285,6 +336,7 @@ class DuplicationPanel {
                 }
             });
             this.panel.webview.postMessage({ type: 'deployDone', dest: destUri.fsPath });
+            appendAudit('DUP_TEMPLATE_DEPLOY', `template deployed to ${path.basename(destUri.fsPath)} (${extracted} files)`, { result: 'ok', verified: true });
         } catch {
             vscode.window.showErrorMessage('Déploiement échoué — vérifiez que le fichier ZIP est valide et les permissions du dossier.');
             this.panel.webview.postMessage({ type: 'error', msg: '[FAIL] Déploiement échoué — ZIP invalide ou permissions insuffisantes.' });

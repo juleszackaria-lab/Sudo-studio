@@ -1,0 +1,79 @@
+{
+  "format": 1,
+  "generatedAt": "2026-10-11",
+  "source": "Sudo Studio embedded snapshot, hand-curated from public CVE records. Coverage is intentionally small; import a fresher advisories.json for broader coverage.",
+  "advisories": [
+    {
+      "ecosystem": "npm",
+      "package": "lodash",
+      "vulnerable": "<4.17.21",
+      "cve": "CVE-2020-8203",
+      "severity": "high",
+      "summary": "Prototype pollution in lodash",
+      "fixedIn": "4.17.21"
+    },
+    {
+      "ecosystem": "npm",
+      "package": "minimist",
+      "vulnerable": "<1.2.6",
+      "cve": "CVE-2021-44906",
+      "severity": "critical",
+      "summary": "Prototype pollution in minimist option parsing",
+      "fixedIn": "1.2.6"
+    },
+    {
+      "ecosystem": "npm",
+      "package": "node-fetch",
+      "vulnerable": "<2.6.7",
+      "cve": "CVE-2022-0235",
+      "severity": "high",
+      "summary": "Sensitive information exposure via crafted URL (2.x line)",
+      "fixedIn": "2.6.7"
+    },
+    {
+      "ecosystem": "npm",
+      "package": "semver",
+      "vulnerable": "<7.5.2",
+      "cve": "CVE-2022-25883",
+      "severity": "high",
+      "summary": "Regular expression denial of service (ReDoS)",
+      "fixedIn": "7.5.2"
+    },
+    {
+      "ecosystem": "pip",
+      "package": "requests",
+      "vulnerable": "<2.31.0",
+      "cve": "CVE-2023-32681",
+      "severity": "medium",
+      "summary": "Unintended leak of Proxy-Authorization header to destination",
+      "fixedIn": "2.31.0"
+    },
+    {
+      "ecosystem": "pip",
+      "package": "urllib3",
+      "vulnerable": "<1.26.18",
+      "cve": "CVE-2023-45803",
+      "severity": "medium",
+      "summary": "Request body leaked across redirects (1.x line)",
+      "fixedIn": "1.26.18"
+    },
+    {
+      "ecosystem": "pip",
+      "package": "urllib3",
+      "vulnerable": ">=2.0.0,<2.0.7",
+      "cve": "CVE-2023-45803",
+      "severity": "medium",
+      "summary": "Request body leaked across redirects (2.x line)",
+      "fixedIn": "2.0.7"
+    },
+    {
+      "ecosystem": "pip",
+      "package": "pyyaml",
+      "vulnerable": "<5.4",
+      "cve": "CVE-2020-14343",
+      "severity": "high",
+      "summary": "Arbitrary code execution via yaml.full_load with python/object/new",
+      "fixedIn": "5.4"
+    }
+  ]
+}

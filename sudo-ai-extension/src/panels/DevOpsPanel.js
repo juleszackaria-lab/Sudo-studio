@@ -9,6 +9,8 @@ const axios  = require('axios');
 const path   = require('path');
 const fs     = require('fs');
 const { exec } = require('child_process');
+const crypto = require('crypto');
+const { appendAudit } = require('../utils/auditLog');
 
 class DevOpsPanel {
     static currentPanel = undefined;
@@ -55,7 +57,7 @@ class DevOpsPanel {
                 await this.openFile(msg.filePath); break;
             }
             case 'refreshProject':       await this.detectProject(); break;
-            case 'aiGenerate':           await this.aiGenerate(msg.prompt, msg.type); break;
+            case 'aiGenerate':           await this.aiGenerate(msg.prompt, msg.fileType); break;
         }
     }
 
@@ -554,6 +556,7 @@ server {
             const codeMatch = content.match(/```[\w]*\n([\s\S]*?)```/);
             const code = codeMatch ? codeMatch[1] : content;
             this.panel.webview.postMessage({ type: 'aiResult', content: code, fileType: type });
+            appendAudit('DEVOPS_AI_GENERATE', `AI ${type || 'generic'}: ${code.length} chars received`, { result: code ? 'ok' : 'empty', verified: code.length > 0 });
         } catch (e) {
             // Never expose raw axios/system error messages — they can contain internal IPs or stack traces
             const isOffline = e.code === 'ECONNREFUSED';
@@ -568,6 +571,7 @@ server {
                     ? 'La génération a pris trop de temps. Réessayez avec une demande plus courte.'
                     : 'Génération IA indisponible. Vérifiez que le Runtime est actif (port 6000).';
             this.panel.webview.postMessage({ type: 'aiError', text: friendly });
+            appendAudit('DEVOPS_AI_GENERATE', `AI ${type || 'generic'} failed (${isNoModel ? 'no-model' : isOffline ? 'offline' : isTimeout ? 'timeout' : 'error'})`, { result: 'error', verified: false });
         }
     }
 
@@ -605,7 +609,19 @@ server {
             }
         }
 
-        fs.writeFileSync(fullPath, content, 'utf8');
+        // TASK 7: write + post-condition (re-read and compare hash) - failures are explicit.
+        let evidence;
+        try {
+            fs.writeFileSync(fullPath, content, 'utf8');
+            const back = fs.readFileSync(fullPath, 'utf8');
+            if (back !== content) throw new Error('verify-mismatch');
+            evidence = { bytes: Buffer.byteLength(back, 'utf8'), sha256: crypto.createHash('sha256').update(back, 'utf8').digest('hex') };
+        } catch {
+            this.panel.webview.postMessage({ type: 'fileError', file: relativePath });
+            vscode.window.showErrorMessage(`Echec d'ecriture : ${relativePath} - verifiez les permissions.`);
+            appendAudit('DEVOPS_WRITE_FILE', `${relativePath}: write or verify failed`, { result: 'error', verified: false });
+            return;
+        }
 
         // Open file in editor
         const doc = await vscode.workspace.openTextDocument(fullPath);
@@ -614,9 +630,11 @@ server {
         this.panel.webview.postMessage({
             type: 'fileGenerated',
             file: relativePath,
-            fullPath
+            fullPath,
+            evidence
         });
 
+        appendAudit('DEVOPS_WRITE_FILE', `${relativePath} (${evidence.bytes} B, sha256 ${evidence.sha256.slice(0, 12)}...)`, { result: 'ok', verified: true });
         vscode.window.showInformationMessage(
             `✅ ${relativePath} généré avec succès!`,
             'Voir le fichier'

@@ -6,6 +6,7 @@
  */
 const vscode = require('vscode');
 const { exec } = require('child_process');
+const { appendAudit } = require('../utils/auditLog');
 const os = require('os');
 
 const IS_WIN = process.platform === 'win32';
@@ -435,9 +436,17 @@ class SDKPanel {
             if (sel === 'Re-detect After') this.detectAll();
         });
 
-        // Auto re-detect after 15s, then auto-configure PATH after install
-        setTimeout(() => {
-            this.detectAll();
+        // TASK 7g: terminal-delegated - audit start as NOT verified, verify after re-detect.
+        appendAudit('SDK_ACTION', `${action} ${sdk.name} (${sdkId}) started in terminal`, { result: 'started', verified: false });
+        const beforeSt = this.sdkStatus[sdkId] ? { ...this.sdkStatus[sdkId] } : { installed: null, version: null };
+
+        // Auto re-detect after 15s, verify the end state (TASK 7g), then auto-configure PATH after install
+        setTimeout(async () => {
+            await this.detectAll();
+            const after = this.sdkStatus[sdkId] || { installed: null, version: null };
+            const expectInstalled = action !== 'uninstall';
+            const ok = expectInstalled ? after.installed === true : after.installed === false;
+            appendAudit('SDK_ACTION_VERIFY', `${action} ${sdk.name}: installed before=${beforeSt.installed} after=${after.installed} version=${after.version || 'n/a'}`, { result: ok ? 'ok' : 'not-confirmed', verified: ok });
             if (action === 'install' && IS_WIN) {
                 this._autoConfigurePathAfterInstall(sdk);
             }

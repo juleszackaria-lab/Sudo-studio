@@ -18,12 +18,13 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const { exec } = require('child_process');
+const sharedAudit = require('../utils/auditLog');
 
 const IS_WIN = process.platform === 'win32';
 
 // ── Storage helpers ──────────────────────────────────────────────────────────
 function getCentralDir() {
-    const d = path.join(os.homedir(), '.sudo_studio', 'central');
+    const d = path.join(process.env.SUDO_STUDIO_HOME || os.homedir(), '.sudo_studio', 'central');
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
     return d;
 }
@@ -45,10 +46,9 @@ function writeJson(file, data) {
     }
 }
 
-function appendAudit(action, detail, actor = 'admin') {
-    const log = readJson('audit.json', []);
-    log.unshift({ ts: new Date().toISOString(), actor, action, detail });
-    writeJson('audit.json', log.slice(0, 500)); // keep last 500
+function appendAudit(action, detail, actor = 'admin', extra = {}) {
+    // TASK 7g: shared audit store, with result + verified flag.
+    sharedAudit.appendAudit(action, detail, { actor, ...extra });
 }
 
 // ── Default data structures ──────────────────────────────────────────────────
@@ -65,7 +65,7 @@ function getConfigs()  { return readJson('configs.json', [
     { id: '1', name: 'Default Dev Profile',  model: 'Qwen2.5-Coder-1.5B', agentMode: true,  doctorAutoRun: true  },
     { id: '2', name: 'Lightweight Profile',  model: 'TinyLlama-1.1B',     agentMode: false, doctorAutoRun: false },
 ]); }
-function getAuditLog() { return readJson('audit.json', []); }
+function getAuditLog() { return sharedAudit.getAuditLog(500); }
 
 // ── Tool version detection ───────────────────────────────────────────────────
 const TOOL_CMDS = {
@@ -237,10 +237,18 @@ class CentralMgmtPanel {
             user.active  = true;
             users.push(user);
             if (!writeJson('users.json', users)) {
-                vscode.window.showErrorMessage('Impossible de sauvegarder la liste des utilisateurs — vérifiez les permissions.');
+                vscode.window.showErrorMessage('Impossible de sauvegarder la liste des utilisateurs - vérifiez les permissions.');
+                appendAudit('ADD_USER', `Failed to save ${user.email}`, 'admin', { result: 'error', verified: false });
                 return;
             }
-            appendAudit('ADD_USER', `Added ${user.email} (${user.role})`);
+            // TASK 7: post-condition - re-read and confirm the user is stored.
+            const stored = getUsers().find(u => u.email === user.email);
+            if (!stored) {
+                vscode.window.showErrorMessage('Ajout incertain - relecture du stockage impossible. Reessayez.');
+                appendAudit('ADD_USER', `Stored but not confirmed: ${user.email}`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('ADD_USER', `Added ${user.email} (${user.role})`, 'admin', { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Utilisateur ${user.name} ajouté.`);
             this._loadAll();
         } catch {
@@ -252,21 +260,50 @@ class CentralMgmtPanel {
         try {
             const existing = getUsers();
             const removed  = existing.find(u => u.id === id);
-            writeJson('users.json', existing.filter(u => u.id !== id));
-            appendAudit('REMOVE_USER', `Removed user id=${id}`);
+            if (!removed) {
+                vscode.window.showErrorMessage('Utilisateur introuvable - suppression impossible.');
+                appendAudit('REMOVE_USER', `User id=${id} not found`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            if (!writeJson('users.json', existing.filter(u => u.id !== id))) {
+                vscode.window.showErrorMessage('Suppression impossible - ecriture du stockage refusee.');
+                appendAudit('REMOVE_USER', `Failed to save after removing id=${id}`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            // TASK 7: post-condition - re-read and confirm the user is gone.
+            const gone = !getUsers().find(u => u.id === id);
+            if (!gone) {
+                vscode.window.showErrorMessage('Suppression incertaine - relecture impossible. Reessayez.');
+                appendAudit('REMOVE_USER', `Removed ${removed.email} but not confirmed`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('REMOVE_USER', `Removed ${removed.email} (id=${id})`, 'admin', { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Utilisateur supprimé.`);
             this._loadAll();
         } catch {
-            vscode.window.showErrorMessage('Suppression de l\'utilisateur échouée — réessayez.');
+            vscode.window.showErrorMessage('Suppression de l\'utilisateur échouée - réessayez.');
         }
     }
 
     _toggleUser(id) {
         try {
+            const before = getUsers().find(x => x.id === id);
+            if (!before) {
+                vscode.window.showErrorMessage('Utilisateur introuvable.');
+                appendAudit('TOGGLE_USER', `User id=${id} not found`, 'admin', { result: 'error', verified: false });
+                return;
+            }
             const users = getUsers().map(u => u.id === id ? { ...u, active: !u.active } : u);
-            const u = users.find(x => x.id === id);
-            writeJson('users.json', users);
-            appendAudit('TOGGLE_USER', `User toggled → active=${u?.active}`);
+            if (!writeJson('users.json', users)) {
+                vscode.window.showErrorMessage('Modification impossible - ecriture refusee.');
+                appendAudit('TOGGLE_USER', `Failed to save toggle id=${id}`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            // TASK 7: post-condition - confirm the state actually flipped.
+            const after = getUsers().find(x => x.id === id);
+            const flipped = after && after.active === !before.active;
+            appendAudit('TOGGLE_USER', `User ${before.email} active ${before.active} -> ${after?.active}`, 'admin', { result: flipped ? 'ok' : 'error', verified: !!flipped });
+            if (!flipped) vscode.window.showErrorMessage('Modification incertaine - relecture impossible.');
             this._loadAll();
         } catch {
             vscode.window.showErrorMessage('Modification de l\'utilisateur échouée.');
@@ -279,8 +316,19 @@ class CentralMgmtPanel {
             policy.id = Date.now().toString();
             policy.active = true;
             policies.push(policy);
-            writeJson('policies.json', policies);
-            appendAudit('ADD_POLICY', `Added policy: ${policy.name}`);
+            if (!writeJson('policies.json', policies)) {
+                vscode.window.showErrorMessage('Ajout impossible - ecriture refusee.');
+                appendAudit('ADD_POLICY', `Failed to save: ${policy.name}`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            // TASK 7: post-condition - re-read and confirm.
+            const pok = getPolicies().find(x => x.id === policy.id);
+            if (!pok) {
+                vscode.window.showErrorMessage('Ajout incertain - relecture impossible. Reessayez.');
+                appendAudit('ADD_POLICY', `Stored but not confirmed: ${policy.name}`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('ADD_POLICY', `Added policy: ${policy.name}`, 'admin', { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Policy "${policy.name}" ajoutée.`);
             this._loadAll();
         } catch {
@@ -290,21 +338,44 @@ class CentralMgmtPanel {
 
     _removePolicy(id) {
         const p = getPolicies().find(x => x.id === id);
-        writeJson('policies.json', getPolicies().filter(x => x.id !== id));
-        appendAudit('REMOVE_POLICY', `Removed policy: ${p?.name || id}`);
+        if (!p) {
+            vscode.window.showErrorMessage('Policy introuvable - suppression impossible.');
+            appendAudit('REMOVE_POLICY', `Policy id=${id} not found`, 'admin', { result: 'error', verified: false });
+            return;
+        }
+        if (!writeJson('policies.json', getPolicies().filter(x => x.id !== id))) {
+            vscode.window.showErrorMessage('Suppression impossible - ecriture refusee.');
+            appendAudit('REMOVE_POLICY', `Failed to save after removing ${p.name}`, 'admin', { result: 'error', verified: false });
+            return;
+        }
+        const gone = !getPolicies().find(x => x.id === id);
+        appendAudit('REMOVE_POLICY', `Removed policy: ${p.name}`, 'admin', { result: gone ? 'ok' : 'error', verified: gone });
+        if (!gone) vscode.window.showErrorMessage('Suppression incertaine - relecture impossible.');
         this._loadAll();
     }
 
     _togglePolicy(id) {
+        const before = getPolicies().find(x => x.id === id);
+        if (!before) {
+            appendAudit('TOGGLE_POLICY', `Policy id=${id} not found`, 'admin', { result: 'error', verified: false });
+            return;
+        }
         const policies = getPolicies().map(p => p.id === id ? { ...p, active: !p.active } : p);
-        writeJson('policies.json', policies);
+        if (!writeJson('policies.json', policies)) {
+            appendAudit('TOGGLE_POLICY', `Failed to save toggle ${before.name}`, 'admin', { result: 'error', verified: false });
+            return;
+        }
+        const after = getPolicies().find(x => x.id === id);
+        const flipped = after && after.active === !before.active;
+        appendAudit('TOGGLE_POLICY', `Policy ${before.name} active ${before.active} -> ${after?.active}`, 'admin', { result: flipped ? 'ok' : 'error', verified: !!flipped });
         this._loadAll();
     }
 
     async _runPolicyCheck() {
         const tools = Object.keys(TOOL_CMDS);
         this.detected = await Promise.all(tools.map(t => detectVersion(t)));
-        appendAudit('POLICY_CHECK', `Policy check run by admin`);
+        const fails = getPolicies().filter(p => !checkPolicy(p, this.detected).pass).length;
+        appendAudit('POLICY_CHECK', `Policy check: ${getPolicies().length} policies, ${fails} failing`, 'admin', { result: fails ? 'failing' : 'ok', verified: true });
         this._loadAll();
     }
 
@@ -313,8 +384,18 @@ class CentralMgmtPanel {
             const configs = getConfigs();
             config.id = Date.now().toString();
             configs.push(config);
-            writeJson('configs.json', configs);
-            appendAudit('ADD_CONFIG', `Added config profile: ${config.name}`);
+            if (!writeJson('configs.json', configs)) {
+                vscode.window.showErrorMessage('Sauvegarde impossible - ecriture refusee.');
+                appendAudit('ADD_CONFIG', `Failed to save: ${config.name}`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            const cok = getConfigs().find(x => x.id === config.id);
+            if (!cok) {
+                vscode.window.showErrorMessage('Sauvegarde incertaine - relecture impossible. Reessayez.');
+                appendAudit('ADD_CONFIG', `Stored but not confirmed: ${config.name}`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('ADD_CONFIG', `Added config profile: ${config.name}`, 'admin', { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Profil "${config.name}" sauvegardé.`);
             this._loadAll();
         } catch {
@@ -324,22 +405,44 @@ class CentralMgmtPanel {
 
     _removeConfig(id) {
         const c = getConfigs().find(x => x.id === id);
-        writeJson('configs.json', getConfigs().filter(x => x.id !== id));
-        appendAudit('REMOVE_CONFIG', `Removed config: ${c?.name || id}`);
+        if (!c) {
+            vscode.window.showErrorMessage('Profil introuvable - suppression impossible.');
+            appendAudit('REMOVE_CONFIG', `Config id=${id} not found`, 'admin', { result: 'error', verified: false });
+            return;
+        }
+        if (!writeJson('configs.json', getConfigs().filter(x => x.id !== id))) {
+            vscode.window.showErrorMessage('Suppression impossible - ecriture refusee.');
+            appendAudit('REMOVE_CONFIG', `Failed to save after removing ${c.name}`, 'admin', { result: 'error', verified: false });
+            return;
+        }
+        const gone = !getConfigs().find(x => x.id === id);
+        appendAudit('REMOVE_CONFIG', `Removed config: ${c.name}`, 'admin', { result: gone ? 'ok' : 'error', verified: gone });
+        if (!gone) vscode.window.showErrorMessage('Suppression incertaine - relecture impossible.');
         this._loadAll();
     }
 
-    _applyConfig(id) {
+    async _applyConfig(id) {
         const config = getConfigs().find(c => c.id === id);
         if (!config) return;
         const cfg = vscode.workspace.getConfiguration('sudoStudio');
         try {
-            if (config.model)                     cfg.update('ai.model',       config.model,       vscode.ConfigurationTarget.Global);
-            if (config.agentMode !== undefined)   cfg.update('agent.enabled',  config.agentMode,   vscode.ConfigurationTarget.Global);
-            appendAudit('APPLY_CONFIG', `Applied config profile: ${config.name}`);
+            // TASK 7: awaited + read back - never announce before the values stick.
+            if (config.model)                   await cfg.update('ai.model',      config.model,     vscode.ConfigurationTarget.Global);
+            if (config.agentMode !== undefined) await cfg.update('agent.enabled', config.agentMode, vscode.ConfigurationTarget.Global);
+            const backModel = cfg.get('ai.model');
+            const backAgent = cfg.get('agent.enabled');
+            const okModel = !config.model || backModel === config.model;
+            const okAgent = config.agentMode === undefined || backAgent === config.agentMode;
+            if (!okModel || !okAgent) {
+                vscode.window.showErrorMessage('Application incertaine : relecture differente. Reessayez.');
+                appendAudit('APPLY_CONFIG', `Applied ${config.name} but readback differs`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('APPLY_CONFIG', `Applied config profile: ${config.name}`, 'admin', { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Profil "${config.name}" appliqué.`);
+            this._loadAll();
         } catch {
-            vscode.window.showErrorMessage('Application du profil échouée — réessayez.');
+            vscode.window.showErrorMessage('Application du profil échouée - réessayez.');
         }
     }
 
@@ -357,7 +460,13 @@ class CentralMgmtPanel {
             });
             if (!saveUri) return;
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(data, null, 2), 'utf8');
-            appendAudit('EXPORT_ALL', `Config exporté`);
+            // TASK 7: post-condition - parse the file back and compare counts.
+            const back = JSON.parse(fs.readFileSync(saveUri.fsPath, 'utf8'));
+            const okCounts = (back.users || []).length === data.users.length
+                && (back.policies || []).length === data.policies.length
+                && (back.configs || []).length === data.configs.length;
+            if (!okCounts) throw new Error('verify-mismatch');
+            appendAudit('EXPORT_ALL', `Config exporte (${data.users.length} users, ${data.policies.length} policies, ${data.configs.length} configs)`, 'admin', { result: 'ok', verified: true });
             vscode.window.showInformationMessage('✅ Configuration centrale exportée.');
         } catch {
             vscode.window.showErrorMessage('Export échoué — vérifiez les permissions du dossier de destination.');
@@ -392,7 +501,16 @@ class CentralMgmtPanel {
             if (Array.isArray(data.users))    writeJson('users.json',    data.users);
             if (Array.isArray(data.policies)) writeJson('policies.json', data.policies);
             if (Array.isArray(data.configs))  writeJson('configs.json',  data.configs);
-            appendAudit('IMPORT_ALL', `Config importé depuis ${path.basename(uris[0].fsPath)}`);
+            // TASK 7: post-condition - re-read the stores and confirm counts.
+            const okUsers = !Array.isArray(data.users) || getUsers().length === data.users.length;
+            const okPol   = !Array.isArray(data.policies) || getPolicies().length === data.policies.length;
+            const okCfg   = !Array.isArray(data.configs) || getConfigs().length === data.configs.length;
+            if (!okUsers || !okPol || !okCfg) {
+                vscode.window.showErrorMessage('Import incertain : relecture differente. Reessayez.');
+                appendAudit('IMPORT_ALL', `Imported ${path.basename(uris[0].fsPath)} but readback differs`, 'admin', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('IMPORT_ALL', `Config importe depuis ${path.basename(uris[0].fsPath)}`, 'admin', { result: 'ok', verified: true });
             vscode.window.showInformationMessage('✅ Configuration centrale importée.');
             this._loadAll();
         } catch {

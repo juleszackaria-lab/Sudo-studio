@@ -20,6 +20,7 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 const crypto = require('crypto');
+const { appendAudit } = require('../utils/auditLog');
 
 // ── License definitions ───────────────────────────────────────────────────────
 // Format: SSENT-XXXXX-XXXXX-XXXXX (Sudo Studio ENTerprise)
@@ -39,7 +40,7 @@ const DEMO_KEYS = {
 
 // ── Storage helpers ───────────────────────────────────────────────────────────
 function getLicensePath() {
-    const d = path.join(os.homedir(), '.sudo_studio');
+    const d = path.join(process.env.SUDO_STUDIO_HOME || os.homedir(), '.sudo_studio');
     if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
     return path.join(d, 'license.json');
 }
@@ -165,9 +166,18 @@ class LicensePanel {
         try {
             writeLicense(lic);
         } catch {
-            vscode.window.showErrorMessage('Activation échouée — impossible de sauvegarder la licence. Vérifiez les permissions.');
+            vscode.window.showErrorMessage('Activation échouée - impossible de sauvegarder la licence. Vérifiez les permissions.');
+            appendAudit('LICENSE_ACTIVATE', 'save failed', { result: 'error', verified: false });
             return;
         }
+        // TASK 7: post-condition - re-read the stored license and confirm key + edition.
+        const back = readLicense();
+        if (!back || back.key !== lic.key || back.edition !== lic.edition) {
+            vscode.window.showErrorMessage('Activation incertaine : relecture differente. Reessayez.');
+            appendAudit('LICENSE_ACTIVATE', 'stored but not confirmed on re-read', { result: 'error', verified: false });
+            return;
+        }
+        appendAudit('LICENSE_ACTIVATE', `${result.editionLabel} for ${result.company} (demo-key validation)`, { result: 'ok', verified: true });
         vscode.window.showInformationMessage(`✅ Sudo Studio ${result.editionLabel} activé pour ${result.company}`);
         this._load();
     }
@@ -176,6 +186,13 @@ class LicensePanel {
         try {
             const p = getLicensePath();
             if (fs.existsSync(p)) fs.unlinkSync(p);
+            // TASK 7: post-condition - the license file must be gone.
+            if (fs.existsSync(p)) {
+                vscode.window.showErrorMessage('Desactivation incertaine : fichier toujours present.');
+                appendAudit('LICENSE_DEACTIVATE', 'file still present after delete', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('LICENSE_DEACTIVATE', 'license removed (Community)', { result: 'ok', verified: true });
             vscode.window.showInformationMessage('Licence désactivée. Retour à l\'édition Community.');
             this._load();
         } catch {
@@ -198,6 +215,14 @@ class LicensePanel {
             }
             lic.seats.allocated.push(email);
             writeLicense(lic);
+            // TASK 7: post-condition - re-read and confirm the seat.
+            const back = readLicense();
+            if (!back || !(back.seats?.allocated || []).includes(email)) {
+                vscode.window.showErrorMessage('Attribution incertaine - relecture impossible. Reessayez.');
+                appendAudit('LICENSE_ADD_SEAT', `seat for ${email} not confirmed`, { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('LICENSE_ADD_SEAT', `seat allocated to ${email}`, { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Siège alloué à ${email}`);
             this._load();
         } catch {
@@ -210,8 +235,20 @@ class LicensePanel {
             const lic = readLicense();
             if (!lic) return;
             if (!lic.seats?.allocated) return;
+            // TASK 7: never announce a release that changed nothing.
+            if (!lic.seats.allocated.includes(email)) {
+                vscode.window.showWarningMessage(`${email} n'a aucun siege alloue.`);
+                return;
+            }
             lic.seats.allocated = lic.seats.allocated.filter(e => e !== email);
             writeLicense(lic);
+            const back = readLicense();
+            const freed = back && !(back.seats?.allocated || []).includes(email);
+            appendAudit('LICENSE_REMOVE_SEAT', `seat released for ${email}`, { result: freed ? 'ok' : 'error', verified: !!freed });
+            if (!freed) {
+                vscode.window.showErrorMessage('Liberation incertaine - relecture impossible. Reessayez.');
+                return;
+            }
             vscode.window.showInformationMessage(`✅ Siège libéré pour ${email}`);
             this._load();
         } catch {
@@ -229,6 +266,10 @@ class LicensePanel {
             });
             if (!saveUri) return;
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(lic, null, 2), 'utf8');
+            // TASK 7: post-condition - parse the file back and confirm the key.
+            const back = JSON.parse(fs.readFileSync(saveUri.fsPath, 'utf8'));
+            if (!back || back.key !== lic.key) throw new Error('verify-mismatch');
+            appendAudit('LICENSE_EXPORT', `license exported to ${path.basename(saveUri.fsPath)}`, { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Licence exportée : ${path.basename(saveUri.fsPath)}`);
         } catch {
             vscode.window.showErrorMessage('Export échoué — vérifiez les permissions du dossier.');
@@ -275,6 +316,14 @@ class LicensePanel {
                 },
             };
             writeLicense(cleanLic);
+            // TASK 7: post-condition - re-read and confirm key + edition.
+            const back = readLicense();
+            if (!back || back.key !== cleanLic.key || back.edition !== cleanLic.edition) {
+                vscode.window.showErrorMessage('Import incertain : relecture differente. Reessayez.');
+                appendAudit('LICENSE_IMPORT', 'stored but not confirmed on re-read', { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('LICENSE_IMPORT', `${validated.editionLabel} for ${validated.company}`, { result: 'ok', verified: true });
             vscode.window.showInformationMessage(`✅ Licence importée : ${validated.editionLabel} pour ${validated.company}`);
             this._load();
         } catch {
@@ -360,7 +409,8 @@ function renderLicense(lic){
       <h2 style="font-size:16px;margin-bottom:8px">🔓 Activate Sudo Studio</h2>
       <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
         Enter your license key to unlock Enterprise features.<br>
-        Demo key: <code>SSENT-DEMO0-00000-0001</code>
+        Demo key: <code>SSENT-DEMO0-00000-0001</code><br>
+        Local demo validation - production keys require a license server.
       </p>
       <div class="input-row">
         <input id="keyInput" placeholder="SSENT-XXXXX-XXXXX-XXXX" spellcheck="false">
