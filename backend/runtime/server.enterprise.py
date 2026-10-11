@@ -521,6 +521,94 @@ class _RamWatchdog(threading.Thread):
             dlog(f"[RAM-WD] watchdog stopped for {self.model_id} "
                  f"(tripped={self.tripped} samples={self.samples})")
 
+# --- CPU variant selection (llama-cpp compat/avx2) ---------------------------
+# Old CPUs crash with STATUS_ILLEGAL_INSTRUCTION (0xc000001d) when the bundled
+# llama.cpp binary uses AVX2/FMA. The build embeds TWO prebuilt trees
+# (see 02-runtime-build.yml); at startup we detect the CPU and import the
+# matching one. No variant dir (dev install) -> plain `import llama_cpp`.
+LLAMA_VARIANTS_DIRNAME = "llama_variants"
+_CPU_VARIANT = None  # cached 'avx2' | 'compat', chosen once per process
+
+def _cpu_has_avx_avx2() -> tuple:
+    """Return (has_avx2, has_avx). Windows: IsProcessorFeaturePresent; else cpuinfo."""
+    # Windows official API: 40 = AVX2 (PF_AVX2_INSTRUCTIONS_AVAILABLE),
+    # 39 = AVX (PF_AVX_INSTRUCTIONS_AVAILABLE).
+    try:
+        import ctypes
+        _windll = getattr(ctypes, 'windll', None)
+        if _windll is not None:
+            _k32 = _windll.kernel32
+            _k32.IsProcessorFeaturePresent.restype = ctypes.c_bool
+            has_avx2 = bool(_k32.IsProcessorFeaturePresent(40))
+            has_avx = bool(_k32.IsProcessorFeaturePresent(39))
+            return has_avx2, has_avx
+    except Exception:
+        pass
+    # Linux/macOS fallback: parse CPU flags (also used by CI/sandbox tests).
+    try:
+        with open('/proc/cpuinfo') as f:
+            flags = f.read().lower()
+        return ('avx2' in flags, 'avx' in flags)
+    except Exception:
+        pass
+    return False, False
+
+
+def detect_cpu_variant() -> str:
+    """Choose 'avx2' if the CPU supports it, else 'compat'. Cached + logged."""
+    global _CPU_VARIANT
+    if _CPU_VARIANT is None:
+        has_avx2, has_avx = _cpu_has_avx_avx2()
+        _CPU_VARIANT = 'avx2' if has_avx2 else 'compat'
+        dlog(f"[CPU] AVX2={has_avx2} AVX={has_avx} -> variant={_CPU_VARIANT}")
+        logger.info(f"[CPU] AVX2={has_avx2} AVX={has_avx} -> variant={_CPU_VARIANT}")
+    return _CPU_VARIANT
+
+
+def _llama_variant_dir(variant: str):
+    """Locate the bundled llama_variants/<variant> tree, or None (dev install)."""
+    candidates = []
+    try:
+        # PyInstaller --onefile extracts data files under the bundle root.
+        _meipass = getattr(sys, '_MEIPASS', None)
+        if _meipass:
+            candidates.append(Path(_meipass) / LLAMA_VARIANTS_DIRNAME / variant)
+    except Exception:
+        pass
+    try:
+        candidates.append(Path(sys.executable).resolve().parent / LLAMA_VARIANTS_DIRNAME / variant)
+    except Exception:
+        pass
+    try:
+        candidates.append(Path(__file__).resolve().parent / LLAMA_VARIANTS_DIRNAME / variant)
+    except Exception:
+        pass
+    for c in candidates:
+        try:
+            if (c / 'llama_cpp').is_dir():
+                return c
+        except Exception:
+            pass
+    return None
+
+
+def import_llama_cpp():
+    """Import (Llama, llama_cpp_package, variant) from the CPU-matched tree."""
+    variant = detect_cpu_variant()
+    vdir = _llama_variant_dir(variant)
+    if vdir is not None:
+        vdir_s = str(vdir)
+        if vdir_s not in sys.path:
+            sys.path.insert(0, vdir_s)
+        dlog(f"[CPU] llama_cpp variant '{variant}' selected from {vdir_s}")
+        logger.info(f"[CPU] llama_cpp variant '{variant}' selected")
+    else:
+        dlog(f"[CPU] no bundled '{variant}' tree found, trying plain llama_cpp import")
+    from llama_cpp import Llama
+    import llama_cpp as _pkg
+    return Llama, _pkg, variant
+
+
 # ─── State persistence ──────────────────────────────────────────────────────────
 def load_model_state() -> dict:
     """Load persisted model state (last valid model path/id)."""
@@ -1082,11 +1170,10 @@ def load_model_thread(model_id: str, force_download: bool = False):
         if _is_gguf_model:
             dlog("GGUF model detected — attempting llama-cpp-python loader...")
             try:
-                from llama_cpp import Llama
-                dlog("llama-cpp-python imported OK")
+                Llama, _llama_pkg, _variant = import_llama_cpp()
+                dlog(f"llama-cpp-python imported OK (variant={_variant})")
 
                 # ── SANITY CHECK: verify llama_cpp native lib is accessible ───────
-                import llama_cpp as _llama_pkg
                 _lib_path = os.path.join(os.path.dirname(_llama_pkg.__file__), 'lib')
                 _lib_ok   = os.path.exists(_lib_path)
                 dlog(f"[SANITY] llama_cpp.__file__ = {_llama_pkg.__file__}")
@@ -1233,6 +1320,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     state.device     = 'cpu'
                     state.detected_local = True
                     state.download_progress = 100
+                    state.error = None
 
                     save_model_state(model_id, gguf_path)
                     logger.info(f"[MODEL] ✅ Qwen2.5-Coder GGUF loaded successfully ({os.path.getsize(gguf_path)//(1024*1024)}MB)")
@@ -1256,8 +1344,8 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 # llama-cpp-python missing from the packaged EXE: clear error, no silent fallback.
                 _err_msg = (
                     "[GGUF] FATAL: llama-cpp-python is not available in this build. "
-                    "The packaged runtime.exe must be rebuilt with: "
-                    "pyinstaller --collect-all llama_cpp (see 02-runtime-build.yml)."
+                    "The packaged runtime.exe must embed llama_variants/compat + "
+                    "llama_variants/avx2 (see 02-runtime-build.yml)."
                 )
                 dlog(_err_msg)
                 logger.error(_err_msg)
@@ -1266,14 +1354,23 @@ def load_model_thread(model_id: str, force_download: bool = False):
                 return  # Stop here — cannot load GGUF without llama-cpp-python
 
             except Exception as gguf_err:
-                # Generic GGUF load error (e.g. WinError 3 — lib dir missing in EXE).
-                # For GGUF-only models, do NOT fall through to transformers.
-                _err_msg = (
-                    f"[GGUF] FATAL: GGUF load failed for '{model_id}'. "
-                    f"Error: {gguf_err}. "
-                    f"If this is a WinError 3 (path not found), the EXE was built without "
-                    f"--collect-all llama_cpp — rebuild with updated 02-runtime-build.yml."
-                )
+                # Generic GGUF load error. For GGUF-only models, do NOT fall
+                # through to transformers.
+                _ge_str = str(gguf_err).lower()
+                if '1073741795' in _ge_str or 'c000001d' in _ge_str:
+                    # STATUS_ILLEGAL_INSTRUCTION: the CPU lacks the SIMD
+                    # instructions used by this llama.cpp build. NOT a RAM or
+                    # path problem: the 'compat' variant is required.
+                    _err_msg = (
+                        f"[GGUF] FATAL: CPU incompatible : instructions manquantes, "
+                        f"variante 'compat' requise. (load of '{model_id}' failed with "
+                        f"0xc000001d / -1073741795)."
+                    )
+                else:
+                    _err_msg = (
+                        f"[GGUF] FATAL: GGUF load failed for '{model_id}'. "
+                        f"Error: {gguf_err}."
+                    )
                 dlog(_err_msg)
                 logger.error(_err_msg)
                 state.error   = _err_msg
@@ -1927,6 +2024,7 @@ def health():
         },
         "requests_served": state.requests,
         "mock_mode":       not state.loaded,
+        "last_error":      state.error,
         "detection_log":   state.detection_log,
     })
 

@@ -36,31 +36,82 @@ jobs:
           pip install pyinstaller
 
       # ── Verify llama-cpp-python is importable (sanity pre-build) ─────────
-      - name: Verify llama-cpp-python import
+      # --- Build tools for compiling llama-cpp-python from source ---
+      # MSVC + CMake come from windows-latest; ninja + scikit-build-core via pip.
+      # Used with --no-build-isolation for deterministic offline-safe builds.
+      - name: Install llama.cpp build tools
+        run: |
+          pip install scikit-build-core cmake ninja
+
+      # --- llama-cpp COMPAT variant: no AVX/AVX2/AVX512/FMA/F16C ---
+      # Runs on any x86-64 CPU, including old machines without AVX2.
+      # NOTE: no --no-deps on purpose: each variant tree is SELF-CONTAINED
+      # (own numpy/diskcache/jinja2), so the frozen EXE needs no hidden imports.
+      - name: Build llama-cpp compat variant
+        working-directory: backend/runtime
+        shell: powershell
+        run: |
+          $env:CMAKE_ARGS = "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_AVX512=OFF -DGGML_FMA=OFF -DGGML_F16C=OFF"
+          pip install --target llama_variants/compat --no-binary llama-cpp-python --no-cache-dir --no-build-isolation llama-cpp-python==0.3.9
+
+      # --- llama-cpp AVX2 variant: modern CPUs ---
+      - name: Build llama-cpp avx2 variant
+        working-directory: backend/runtime
+        shell: powershell
+        run: |
+          $env:CMAKE_ARGS = "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON"
+          pip install --target llama_variants/avx2 --no-binary llama-cpp-python --no-cache-dir --no-build-isolation llama-cpp-python==0.3.9
+
+      # --- PROOF + GATE: system info per variant, AVX2 flag asserted ---
+      # Each variant is imported in a FRESH python process (a same-process
+      # double import would return the cached first module). The build FAILS
+      # if compat reports AVX2=1 or avx2 reports AVX2=0.
+      - name: Verify compat variant (AVX2 must be 0)
         working-directory: backend/runtime
         shell: python
         run: |
-          import llama_cpp, os
-          lib_path = os.path.join(os.path.dirname(llama_cpp.__file__), 'lib')
-          print(f"[SANITY] llama_cpp.__file__  = {llama_cpp.__file__}")
-          print(f"[SANITY] llama_cpp lib path  = {lib_path}")
-          print(f"[SANITY] lib dir exists      = {os.path.exists(lib_path)}")
-          if os.path.exists(lib_path):
-              print(f"[SANITY] lib contents: {os.listdir(lib_path)}")
-          else:
-              print("[SANITY][WARN] lib dir missing — PyInstaller collect-all will embed it from wheel")
+          import re, subprocess, sys
+          p = subprocess.run(
+              [sys.executable, "-c",
+               "import sys; sys.path.insert(0, 'llama_variants/compat'); "
+               "import llama_cpp; "
+               "print('[VARIANT] llama_cpp file:', llama_cpp.__file__); "
+               "llama_cpp.llama_print_system_info()"],
+              capture_output=True, text=True)
+          print(p.stdout)
+          print(p.stderr, file=sys.stderr)
+          assert p.returncode == 0, "compat variant import/system_info failed"
+          m = re.search(r"AVX2\s*=\s*(\d)", p.stdout)
+          assert m and m.group(1) == "0", "compat variant must report AVX2 = 0, got: " + (m.group(0) if m else "no AVX2 field")
+          print("[GATE] compat variant OK: AVX2 = 0")
+
+      - name: Verify avx2 variant (AVX2 must be 1)
+        working-directory: backend/runtime
+        shell: python
+        run: |
+          import re, subprocess, sys
+          p = subprocess.run(
+              [sys.executable, "-c",
+               "import sys; sys.path.insert(0, 'llama_variants/avx2'); "
+               "import llama_cpp; "
+               "print('[VARIANT] llama_cpp file:', llama_cpp.__file__); "
+               "llama_cpp.llama_print_system_info()"],
+              capture_output=True, text=True)
+          print(p.stdout)
+          print(p.stderr, file=sys.stderr)
+          assert p.returncode == 0, "avx2 variant import/system_info failed"
+          m = re.search(r"AVX2\s*=\s*(\d)", p.stdout)
+          assert m and m.group(1) == "1", "avx2 variant must report AVX2 = 1, got: " + (m.group(0) if m else "no AVX2 field")
+          print("[GATE] avx2 variant OK: AVX2 = 1")
 
       # ── Build runtime EXE with full llama_cpp collection ─────────────────
       #
-      # --collect-all llama_cpp  : Embeds ALL llama_cpp data files, binaries,
-      #                            and hidden imports (includes lib/*.dll on
-      #                            Windows and libllama.so on Linux).
-      #                            Fixes: [WinError 3] ...\_MEI...\llama_cpp\lib
-      # --hidden-import llama_cpp: Belt-and-suspenders: force-import the package
-      #                            even if auto-analysis misses it.
-      # --collect-binaries llama_cpp: Explicitly collect native .dll/.so files
-      #                            (redundant with collect-all but harmless; adds
-      #                            safety for edge-case wheel layouts).
+      # --add-data llama_variants: Embeds BOTH prebuilt llama_cpp trees
+      #                            (llama_variants/compat + llama_variants/avx2).
+      #                            The runtime picks one via CPU detection
+      #                            (see detect_cpu_variant in server.enterprise.py).
+      #                            llama_cpp is NOT pip-installed in this env:
+      #                            no --collect-all / --hidden-import for it.
       # --onefile                : Single portable server.exe, no loose files.
       # ─────────────────────────────────────────────────────────────────────
       - name: Build runtime executable
@@ -69,11 +120,7 @@ jobs:
           pyinstaller
           --onefile
           --name server
-          --collect-all llama_cpp
-          --collect-binaries llama_cpp
-          --hidden-import llama_cpp
-          --hidden-import llama_cpp.llama
-          --hidden-import llama_cpp.llama_cpp
+          --add-data "llama_variants;llama_variants"
           --hidden-import huggingface_hub
           --hidden-import huggingface_hub.file_download
           server.enterprise.py
