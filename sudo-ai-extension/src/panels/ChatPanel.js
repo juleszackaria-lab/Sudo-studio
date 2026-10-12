@@ -1,136 +1,482 @@
 /**
- * SUDO STUDIO - Chat Panel v3
- * Full-featured AI chat with:
- * - Immediate user message display (fixed send button)
- * - Retry last message
- * - Stop generation
- * - Persistent conversation history (VSCode memento)
- * - Markdown + syntax highlighting (highlight.js via CDN)
- * - Intent routing: "analyse projet", "docteur", "autofix", "dockerfile" etc.
- * - Multi-conversation (New Chat)
- * - Dual-path AI: backend:5000 → fallback runtime:6000
- * - Model download progress bar
+ * SUDO STUDIO - Sudo Chat (MISSION P5: chat with full project access).
+ * The chat uses the SAME engine and providers as the agent (P3/P2), always in
+ * "Plan" (read-only) mode: it really reads files (read/glob/grep/list) to
+ * answer. The old unguided /infer path (raw model, no context, refusals and
+ * invented answers) is REPLACED; kept from the old panel: intent shortcuts,
+ * globalState history (+restore), provider switch, runtime status.
+ * - automatic context: active file, selection, Problems panel, @file/@folder
+ * - instruction: French, cite files read (path + lines), "je ne sais pas"
+ *   instead of inventing, read-only
+ * - "Passer en mode Agent" forwards the last question to the Sudo Agent tab
+ * - same conversation renderer as the agent (shared getWebviewHtml variant)
+ * ASCII-only.
  */
-const vscode = require('vscode');
-const axios  = require('axios');
-const { getAIProviderService } = require('../services/AIProviderService');
-const http   = require('http');
-const { exec } = require('child_process');
+'use strict';
 
-const IS_WIN = process.platform === 'win32';
+const vscode = require('vscode');
+const path = require('path');
+const fs = require('fs');
+const { AgentEngine } = require('../agent/AgentEngine');
+const { getWebviewHtml } = require('../agent/AgentPanel');
+const { getAIProviderService } = require('../services/AIProviderService');
+
+const RUNTIME_URL = 'http://127.0.0.1:6000';
+const RUNTIME_POLL_MS = 20000;
+const CAP_FILE = 12000;
+const CAP_SEL = 4000;
+const CAP_MENTION_FILE = 8000;
+const CAP_MENTIONS = 16000;
+const CAP_DIAG = 20;
+
+// ---------------------------------------------------------------- mentions
+
+function resolveMention(tok, root) {
+    const abs = path.resolve(root, tok);
+    const r = path.resolve(root);
+    if (abs !== r && abs.indexOf(r + path.sep) !== 0) return { token: tok, status: 'outside' };
+    try {
+        const st = fs.statSync(abs);
+        if (st.isDirectory()) {
+            let names = [];
+            try { names = fs.readdirSync(abs).slice(0, 60); } catch (_) {}
+            return { token: tok, status: 'dir', rel: path.relative(root, abs), names };
+        }
+        if (st.isFile()) {
+            if (st.size > 256 * 1024)
+                return { token: tok, status: 'too-big', rel: path.relative(root, abs), size: st.size };
+            const content = fs.readFileSync(abs, 'utf8');
+            if (content.indexOf('\0') !== -1)
+                return { token: tok, status: 'binary', rel: path.relative(root, abs) };
+            return { token: tok, status: 'file', rel: path.relative(root, abs),
+                lines: content.split('\n').length, content };
+        }
+    } catch (_) { /* missing below */ }
+    return { token: tok, status: 'missing' };
+}
+
+function parseMentions(text, root) {
+    const found = [];
+    const seen = new Set();
+    const re = /@"([^"]+)"|@([^\s"'`<>()[\],;]+)/g;
+    let m;
+    let budget = CAP_MENTIONS;
+    while ((m = re.exec(text)) !== null) {
+        const tok = (m[1] || m[2] || '').trim().replace(/[.?,;:!]+$/, '');
+        if (!tok || seen.has(tok)) continue;
+        seen.add(tok);
+        const r = resolveMention(tok, root);
+        if (r.status === 'file' && r.content) {
+            const capped = r.content.slice(0, Math.min(CAP_MENTION_FILE, budget));
+            budget = Math.max(0, budget - capped.length);
+            r.truncated = capped.length < r.content.length;
+            r.content = capped;
+        }
+        found.push(r);
+    }
+    return found;
+}
+
+// ---------------------------------------------------------------- prompt
+
+function buildChatPrompt(p, question) {
+    const L = [];
+    L.push("[ROLE] Tu es Sudo Chat, l'assistant de conversation du projet ouvert. Tu reponds TOUJOURS en francais.");
+    L.push('[REGLES] 1. Lis reellement les fichiers du projet avec tes outils avant de repondre.');
+    L.push('2. Cite chaque fichier utilise sous la forme chemin:ligne-debut-fin (exemple lib/main.dart:1-40).');
+    L.push('3. Si l\'information demandee ne se trouve pas dans les fichiers lus, dis exactement "je ne sais pas" et ne l\'invente jamais.');
+    L.push('4. Tu es en lecture seule : tu ne modifies rien, tu proposes et tu expliques.');
+    L.push('[PROJET] ' + p.root);
+    if (p.activeFile) {
+        L.push('[FICHIER ACTIF] ' + p.activeFile.rel + ' (' + p.activeFile.lines + ' lignes' +
+            (p.activeFile.truncated ? ', tronque' : '') + ')\n' + p.activeFile.content);
+    } else L.push('[FICHIER ACTIF] aucun');
+    if (p.selection) L.push('[SELECTION] ' + p.selection.rel + ':' + p.selection.range + '\n' + p.selection.text);
+    else L.push('[SELECTION] aucune');
+    if (p.problems && p.problems.length) L.push('[PROBLEMES] (' + p.problemsTotal + ' au total)\n' + p.problems.join('\n'));
+    else L.push('[PROBLEMES] aucun');
+    if (p.mentions && p.mentions.length) {
+        const ML = ['[MENTIONS]'];
+        for (const mt of p.mentions) {
+            if (mt.status === 'file') {
+                ML.push('@' + mt.token + ' -> ' + mt.rel + ' (' + mt.lines + ' lignes' +
+                    (mt.truncated ? ', tronque' : '') + '):\n' + mt.content);
+            } else if (mt.status === 'dir') {
+                ML.push('@' + mt.token + ' -> dossier ' + (mt.rel || '.') + ' (' + mt.names.length + ' entrees): ' +
+                    mt.names.join(', '));
+            } else if (mt.status === 'missing') ML.push('@' + mt.token + ' -> INTROUVABLE dans le projet');
+            else if (mt.status === 'outside') ML.push('@' + mt.token + ' -> hors projet (ignore)');
+            else if (mt.status === 'too-big') ML.push('@' + mt.token + ' -> trop gros (' + mt.size + ' octets, non lu)');
+            else ML.push('@' + mt.token + ' -> binaire (non lu)');
+        }
+        L.push(ML.join('\n'));
+    } else L.push('[MENTIONS] aucune');
+    L.push('[QUESTION] ' + question);
+    return L.join('\n');
+}
+
+// ---------------------------------------------------------------- panel
 
 class ChatPanel {
     static currentPanel = undefined;
 
-    constructor(panel, extensionUri, ctx) {
-        this.panel        = panel;
-        this.extensionUri = extensionUri;
-        this.ctx          = ctx;
-        this.disposables  = [];
-        this.authToken    = null;
-        this.abortCtrl    = null;   // for stop generation
-        this.history      = [];     // [{role, content}]
-        this.lastUserMsg  = '';
+    constructor(panel, extensionUri, ctx, opts = {}) {
+        this.panel = panel;
+        this.extensionUri = extensionUri || null;
+        this.ctx = ctx || null;
+        this.disposables = [];
+        this._http = opts.http || null;
+        this._engineFactory = opts.engineFactory || ((o) => new AgentEngine(o));
+        this.engine = null;
+        this.projectRoot = null;
+        this.history = [];
+        this.lastUserMsg = '';
+        this._running = false;
+        this._queue = [];
+        this._approvals = [];
+        this._resolved = new Set();
+        this._runtimeTimer = null;
 
-        // Restore history from storage
         if (ctx) {
-            this.history = ctx.globalState.get('sudoChat.history', []);
+            try { this.history = ctx.globalState.get('sudoChat.history', []) || []; } catch (_) {}
         }
-
-        this.panel.webview.html = this.getHtmlContent();
-        this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
-        this.panel.webview.onDidReceiveMessage(m => this.handleMessage(m), null, this.disposables);
-
-        // Send existing history to webview after a tick
-        setTimeout(() => {
-            this.history.forEach(h => {
-                if (h.role === 'user') {
-                    this.panel.webview.postMessage({ type: 'userMessage', text: h.content, noScroll: true });
-                } else {
-                    this.panel.webview.postMessage({ type: 'aiMessage', text: h.content, model: h.model || 'AI', mock: h.mock, noScroll: true });
-                }
-            });
-            this.sendStatus();
-        }, 200);
-
-        this._tryLogin();
-        // Poll status every 5s
-        this._statusInterval = setInterval(() => this.sendStatus(), 5000);
+        const webview = panel.webview;
+        webview.html = getWebviewHtml({
+            nonce: ChatPanel._nonce(),
+            cspSource: webview.cspSource,
+            codiconUri: webview.asWebviewUri(
+                vscode.Uri.joinPath(this.extensionUri, 'media', 'codicon.css')).toString(),
+            variant: 'chat',
+        });
+        panel.onDidDispose(() => this.dispose(), null, this.disposables);
+        webview.onDidReceiveMessage((m) => this.handleMessage(m), null, this.disposables);
+        const replay = this.history.slice(-20).map((h) => ({
+            role: h.role === 'user' ? 'user' : 'assistant', content: h.content || '',
+        }));
+        if (replay.length) setTimeout(() => this._post({ type: 'history', turns: replay }), 200);
+        this._postProviders();
+        this._checkRuntime();
+        this._runtimeTimer = setInterval(() => this._checkRuntime(), RUNTIME_POLL_MS);
     }
 
-    static createOrShow(extensionUri, ctx) {
+    static _nonce() {
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let n = '';
+        for (let i = 0; i < 32; i++) n += chars.charAt(Math.floor(Math.random() * chars.length));
+        return n;
+    }
+
+    static createOrShow(extensionUri, ctx, opts) {
         const column = vscode.window.activeTextEditor
             ? vscode.window.activeTextEditor.viewColumn
             : vscode.ViewColumn.One;
-
         if (ChatPanel.currentPanel) {
             ChatPanel.currentPanel.panel.reveal(column);
-            return;
+            ChatPanel.currentPanel._checkRuntime();
+            return ChatPanel.currentPanel;
         }
         const panel = vscode.window.createWebviewPanel(
             'sudoStudioChat',
-            '💬 Sudo AI Chat',
+            'Sudo Chat',
             column,
-            { enableScripts: true, retainContextWhenHidden: true }
+            { enableScripts: true, retainContextWhenHidden: true,
+              localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')] }
         );
-        ChatPanel.currentPanel = new ChatPanel(panel, extensionUri, ctx);
+        ChatPanel.currentPanel = new ChatPanel(panel, extensionUri, ctx, opts);
+        return ChatPanel.currentPanel;
     }
 
-    async _tryLogin() {
+    async handleMessage(msg) {
         try {
-            const r = await axios.post('http://localhost:5000/api/auth/login',
-                { username: 'admin', password: 'admin123' }, { timeout: 3000 });
-            this.authToken = r.data.token;
-        } catch (_) { this.authToken = null; }
-    }
-
-    async handleMessage(message) {
-        console.log('[EXT] handleMessage received — type:', message.type);
-        switch (message.type) {
-            case 'sendMessage':   await this.handleChat(message.text); break;
-            case 'retryLast':     await this.retryLast(); break;
-            case 'stopGeneration': this.stopGeneration(); break;
-            case 'clearChat':     this.clearHistory(); break;
-            case 'checkStatus':   await this.sendStatus(); break;
-            case 'downloadModel': await this.downloadModel(message.modelId); break;
-            case 'runDoctor':     vscode.commands.executeCommand('sudoStudio.runDoctor'); break;
-            case 'analyzeProject': vscode.commands.executeCommand('sudoStudio.analyzeProject'); break;
-            case 'openDevOps':    vscode.commands.executeCommand('sudoStudio.openDevOpsPanel'); break;
-            case 'openSDK':       vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
-            case 'openRuntime':   vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
-            case 'openEnvironment': vscode.commands.executeCommand('sudoStudio.openEnvironmentPanel'); break;
-            case 'openAgentMode': vscode.commands.executeCommand('sudoStudio.openAgentPanel'); break;
-            case 'setProvider': {
-                const _r = getAIProviderService().setActive(message.id);
-                if (!_r.ok) this.panel.webview.postMessage({ type: 'error', text: _r.error });
-                await this._pushProviders(); break;
+            switch (msg && msg.type) {
+                case 'send': await this._handleSend(msg.text); break;
+                case 'stop': this.stopChat(); break;
+                case 'approve': await this._handleApprove(msg.id, msg.choice); break;
+                case 'setProvider': this._handleProvider(msg.id); break;
+                case 'openRuntime':
+                    vscode.commands.executeCommand('sudoStudio.openRuntimePanel');
+                    break;
+                case 'toAgent': this._handleToAgent(); break;
+                case 'clear': this.clearHistory(); this._postRunState(); break;
+                case 'refreshRuntime': this._checkRuntime(); break;
+                default: break;
             }
-            case 'openProviders': vscode.commands.executeCommand('sudoStudio.openProvidersPanel'); break;
+        } catch (e) {
+            this._post({ type: 'error', message: 'Chat: ' + e.message });
         }
     }
 
-    // ── Intent routing ─────────────────────────────────────────────────────
+    async _handleSend(text) {
+        text = (text || '').trim();
+        if (!text) return;
+        this.lastUserMsg = text;
+        const intent = this._detectIntent(text);
+        if (intent) {
+            this._addHistory('user', text);
+            this._post({ type: 'history', turns: [{ role: 'user', content: text }] });
+            try {
+                await this._handleIntent(intent, text);
+            } finally {
+                this._postRunState();
+            }
+            return;
+        }
+        const folders = vscode.workspace.workspaceFolders;
+        const ws = folders && folders[0];
+        if (!ws) {
+            await this._chatQueryFallback(text);
+            return;
+        }
+        const root = ws.uri.fsPath;
+        if (this.engine && this.projectRoot !== root) {
+            try { await this.engine.stop(); } catch (_) {}
+            this.engine = null;
+        }
+        this.projectRoot = root;
+        if (this._running) {
+            this._queue.push(text);
+            this._postRunState();
+            return;
+        }
+        this._runOne(text);
+    }
+
+    async _runOne(text) {
+        this._running = true;
+        this._postRunState();
+        try {
+            this._ensureEngine();
+        } catch (e) {
+            this._running = false;
+            this._post({ type: 'error', message: 'Moteur: ' + e.message });
+            this._postRunState();
+            return;
+        }
+        const cx = this._gatherContext(text);
+        this._post({ type: 'context', activeFile: cx.contextPost.activeFile,
+            hasSelection: cx.contextPost.hasSelection, problems: cx.contextPost.problems });
+        this._addHistory('user', text);
+        this._approvals = [];
+        this._resolved = new Set();
+        this._post({ type: 'started', mode: 'plan' });
+        try {
+            await this.engine.run({ prompt: buildChatPrompt(cx, text), mode: 'plan' });
+        } catch (e) {
+            this._running = false;
+            this._post({ type: 'error', message: e.message });
+            this._postRunState();
+            this._drain();
+        }
+    }
+
+    _ensureEngine() {
+        if (this.engine) return;
+        this.engine = this._engineFactory({
+            projectRoot: this.projectRoot,
+            extensionDir: this.extensionUri ? this.extensionUri.fsPath : null,
+            mode: 'plan',
+        });
+        this.engine.on('step', (d) => this._post({ type: 'step', phase: d.phase, message: d.message }));
+        this.engine.on('error', (d) => this._post({ type: 'error', message: d.message }));
+        this.engine.on('approval_needed', (d) => this._onApproval(d));
+        this.engine.on('done', (d) => this._onDone(d));
+        const drv = this.engine.driver;
+        if (drv && typeof drv.on === 'function') drv.on('bus', (ev) => this._onBus(ev));
+    }
+
+    _onBus(ev) {
+        if (!ev || typeof ev.type !== 'string') return;
+        if (ev.type.indexOf('message') !== 0 || ev.type.indexOf('part') === -1) return;
+        const props = ev.properties || {};
+        try { if (JSON.stringify(props).length > 200000) return; } catch (_) { return; }
+        this._post({ type: 'part', properties: props });
+    }
+
+    _onDone(d) {
+        this._running = false;
+        const reason = d.reason || '';
+        const noModel = d.status === 'ECHEC' && /NO_MODEL_LOADED|Runtime offline/.test(reason);
+        // sessionId nulled: no undo button in chat (plan mode modifies nothing).
+        this._post({ type: 'done', status: d.status, reason, reply: d.reply || '',
+            filesModified: d.filesModified || [], sessionId: null, mode: 'plan', noModel });
+        this._addHistory('assistant', d.reply || reason, 'Sudo Chat');
+        this._postRunState();
+        this._drain();
+    }
+
+    _drain() {
+        if (this._running || !this._queue.length) return;
+        this._runOne(this._queue.shift());
+    }
+
+    stopChat() {
+        this._queue = [];
+        if (this.engine) { try { this.engine.stop(); } catch (_) {} }
+        this._running = false;
+        this._postRunState();
+    }
+
+    // -- approvals (not expected in plan/read-only; supported defensively) --
+    _onApproval(d) {
+        const a = { id: d.id, action: d.action, title: d.title, description: d.description };
+        this._approvals.push(a);
+        const first = this._approvals.find((x) => !this._resolved.has(x.id));
+        this._post({ type: 'approval', id: a.id, action: a.action, title: a.title,
+            description: a.description, actionable: !!first && first.id === a.id });
+    }
+
+    async _handleApprove(id, choice) {
+        const open = this._approvals.filter((x) => !this._resolved.has(x.id));
+        if (!open.length) return;
+        if (open[0].id !== id) {
+            this._post({ type: 'error', message: "Traitez les demandes dans l'ordre (la plus ancienne d'abord)." });
+            return;
+        }
+        if (['once', 'session', 'project', 'reject'].indexOf(choice) === -1) {
+            this._post({ type: 'error', message: 'Choix inconnu: ' + choice });
+            return;
+        }
+        if (!this.engine) { this._post({ type: 'error', message: 'Aucun moteur actif.' }); return; }
+        const r = await this.engine.resolveApproval(choice);
+        if (!r || !r.ok) {
+            this._post({ type: 'error', message: 'Approbation impossible: ' + ((r && r.error) || '?') });
+            return;
+        }
+        this._resolved.add(id);
+        this._post({ type: 'approvalResolved', id, choice });
+        const next = this._approvals.find((x) => !this._resolved.has(x.id));
+        this._post({ type: 'actionable', id: next ? next.id : null });
+    }
+
+    // -- no-folder fallback: direct model call, guided, honest about scope --
+    async _chatQueryFallback(text) {
+        this._running = true;
+        this._postRunState();
+        this._post({ type: 'context', activeFile: null, hasSelection: false, problems: 0 });
+        this._post({ type: 'started', mode: 'plan' });
+        try {
+            this._ensureEngineForQuery();
+        } catch (e) {
+            this._running = false;
+            this._post({ type: 'error', message: 'Moteur: ' + e.message });
+            this._postRunState();
+            return;
+        }
+        const prompt = "[ROLE] Tu es Sudo Chat. Tu reponds TOUJOURS en francais. " +
+            'Aucun dossier projet n\'est ouvert : reponds de facon generale, et si tu ne sais pas, dis exactement "je ne sais pas".\n' +
+            '[QUESTION] ' + text;
+        try {
+            const r = await this.engine.chatQuery(prompt);
+            this._running = false;
+            if (r && r.ok) {
+                this._addHistory('user', text);
+                this._addHistory('assistant', r.reply || '', 'Sudo Chat');
+                this._post({ type: 'history', turns: [{ role: 'assistant', content: r.reply || '' }] });
+            } else {
+                this._post({ type: 'error', message: (r && r.error) || 'reponse vide' });
+            }
+        } catch (e) {
+            this._running = false;
+            this._post({ type: 'error', message: e.message });
+        }
+        this._postRunState();
+        this._drain();
+    }
+
+    _ensureEngineForQuery() {
+        if (this.engine) return;
+        this.engine = this._engineFactory({
+            projectRoot: null,
+            extensionDir: this.extensionUri ? this.extensionUri.fsPath : null,
+            mode: 'plan',
+        });
+    }
+
+    // -- context ---------------------------------------------------------------
+    _gatherContext(text) {
+        const root = this.projectRoot;
+        const out = { root, activeFile: null, selection: null, problems: [], problemsTotal: 0,
+            mentions: [], contextPost: { activeFile: null, hasSelection: false, problems: 0 } };
+        try {
+            const ed = vscode.window.activeTextEditor;
+            if (ed && ed.document && ed.document.uri && ed.document.uri.fsPath) {
+                const abs = ed.document.uri.fsPath;
+                const r = path.resolve(root);
+                if (abs === r || abs.indexOf(r + path.sep) === 0) {
+                    const rel = path.relative(root, abs);
+                    let content = '';
+                    try { content = fs.readFileSync(abs, 'utf8'); } catch (_) { content = ''; }
+                    if (content.indexOf('\0') === -1 && content) {
+                        out.activeFile = { rel, lines: content.split('\n').length,
+                            content: content.slice(0, CAP_FILE), truncated: content.length > CAP_FILE };
+                        out.contextPost.activeFile = rel;
+                    }
+                    const sel = ed.selection;
+                    if (sel && !sel.isEmpty && ed.document.getText) {
+                        try {
+                            const t = ed.document.getText(sel) || '';
+                            if (t.trim()) {
+                                out.selection = { rel, range: (sel.start.line + 1) + '-' + (sel.end.line + 1),
+                                    text: t.slice(0, CAP_SEL) };
+                                out.contextPost.hasSelection = true;
+                            }
+                        } catch (_) {}
+                    }
+                }
+            }
+        } catch (_) {}
+        try {
+            const all = (vscode.languages && vscode.languages.getDiagnostics
+                && vscode.languages.getDiagnostics()) || [];
+            const r = path.resolve(root);
+            const flat = [];
+            for (const entry of all) {
+                const uri = entry && entry[0];
+                const diags = (entry && entry[1]) || [];
+                if (!uri || !uri.fsPath) continue;
+                if (uri.fsPath !== r && uri.fsPath.indexOf(r + path.sep) !== 0) continue;
+                const rel = path.relative(root, uri.fsPath);
+                for (const dg of diags) {
+                    const sev = dg.severity === 0 ? 'erreur' : (dg.severity === 1 ? 'avertissement' : 'info');
+                    const line = (dg.range && dg.range.start && typeof dg.range.start.line === 'number')
+                        ? (dg.range.start.line + 1) : '?';
+                    flat.push(rel + ':' + line + ' [' + sev + '] ' + String(dg.message || '').slice(0, 200));
+                }
+            }
+            out.problemsTotal = flat.length;
+            out.problems = flat.slice(0, CAP_DIAG);
+            out.contextPost.problems = flat.length;
+        } catch (_) {}
+        try {
+            out.mentions = parseMentions(text, root);
+        } catch (_) { out.mentions = []; }
+        return out;
+    }
+
+    // -- agent handoff ------------------------------------------------------------
+    _handleToAgent() {
+        try {
+            const { AgentPanel } = require('../agent/AgentPanel');
+            const agent = AgentPanel.createOrShow(this.extensionUri);
+            if (agent && this.lastUserMsg) agent.sendExternal(this.lastUserMsg);
+        } catch (e) {
+            this._post({ type: 'error', message: 'Mode Agent: ' + e.message });
+        }
+    }
+
+    // -- intents (kept from the old panel; replies adapted to the new UI) ------
     _detectIntent(text) {
         const t = text.toLowerCase();
-        // IMPORTANT: Only trigger project analysis for EXPLICIT requests.
-        // Words like "analyse" alone are too broad — a user asking to
-        // "write an app that analyses data" must NOT open the Analysis panel.
-        // Require the analysis phrase to reference the project/code/workspace/folder
-        // explicitly, OR be the whole message, OR use imperative forms.
         if (
-            // Explicit: "analyse le projet", "analyse mon code", "analyse le workspace"
-            /analys[ez]\s+(le\s+|mon\s+|ce\s+)?(projet|code|workspace|dossier|répertoire|repo|codebase)/i.test(t) ||
-            // "audit du code", "audit du projet"
+            /analys[ez]\s+(le\s+|mon\s+|ce\s+)?(projet|code|workspace|dossier|r\u00e9pertoire|repo|codebase)/i.test(t) ||
             /audit\s+(du|de|le|mon|ce)\s+(code|projet|workspace)/i.test(t) ||
-            // "inspecte le projet", "scanne le projet"
             /(inspecte|scanne|examine)\s+(le|mon|ce)\s+(projet|code|workspace|dossier)/i.test(t) ||
-            // Very short messages that are ONLY "analyse" / "analyse le projet"
             (/^\s*(analys[ez]|scan|audit|inspecte|examine)\s*$/.test(t))
         )
             return 'analyzeProject';
-        if (/doctor|docteur|diagnos|santé|health|problème.*système|système.*problème/.test(t))
+        if (/doctor|docteur|diagnos|sant\u00e9|health|probl\u00e8me.*syst\u00e8me|syst\u00e8me.*probl\u00e8me/.test(t))
             return 'openDoctor';
-        if (/autofix|auto.?fix|corrige.*auto|répare.*auto|fix.*(all|tout|auto)/.test(t))
+        if (/autofix|auto.?fix|corrige.*auto|r\u00e9pare.*auto|fix.*(all|tout|auto)/.test(t))
             return 'autoFix';
         if (/dockerfile|docker.?compose|docker-compose/.test(t))
             return 'genDocker';
@@ -140,1238 +486,123 @@ class ChatPanel {
             return 'genKubernetes';
         if (/install.*sdk|sdk.*install|installe.*node|installe.*python|installe.*flutter/.test(t))
             return 'openSDK';
-        if (/runtime|modèle|model.*status|status.*model|télécharge.*model|download.*model/.test(t))
+        if (/runtime|mod\u00e8le|model.*status|status.*model|t\u00e9l\u00e9charge.*model|download.*model/.test(t))
             return 'openRuntime';
-        if (/environnement.*reproductible|reproduc|snapshot.*env|exporte.*env|import.*profil|synchronis.*env|ça marche chez moi|marche.pas.chez|sync.*équipe|team.*sync/.test(t))
+        if (/environnement.*reproductible|reproduc|snapshot.*env|exporte.*env|import.*profil|synchronis.*env|\u00e7a marche chez moi|marche.pas.chez|sync.*\u00e9quipe|team.*sync/.test(t))
             return 'openEnvironment';
         return null;
     }
 
-    async handleChat(text) {
-        if (!text || !text.trim()) return;
-        console.log('[EXT] handleChat — text[:60]:', text.slice(0,60));
-        this.lastUserMsg = text;
-
-        // Show user message immediately
-        this.panel.webview.postMessage({ type: 'userMessage', text });
-        this._addHistory('user', text);
-
-        // Check for intent shortcuts
-        const intent = this._detectIntent(text);
-        if (intent) {
-            // FIX BUG: _handleIntent never sent 'generating: false' to the WebView,
-            // so sendBtn stayed disabled forever after an intent was detected.
-            // Always wrap in try/finally so generating is always reset.
-            try {
-                await this._handleIntent(intent, text);
-            } finally {
-                // aiMessage sent by _handleIntent already calls setGenerating(false)
-                // in the WebView, but send an explicit reset as belt-and-braces.
-                this.panel.webview.postMessage({ type: 'generating', show: false });
-            }
-            return;
-        }
-
-        // Normal AI call — try SSE streaming first, fall back to plain /infer
-        this.panel.webview.postMessage({ type: 'generating', show: true });
-        this.abortCtrl = new AbortController();
-
-        try {
-            // Attempt streaming via /infer-stream (SSE)
-            const streamed = await this._sendToAIStream(text);
-            if (streamed) return;  // stream handled all postMessages incl. final aiMessage
-
-            // Fallback: plain /infer (no streaming, but still works)
-            const reply = await this._sendToAI(text);
-
-            // FIX BUG: _sendToAI could return undefined (ECONNREFUSED with no authToken)
-            // which caused "Cannot read property 'reply' of undefined" → unhandled crash.
-            if (!reply) {
-                throw new Error(
-                    'Runtime IA hors ligne (port 6000).\n' +
-                    'Vérifiez que runtime.exe est lancé depuis start.bat.'
-                );
-            }
-
-            this.panel.webview.postMessage({ type: 'generating', show: false });
-            const aiText = reply.reply || reply.response || 'Pas de reponse.';
-            this.panel.webview.postMessage({
-                type: 'aiMessage',
-                text: aiText,
-                model: reply.model === 'mock' ? 'Sudo AI (chargement modele)' : (reply.model || 'AI'),
-                latency: reply.latency_ms,
-                mock: reply.mock || false,
-                loading: reply.loading || false,
-                progress: reply.download_progress
-            });
-            this._addHistory('assistant', aiText, reply.model, reply.mock);
-            // P4: Try to create a file if the user asked for one
-            this._tryWriteFile(text, aiText).catch(() => {});
-        } catch (e) {
-            // FIX BUG: always reset generating state FIRST, then show error/stop message.
-            // Previously 'generating: false' was sent but the WebView 'error' case
-            // didn't call setGenerating(false), leaving sendBtn permanently disabled.
-            this.panel.webview.postMessage({ type: 'generating', show: false });
-            if (e.name === 'AbortError' || e.message === 'STOPPED') {
-                this.panel.webview.postMessage({ type: 'aiMessage', text: '⏹ Génération arrêtée.', model: 'system' });
-            } else if (e.noModel) {
-                // TASK 4a: no model loaded --- guide the user to Runtime & Models.
-                this.panel.webview.postMessage({
-                    type: 'aiMessage',
-                    text: '\u274C Aucun mod\u00e8le charg\u00e9.\n\nOuvrez le panneau Runtime & Models pour t\u00e9l\u00e9charger et charger un mod\u00e8le.',
-                    model: 'system',
-                    mock: false
-                });
-            } else {
-                this.panel.webview.postMessage({
-                    type: 'aiMessage',
-                    text: `❌ ${e.message}\n\nVérifiez que runtime.exe est lancé (port 6000).`,
-                    model: 'system',
-                    mock: true
-                });
-            }
-        }
-    }
-
     async _handleIntent(intent, text) {
         const replies = {
-            analyzeProject: '🔍 **Analyse du projet en cours...**\n\nJ\'ouvre le panneau d\'analyse. Résultats dans un instant.',
-            openDoctor:     '🩺 **Ouverture du System Doctor...**\n\nDiagnostic en cours.',
-            autoFix:        '🔧 **AutoFix lancé...**\n\nDétection et correction automatique des problèmes.',
-            genDocker:      '🐳 **Génération Dockerfile...**\n\nJ\'ouvre le panneau DevOps pour générer les fichiers Docker.',
-            genCICD:        '⚙️ **Génération CI/CD...**\n\nJ\'ouvre le panneau DevOps.',
-            genKubernetes:  '☸️ **Génération Kubernetes...**\n\nJ\'ouvre le panneau DevOps.',
-            openSDK:        '📦 **SDK Manager...**\n\nJ\'ouvre le gestionnaire de SDKs.',
-            openRuntime:    '🤖 **Runtime Manager...**\n\nJ\'ouvre le panneau de gestion du runtime IA.',
-            openEnvironment: '🔄 **Environnements Reproductibles...**\n\nJ\'ouvre le panneau de synchronisation d\'environnement. Scannez, exportez et comparez vos environnements développeur.'
+            analyzeProject: "Analyse du projet en cours... J'ouvre le panneau d'analyse.",
+            openDoctor: 'Ouverture du System Doctor... Diagnostic en cours.',
+            autoFix: 'AutoFix lance... Detection et correction automatique.',
+            genDocker: "Generation Dockerfile... J'ouvre le panneau DevOps.",
+            genCICD: "Generation CI/CD... J'ouvre le panneau DevOps.",
+            genKubernetes: "Generation Kubernetes... J'ouvre le panneau DevOps.",
+            openSDK: 'SDK Manager... J ouvre le gestionnaire de SDKs.',
+            openRuntime: 'Runtime Manager... J ouvre le panneau du runtime IA.',
+            openEnvironment: 'Environnements Reproductibles... J ouvre le panneau de synchronisation.'
         };
-
-        const reply = replies[intent] || '✅ Action lancée.';
-        this.panel.webview.postMessage({ type: 'aiMessage', text: reply, model: 'Sudo AI', mock: false });
+        const reply = replies[intent] || 'Action lancee.';
+        this._post({ type: 'history', turns: [{ role: 'assistant', content: reply }] });
         this._addHistory('assistant', reply, 'Sudo AI');
-
-        // Execute the actual action
         setTimeout(() => {
-            switch (intent) {
-                case 'analyzeProject': vscode.commands.executeCommand('sudoStudio.analyzeProject'); break;
-                case 'openDoctor':     vscode.commands.executeCommand('sudoStudio.runDoctor'); break;
-                case 'autoFix':        vscode.commands.executeCommand('sudoStudio.autoFix'); break;
-                case 'genDocker':
-                case 'genCICD':
-                case 'genKubernetes':  vscode.commands.executeCommand('sudoStudio.openDevOpsPanel'); break;
-                case 'openSDK':        vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
-                case 'openRuntime':    vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
-                case 'openEnvironment': vscode.commands.executeCommand('sudoStudio.openEnvironmentPanel'); break;
-            }
+            try {
+                switch (intent) {
+                    case 'analyzeProject': vscode.commands.executeCommand('sudoStudio.analyzeProject'); break;
+                    case 'openDoctor':     vscode.commands.executeCommand('sudoStudio.runDoctor'); break;
+                    case 'autoFix':        vscode.commands.executeCommand('sudoStudio.autoFix'); break;
+                    case 'genDocker':
+                    case 'genCICD':
+                    case 'genKubernetes':  vscode.commands.executeCommand('sudoStudio.openDevOpsPanel'); break;
+                    case 'openSDK':        vscode.commands.executeCommand('sudoStudio.openSDKPanel'); break;
+                    case 'openRuntime':    vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
+                    case 'openEnvironment': vscode.commands.executeCommand('sudoStudio.openEnvironmentPanel'); break;
+                    default: break;
+                }
+            } catch (_) {}
         }, 500);
     }
 
-    async retryLast() {
-        if (!this.lastUserMsg) return;
-        // Remove last exchange from history
-        while (this.history.length && this.history[this.history.length - 1].role === 'assistant') {
-            this.history.pop();
+    // -- history -------------------------------------------------------------------
+    _addHistory(role, content, model, mock) {
+        this.history.push({ role, content, model, mock, ts: Date.now() });
+        if (this.history.length > 50) this.history = this.history.slice(-50);
+        if (this.ctx) {
+            try { this.ctx.globalState.update('sudoChat.history', this.history); } catch (_) {}
         }
-        if (this.history.length && this.history[this.history.length - 1].role === 'user') {
-            this.history.pop();
-        }
-        this.panel.webview.postMessage({ type: 'retryMessage' });
-        await this.handleChat(this.lastUserMsg);
-    }
-
-    stopGeneration() {
-        if (this.abortCtrl) {
-            this.abortCtrl.abort();
-            this.abortCtrl = null;
-        }
-        this.panel.webview.postMessage({ type: 'generating', show: false });
     }
 
     clearHistory() {
         this.history = [];
-        if (this.ctx) this.ctx.globalState.update('sudoChat.history', []);
-        this.panel.webview.postMessage({ type: 'clearDone' });
+        this._queue = [];
+        if (this.ctx) {
+            try { this.ctx.globalState.update('sudoChat.history', []); } catch (_) {}
+        }
+        this._post({ type: 'cleared' });
     }
 
-    _addHistory(role, content, model, mock) {
-        this.history.push({ role, content, model, mock, ts: Date.now() });
-        // Keep last 50 messages
-        if (this.history.length > 50) this.history = this.history.slice(-50);
-        if (this.ctx) this.ctx.globalState.update('sudoChat.history', this.history);
-    }
-
-    async sendStatus() {
+    // -- providers + runtime (same selectors as the agent) -----------------------
+    _postProviders() {
         try {
-            const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
-            this.panel.webview.postMessage({ type: 'status', data: r.data });
+            const { providers, activeId } = getAIProviderService().listProviders();
+            this._post({ type: 'providers',
+                providers: providers.map((p) => ({ id: p.id, type: p.type, name: p.name, model: p.model })),
+                activeId });
+        } catch (e) {
+            this._post({ type: 'error', message: 'Fournisseurs: ' + e.message });
+        }
+    }
+
+    _handleProvider(id) {
+        try {
+            getAIProviderService().setActive(id);
+        } catch (e) {
+            this._post({ type: 'error', message: 'Fournisseur: ' + e.message });
+            return;
+        }
+        this._postProviders();
+    }
+
+    async _checkRuntime() {
+        let active = null;
+        try { active = getAIProviderService().getActive(); } catch (_) { active = null; }
+        if (active && active.type !== 'local') {
+            this._post({ type: 'runtime', kind: 'cloud', provider: active.name, model: active.model });
+            return;
+        }
+        try {
+            const ax = this._http || require('axios');
+            await ax.get(RUNTIME_URL + '/health', { timeout: 3000 });
+            const m = await ax.get(RUNTIME_URL + '/v1/models', { timeout: 3000 });
+            const ids = ((m.data && m.data.data) || []).map((x) => x.id).filter(Boolean);
+            this._post({ type: 'runtime', kind: 'local', online: true, models: ids });
         } catch (_) {
-            // Don't immediately show offline - runtime may still be starting
-            // The status bar polling handles graceful offline detection
-            this.panel.webview.postMessage({
-                type: 'status',
-                data: { status: 'starting', model: { loaded: false, loading: true, download_progress: 0 } }
-            });
-        }
-        this._pushProviders().catch(() => {});
-    }
-
-    async _pushProviders() {
-        const list = getAIProviderService().listProviders();
-        this.panel.webview.postMessage({ type: 'providerList', providers: list.providers, activeId: list.activeId });
-    }
-
-    async downloadModel(modelId) {
-        try {
-            await axios.post('http://127.0.0.1:6000/download',
-                { model: modelId || 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
-            this.panel.webview.postMessage({ type: 'downloadStarted' });
-            vscode.window.showInformationMessage(`⬇️ Downloading ${modelId}... Check status bar.`);
-        } catch (e) {
-            this.panel.webview.postMessage({ type: 'error', text: `Cannot reach runtime port 6000: ${e.message}` });
+            this._post({ type: 'runtime', kind: 'local', online: false, models: [] });
         }
     }
 
-    /**
-     * SSE streaming call to /infer-stream.
-     * Returns true if streaming succeeded (all postMessages already sent).
-     * Returns false if the endpoint is unreachable (caller falls back to _sendToAI).
-     * Throws on abort.
-     */
-    async _sendToAIStream(text) {
-        return new Promise((resolve, reject) => {
-            const payload = JSON.stringify({
-                message: text, prompt: text, input: text,
-                max_tokens: 128, temperature: 0.7
-            });
-
-            const options = {
-                hostname: '127.0.0.1',
-                port:     6000,
-                path:     '/infer-stream',
-                method:   'POST',
-                headers:  {
-                    'Content-Type':   'application/json',
-                    'Content-Length': Buffer.byteLength(payload),
-                    'Accept':         'text/event-stream',
-                },
-                timeout: 300000,  // 5 minutes
-            };
-
-            let streamStarted = false;
-            let accumulatedText = '';
-            let buffer = '';
-
-            const req = http.request(options, (res) => {
-                // Non-SSE response (e.g. 404, 500) → fall back to _sendToAI
-                if (res.statusCode !== 200 || !res.headers['content-type'] ||
-                    !res.headers['content-type'].includes('text/event-stream')) {
-                    res.resume();
-                    resolve(false);
-                    return;
-                }
-
-                res.setEncoding('utf8');
-
-                res.on('data', (chunk) => {
-                    // Abort check
-                    if (this.abortCtrl && this.abortCtrl.signal.aborted) {
-                        req.destroy();
-                        return;
-                    }
-
-                    buffer += chunk;
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop();  // keep incomplete last line
-
-                    for (const line of lines) {
-                        if (!line.startsWith('data: ')) continue;
-                        const raw = line.slice(6).trim();
-                        if (!raw) continue;
-
-                        let evt;
-                        try { evt = JSON.parse(raw); }
-                        catch (_) { continue; }
-
-                        if (!streamStarted) {
-                            streamStarted = true;
-                            // Tell WebView to open a streaming bubble
-                            this.panel.webview.postMessage({ type: 'aiStreamStart' });
-                        }
-
-                        if (evt.token) {
-                            accumulatedText += evt.token;
-                            this.panel.webview.postMessage({ type: 'aiToken', token: evt.token });
-                        }
-
-                        if (evt.done) {
-                            const finalText = evt.reply || accumulatedText.trim();
-                            // Replace the streaming bubble with the final rendered message
-                            this.panel.webview.postMessage({
-                                type:    'aiMessage',
-                                text:    finalText,
-                                model:   evt.mock ? 'Sudo AI (chargement modele)' : (evt.model || 'AI'),
-                                latency: evt.latency_ms,
-                                mock:    evt.mock   || false,
-                                loading: evt.loading || false,
-                                stream:  true,   // signals WebView to replace the streaming bubble
-                            });
-                            this.panel.webview.postMessage({ type: 'generating', show: false });
-                            this._addHistory('assistant', finalText, evt.model, evt.mock);
-                            // P4: Try to create a file if the user asked for one
-                            this._tryWriteFile(text, finalText).catch(() => {});
-                            resolve(true);
-                        }
-                    }
-                });
-
-                res.on('end', () => {
-                    if (!streamStarted) {
-                        resolve(false);  // empty response → fall back
-                    } else {
-                        resolve(true);
-                    }
-                });
-
-                res.on('error', () => resolve(false));
-            });
-
-            req.on('error', (e) => {
-                if (e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
-                    resolve(false);  // runtime down → fall back
-                } else {
-                    resolve(false);
-                }
-            });
-
-            req.on('timeout', () => { req.destroy(); resolve(false); });
-
-            // Wire abort
-            if (this.abortCtrl) {
-                this.abortCtrl.signal.addEventListener('abort', () => {
-                    req.destroy();
-                    reject(Object.assign(new Error('STOPPED'), { name: 'AbortError' }));
-                });
-            }
-
-            req.write(payload);
-            req.end();
-        });
+    _postRunState() {
+        this._post({ type: 'runState', running: this._running, queued: this._queue.length });
     }
 
-    // ── Real file writing ────────────────────────────────────────────────────
-    /**
-     * Inspect the AI reply for a file-creation intent and write the file if:
-     *  1. The user's message explicitly asked to create/write a file, AND
-     *  2. A code block is present in the AI reply.
-     *
-     * Detection heuristics (order matters — first match wins):
-     *  A. Comment on the first line of a code block: // file: name.ext  OR  # file: name.ext
-     *  B. Markdown heading immediately before the code block:  ### hello.py  etc.
-     *  C. User message contains "crée (un fichier|le fichier) <name.ext>"
-     *
-     * Returns the created file path (or null if nothing was written).
-     */
-    async _tryWriteFile(userText, aiReply) {
-        const path = require('path');
-        const fs   = require('fs');
-
-        // Only act when user explicitly asked to create/write a file
-        const userLower = userText.toLowerCase();
-        const isWriteRequest = (
-            /cr[ée]{1,2}[sz]?\s+(un\s+|le\s+|ce\s+)?(fichier|file)\b/i.test(userText) ||
-            /[ée]cris\s+(un\s+|le\s+|ce\s+)?(fichier|file)\b/i.test(userText) ||
-            /write\s+(a\s+|the\s+|this\s+)?(file|script)\b/i.test(userText) ||
-            /create\s+(a\s+|the\s+|this\s+)?(file|script)\b/i.test(userText) ||
-            /génère?\s+(un\s+|le\s+)?(fichier|file|script)\b/i.test(userText) ||
-            // Also detect "Crée un script Python", "Écris un script Dart" etc.
-            /cr[ée]{1,2}[sz]?\s+(un\s+|le\s+)?(script|module|programme|program|component|composant)/i.test(userText) ||
-            /[ée]cris\s+(un\s+|le\s+)?(script|module|programme|program)/i.test(userText)
-        );
-
-        if (!isWriteRequest) return null;
-
-        // Check workspace
-        const wsFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!wsFolder) {
-            // No workspace — inform the user but don't spam every message
-            this.panel.webview.postMessage({
-                type: 'aiMessage',
-                text: '⚠️ **Aucun dossier ouvert.** Ouvrez un projet via **File > Open Folder** pour que je puisse créer des fichiers réels.',
-                model: 'system',
-                mock: true
-            });
-            return null;
-        }
-
-        const workspaceRoot = wsFolder.uri.fsPath;
-
-        // ── Extract code block from AI reply ────────────────────────────────
-        // Regex: ```(lang)?\n(content)```  — or just ``` blocks without lang
-        const codeBlockRe = /```(?:[a-zA-Z0-9_+-]*)?\n([\s\S]*?)```/g;
-        let codeMatch = codeBlockRe.exec(aiReply);
-        if (!codeMatch) {
-            // No code block at all — nothing to write
-            return null;
-        }
-
-        const codeContent = codeMatch[1];
-
-        // ── Detect file name ─────────────────────────────────────────────────
-        let fileName = null;
-
-        // A. First line of code block is a comment naming the file
-        //    // file: hello.py  OR  # file: hello.py  OR  // fichier: hello.py
-        const firstLineMatch = codeContent.match(/^(?:\/\/|#)\s*(?:file|fichier)\s*:\s*([^\s\n]+)/i);
-        if (firstLineMatch) {
-            fileName = firstLineMatch[1].trim();
-        }
-
-        // B. Markdown heading right before the code block:  ### hello.py  or  **hello.py**
-        if (!fileName) {
-            const beforeBlock = aiReply.slice(0, codeBlockRe.lastIndex - codeMatch[0].length);
-            const headingMatch = beforeBlock.match(/(?:#{1,4}|\*\*|`)\s*([\w\-.]+\.[a-zA-Z]{1,10})\s*(?:`|\*\*)?[^\n]*\n\s*$/);
-            if (headingMatch) fileName = headingMatch[1].trim();
-        }
-
-        // C. User message explicitly mentions a file name
-        if (!fileName) {
-            const userFileMatch = userText.match(/\b([\w\-.]+\.(?:py|js|ts|dart|go|rs|java|c|cpp|cs|rb|php|swift|kt|sh|bat|json|yaml|yml|md|html|css|txt))\b/i);
-            if (userFileMatch) fileName = userFileMatch[1];
-        }
-
-        // D. Infer from language/context if still unknown
-        if (!fileName) {
-            // Check for language in user message to assign a sensible extension
-            const langMap = { python: 'script.py', dart: 'app.dart', javascript: 'index.js',
-                              typescript: 'index.ts', go: 'main.go', rust: 'main.rs',
-                              java: 'Main.java', 'c++': 'main.cpp', ruby: 'main.rb',
-                              kotlin: 'main.kt', swift: 'main.swift', bash: 'script.sh' };
-            for (const [lang, defaultName] of Object.entries(langMap)) {
-                if (userLower.includes(lang)) { fileName = defaultName; break; }
-            }
-            // Default fallback
-            if (!fileName) fileName = 'generated_code.txt';
-        }
-
-        // Sanitize: only allow safe path characters, prevent path traversal
-        fileName = path.basename(fileName.replace(/[<>:"|?*\\/]/g, '_'));
-        if (!fileName) return null;
-
-        // ── Write the file ───────────────────────────────────────────────────
-        const filePath = path.join(workspaceRoot, fileName);
-
-        // Remove the file-comment line from code if present (it was our marker)
-        let contentToWrite = codeContent;
-        if (firstLineMatch) {
-            // Strip the first line (the comment)
-            contentToWrite = codeContent.replace(/^[^\n]+\n/, '');
-        }
-
-        try {
-            fs.writeFileSync(filePath, contentToWrite, 'utf8');
-
-            // Refresh VS Code Explorer
-            await vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer');
-
-            // Post success confirmation in chat
-            const relPath = path.relative(workspaceRoot, filePath);
-            this.panel.webview.postMessage({
-                type: 'aiMessage',
-                text: `✅ **Fichier créé :** \`${relPath}\`\n\nLe fichier est visible dans l\'Explorer (panneau gauche).`,
-                model: 'system',
-                mock: false
-            });
-
-            console.log('[EXT] File written:', filePath);
-            return filePath;
-
-        } catch (e) {
-            console.error('[EXT] _tryWriteFile error:', e.message);
-            this.panel.webview.postMessage({
-                type: 'aiMessage',
-                text: `❌ Impossible de créer le fichier \`${fileName}\` : ${e.message}`,
-                model: 'system',
-                mock: true
-            });
-            return null;
-        }
+    _post(msg) {
+        try { this.panel.webview.postMessage(msg); } catch (_) {}
     }
 
-    async _sendToAI(text) {
-        // P2-a: cloud provider routing (shared selector). Local path below unchanged.
-        try {
-            const _svc = getAIProviderService();
-            if (_svc.getActive().type !== 'local') {
-                const _r = await _svc.complete({ prompt: text, max_tokens: 512, temperature: 0.7, purpose: 'chat' });
-                return { reply: _r.reply, model: _r.model, provider: _r.provider, masked: _r.masked };
-            }
-        } catch (_e) { throw new Error(_e.message); }
-        // PRIMARY PATH: Direct call to Python runtime on port 6000
-        console.log('[EXT] _sendToAI - calling http://127.0.0.1:6000/infer');
-        // This is always tried first — no auth required, most reliable
-        // max_tokens: 128 — keeps CPU inference under ~30-60s for TinyLlama (was 512 → 120s+ timeout)
-        const payload = { message: text, prompt: text, input: text, max_tokens: 128, temperature: 0.7 };
-
-        // FIX BUG: AbortController signal was never passed to axios — Stop button had no effect.
-        // Now we pass signal so axios cancels the request when abortCtrl.abort() is called.
-        const signal = this.abortCtrl ? this.abortCtrl.signal : undefined;
-
-        try {
-            const r = await axios.post('http://127.0.0.1:6000/infer', payload, { timeout: 300000, signal });
-            console.log('[EXT] /infer response — status:', r.status, '| reply[:60]:', (r.data.reply||'').slice(0,60));
-            return r.data;
-        } catch (e) {
-            // If aborted by Stop button, rethrow as AbortError for proper UI handling
-            if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') {
-                const err = new Error('STOPPED');
-                err.name = 'AbortError';
-                throw err;
-            }
-            console.warn('[EXT] /infer error — code:', e.code, '| msg:', e.message);
-            // TASK 4a: runtime is up but no model is loaded (503 no_model_loaded).
-            if (e.response && e.response.status === 503) {
-                const noModel = new Error('NO_MODEL_LOADED');
-                noModel.noModel = true;
-                throw noModel;
-            }
-            if (e.code !== 'ECONNREFUSED' && e.code !== 'ENOTFOUND') {
-                // Runtime is up but returned an error — still return what we got
-                if (e.response && e.response.data) return e.response.data;
-                throw new Error(`Runtime error: ${e.message}`);
-            }
-        }
-
-        // FALLBACK PATH: Try backend:5000 proxy if runtime is down
-        if (this.authToken) {
-            try {
-                const r = await axios.post('http://localhost:5000/api/ai/chat',
-                    { message: text, model: 'default' },
-                    { headers: { Authorization: `Bearer ${this.authToken}` }, timeout: 30000, signal });
-                return r.data;
-            } catch (e2) {
-                if (e2.name === 'CanceledError' || e2.code === 'ERR_CANCELED') {
-                    const err = new Error('STOPPED');
-                    err.name = 'AbortError';
-                    throw err;
-                }
-                /* otherwise ignore fallback error */
-            }
-        }
-
-        throw new Error(
-            'Runtime IA hors ligne (port 6000).\n' +
-            'Vérifiez que runtime.exe est lancé depuis start.bat.'
-        );
-    }
+    post(msg) { this._post(msg); }
 
     dispose() {
         ChatPanel.currentPanel = undefined;
-        clearInterval(this._statusInterval);
-        this.panel.dispose();
-        this.disposables.forEach(d => d && d.dispose());
-    }
-
-    getHtmlContent() {
-        // ── CSP NONCE ────────────────────────────────────────────────────────
-        // VSCode WebView enforces "script-src 'nonce-XXXX'" — any <script> tag
-        // without the matching nonce is silently blocked, which means
-        // acquireVsCodeApi() never runs, sendMsg() is never defined, and the
-        // keydown listener is never attached → button does nothing, Enter adds newline.
-        // Fix: generate a per-load nonce and inject it into both the CSP meta tag
-        // and the <script> tag.
-        const nonce = (function() {
-            let n = '';
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-            for (let i = 0; i < 32; i++) n += chars.charAt(Math.floor(Math.random() * chars.length));
-            return n;
-        })();
-
-        return `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sudo AI Chat</title>
-<!-- FIX SESSION 14: CSP nonce required — without it the entire <script> block is
-     silently blocked by VSCode WebView, making every button/keydown dead. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data: https:; connect-src http://localhost:*;">
-<style>
-/* ─── SUDO STUDIO DARK THEME OVERRIDE ─────────────────────── */
-:root {
-    --ss-bg: #0d1117; --ss-card-bg: #161b22; --ss-border: #21262d;
-    --ss-btn-green: #2ea043; --ss-btn-blue: #1f6feb;
-    --ss-text: #e6edf3; --ss-text-muted: #7d8590; --ss-radius: 8px;
-    --ss-input-bg: #0d1117; --ss-success: #3fb950; --ss-warning: #d29922;
-    --ss-error: #f85149; --ss-accent: #58a6ff;
-    /* Map vscode vars to our dark theme */
-    --vscode-editor-background: #0d1117;
-    --vscode-editor-foreground: #e6edf3;
-    --vscode-sideBar-background: #161b22;
-    --vscode-panel-border: #21262d;
-    --vscode-editorWidget-background: #161b22;
-    --vscode-button-background: #2ea043;
-    --vscode-button-foreground: #ffffff;
-    --vscode-button-secondaryBackground: #21262d;
-    --vscode-button-secondaryForeground: #e6edf3;
-    --vscode-input-background: #0d1117;
-    --vscode-input-foreground: #e6edf3;
-    --vscode-input-border: #21262d;
-    --vscode-focusBorder: #1f6feb;
-    --vscode-descriptionForeground: #7d8590;
-    --vscode-textCodeBlock-background: #161b22;
-    --vscode-scrollbarSlider-background: #21262d;
-}
-* { margin:0; padding:0; box-sizing:border-box; }
-body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: var(--vscode-editor-background);
-    color: var(--vscode-editor-foreground);
-    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
-}
-#header {
-    padding: 10px 14px; background: var(--vscode-sideBar-background);
-    border-bottom: 1px solid var(--vscode-panel-border);
-    display: flex; justify-content: space-between; align-items: center; flex-shrink:0;
-}
-#header h1 { font-size:15px; font-weight:600; }
-.hdr-btns { display:flex; gap:6px; }
-#statusBar {
-    padding: 5px 14px; font-size:11px;
-    background: var(--vscode-editorWidget-background);
-    border-bottom: 1px solid var(--vscode-panel-border);
-    display: flex; align-items: center; gap: 8px; flex-shrink:0;
-}
-.dot { width:8px; height:8px; border-radius:50%; background:#888; flex-shrink:0; }
-.dot.online  { background:#4caf50; }
-.dot.loading { background:#ff9800; animation:pulse 1s infinite; }
-.dot.offline { background:#f44336; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-#dlBar { display:none; padding:6px 14px; background:var(--vscode-editorWidget-background); border-bottom:1px solid var(--vscode-panel-border); flex-shrink:0; }
-#dlBar.show { display:block; }
-.dl-track { height:5px; background:var(--vscode-panel-border); border-radius:3px; overflow:hidden; }
-.dl-fill   { height:100%; background:#4caf50; transition:width .3s; width:0; }
-#chat {
-    flex:1; overflow-y:auto; padding:14px;
-    display:flex; flex-direction:column; gap:10px;
-}
-.empty {
-    display:flex; flex-direction:column; align-items:center; justify-content:center;
-    height:100%; gap:10px; color:var(--vscode-descriptionForeground); text-align:center;
-}
-.empty-icon { font-size:44px; opacity:.5; }
-.quick-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:8px; max-width:380px; }
-.qb {
-    padding:8px 10px; border-radius:8px; font-size:12px; cursor:pointer; text-align:left;
-    background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
-    border:1px solid var(--vscode-panel-border); transition:opacity .2s;
-    display:flex; align-items:center; gap:6px;
-}
-.qb:hover { opacity:.8; }
-.msg { display:flex; gap:8px; animation:fadeIn .2s; }
-.msg.user { flex-direction:row-reverse; }
-@keyframes fadeIn { from{opacity:0;transform:translateY(5px)} to{opacity:1;transform:translateY(0)} }
-.av {
-    width:28px; height:28px; border-radius:50%;
-    display:flex; align-items:center; justify-content:center;
-    font-size:12px; font-weight:700; flex-shrink:0;
-}
-.msg.user .av { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
-.msg.ai  .av { background:linear-gradient(135deg,#7c3aed,#4f46e5); color:#fff; }
-.bubble {
-    max-width:82%; background:var(--vscode-input-background);
-    border:1px solid var(--vscode-input-border); border-radius:12px;
-    padding:10px 13px; font-size:13.5px; line-height:1.55; word-break:break-word;
-}
-.msg.user .bubble {
-    background:var(--vscode-button-background); color:var(--vscode-button-foreground); border:none;
-}
-.bubble pre { margin:8px 0; border-radius:6px; overflow:auto; }
-.bubble code:not([class]) {
-    background:var(--vscode-textCodeBlock-background); padding:1px 5px;
-    border-radius:3px; font-size:12px; font-family:monospace;
-}
-.bubble p { margin:4px 0; }
-.bubble ul,.bubble ol { margin:6px 0 6px 18px; }
-.meta { font-size:10px; opacity:.55; margin-top:5px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-.badge { font-size:10px; padding:1px 6px; border-radius:8px; background:rgba(255,152,0,.2); color:#ff9800; }
-.copy-btn {
-    float:right; margin:-2px 0 0 8px; font-size:10px; padding:2px 7px; cursor:pointer; border:none;
-    background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
-    border-radius:4px;
-}
-.copy-btn:hover { opacity:.8; }
-#genWrap { display:none; padding:8px 14px; flex-shrink:0; }
-#genWrap.show { display:flex; align-items:center; gap:8px; }
-.dot-wave { display:flex; gap:3px; align-items:center; }
-.dot-wave span { width:6px; height:6px; border-radius:50%; background:var(--vscode-button-background); animation:dw 1.2s infinite; }
-.dot-wave span:nth-child(2){animation-delay:.2s}
-.dot-wave span:nth-child(3){animation-delay:.4s}
-@keyframes dw { 0%,80%,100%{opacity:.2;transform:scale(.8)} 40%{opacity:1;transform:scale(1)} }
-.stream-cursor { display:inline-block; width:2px; height:1em; background:var(--vscode-button-background); margin-left:2px; vertical-align:text-bottom; animation:blink .7s step-end infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
-#streamingBubble { padding:8px 12px; border-radius:12px; background:var(--vscode-editor-inactiveSelectionBackground); max-width:85%; word-break:break-word; white-space:pre-wrap; }
-#inputArea {
-    padding:10px 14px; background:var(--vscode-sideBar-background);
-    border-top:1px solid var(--vscode-panel-border); flex-shrink:0;
-}
-.input-row { display:flex; gap:6px; align-items:flex-end; }
-#msgInput {
-    flex:1; background:var(--vscode-input-background); color:var(--vscode-input-foreground);
-    border:1px solid var(--vscode-input-border); border-radius:8px;
-    padding:9px 12px; font-size:13.5px; font-family:inherit;
-    resize:none; min-height:38px; max-height:110px;
-}
-#msgInput:focus { outline:none; border-color:var(--vscode-focusBorder); }
-.ibtn {
-    padding:9px 15px; min-height:38px; border:none; border-radius:8px;
-    cursor:pointer; font-size:13px; font-weight:500; white-space:nowrap;
-}
-#sendBtn { background:var(--vscode-button-background); color:var(--vscode-button-foreground); transition:opacity .2s; }
-#sendBtn:hover { opacity:.85; }
-#sendBtn:disabled { opacity:.45; cursor:not-allowed; }
-#stopBtn { display:none; background:#c62828; color:#fff; }
-#stopBtn.show { display:block; }
-.sbtn {
-    padding:4px 9px; font-size:11px; cursor:pointer; border:none; border-radius:4px;
-    background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground);
-}
-.sbtn:hover { opacity:.8; }
-::-webkit-scrollbar { width:6px; }
-::-webkit-scrollbar-thumb { background:var(--vscode-scrollbarSlider-background); border-radius:3px; }
-</style>
-</head>
-<body>
-<div id="header">
-    <h1>🤖 Sudo AI Chat</h1>
-    <div class="hdr-btns">
-        <button class="sbtn" id="agentModeBtn" title="Mode Agent Autonome" style="background:#1f6feb;color:#fff;border-color:#1f6feb">🤖 Agent</button>
-        <button class="sbtn" id="newChatBtn" title="Nouvelle conversation">✨ New</button>
-        <button class="sbtn" id="retryBtn" title="Réessayer">↩ Retry</button>
-        <button class="sbtn" id="statusBtn">⟳ Status</button>
-        <button class="sbtn" id="clearBtn">🗑 Clear</button>
-        <select class="sbtn" id="providerSel" title="Fournisseur IA (agent + chat)" onchange="vscPost({type:'setProvider', id:this.value})"></select>
-        <button class="sbtn" id="providersBtn" title="Configurer les fournisseurs" onclick="vscPost({type:'openProviders'})">Providers</button>
-    </div>
-</div>
-
-<div id="statusBar">
-    <div class="dot" id="dot"></div>
-    <span id="statusTxt">Vérification runtime...</span>
-    <button class="sbtn" id="dlBtn" style="display:none">⬇ Download Model</button>
-</div>
-
-<div id="cloudBanner" style="display:none;padding:6px 14px;background:#3a2a00;border-bottom:2px solid #d29922;color:#f0c060;font-size:12px;font-weight:600;flex-shrink:0;align-items:center;gap:8px;"></div>
-
-<div id="dlBar">
-    <div style="font-size:10px;margin-bottom:3px" id="dlLabel">Téléchargement modèle...</div>
-    <div class="dl-track"><div class="dl-fill" id="dlFill"></div></div>
-</div>
-
-<div id="mockBanner" style="display:none;padding:8px 14px;background:#5a2d00;border-bottom:2px solid #d29922;color:#f0c060;font-size:12px;font-weight:600;flex-shrink:0;align-items:center;gap:8px;">
-    <span style="font-size:16px">⚠️</span>
-    <span id="mockBannerText">Modele non charge - ouvrez Runtime pour charger un modele.</span>
-    <button id="mockBannerBtn" style="margin-left:auto;padding:3px 10px;font-size:11px;background:#d29922;color:#000;border:none;border-radius:4px;cursor:pointer;font-weight:600">Ouvrir Runtime</button>
-</div>
-
-<div id="chat">
-    <div class="empty" id="emptyState">
-        <div class="empty-icon">🤖</div>
-        <div style="font-size:16px;font-weight:600">Sudo AI Assistant</div>
-        <div style="font-size:12px;opacity:.7">Posez une question ou choisissez une action rapide</div>
-        <div class="quick-grid" id="quickGrid">
-            <button class="qb" data-prompt="Analyse ce projet">🔍 Analyser le projet</button>
-            <button class="qb" data-prompt="Diagnostique mon système">🩺 System Doctor</button>
-            <button class="qb" data-prompt="Crée un Dockerfile">🐳 Dockerfile</button>
-            <button class="qb" data-prompt="Génère un pipeline CI/CD GitHub Actions">⚙️ CI/CD Pipeline</button>
-            <button class="qb" data-prompt="Corrige automatiquement les erreurs">🔧 AutoFix</button>
-            <button class="qb" data-vscpost='{"type":"openRuntime"}'>🤖 Runtime &amp; Modèles</button>
-            <button class="qb" data-vscpost='{"type":"openSDK"}'>📦 SDK Manager</button>
-            <button class="qb" data-vscpost='{"type":"openDevOps"}'>🚀 DevOps Panel</button>
-            <button class="qb" data-vscpost='{"type":"openEnvironment"}'>🔄 Env Reproductible</button>
-        </div>
-    </div>
-</div>
-
-<div id="genWrap">
-    <div class="dot-wave"><span></span><span></span><span></span></div>
-    <span style="font-size:12px;opacity:.7">Sudo AI réfléchit...</span>
-</div>
-
-<div id="inputArea">
-    <div class="input-row">
-        <textarea id="msgInput" rows="1" placeholder="Message... (Entrée = envoyer, Shift+Entrée = nouvelle ligne)"></textarea>
-        <button class="ibtn" id="sendBtn">Envoyer</button>
-        <button class="ibtn" id="stopBtn">⏹ Stop</button>
-    </div>
-</div>
-
-<script nonce="${nonce}">
-// ── DIAGNOSTIC SESSION 15 ────────────────────────────────────────────────
-// Every step logs to console so Help→Toggle Dev Tools shows exact failure.
-console.log('[CHAT] Script starting — nonce OK, DOM loading...');
-
-// ── FIX: acquireVsCodeApi() throws if called twice (panel reveal/reload).
-// Without try/catch the ENTIRE script crashes here and nothing below runs.
-// Always guard with try/catch and cache in window._vscode.
-let vscode;
-try {
-    vscode = acquireVsCodeApi();
-    window._vscode = vscode;
-    console.log('[CHAT] acquireVsCodeApi() OK — vscode:', typeof vscode);
-} catch(e) {
-    // Already acquired — reuse the cached instance.
-    vscode = window._vscode;
-    console.warn('[CHAT] acquireVsCodeApi() threw (already acquired) — reusing cached:', typeof vscode, '| error:', e.message);
-}
-if (!vscode) {
-    console.error('[CHAT] FATAL: vscode API unavailable — postMessage will fail');
-}
-
-const chat  = document.getElementById('chat');
-const input = document.getElementById('msgInput');
-console.log('[CHAT] DOM refs — chat:', chat ? 'OK' : 'NULL', '| input(msgInput):', input ? 'OK' : 'NULL');
-
-let generating = false;
-
-function vscPost(msg) {
-    if (!vscode) { console.error('[CHAT] vscPost: vscode undefined, cannot send', msg); return; }
-    try {
-        vscode.postMessage(msg);
-        console.log('[CHAT] vscPost OK — type:', msg.type);
-    } catch(e) {
-        console.error('[CHAT] vscPost ERROR:', e.message, '| msg:', JSON.stringify(msg));
+        try { if (this._runtimeTimer) clearInterval(this._runtimeTimer); } catch (_) {}
+        this._runtimeTimer = null;
+        if (this.engine) { try { this.engine.stop(); } catch (_) {} }
+        this.engine = null;
+        try { this.panel.dispose(); } catch (_) {}
+        this.disposables.forEach((d) => { try { d && d.dispose(); } catch (_) {} });
     }
 }
 
-function sendMsg() {
-    console.log('[CHAT] sendMsg() called — generating:', generating);
-    if (!input) { console.error('[CHAT] sendMsg: input#msgInput not found'); return; }
-    const t = input.value.trim();
-    console.log('[CHAT] sendMsg text:', JSON.stringify(t));
-    if (!t || generating) {
-        console.log('[CHAT] sendMsg: aborted — empty:', !t, '| generating:', generating);
-        return;
-    }
-    input.value = ''; input.style.height = 'auto';
-    setGenerating(true);
-    vscPost({ type: 'sendMessage', text: t });
-    // Safety timeout: auto-reset if no aiMessage in 310s (5min + 10s margin)
-    const _safetyTimer = setTimeout(() => {
-        if (generating) {
-            setGenerating(false);
-            console.warn('[CHAT] Safety timeout: reset generating after 310s');
-        }
-    }, 310000);
-    window._sendSafetyTimer = _safetyTimer;
-}
-function retryLast()    { vscPost({ type: 'retryLast' }); }
-function stopGen()      {
-    vscPost({ type: 'stopGeneration' });
-    setGenerating(false);
-    if (window._sendSafetyTimer) { clearTimeout(window._sendSafetyTimer); window._sendSafetyTimer = null; }
-}
-function clearChat()    { vscPost({ type: 'clearChat' }); }
-function checkStatus()  { vscPost({ type: 'checkStatus' }); }
-function downloadModel(){ vscPost({ type: 'downloadModel', modelId: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }); }
-function usePrompt(t)   {
-    console.log('[CHAT] usePrompt:', JSON.stringify(t));
-    if (input) { input.value = t; input.focus(); sendMsg(); }
-}
-function newChat()      { vscPost({ type: 'clearChat' }); }
-
-function setGenerating(v) {
-    generating = v;
-    document.getElementById('sendBtn').disabled = v;
-    document.getElementById('genWrap').classList.toggle('show', v);
-    document.getElementById('stopBtn').classList.toggle('show', v);
-    // Cancel safety timer whenever generating is turned off
-    if (!v && window._sendSafetyTimer) {
-        clearTimeout(window._sendSafetyTimer);
-        window._sendSafetyTimer = null;
-    }
-}
-
-// ── FIX SESSION 14+15: Replace ALL inline onclick= with addEventListener ──
-// VSCode WebView CSP blocks onclick="..." HTML attributes (inline handlers).
-// Every button must be wired via JS addEventListener AFTER the script loads.
-
-// Send button
-const sendBtnEl = document.getElementById('sendBtn');
-if (sendBtnEl) {
-    sendBtnEl.addEventListener('click', function(e) { e.preventDefault(); sendMsg(); });
-    console.log('[CHAT] sendBtn listener attached');
-} else { console.error('[CHAT] sendBtn NOT FOUND in DOM'); }
-
-// Stop button
-const stopBtnEl = document.getElementById('stopBtn');
-if (stopBtnEl) {
-    stopBtnEl.addEventListener('click', function(e) { e.preventDefault(); stopGen(); });
-    console.log('[CHAT] stopBtn listener attached');
-} else { console.error('[CHAT] stopBtn NOT FOUND in DOM'); }
-
-// Header buttons
-['newChatBtn','retryBtn','statusBtn','clearBtn'].forEach(function(id) {
-    const el = document.getElementById(id);
-    if (el) {
-        el.addEventListener('click', function() {
-            if (id === 'newChatBtn') newChat();
-            else if (id === 'retryBtn') retryLast();
-            else if (id === 'statusBtn') checkStatus();
-            else if (id === 'clearBtn') clearChat();
-        });
-        console.log('[CHAT] ' + id + ' listener attached');
-    } else { console.warn('[CHAT] ' + id + ' not found'); }
-});
-
-// Agent mode button
-const agentModeEl = document.getElementById('agentModeBtn');
-if (agentModeEl) {
-    agentModeEl.addEventListener('click', function() {
-        vscPost({ type: 'openAgentMode' });
-    });
-    console.log('[CHAT] agentModeBtn listener attached');
-}
-
-// Download Model button
-const dlBtnEl = document.getElementById('dlBtn');
-if (dlBtnEl) {
-    dlBtnEl.addEventListener('click', function() { downloadModel(); });
-}
-
-// Mock banner "Ouvrir Runtime" button
-const mockBannerBtnEl = document.getElementById('mockBannerBtn');
-if (mockBannerBtnEl) {
-    mockBannerBtnEl.addEventListener('click', function() {
-        vscPost({ type: 'openRuntime' });
-    });
-    console.log('[CHAT] mockBannerBtn listener attached');
-}
-
-// Quick-action buttons — use data attributes, delegate via event bubbling
-function bindQuickGrid(container) {
-    container.querySelectorAll('.qb').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            const prompt = btn.getAttribute('data-prompt');
-            const post   = btn.getAttribute('data-vscpost');
-            if (prompt) { usePrompt(prompt); }
-            else if (post) { try { vscPost(JSON.parse(post)); } catch(_) {} }
-        });
-    });
-}
-// Bind initial quick-grid (in #emptyState)
-const initialGrid = document.getElementById('quickGrid');
-if (initialGrid) bindQuickGrid(initialGrid.parentElement);
-
-// Keyboard: Enter = send, Shift+Enter = newline
-if (input) {
-    input.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            e.stopPropagation();
-            console.log('[CHAT] Enter key detected → sendMsg()');
-            sendMsg();
-        }
-    });
-    input.addEventListener('input', function() {
-        input.style.height = 'auto';
-        input.style.height = Math.min(input.scrollHeight, 110) + 'px';
-    });
-    console.log('[CHAT] keydown+input listeners attached on #msgInput');
-    input.focus();
-} else {
-    console.error('[CHAT] FATAL: #msgInput not found — keyboard send impossible');
-}
-
-console.log('[CHAT] Script init complete — all listeners attached');
-
-// ── Rendering ─────────────────────────────────────────────────────────────
-function addMsg(html, isUser, meta, noScroll) {
-    removeEmpty();
-    const wrap = document.createElement('div');
-    wrap.className = 'msg ' + (isUser ? 'user' : 'ai');
-    const av = document.createElement('div');
-    av.className = 'av';
-    av.textContent = isUser ? 'U' : 'AI';
-    const b = document.createElement('div');
-    b.className = 'bubble';
-    b.innerHTML = html;
-    if (meta) {
-        const m = document.createElement('div');
-        m.className = 'meta';
-        m.innerHTML = meta;
-        b.appendChild(m);
-    }
-    if (!isUser) {
-        const btn = document.createElement('button');
-        btn.className = 'copy-btn';
-        btn.textContent = 'Copy';
-        btn.onclick = () => {
-            navigator.clipboard.writeText(b.innerText.replace(/Copy$/, '').trim());
-            btn.textContent = '✓'; setTimeout(() => btn.textContent = 'Copy', 1500);
-        };
-        b.insertBefore(btn, b.firstChild);
-    }
-    wrap.appendChild(av);
-    wrap.appendChild(b);
-    chat.appendChild(wrap);
-    if (!noScroll) chat.scrollTop = chat.scrollHeight;
-    // Syntax highlight
-    b.querySelectorAll('pre code').forEach(block => {
-        if (window.hljs) window.hljs.highlightElement(block);
-    });
-}
-
-function renderMarkdown(text) {
-    // FIX SESSION 16: All regex rewritten using new RegExp() constructor to avoid
-    // template-literal escape interpretation bugs. This function body lives inside
-    // the outer getHtmlContent() template literal, so Node.js evaluates escapes:
-    //   backslash+backtick  => raw backtick  => opens unclosed template literal
-    //   backslash-n in /.../ => literal newline => "Invalid regular expression: missing /"
-    //   backslash-star-star  => ** => parsed as block-comment start
-    //   backslash-d         => d  => backslash stripped, no longer matches digits
-    // Using new RegExp(string) avoids all of these because the string is NOT
-    // re-interpreted as a regex literal by the WebView JavaScript parser.
-
-    // Escape HTML first — these simple char-class regexes are safe
-    let t = text
-        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-
-    // Code blocks: triple-backtick lang newline code triple-backtick
-    // Uses new RegExp() to avoid backtick/newline issues in template literal context
-    var reCB = new RegExp('\\x60{3}(\\w*)\\n?([\\s\\S]*?)\\x60{3}', 'g');
-    t = t.replace(reCB, function(_, lang, code) {
-        return '<pre><code class="language-' + (lang || 'text') + '">' + code.trim() + '</code></pre>';
-    });
-
-    // Inline code: single-backtick code single-backtick
-    // Uses new RegExp() to avoid backtick in regex literal
-    var reIC = new RegExp('\\x60([^\\x60]+)\\x60', 'g');
-    t = t.replace(reIC, '<code>$1</code>');
-
-    // Bold: **text** — avoid ** being parsed as block comment /*...*/
-    var reBold = new RegExp('[*][*]([^*]+)[*][*]', 'g');
-    t = t.replace(reBold, '<strong>$1</strong>');
-
-    // Italic: *text* (single star, not double) — same issue
-    var reItalic = new RegExp('(?<![*])[*]([^*]+)[*](?![*])', 'g');
-    t = t.replace(reItalic, '<em>$1</em>');
-
-    // Headers — these are safe as regex literals (no backtick/star issues)
-    t = t.replace(/^### (.+)$/gm, '<strong>$1</strong>');
-    t = t.replace(/^## (.+)$/gm, '<strong style="font-size:1.1em">$1</strong>');
-    t = t.replace(/^# (.+)$/gm,  '<strong style="font-size:1.2em">$1</strong>');
-
-    // Lists
-    t = t.replace(/^[*-] (.+)$/gm, '• $1');
-
-    // Numbered lists — avoid \d (stripped to d by template literal)
-    var reNum = new RegExp('^[0-9]+[.] (.+)$', 'gm');
-    t = t.replace(reNum, function(_, c) { return '› ' + c; });
-
-    // Line breaks — use new RegExp with double-escaped backslash-n (avoids template literal evaluation)
-    var reNL = new RegExp('\\n', 'g');
-    t = t.replace(reNL, '<br>');
-    return t;
-}
-
-function removeEmpty() {
-    const e = document.getElementById('emptyState');
-    if (e) e.remove();
-}
-
-// ── Status ─────────────────────────────────────────────────────────────────
-function updateStatus(data) {
-    const dot = document.getElementById('dot');
-    const txt = document.getElementById('statusTxt');
-    const dlBtn = document.getElementById('dlBtn');
-    const dlBar = document.getElementById('dlBar');
-    const dlFill = document.getElementById('dlFill');
-    const dlLabel = document.getElementById('dlLabel');
-    const mockBanner = document.getElementById('mockBanner');
-    const mockBannerText = document.getElementById('mockBannerText');
-
-    // Helper: show/hide mock banner
-    function setMockBanner(show, reason) {
-        if (!mockBanner) return;
-        if (show) {
-            mockBanner.style.display = 'flex';
-            if (mockBannerText) mockBannerText.textContent = reason || '\u26A0\uFE0F Mod\u00e8le non charg\u00e9 \u2014 ouvrez Runtime pour charger un mod\u00e8le';
-        } else {
-            mockBanner.style.display = 'none';
-        }
-    }
-
-    if (!data || data.status === 'offline') {
-        dot.className = 'dot offline';
-        txt.textContent = 'Runtime hors ligne - lancez runtime.exe';
-        dlBtn.style.display = 'none';
-        dlBar.classList.remove('show');
-        setMockBanner(false);
-        return;
-    }
-    if (data.status === 'starting') {
-        dot.className = 'dot loading';
-        txt.textContent = 'Runtime en demarrage... (3-5 min)';
-        dlBtn.style.display = 'none';
-        dlBar.classList.remove('show');
-        setMockBanner(true, '⏳ Runtime en démarrage — le chat sera disponible apr\u00e8s le chargement du mod\u00e8le');
-        return;
-    }
-    const m = data.model || {};
-    const isMockMode = data.mock_mode === true || (!m.loaded && !m.loading);
-
-    if (m.loading) {
-        dot.className = 'dot loading';
-        const pct = m.download_progress || 0;
-        txt.textContent = '⬇ Chargement modèle ' + pct + '%...';
-        dlBar.classList.add('show');
-        dlFill.style.width = pct + '%';
-        dlLabel.textContent = 'Chargement: ' + (m.name || 'Qwen2.5-Coder') + ' — ' + pct + '%';
-        dlBtn.style.display = 'none';
-        setMockBanner(true, '⏳ Modèle en cours de chargement (' + pct + '%) \u2014 patientez, chat disponible \u00e0 la fin du chargement');
-    } else if (m.loaded) {
-        dot.className = 'dot online';
-        txt.textContent = '\u2705 IA pr\u00eate \u00b7 ' + (m.name || 'mod\u00e8le') + ' \u00b7 ' + (m.device || 'cpu');
-        dlBtn.style.display = 'none';
-        dlBar.classList.remove('show');
-        setMockBanner(false);  // Model loaded — hide banner
-    } else {
-        dot.className = 'dot offline';
-        txt.textContent = '⚠ Aucun modèle chargé';
-        dlBtn.style.display = 'inline-block';
-        dlBar.classList.remove('show');
-        const errMsg = m.error ? ' — ' + m.error.slice(0, 80) : '';
-        setMockBanner(true, '⚠️ Modèle non chargé \u2014 chat indisponible' + errMsg + '. Cliquez "Ouvrir Runtime" pour t\u00e9l\u00e9charger un mod\u00e8le.');
-    }
-}
-
-// ── Messages from extension ───────────────────────────────────────────────
-window.addEventListener('message', ev => {
-    const msg = ev.data;
-    console.log('[CHAT] Message from extension — type:', msg.type, '| keys:', Object.keys(msg).join(','));
-    switch (msg.type) {
-        case 'aiStreamStart': {
-            // Create a streaming bubble with a blinking cursor — tokens will be appended
-            removeEmpty();
-            const streamBubble = document.createElement('div');
-            streamBubble.className = 'msg ai';
-            streamBubble.id = 'streamingBubble';
-            streamBubble.innerHTML = '<span id="streamContent"></span><span class="stream-cursor">|</span>';
-            chat.appendChild(streamBubble);
-            chat.scrollTop = chat.scrollHeight;
-            console.log('[CHAT] aiStreamStart — bubble created');
-            break;
-        }
-        case 'aiToken': {
-            // Append token text to the streaming bubble (raw text, no markdown yet)
-            const sc = document.getElementById('streamContent');
-            if (sc) {
-                sc.textContent += msg.token || '';
-                chat.scrollTop = chat.scrollHeight;
-            }
-            break;
-        }
-        case 'providerList': {
-            const sel = document.getElementById('providerSel');
-            if (sel) sel.innerHTML = (msg.providers||[]).map(p=>'<option value="'+p.id+'"'+(p.id===msg.activeId?' selected':'')+'>'+p.name+'</option>').join('');
-            const b = document.getElementById('cloudBanner');
-            const act = (msg.providers||[]).find(p=>p.id===msg.activeId);
-            if (b) {
-                if (act && act.type !== 'local') { b.style.display='flex'; b.textContent = 'Mode connect\u00e9 : ' + act.name; }
-                else b.style.display='none';
-            }
-            break;
-        }
-        case 'userMessage':
-            addMsg(msg.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(new RegExp('\\n','g'),'<br>'),
-
-                true, null, msg.noScroll);
-            break;
-        case 'aiMessage': {
-            console.log('[CHAT] aiMessage received — model:', msg.model, '| mock:', msg.mock, '| stream:', msg.stream, '| text[:60]:', (msg.text||'').slice(0,60));
-            // Remove the streaming bubble if this message is the final streamed result
-            if (msg.stream) {
-                const bubble = document.getElementById('streamingBubble');
-                if (bubble) bubble.remove();
-            }
-            let meta = '';
-            if (msg.model) meta += msg.model;
-            if (msg.latency && msg.latency > 0) meta += (meta ? ' · ' : '') + msg.latency + 'ms';
-            if (msg.mock && msg.loading) {
-                meta += '<span class="badge" style="background:rgba(33,150,243,.2);color:#2196f3">⏳ Chargement modele...</span>';
-            } else if (msg.mock) {
-                meta += '<span class="badge" style="background:rgba(210,153,34,.25);color:#d29922">⚠️ Réponse simulée (mock)</span>';
-            }
-            if (msg.progress !== undefined && msg.progress > 0 && msg.progress < 100) {
-                meta += (meta ? ' · ' : '') + msg.progress + '%';
-            }
-            addMsg(renderMarkdown(msg.text), false, meta, msg.noScroll);
-            setGenerating(false);
-            break;
-        }
-        case 'error':
-            // FIX BUG: 'error' case never called setGenerating(false) — button stayed
-            // disabled forever after any network error. Fixed: always reset.
-            addMsg('<span style="color:var(--vscode-errorForeground)">' +
-                msg.text.replace(new RegExp('\\n','g'),'<br>') + '</span>', false);
-            setGenerating(false);
-            if (window._sendSafetyTimer) { clearTimeout(window._sendSafetyTimer); window._sendSafetyTimer = null; }
-            break;
-        case 'generating':
-            if (!msg.show) setGenerating(false);
-            break;
-        case 'status':
-            updateStatus(msg.data);
-            break;
-        case 'downloadStarted':
-            document.getElementById('dlBtn').style.display = 'none';
-            document.getElementById('dlBar').classList.add('show');
-            break;
-        case 'clearDone':
-            chat.innerHTML = '';
-            const es = document.createElement('div');
-            es.className = 'empty'; es.id = 'emptyState';
-            // FIX: Build buttons programmatically — no inline onclick= (blocked by CSP)
-            const esIcon  = document.createElement('div'); esIcon.className = 'empty-icon'; esIcon.textContent = '🤖';
-            const esTitle = document.createElement('div'); esTitle.style.cssText = 'font-size:16px;font-weight:600'; esTitle.textContent = 'Nouvelle conversation';
-            const esGrid  = document.createElement('div'); esGrid.className = 'quick-grid';
-            const esItems = [
-                { label: '🔍 Analyser le projet',   prompt: 'Analyse ce projet' },
-                { label: '🩺 System Doctor',         prompt: 'Diagnostique mon système' },
-                { label: '🐳 Dockerfile',             prompt: 'Crée un Dockerfile' },
-                { label: '⚙️ CI/CD',                 prompt: 'Génère un pipeline CI/CD' },
-                { label: '🔧 AutoFix',               prompt: 'Corrige automatiquement' },
-                { label: '🤖 Modèles IA',            vscpost: {type:'openRuntime'} }
-            ];
-            esItems.forEach(function(item) {
-                const b = document.createElement('button');
-                b.className = 'qb'; b.textContent = item.label;
-                b.addEventListener('click', function() {
-                    if (item.prompt)  { usePrompt(item.prompt); }
-                    else if (item.vscpost) { vscPost(item.vscpost); }
-                });
-                esGrid.appendChild(b);
-            });
-            es.appendChild(esIcon); es.appendChild(esTitle); es.appendChild(esGrid);
-            chat.appendChild(es);
-            break;
-        case 'retryMessage':
-            // Remove last AI message from DOM
-            const msgs = chat.querySelectorAll('.msg.ai');
-            if (msgs.length) msgs[msgs.length-1].remove();
-            break;
-    }
-});
-
-// FIX BUG: Removed duplicate WebView-side poll (setInterval checkStatus every 5s).
-// The Extension Host already polls every 5s via this._statusInterval and pushes 
-// status updates to the WebView. Having both caused double the network requests.
-// Initial status check on open is already handled in constructor setTimeout.
-// NOTE: input.focus() is now inside the if(input) block above.
-</script>
-</body>
-</html>`;
-    }
-}
-
-module.exports = { ChatPanel };
+module.exports = { ChatPanel, parseMentions, buildChatPrompt };

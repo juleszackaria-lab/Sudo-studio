@@ -79,9 +79,10 @@ function getWebviewHtml(opts) {
     const nonce = opts.nonce;
     const csp = opts.cspSource;
     const codicons = opts.codiconUri;
+    const isChat = opts.variant === 'chat';
     return '<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8">\n' +
     '<meta name="viewport" content="width=device-width,initial-scale=1.0">\n' +
-    '<title>Sudo Agent</title>\n' +
+    (isChat ? '<title>Sudo Chat</title>\n' : '<title>Sudo Agent</title>\n') +
     '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; ' +
     'style-src ' + csp + ' \'unsafe-inline\'; font-src ' + csp + '; ' +
     'script-src \'nonce-' + nonce + '\'; img-src ' + csp + ' data:;">\n' +
@@ -163,15 +164,21 @@ function getWebviewHtml(opts) {
     '@media (prefers-reduced-motion: reduce) {\n' +
     '.codicon-modifier-spin { animation:none; }\n' +
     '}\n' +
+    '.planbadge { font-size:12px; color:var(--vscode-descriptionForeground); display:inline-flex; gap:8px; align-items:center; white-space:nowrap; }\n' +
+    '#ctxbar { width:100%; max-width:880px; margin:0 auto; display:flex; gap:8px; padding:8px 16px 0; flex-wrap:wrap; }\n' +
+    '#ctxbar:empty { display:none; }\n' +
+    '.chip { font-size:11px; color:var(--vscode-descriptionForeground); border:1px solid var(--vscode-editorWidget-border); border-radius:6px; padding:2px 8px; display:inline-flex; gap:4px; align-items:center; }\n' +
     '</style>\n</head>\n<body>\n' +
     '<div id="hdr">\n' +
-    '  <span class="title"><span class="codicon codicon-comment-discussion"></span>Sudo Agent</span>\n' +
-    '  <label for="modeSel">Mode</label>\n' +
-    '  <select id="modeSel"><option value="build">Build</option><option value="plan">Plan</option></select>\n' +
+    (isChat ? '  <span class="title"><span class="codicon codicon-comment-discussion"></span>Sudo Chat</span>\n' : '  <span class="title"><span class="codicon codicon-comment-discussion"></span>Sudo Agent</span>\n') +
+    (isChat ? '  <span class="planbadge"><span class="codicon codicon-eye"></span>Plan, lecture seule</span>\n' : '  <label for="modeSel">Mode</label>\n') +
+    (isChat ? '' : '  <select id="modeSel"><option value="build">Build</option><option value="plan">Plan</option></select>\n') +
     '  <label for="providerSel">Fournisseur</label>\n' +
     '  <select id="providerSel"></select>\n' +
+    (isChat ? '  <button class="btn" id="toAgentBtn"><span class="codicon codicon-robot"></span>Passer en mode Agent</button>\n' : '') +
     '  <button id="rt" class="rtbtn" title="Cliquer pour actualiser"><span class="dot bad" id="rtDot"></span><span id="rtTxt">Runtime : ?</span></button>\n' +
     '</div>\n' +
+    (isChat ? '<div id="ctxbar"></div>\n' : '') +
     '<div id="thread" role="log" aria-label="Conversation"><div id="empty">' +
     '<span class="codicon codicon-comment-discussion"></span>' +
     '<div class="t">Sudo Agent</div>' +
@@ -231,8 +238,10 @@ function getWebviewHtml(opts) {
     '  input.style.height = "auto";\n' +
     '  input.style.height = Math.min(input.scrollHeight, 140) + "px";\n' +
     '});\n' +
-    'modeSel.addEventListener("change", function() { post({ type: "setMode", mode: modeSel.value }); });\n' +
+    'if (modeSel) modeSel.addEventListener("change", function() { post({ type: "setMode", mode: modeSel.value }); });\n' +
     'providerSel.addEventListener("change", function() { post({ type: "setProvider", id: providerSel.value }); });\n' +
+    'var toAgentBtn = document.getElementById("toAgentBtn");\n' +
+    'if (toAgentBtn) toAgentBtn.addEventListener("click", function() { post({ type: "toAgent" }); });\n' +
     'document.getElementById("rt").addEventListener("click", function() { post({ type: "refreshRuntime" }); });\n' +
     'Array.prototype.forEach.call(document.querySelectorAll("[data-sugg]"), function(b) {\n' +
     '  b.addEventListener("click", function() { input.value = b.getAttribute("data-sugg"); input.focus(); });\n' +
@@ -498,6 +507,47 @@ function getWebviewHtml(opts) {
     '  });\n' +
     '  providerSel.value = activeId;\n' +
     '}\n' +
+    'function setContext(c) {\n' +
+    '  var bar = document.getElementById("ctxbar");\n' +
+    '  if (!bar) return;\n' +
+    '  bar.innerHTML = "";\n' +
+    '  var chips = [];\n' +
+    '  if (c.activeFile) chips.push(["file", c.activeFile]);\n' +
+    '  if (c.hasSelection) chips.push(["quote", "s\\u00e9lection"]);\n' +
+    '  if (c.problems) chips.push(["warning", c.problems + " probl\\u00e8me(s)"]);\n' +
+    '  chips.forEach(function(ch) {\n' +
+    '    var s = document.createElement("span");\n' +
+    '    s.className = "chip";\n' +
+    '    s.innerHTML = "<span class=\\"codicon codicon-" + ch[0] + "\\"></span>";\n' +
+    '    var t = document.createElement("span");\n' +
+    '    t.textContent = ch[1];\n' +
+    '    s.appendChild(t);\n' +
+    '    bar.appendChild(s);\n' +
+    '  });\n' +
+    '}\n' +
+    'function renderHistory(turns) {\n' +
+    '  clearEmpty();\n' +
+    '  turns.forEach(function(t) {\n' +
+    '    if (t.role === "user") {\n' +
+    '      var d = document.createElement("div");\n' +
+    '      d.className = "msg user";\n' +
+    '      d.textContent = t.content || "";\n' +
+    '      thread.appendChild(d);\n' +
+    '    } else {\n' +
+    '      var wrap = document.createElement("div");\n' +
+    '      wrap.className = "msg agent";\n' +
+    '      var b = document.createElement("div");\n' +
+    '      b.className = "bubble";\n' +
+    '      var x = document.createElement("div");\n' +
+    '      x.className = "txt";\n' +
+    '      x.textContent = t.content || "";\n' +
+    '      b.appendChild(x);\n' +
+    '      wrap.appendChild(b);\n' +
+    '      thread.appendChild(wrap);\n' +
+    '    }\n' +
+    '  });\n' +
+    '  thread.scrollTop = thread.scrollHeight;\n' +
+    '}\n' +
     'window.addEventListener("message", function(ev) {\n' +
     '  var m = ev.data || {};\n' +
     '  if (m.type === "runState") setRunning(!!m.running, m.queued || 0);\n' +
@@ -513,8 +563,10 @@ function getWebviewHtml(opts) {
     '    m.ok ? ("Annul\\u00e9 : " + (m.restored || []).join(", ")) : ("Echec : " + m.error));\n' +
     '  else if (m.type === "runtime") setRuntime(m);\n' +
     '  else if (m.type === "providers") setProviders(m.providers, m.activeId);\n' +
-    '  else if (m.type === "mode") { modeSel.value = m.mode; }\n' +
+    '  else if (m.type === "mode") { if (modeSel) modeSel.value = m.mode; }\n' +
     '  else if (m.type === "cleared") { thread.innerHTML = ""; currentAgent = null; parts = {}; approvals = {}; }\n' +
+    '  else if (m.type === "context") setContext(m);\n' +
+    '  else if (m.type === "history") renderHistory(m.turns || []);\n' +
     '});\n' +
     '</script>\n</body>\n</html>';
 }
@@ -699,6 +751,11 @@ class AgentPanel {
         this._running = false;
         this._postRunState();
         // the engine 'done' event renders the final (stopped) state.
+    }
+
+    // P5-d: external send (used by Sudo Chat "Passer en mode Agent").
+    async sendExternal(text) {
+        await this._handleSend(text);
     }
 
     _onApproval(d) {
