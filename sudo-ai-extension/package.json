@@ -36,10 +36,26 @@
           "id": "sudo-studio",
           "title": "Sudo Studio",
           "icon": "$(robot)"
+        },
+        {
+          "id": "sudo-agent",
+          "title": "Sudo Agent",
+          "icon": {
+            "light": "resources/agent-light.svg",
+            "dark": "resources/agent-dark.svg"
+          }
         }
       ]
     },
     "views": {
+      "sudo-agent": [
+        {
+          "id": "sudoAgentLauncher",
+          "name": "Sudo Agent",
+          "icon": "$(comment-discussion)",
+          "contextualTitle": "Sudo Agent"
+        }
+      ],
       "sudo-studio": [
         {
           "id": "sudoStudioDashboard",
@@ -320,9 +336,21 @@
       },
       {
         "command": "sudoStudio.openAgentPanel",
-        "title": "🤖 Sudo Agent — Mode Autonome",
+        "title": "Sudo Agent",
         "category": "Sudo Studio",
         "icon": "$(robot)"
+      },
+      {
+        "command": "sudoAgent.open",
+        "title": "Sudo Agent: Ouvrir",
+        "category": "Sudo Studio",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "sudoAgent.stop",
+        "title": "Sudo Agent: Arreter",
+        "category": "Sudo Studio",
+        "icon": "$(debug-stop)"
       },
       {
         "command": "sudoStudio.refreshDashboard",
@@ -617,7 +645,15 @@
           "description": "Send anonymous usage telemetry"
         }
       }
-    }
+    },
+    "keybindings": [
+      {
+        "command": "sudoAgent.open",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a",
+        "when": "!terminalFocus"
+      }
+    ]
   },
   "scripts": {
     "lint": "eslint .",

@@ -77,6 +77,7 @@ class DashboardProvider {
 
     getQuickActions() {
         return [
+            this.createActionItem('Sudo Agent',              'sudoAgent.open',               'robot'),
             this.createActionItem('💬 Open AI Chat',         'sudoStudio.openChat',          'comment-discussion'),
             this.createActionItem('🩺 System Doctor',        'sudoStudio.runDoctor',          'pulse'),
             this.createActionItem('📦 SDK Manager',          'sudoStudio.openSDKPanel',       'package'),

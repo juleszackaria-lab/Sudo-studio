@@ -895,3 +895,10 @@ zod@4.1.8 :: MIT
 zod-to-json-schema@3.25.2 :: ISC
 zwitch@2.0.4 :: MIT
 ```
+
+## 3. VS Code Codicons (bundled UI icons, MISSION P4)
+
+- Package: @vscode/codicons (css + font), files: sudo-ai-extension/media/codicon.css,
+  sudo-ai-extension/media/codicon.ttf, full license: media/codicons-LICENSE.txt
+- License: CC-BY-4.0 (c) Microsoft Corporation; attribution satisfied by this notice.
+

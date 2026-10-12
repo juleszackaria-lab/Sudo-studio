@@ -45,11 +45,13 @@ const { LicensePanel }         = require('./src/panels/LicensePanel');
 
 // Agent Mode (Mission 2 — autonomous programming agent)
 const { AgentPanel }           = require('./src/agent/AgentPanel');
+const { AgentActivityView }    = require('./src/agent/AgentActivityView');
 
 // Global instances
 let backend, state, context;
 let providers = {};
 let statusBarItem = null;       // VSCode status bar for AI state
+let agentBarItem = null;        // P4: dedicated Sudo Agent button
 let runtimePollTimer = null;    // Polls port 6000 every 5s
 let runtimeProcess = null;      // Child process for auto-started runtime
 let startupProcess = null;      // Child process for start.bat/start.sh
@@ -80,6 +82,9 @@ async function activate(ctx) {
 
         // Status bar for AI runtime (synchronous)
         setupStatusBar(ctx);
+
+        // P4: dedicated Agent status-bar button (synchronous)
+        setupAgentBar(ctx);
 
         // NON-BLOCKING: Connect to backend after 5s delay
         // Longer delay (5s instead of 2s) to avoid "Extension host did not start"
@@ -187,6 +192,11 @@ function registerProviders() {
     providers.license = new LicenseProvider();
     vscode.window.registerTreeDataProvider('sudoStudioLicense', providers.license);
     
+    // P4: Sudo Agent launcher under the dedicated activity-bar icon
+    providers.agentView = new AgentActivityView(context.extensionUri);
+    vscode.window.registerWebviewViewProvider(
+        AgentActivityView.VIEW_ID, providers.agentView);
+
     console.log('✅ All providers registered');
 }
 
@@ -259,6 +269,9 @@ function registerCommands() {
 
         // Agent Mode (Mission 2)
         ['sudoStudio.openAgentPanel',        openAgentPanel],
+        // P4: Sudo Agent (conversation editor tab)
+        ['sudoAgent.open',                       openSudoAgent],
+        ['sudoAgent.stop',                       stopSudoAgent],
 
         // Logs (Mission 3 — MISSION FINALE)
         ['sudoStudio.openLogsFolder',        openLogsFolder],
@@ -647,6 +660,18 @@ async function pollForRuntime(maxSeconds) {
  * Creates a persistent status bar item at the bottom of VSCode showing
  * the AI runtime state in real-time.
  */
+// P4 (g): always-visible Agent button in the status bar.
+function setupAgentBar(ctx) {
+    agentBarItem = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Right, 101
+    );
+    agentBarItem.command = 'sudoAgent.open';
+    agentBarItem.text = '$(comment-discussion) Agent';
+    agentBarItem.tooltip = 'Sudo Agent — ouvrir la conversation (Ctrl+Alt+A)';
+    agentBarItem.show();
+    ctx.subscriptions.push(agentBarItem);
+}
+
 function setupStatusBar(ctx) {
     statusBarItem = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Right, 100
@@ -1569,6 +1594,17 @@ function openEnvironmentPanel() {
 }
 
 // ── Agent Mode ────────────────────────────────────────────────────────────────
+// P4: open/focus the Sudo Agent conversation tab.
+function openSudoAgent() {
+    console.log('[EXT] openSudoAgent() called');
+    AgentPanel.createOrShow(context.extensionUri);
+}
+
+// P4: stop the running agent (if any).
+function stopSudoAgent() {
+    if (AgentPanel.currentPanel) AgentPanel.currentPanel.stopAgent();
+}
+
 function openAgentPanel() {
     console.log('[EXT] openAgentPanel() called');
     const panel = AgentPanel.createOrShow(context.extensionUri);

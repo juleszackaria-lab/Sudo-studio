@@ -300,26 +300,30 @@ class AgentEngine extends EventEmitter {
         const info = (resp && resp.info) || {};
         const parts = (resp && resp.parts) || [];
         const toolErrors = parts.filter(p => p && p.type === 'tool' && p.state && p.state.status === 'error');
+        // P4-d/c: assistant text for the conversation UI (additive; verdict logic unchanged).
+        const reply = parts
+            .filter(p => p && p.type === 'text' && typeof p.text === 'string')
+            .map(p => p.text).join('\n').slice(0, 20000);
         if (info.error) {
             const em = (info.error && (info.error.data || info.error.message)) || info.error;
-            return this._finish(STATUS.FAIL, 'model error: ' + JSON.stringify(em).slice(0, 300), flat, sid);
+            return this._finish(STATUS.FAIL, 'model error: ' + JSON.stringify(em).slice(0, 300), flat, sid, reply);
         }
         const finishReason = parts.filter(p => p && p.type === 'step-finish').map(p => p.reason).join(',');
         if (toolErrors.length) {
             const first = toolErrors[0].state && toolErrors[0].state.error;
             const reason = `${toolErrors.length} tool error(s); first: ${String(first).slice(0, 200)}`;
-            if (!flat.length) return this._finish(STATUS.FAIL, reason, flat, sid);
-            return this._finish(STATUS.PARTIAL, reason + ` | step-finish: ${finishReason || '?'}`, flat, sid);
+            if (!flat.length) return this._finish(STATUS.FAIL, reason, flat, sid, reply);
+            return this._finish(STATUS.PARTIAL, reason + ` | step-finish: ${finishReason || '?'}`, flat, sid, reply);
         }
         if (mode === 'plan' && flat.length) {
-            return this._finish(STATUS.PARTIAL, 'plan mode modified files (should be read-only)', flat, sid);
+            return this._finish(STATUS.PARTIAL, 'plan mode modified files (should be read-only)', flat, sid, reply);
         }
         return this._finish(STATUS.DONE,
-            `finished (${parts.length} parts${finishReason ? ', ' + finishReason : ''})`, flat, sid);
+            `finished (${parts.length} parts${finishReason ? ', ' + finishReason : ''})`, flat, sid, reply);
     }
 
-    _finish(status, reason, filesModified, sessionId) {
-        const summary = { status, reason, filesModified, sessionId, mode: this.mode,
+    _finish(status, reason, filesModified, sessionId, reply = '') {
+        const summary = { status, reason, reply, filesModified, sessionId, mode: this.mode,
             at: new Date().toISOString() };
         this._emit('done', summary);
         return summary;
