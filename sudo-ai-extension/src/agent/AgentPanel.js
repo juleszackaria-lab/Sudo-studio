@@ -88,81 +88,81 @@ function getWebviewHtml(opts) {
     '<link rel="stylesheet" href="' + codicons + '">\n' +
     '<style>\n' +
     '* { margin:0; padding:0; box-sizing:border-box; }\n' +
-    'body { font-family:var(--vscode-font-family); font-size:var(--vscode-font-size); ' +
-    'background:var(--vscode-editor-background); color:var(--vscode-editor-foreground); ' +
-    'height:100vh; display:flex; flex-direction:column; }\n' +
-    '#hdr { display:flex; align-items:center; gap:10px; padding:8px 12px; flex-shrink:0; ' +
-    'border-bottom:1px solid var(--vscode-editorWidget-border); background:var(--vscode-editor-background); }\n' +
-    '#hdr .title { font-weight:600; font-size:13px; display:flex; align-items:center; gap:6px; white-space:nowrap; }\n' +
-    '#hdr select { background:var(--vscode-input-background); color:var(--vscode-input-foreground); ' +
-    'border:1px solid var(--vscode-input-border); border-radius:2px; padding:3px 6px; font-size:12px; font-family:inherit; max-width:220px; }\n' +
-    '#hdr select:focus { outline:1px solid var(--vscode-focusBorder); }\n' +
-    '#hdr label { font-size:11px; color:var(--vscode-descriptionForeground); white-space:nowrap; }\n' +
-    '#rt { margin-left:auto; display:flex; align-items:center; gap:6px; font-size:11.5px; ' +
-    'color:var(--vscode-descriptionForeground); cursor:pointer; white-space:nowrap; }\n' +
-    '.dot { width:8px; height:8px; border-radius:50%; display:inline-block; }\n' +
-    '.dot.ok { background:var(--vscode-testing-iconPassed); } ' +
-    '.dot.bad { background:var(--vscode-testing-iconFailed); } ' +
+    'body { font-family:var(--vscode-font-family); font-size:13px; background:var(--vscode-editor-background); color:var(--vscode-editor-foreground); height:100vh; display:flex; flex-direction:column; line-height:1.5; }\n' +
+    ':focus-visible { outline:1px solid var(--vscode-focusBorder); outline-offset:1px; }\n' +
+    '#hdr { display:flex; align-items:center; gap:8px; padding:8px 16px; flex-shrink:0; flex-wrap:wrap; border-bottom:1px solid var(--vscode-editorWidget-border); background:var(--vscode-editor-background); }\n' +
+    '#hdr .title { font-weight:600; font-size:13px; display:flex; align-items:center; gap:8px; white-space:nowrap; margin-right:8px; }\n' +
+    '#hdr .title .codicon { font-size:16px; }\n' +
+    '#hdr select { background:var(--vscode-input-background); color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border); border-radius:2px; padding:2px 4px; font-size:12px; font-family:inherit; max-width:240px; }\n' +
+    '#hdr label { font-size:12px; color:var(--vscode-descriptionForeground); white-space:nowrap; }\n' +
+    '.rtbtn { margin-left:auto; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--vscode-descriptionForeground); cursor:pointer; white-space:nowrap; background:none; border:none; border-radius:2px; padding:4px 8px; font-family:inherit; }\n' +
+    '.rtbtn:hover { color:var(--vscode-editor-foreground); }\n' +
+    '.dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }\n' +
+    '.dot.ok { background:var(--vscode-testing-iconPassed); }\n' +
+    '.dot.bad { background:var(--vscode-testing-iconFailed); }\n' +
     '.dot.cloud { background:var(--vscode-textLink-foreground); }\n' +
-    '#thread { flex:1; overflow-y:auto; padding:12px 16px; display:flex; flex-direction:column; gap:10px; }\n' +
-    '.msg { max-width:860px; }\n' +
-    '.msg.user { align-self:flex-end; background:var(--vscode-input-background); ' +
-    'border:1px solid var(--vscode-input-border); border-radius:6px; padding:8px 12px; white-space:pre-wrap; word-break:break-word; }\n' +
-    '.msg.agent { align-self:stretch; }\n' +
-    '.bubble { border:1px solid var(--vscode-editorWidget-border); border-radius:6px; ' +
-    'background:var(--vscode-editorWidget-background); padding:10px 12px; }\n' +
-    '.bubble .txt { white-space:pre-wrap; word-break:break-word; line-height:1.5; }\n' +
-    '.bubble .txt:empty::after { content:""; }\n' +
-    '.stepline { font-size:12px; color:var(--vscode-descriptionForeground); padding:3px 0; ' +
-    'display:flex; gap:6px; align-items:baseline; }\n' +
-    'details.tool { border:1px solid var(--vscode-editorWidget-border); border-radius:4px; margin-top:6px; font-size:12px; }\n' +
-    'details.tool summary { cursor:pointer; padding:5px 8px; list-style:none; display:flex; gap:8px; align-items:center; }\n' +
+    '#thread { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:16px; }\n' +
+    '.msg.agent { width:100%; max-width:880px; margin:0 auto; }\n' +
+    '.msg.user { align-self:flex-end; max-width:min(700px,88%); margin:0 max(0px,calc((100% - 880px)/2)) 0 auto; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); border-radius:6px; padding:8px 12px; white-space:pre-wrap; word-break:break-word; }\n' +
+    '.bubble .txt { white-space:pre-wrap; word-break:break-word; line-height:1.55; }\n' +
+    '.bubble .txt:empty { display:none; }\n' +
+    '.stepline { font-size:12px; color:var(--vscode-descriptionForeground); padding:2px 0; display:flex; gap:8px; align-items:baseline; }\n' +
+    '.stepline .codicon { font-size:12px; }\n' +
+    'details.tool { border:1px solid var(--vscode-editorWidget-border); border-radius:6px; margin-top:8px; font-size:12px; background:var(--vscode-editorWidget-background); }\n' +
+    'details.tool summary { cursor:pointer; padding:8px 12px; list-style:none; display:flex; gap:8px; align-items:center; border-radius:6px; }\n' +
     'details.tool summary::-webkit-details-marker { display:none; }\n' +
-    'details.tool summary .st { margin-left:auto; color:var(--vscode-descriptionForeground); }\n' +
-    'details.tool pre { border-top:1px solid var(--vscode-editorWidget-border); padding:8px; ' +
-    'white-space:pre-wrap; word-break:break-word; font-size:11px; max-height:220px; overflow:auto; }\n' +
-    '.approval { border:1px solid var(--vscode-editorWarning-foreground); border-radius:6px; padding:10px 12px; margin-top:8px; }\n' +
-    '.approval h4 { font-size:12.5px; display:flex; gap:6px; align-items:center; margin-bottom:4px; }\n' +
+    'details.tool summary .tgt { color:var(--vscode-descriptionForeground); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }\n' +
+    'details.tool summary .st { margin-left:auto; color:var(--vscode-descriptionForeground); font-size:11px; flex-shrink:0; }\n' +
+    'details.tool pre { border-top:1px solid var(--vscode-editorWidget-border); padding:8px 12px; white-space:pre-wrap; word-break:break-word; font-family:var(--vscode-editor-font-family); font-size:12px; max-height:224px; overflow:auto; margin:0; }\n' +
+    '.approval { border:1px solid var(--vscode-editorWidget-border); border-left:3px solid var(--vscode-editorWarning-foreground); border-radius:6px; padding:12px; margin-top:8px; background:var(--vscode-editorWidget-background); }\n' +
+    '.approval h4 { font-size:13px; font-weight:600; display:flex; gap:8px; align-items:center; margin-bottom:4px; }\n' +
     '.approval p { font-size:12px; color:var(--vscode-descriptionForeground); word-break:break-word; }\n' +
-    '.approval .row { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }\n' +
-    '.done { border-radius:6px; padding:10px 12px; margin-top:8px; border:1px solid var(--vscode-editorWidget-border); }\n' +
-    '.done.ok { border-color:var(--vscode-testing-iconPassed); } ' +
-    '.done.fail { border-color:var(--vscode-testing-iconFailed); } ' +
-    '.done.part { border-color:var(--vscode-editorWarning-foreground); }\n' +
-    '.done h4 { font-size:12.5px; display:flex; gap:6px; align-items:center; }\n' +
+    '.approval .row { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }\n' +
+    '.done { border:1px solid var(--vscode-editorWidget-border); border-radius:6px; padding:12px; margin-top:8px; background:var(--vscode-editorWidget-background); }\n' +
+    '.done.ok { border-left:3px solid var(--vscode-testing-iconPassed); }\n' +
+    '.done.fail { border-left:3px solid var(--vscode-testing-iconFailed); }\n' +
+    '.done.part { border-left:3px solid var(--vscode-editorWarning-foreground); }\n' +
+    '.done h4 { font-size:13px; font-weight:600; display:flex; gap:8px; align-items:center; }\n' +
     '.done .reason { font-size:12px; margin-top:4px; word-break:break-word; }\n' +
-    '.done pre.reply { font-size:12px; white-space:pre-wrap; word-break:break-word; margin-top:6px; ' +
-    'max-height:260px; overflow:auto; font-family:inherit; }\n' +
-    '.files { margin-top:8px; font-size:12px; }\n' +
+    '.files { margin-top:12px; font-size:12px; }\n' +
     '.files h5 { font-size:11px; color:var(--vscode-descriptionForeground); margin-bottom:4px; font-weight:600; }\n' +
-    '.files .frow { display:flex; gap:8px; align-items:center; padding:2px 0; }\n' +
+    '.files .frow { display:flex; gap:8px; align-items:center; padding:4px 8px; margin:0 -8px; border-radius:4px; }\n' +
+    '.files .frow:hover { background:var(--vscode-list-hoverBackground); }\n' +
     '.files .frow .nm { word-break:break-all; }\n' +
-    'a.link, button.linklike { color:var(--vscode-textLink-foreground); background:none; border:none; ' +
-    'cursor:pointer; font-size:inherit; font-family:inherit; padding:0; text-decoration:none; white-space:nowrap; }\n' +
-    'a.link:hover, button.linklike:hover { color:var(--vscode-textLink-activeForeground); text-decoration:underline; }\n' +
-    '.btn { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground); ' +
-    'border:1px solid var(--vscode-button-border, transparent); border-radius:2px; padding:5px 12px; ' +
-    'font-size:12.5px; cursor:pointer; font-family:inherit; display:inline-flex; gap:6px; align-items:center; }\n' +
+    'button.linklike { color:var(--vscode-textLink-foreground); background:none; border:none; cursor:pointer; font-size:inherit; font-family:inherit; padding:0; white-space:nowrap; margin-left:auto; }\n' +
+    'button.linklike:hover { color:var(--vscode-textLink-activeForeground); text-decoration:underline; }\n' +
+    '.btn { background:var(--vscode-button-secondaryBackground); color:var(--vscode-button-secondaryForeground); border:1px solid transparent; border-radius:2px; padding:4px 12px; min-height:28px; font-size:13px; cursor:pointer; font-family:inherit; display:inline-flex; gap:8px; align-items:center; justify-content:center; }\n' +
     '.btn:hover { background:var(--vscode-button-secondaryHoverBackground); }\n' +
     '.btn:disabled { opacity:.45; cursor:default; }\n' +
     '.btn.primary { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }\n' +
     '.btn.primary:hover { background:var(--vscode-button-hoverBackground); }\n' +
-    '#composer { border-top:1px solid var(--vscode-editorWidget-border); padding:10px 12px; flex-shrink:0; }\n' +
-    '#composer .row { display:flex; gap:8px; align-items:flex-end; }\n' +
-    '#agentInput { flex:1; background:var(--vscode-input-background); color:var(--vscode-input-foreground); ' +
-    'border:1px solid var(--vscode-input-border); border-radius:2px; padding:8px 10px; font-size:13px; ' +
-    'font-family:inherit; resize:none; min-height:38px; max-height:140px; }\n' +
-    '#agentInput:focus { outline:none; border-color:var(--vscode-focusBorder); }\n' +
+    '#composer { flex-shrink:0; width:calc(100% - 32px); max-width:880px; margin:0 auto 16px; border:1px solid var(--vscode-input-border); border-radius:6px; background:var(--vscode-input-background); padding:8px 8px 4px; }\n' +
+    '#composer:focus-within { border-color:var(--vscode-focusBorder); }\n' +
+    '#agentInput { width:100%; background:transparent; color:var(--vscode-input-foreground); border:none; padding:4px; font-size:13px; font-family:inherit; resize:none; min-height:40px; max-height:144px; line-height:1.5; }\n' +
+    '#agentInput:focus { outline:none; }\n' +
     '#agentInput::placeholder { color:var(--vscode-input-placeholderForeground); }\n' +
-    '#queueBadge { display:none; font-size:11px; color:var(--vscode-descriptionForeground); margin-top:6px; }\n' +
-    '#queueBadge.show { display:block; }\n' +
-    '#empty { display:flex; flex-direction:column; align-items:center; gap:8px; padding:48px 20px; ' +
-    'color:var(--vscode-descriptionForeground); text-align:center; }\n' +
-    '#empty .codicon { font-size:40px; }\n' +
-    '#empty .t { font-size:14px; font-weight:600; color:var(--vscode-editor-foreground); }\n' +
-    '#empty .s { font-size:12px; }\n' +
-    '.sugg { display:flex; gap:6px; margin-top:6px; flex-wrap:wrap; justify-content:center; }\n' +
-    '.errline { color:var(--vscode-errorForeground); font-size:12px; padding:6px 0; display:flex; gap:6px; align-items:baseline; }\n' +
+    '#composer .crow { display:flex; align-items:center; gap:8px; padding:4px; }\n' +
+    '#hint { font-size:11px; color:var(--vscode-descriptionForeground); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }\n' +
+    '#queueBadge { display:none; font-size:11px; color:var(--vscode-descriptionForeground); white-space:nowrap; }\n' +
+    '#queueBadge.show { display:inline; }\n' +
+    '#composer .cbtns { margin-left:auto; display:flex; gap:8px; flex-shrink:0; }\n' +
+    '#empty { width:100%; max-width:880px; margin:0 auto; display:flex; flex-direction:column; align-items:center; gap:8px; padding:48px 16px; color:var(--vscode-descriptionForeground); text-align:center; }\n' +
+    '#empty .codicon { font-size:44px; }\n' +
+    '#empty .t { font-size:16px; font-weight:600; color:var(--vscode-editor-foreground); }\n' +
+    '#empty .s { font-size:12px; max-width:560px; }\n' +
+    '.sugg { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; justify-content:center; }\n' +
+    '.errline { color:var(--vscode-errorForeground); font-size:12px; padding:4px 0; display:flex; gap:8px; align-items:baseline; }\n' +
+    '::-webkit-scrollbar { width:12px; height:12px; }\n' +
+    '::-webkit-scrollbar-thumb { background:var(--vscode-scrollbarSlider-background); border:3px solid transparent; border-radius:6px; background-clip:content-box; }\n' +
+    '@media (max-width: 640px) {\n' +
+    '#thread { padding:12px; gap:12px; }\n' +
+    '#composer { width:calc(100% - 24px); margin-bottom:12px; }\n' +
+    '.approval .row .btn { flex:1 1 100%; }\n' +
+    '#hint { display:none; }\n' +
+    '}\n' +
+    '@media (prefers-reduced-motion: reduce) {\n' +
+    '.codicon-modifier-spin { animation:none; }\n' +
+    '}\n' +
     '</style>\n</head>\n<body>\n' +
     '<div id="hdr">\n' +
     '  <span class="title"><span class="codicon codicon-comment-discussion"></span>Sudo Agent</span>\n' +
@@ -170,9 +170,9 @@ function getWebviewHtml(opts) {
     '  <select id="modeSel"><option value="build">Build</option><option value="plan">Plan</option></select>\n' +
     '  <label for="providerSel">Fournisseur</label>\n' +
     '  <select id="providerSel"></select>\n' +
-    '  <span id="rt" title="Cliquer pour actualiser"><span class="dot bad" id="rtDot"></span><span id="rtTxt">Runtime : ?</span></span>\n' +
+    '  <button id="rt" class="rtbtn" title="Cliquer pour actualiser"><span class="dot bad" id="rtDot"></span><span id="rtTxt">Runtime : ?</span></button>\n' +
     '</div>\n' +
-    '<div id="thread"><div id="empty">' +
+    '<div id="thread" role="log" aria-label="Conversation"><div id="empty">' +
     '<span class="codicon codicon-comment-discussion"></span>' +
     '<div class="t">Sudo Agent</div>' +
     '<div class="s">D&eacute;crivez une t&acirc;che ci-dessous. Entr&eacute;e envoie, Maj+Entr&eacute;e = nouvelle ligne.</div>' +
@@ -181,11 +181,12 @@ function getWebviewHtml(opts) {
     '<button class="btn" data-sugg="Explique le fichier ouvert dans l&rsquo;&eacute;diteur">Expliquer le fichier actif</button>' +
     '<button class="btn" data-sugg="Lance les tests et r&eacute;sume le r&eacute;sultat">Lancer les tests</button>' +
     '</div></div></div>\n' +
-    '<div id="composer"><div class="row">' +
-    '<textarea id="agentInput" rows="1" placeholder="D&eacute;crivez la t&acirc;che de l&rsquo;agent..."></textarea>' +
-    '<button class="btn primary" id="btnSend"><span class="codicon codicon-send"></span>Envoyer</button>' +
-    '<button class="btn" id="btnStop" disabled><span class="codicon codicon-debug-stop"></span>Arr&ecirc;ter</button>' +
-    '</div><div id="queueBadge"></div></div>\n' +
+    '<div id="composer">' +
+    '<textarea id="agentInput" rows="1" placeholder="D&eacute;crivez la t&acirc;che de l&rsquo;agent..." aria-label="Message pour l&rsquo;agent"></textarea>' +
+    '<div class="crow"><span id="hint">Entr&eacute;e pour envoyer, Maj+Entr&eacute;e pour une nouvelle ligne</span>' +
+    '<span id="queueBadge"></span>' +
+    '<span class="cbtns"><button class="btn" id="btnStop" disabled><span class="codicon codicon-debug-stop"></span>Arr&ecirc;ter</button>' +
+    '<button class="btn primary" id="btnSend"><span class="codicon codicon-send"></span>Envoyer</button></span></div></div>\n' +
     '<script nonce="' + nonce + '">\n' +
     '"use strict";\n' +
     'var vscode = acquireVsCodeApi();\n' +
@@ -316,9 +317,9 @@ function getWebviewHtml(opts) {
     '  var spin = (icon === "sync") ? " codicon-modifier-spin" : "";\n' +
     '  var detail = "";\n' +
     '  try { detail = JSON.stringify(inner.state || inner, null, 1).slice(0, 4000); } catch (e) { detail = ""; }\n' +
-    '  el.innerHTML = "<summary><span class=\\"codicon codicon-chevron-right\\"></span>' +
-    '<span class=\\"codicon codicon-" + icon + spin + "\\"></span>" +\n' +
-    '    "<span><b>" + esc(name) + "</b> " + esc(tgt) + "</span>" +\n' +
+    '  el.innerHTML = "<summary><span class=\\"codicon codicon-" + icon + spin + "\\"></span>" +\n' +
+    '    "<span><b>" + esc(name) + "</b></span> " +\n' +
+    '    "<span class=\\"tgt\\">" + esc(tgt) + "</span>" +\n' +
     '    "<span class=\\"st\\">" + esc(st) + "</span></summary><pre>" + esc(detail) + "</pre>";\n' +
     '  stick();\n' +
     '}\n' +
