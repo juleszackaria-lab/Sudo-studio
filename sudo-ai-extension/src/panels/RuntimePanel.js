@@ -5,6 +5,8 @@
  */
 const vscode = require('vscode');
 const axios  = require('axios');
+const { installAxiosConnRetry } = require('../utils/httpRetry');
+installAxiosConnRetry(axios);
 const os     = require('os');
 
 // Full model catalogue matching server.enterprise.py MODEL_CATALOGUE
@@ -65,7 +67,7 @@ class RuntimePanel {
         switch (msg.type) {
             case 'refresh':        await this.fetchStatus(); break;
             case 'downloadModel':  await this.downloadModel(msg.modelId); break;
-            case 'switchModel':    await this.switchModel(msg.modelId); break;
+            case 'switchModel':    await this.switchModel(msg.modelId, msg.nCtx); break;
             case 'restartRuntime': await this.restartRuntime(); break;
             case 'fetchLogs':      await this.fetchLogs(); break;
             case 'cacheInfo':      await this.fetchCacheInfo(); break;
@@ -133,8 +135,23 @@ class RuntimePanel {
             }));
         }
 
+        // P1-d: supervisor status (best effort, backend :5000 may be down)
+        let supRestart = null;
+        try {
+            const rs = await axios.get('http://localhost:5000/api/supervisor/runtime-status', { timeout: 2500 });
+            if (rs && rs.data && rs.data.lastRestart) supRestart = rs.data.lastRestart;
+        } catch (e) { /* no banner */ }
+        // P1-c: current n_ctx (from /models; /health is frozen by spec)
+        let modelsInfo = null;
+        try {
+            const rm = await axios.get('http://127.0.0.1:6000/models', { timeout: 3000 });
+            if (rm && rm.data) modelsInfo = { n_ctx: rm.data.n_ctx ?? null, n_ctx_default: rm.data.n_ctx_default ?? null };
+        } catch (e) { /* ignore */ }
+
         this.panel.webview.postMessage({
             type:         'statusUpdate',
+            supRestart,
+            modelsInfo,
             sysInfo,
             runtimeData,
             runtimeError,
@@ -238,12 +255,15 @@ class RuntimePanel {
         }
     }
 
-    async switchModel(modelId) {
+    async switchModel(modelId, nCtx) {
         if (!modelId) return;
-        console.log('[RUNTIME] switchModel:', modelId);
+        console.log('[RUNTIME] switchModel:', modelId, 'nCtx=', nCtx);
+        const payload = { model: modelId, force_download: false };
+        const n = parseInt(nCtx, 10);
+        if (Number.isFinite(n) && n >= 512 && n <= 32768) payload.n_ctx = n;
         try {
             await axios.post('http://127.0.0.1:6000/reload',
-                { model: modelId, force_download: false }, { timeout: 5000 });
+                payload, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'actionDone', action: 'switch', modelId });
             vscode.window.showInformationMessage(`🔄 Chargement modèle: ${modelId}`);
             setTimeout(() => this.fetchStatus(), 1000);
@@ -456,6 +476,12 @@ h2 { font-size:15px; font-weight:700; margin-bottom:12px; display:flex; align-it
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
         <span id="statusBadge" class="offline">⚫ Hors ligne</span>
         <span id="modelName" style="font-size:12px;color:var(--muted)">—</span>
+    </div>
+    <div id="restartBanner" style="display:none;font-size:11px;color:var(--orange);background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);border-radius:6px;padding:6px 10px;margin-bottom:10px"></div>
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:var(--muted)">
+        <label for="nctxInput" title="Contexte tokens. Vide = defaut auto selon RAM.">n_ctx :</label>
+        <input id="nctxInput" type="number" min="512" max="32768" step="512" placeholder="auto" style="width:90px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px" />
+        <span id="nctxCur" title="n_ctx actif"></span>
     </div>
     <!-- Download progress bar (hidden by default, shown during active download) -->
     <div id="dlBar" class="dl-bar"><div id="dlFill" class="dl-fill"></div></div>
@@ -775,7 +801,9 @@ function renderCatalogue(catalogue, meta) {
         btn.addEventListener('click', function() {
             const id = this.getAttribute('data-id');
             console.log('[RUNTIME] Load clicked:', id);
-            vscPost({ type: 'switchModel', modelId: id });
+            var nctxEl = document.getElementById('nctxInput');
+            var nctxVal = nctxEl ? parseInt(nctxEl.value, 10) : NaN;
+            vscPost({ type: 'switchModel', modelId: id, nCtx: isNaN(nctxVal) ? undefined : nctxVal });
             this.disabled = true;
             this.textContent = '⟳ Chargement...';
         });
@@ -793,6 +821,15 @@ window.addEventListener('message', function(ev) {
         case 'statusUpdate': {
             updateSystem(msg.sysInfo);
             updateRuntime(msg.runtimeData);
+            if (msg.supRestart && msg.supRestart.atHHMM) {
+                var rb = document.getElementById('restartBanner');
+                if (rb) { rb.style.display = 'block'; rb.textContent = 'Runtime red\u00e9marr\u00e9 \u00e0 ' + msg.supRestart.atHHMM + ' (' + (msg.supRestart.reason || 'relance auto') + ')'; }
+            }
+            var nctxCur = document.getElementById('nctxCur');
+            if (nctxCur) {
+                var mi = msg.modelsInfo || {};
+                nctxCur.textContent = (mi.n_ctx ? ('actif: ' + mi.n_ctx) : '') + (mi.n_ctx_default ? (' (defaut: ' + mi.n_ctx_default + ')') : '');
+            }
             if (msg.runtimeError) {
                 document.getElementById('statusBadge').className = 'offline';
                 document.getElementById('statusBadge').textContent = '⚫ Hors ligne';

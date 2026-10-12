@@ -4,6 +4,8 @@
  */
 
 const axios = require('axios');
+const { installAxiosConnRetry } = require('../utils/httpRetry');
+installAxiosConnRetry(axios);
 const vscode = require('vscode');
 
 class BackendService {

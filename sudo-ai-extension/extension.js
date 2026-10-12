@@ -7,6 +7,8 @@ const vscode = require('vscode');
 const fs     = require('fs');
 const path   = require('path');
 const axios  = require('axios');
+const { installAxiosConnRetry } = require('./src/utils/httpRetry');
+installAxiosConnRetry(axios);
 const { spawn } = require('child_process');
 const { getBackendService } = require('./src/services/BackendService');
 const { getStateManager } = require('./src/services/StateManager');

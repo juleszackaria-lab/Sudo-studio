@@ -111,6 +111,7 @@ const { initDB } = require('./models/user.model');
 earlyLog('Loading logger (winston)...');
 const logger = require('./utils/logger');
 earlyLog('Logger loaded. File transport: ' + logger.fileTransportOk);
+try { require('./utils/connRetry').installAxiosConnRetry(require('axios')); earlyLog('connRetry installed (P1-e: 1 retry on ECONNRESET/REFUSED)'); } catch (e) { earlyLog('WARNING connRetry install failed: ' + e.message); }
 
 // Routes — each wrapped individually so one bad require does not kill the server
 function safeRequire(modPath, name) {
@@ -139,6 +140,7 @@ const devopsRoutes      = safeRequire('./routes/devops.routes',      'devops');
 const aiRoutes          = safeRequire('./routes/ai.routes',          'ai');
 const modelsRoutes      = safeRequire('./routes/models.routes',      'models');
 const sdkRoutes         = safeRequire('./routes/sdk.routes',         'sdk');
+const supervisorRoutes  = safeRequire('./routes/supervisor.routes',  'supervisor');
 earlyLog('All routes loaded');
 
 // ================================================================
@@ -207,6 +209,7 @@ app.use('/', devopsRoutes);
 app.use('/', aiRoutes);
 app.use('/', modelsRoutes);
 app.use('/', sdkRoutes);
+app.use('/', supervisorRoutes);
 
 // Static UI
 app.use('/ui', express.static(path.join(BASE_DIR, 'web-ui')));
@@ -313,3 +316,4 @@ function startServer(port) {
 }
 
 startServer(PORT);
+try { require('./supervisor/runtimeSupervisor').getSupervisor().start(); earlyLog('Runtime supervisor started (P1-d)'); } catch (e) { earlyLog('WARNING supervisor start failed: ' + e.message); }

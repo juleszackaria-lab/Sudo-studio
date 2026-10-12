@@ -114,6 +114,7 @@ dlog("stdlib imports OK")
 
 dlog("Importing flask...")
 from flask import Flask, request, jsonify, Response, stream_with_context
+import openai_compat  # P1: OpenAI API + n_ctx policy (sibling module, no cycle: stdlib only)
 dlog("flask imported OK")
 
 dlog("Importing flask_cors...")
@@ -159,6 +160,7 @@ class State:
     detected_local = False   # True if model was found locally
     detection_log  = []      # Messages from the scan phase
     current_job    = None    # Active load job {model, force_download, started_at} or None
+    n_ctx          = None    # P1-c: active context size (None until first load)
 
 state = State()
 
@@ -626,12 +628,13 @@ def load_model_state() -> dict:
         logger.debug(f"[STATE] Could not read state file: {e}")
     return {}
 
-def save_model_state(model_id: str, cache_path: str = ""):
+def save_model_state(model_id: str, cache_path: str = "", n_ctx: int = None):
     """Persist which model was last validated, to avoid re-scanning on restart."""
     try:
         data = {
             "model_id":   model_id,
             "cache_path": cache_path,
+            "n_ctx":      n_ctx,
             "saved_at":   time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         with open(STATE_FILE, 'w') as f:
@@ -1182,7 +1185,7 @@ def resolve_gguf_wanted(model_id: str):
     return DEFAULT_MODEL_HF_REPO, DEFAULT_MODEL_FILENAME
 
 
-def load_model_thread(model_id: str, force_download: bool = False):
+def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = None):
     """
     Load model in background thread.
     If model is already cached locally, loads from cache (no download).
@@ -1346,13 +1349,17 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     import multiprocessing
                     n_threads = max(2, multiprocessing.cpu_count() - 1)
                     dlog(f"[GGUF] n_threads={n_threads}")
+                    # P1-c: configurable n_ctx, prudent default from free RAM.
+                    eff_n_ctx = (openai_compat.clamp_n_ctx(n_ctx) or
+                                 openai_compat.default_n_ctx(get_available_ram_gb()))
+                    dlog(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx})")
 
                     _wd = _RamWatchdog(model_id)
                     _wd.start()
                     try:
                         llm = Llama(
                             model_path=gguf_path,
-                            n_ctx=4096,
+                            n_ctx=eff_n_ctx,
                             n_threads=n_threads,
                             n_gpu_layers=0,   # CPU only (no CUDA required)
                             verbose=False,
@@ -1396,11 +1403,12 @@ def load_model_thread(model_id: str, force_download: bool = False):
                     state.loaded     = True
                     state.loading    = False
                     state.device     = 'cpu'
+                    state.n_ctx      = eff_n_ctx
                     state.detected_local = True
                     state.download_progress = 100
                     state.error = None
 
-                    save_model_state(model_id, gguf_path)
+                    save_model_state(model_id, gguf_path, n_ctx=eff_n_ctx)
                     logger.info(f"[MODEL] ✅ Qwen2.5-Coder GGUF loaded successfully ({os.path.getsize(gguf_path)//(1024*1024)}MB)")
                     dlog(f"[MODEL] GGUF load complete")
                     _gguf_loaded = True
@@ -1812,7 +1820,7 @@ def load_model_thread(model_id: str, force_download: bool = False):
         dlog(f"load_model_thread DONE: loaded={state.loaded} error={state.error}")
 
 
-def _model_thread_target(model_id: str, force_download: bool):
+def _model_thread_target(model_id: str, force_download: bool, n_ctx: int = None):
     """
     Thread entry point that wraps load_model_thread() with an extra safety net.
     Even if a totally unexpected BaseException escapes load_model_thread()
@@ -1821,7 +1829,7 @@ def _model_thread_target(model_id: str, force_download: bool):
     without bringing down the process.  Flask keeps running.
     """
     try:
-        load_model_thread(model_id, force_download)
+        load_model_thread(model_id, force_download, n_ctx)
     except BaseException as _thread_crash:
         import traceback as _tc
         _msg = f"THREAD CRASH (escaped load_model_thread): {type(_thread_crash).__name__}: {_thread_crash}"
@@ -1863,7 +1871,7 @@ def _release_load_lock():
     except RuntimeError:
         pass  # already released
 
-def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False):
+def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False, n_ctx: int = None):
     """Spawn the ModelLoader thread unless a job is already running.
 
     Returns True if this call started the job, False if a job is already
@@ -1881,7 +1889,7 @@ def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False
     dlog(f"start_model_load: spawning ModelLoader thread daemon=False model={model_id}")
     t = threading.Thread(
         target=_model_thread_target,
-        args=(model_id, force_download),
+        args=(model_id, force_download, n_ctx),
         # CRITICAL: daemon=False - thread MUST NOT die when main thread ends.
         # With daemon=True, if Flask's internal thread finishes first on Windows,
         # all daemon threads are killed immediately -> runtime exits silently.
@@ -2128,6 +2136,16 @@ def generate_mock_reply(prompt: str) -> str:
 
 
 # ─── Routes ─────────────────────────────────────────────────────────────────────
+
+# --- MISSION P1-a/b: OpenAI-compatible API (/v1/models, /v1/chat/completions) ---
+# /infer and /health below are UNCHANGED (compatibility).
+openai_compat.register_openai_routes(app, {
+    "state":         state,
+    "default_model": DEFAULT_MODEL,
+    "dlog":          dlog,
+    "logger":        logger,
+})
+
 
 @app.route('/health', methods=['GET'])
 def health():
@@ -2390,6 +2408,8 @@ def models():
         "available":            available_models,
         "system_ram_available_gb": round(avail, 2),
         "from_local_cache":     state.detected_local,
+        "n_ctx":                state.n_ctx,
+        "n_ctx_default":        openai_compat.default_n_ctx(avail),
         "mock_mode":            _demo_mock_enabled() and not state.loaded,
     })
 
@@ -2399,6 +2419,7 @@ def reload_model():
     data     = request.get_json(silent=True) or {}
     model_id = data.get('model', DEFAULT_MODEL)
     force    = data.get('force_download', False)
+    req_n_ctx = openai_compat.clamp_n_ctx(data.get('n_ctx'))  # None = auto default
     ok, avail, req, msg = check_ram_for_model(model_id)
     if not ok:
         _refuse_load_for_ram(model_id, avail, req, where="reload")
@@ -2416,7 +2437,7 @@ def reload_model():
     state.model     = None
     state.tokenizer = None
     gc.collect()
-    if not start_model_load(model_id, force_download=force):
+    if not start_model_load(model_id, force_download=force, n_ctx=req_n_ctx):
         return jsonify({
             "status":      "already_loading",
             "model":       model_id,
@@ -2426,6 +2447,7 @@ def reload_model():
         "status":           "reloading",
         "model":            model_id,
         "force_download":   force,
+        "n_ctx":            req_n_ctx or openai_compat.default_n_ctx(avail),
         "ram_available_gb": round(avail, 2),
         "ram_required_gb":  req,
     })
