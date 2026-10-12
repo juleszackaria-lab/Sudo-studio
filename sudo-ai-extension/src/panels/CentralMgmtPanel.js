@@ -19,6 +19,7 @@ const path = require('path');
 const os   = require('os');
 const { exec } = require('child_process');
 const sharedAudit = require('../utils/auditLog');
+const { getAIProviderService } = require('../services/AIProviderService');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -188,6 +189,12 @@ class CentralMgmtPanel {
                 if (typeof msg.id !== 'string' || msg.id.length > 32) return;
                 this._togglePolicy(msg.id); break;
             }
+            case 'saveCloudPolicy': {
+                const email = (typeof msg.adminEmail === 'string') ? msg.adminEmail.trim().slice(0, 128) : '';
+                const wl = Array.isArray(msg.whitelist) ? msg.whitelist.filter(x => typeof x === 'string').slice(0, 50) : [];
+                this._saveCloudPolicy(email, msg.cloudEnabled === true, wl); break;
+            }
+            case 'openProviders': vscode.commands.executeCommand('sudoStudio.openProvidersPanel'); break;
             case 'runPolicyCheck': this._runPolicyCheck(); break;
             case 'addConfig': {
                 const c = msg.config;
@@ -207,6 +214,23 @@ class CentralMgmtPanel {
         }
     }
 
+    _saveCloudPolicy(adminEmail, cloudEnabled, whitelist) {
+        // P2-d: only a rostered, active admin can change the cloud policy.
+        const users = getUsers();
+        const admin = users.find(u => (u.email || '').toLowerCase() === adminEmail.toLowerCase() && u.role === 'admin' && u.active);
+        if (!admin) {
+            this.panel.webview.postMessage({ type: 'error', msg: 'Refuse : email admin inconnu, inactif, ou non-admin.' });
+            appendAudit('CLOUD_POLICY', `refused: not an admin (${adminEmail || '?'})`, adminEmail || 'unknown', { result: 'refused_not_admin', verified: true });
+            return;
+        }
+        const r = getAIProviderService().saveCloudPolicy({ cloudEnabled, whitelist, updatedBy: admin.email });
+        if (!r.ok) {
+            this.panel.webview.postMessage({ type: 'error', msg: r.error });
+            return;
+        }
+        this._loadAll();
+    }
+
     async _loadAll() {
         this.panel.webview.postMessage({ type: 'loading' });
         const tools = Object.keys(TOOL_CMDS);
@@ -221,6 +245,7 @@ class CentralMgmtPanel {
             policies: policyResults,
             configs:  getConfigs(),
             audit:    getAuditLog().slice(0, 30),
+            cloudPolicy: getAIProviderService().getCloudPolicy(),
             detected: this.detected,
         });
     }
@@ -576,6 +601,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="tab" onclick="showTab('policies')">📋 Policies</div>
   <div class="tab" onclick="showTab('configs')">⚙️ Configs</div>
   <div class="tab" onclick="showTab('audit')">📜 Audit Log</div>
+  <div class="tab" onclick="showTab('cloud')">Cloud IA</div>
 </div>
 <div id="tab-users" class="tab-content active">
   <div style="text-align:center;padding:30px"><div class="spinner"></div></div>
@@ -583,6 +609,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div id="tab-policies" class="tab-content"></div>
 <div id="tab-configs"  class="tab-content"></div>
 <div id="tab-audit"   class="tab-content"></div>
+<div id="tab-cloud"   class="tab-content"></div>
 
 <script>
 const vscode = acquireVsCodeApi();
@@ -596,7 +623,7 @@ function showTab(t){
 window.addEventListener('message', e=>{
   const m=e.data;
   if(m.type==='loading'){ document.getElementById('tab-users').innerHTML='<div style="text-align:center;padding:30px"><div class="spinner"></div></div>'; return; }
-  if(m.type==='dataReady') renderAll(m);
+  if(m.type==='dataReady'){ renderAll(m); renderCloud(m.cloudPolicy||{}); }
   if(m.type==='error') alert('[FAIL] '+m.msg);
 });
 
@@ -672,6 +699,31 @@ function addPolicy(){
   const sev=document.getElementById('pSev').value;
   if(!n||!v){alert('Name and version required.');return;}
   vscode.postMessage({type:'addPolicy',policy:{name:n,tool,operator:op,version:v,severity:sev}});
+}
+
+function renderCloud(pol){
+  pol = pol || {};
+  const wl = (pol.whitelist||[]).join('\n');
+  let h='<div class="section"><h2>Fournisseurs cloud (IA externe)</h2>';
+  h+='<div class="form-row"><label style="min-width:220px">Activer les fournisseurs cloud</label>';
+  h+='<input type="checkbox" id="cloudEnabled" '+(pol.cloudEnabled?'checked':'')+' style="width:auto"></div>';
+  h+='<div class="form-row"><label style="min-width:220px">Domaines autoris\u00e9s (un par ligne)</label>';
+  h+='<textarea id="cloudWl" rows="4" style="flex:1" placeholder="api.openai.com">'+wl.replace(/&/g,'&amp;').replace(/</g,'&lt;')+'</textarea></div>';
+  h+='<div class="form-row"><label style="min-width:220px">Email admin (requis)</label>';
+  h+='<input id="cloudAdmin" style="flex:1" placeholder="admin@sudostudio.local"></div>';
+  h+='<div style="margin:8px 0;color:var(--muted);font-size:11px">D\u00e9sactiv\u00e9 par d\u00e9faut. Seul un admin du registre peut activer. Hors liste blanche = refus\u00e9.</div>';
+  if(pol.updatedAt) h+='<div style="font-size:11px;color:var(--muted)">Derni\u00e8re modif : '+pol.updatedAt+' par '+(pol.updatedBy||'?')+'</div>';
+  h+='<div style="margin-top:8px"><button class="btn btn-green" onclick="saveCloud()">Enregistrer</button> ';
+  h+='<button class="btn btn-secondary" onclick="vscode.postMessage({type:\'openProviders\'})">G\u00e9rer les fournisseurs</button></div>';
+  h+='</div>';
+  document.getElementById('tab-cloud').innerHTML=h;
+}
+function saveCloud(){
+  const adminEmail=document.getElementById('cloudAdmin').value.trim();
+  const cloudEnabled=document.getElementById('cloudEnabled').checked;
+  const whitelist=document.getElementById('cloudWl').value.split('\n').map(s=>s.trim()).filter(Boolean);
+  if(!adminEmail){alert('Email admin requis.');return;}
+  vscode.postMessage({type:'saveCloudPolicy',adminEmail,cloudEnabled,whitelist});
 }
 
 function renderConfigs(configs){

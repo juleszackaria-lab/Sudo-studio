@@ -36,6 +36,7 @@ const fs           = require('fs');
 const path         = require('path');
 const { exec }     = require('child_process');
 const axios        = require('axios');
+const { getAIProviderService } = require('../services/AIProviderService');
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 const MAX_ITERATIONS  = 14;
@@ -1320,6 +1321,15 @@ class SudoTools {
     async chatQuery(question) {
         const logs = [];
         logs.push(`[CHAT] Querying AI: ${question.slice(0, 100)}...`);
+        // P2-a: cloud provider routing (shared selector). Local path below unchanged.
+        try {
+            const _svc = getAIProviderService();
+            if (_svc.getActive().type !== 'local') {
+                const _r = await _svc.complete({ prompt: question, max_tokens: 512, temperature: 0.2, purpose: 'agent' });
+                logs.push(`[CHAT] Cloud response (${(_r.reply || '').length} chars) via ${_r.provider}`);
+                return { ok: true, logs, reply: _r.reply, mock: false, provider: _r.provider };
+            }
+        } catch (_e) { logs.push('[CHAT] ERROR: ' + _e.message); return { ok: false, error: _e.message, logs }; }
         try {
             const r = await axios.post('http://127.0.0.1:6000/infer', {
                 message: question, max_tokens: 512, temperature: 0.2
@@ -1566,6 +1576,19 @@ class AIProvider {
     async query(prompt, systemContext = '', options = {}) {
         const max_tokens  = options.max_tokens  || 1024;
         const temperature = options.temperature || 0.1;
+
+        // P2-a: cloud provider routing (shared selector). Local path below unchanged.
+        try {
+            const _svc = getAIProviderService();
+            if (_svc.getActive().type !== 'local') {
+                const _msgs = [];
+                if (AGENT_SYSTEM_PROMPT) _msgs.push({ role: 'system', content: AGENT_SYSTEM_PROMPT });
+                if (systemContext) _msgs.push({ role: 'system', content: 'CONTEXT:\n' + systemContext });
+                _msgs.push({ role: 'user', content: prompt.trim() });
+                const _r = await _svc.complete({ messages: _msgs, max_tokens, temperature, purpose: 'agent' });
+                return { ok: true, reply: _r.reply, model: _r.model, mock: false, provider: _r.provider, masked: _r.masked };
+            }
+        } catch (_e) { return { ok: false, error: _e.message, reply: null }; }
 
         const fullPrompt = AGENT_SYSTEM_PROMPT +
             (systemContext ? '\n\nCONTEXT:\n' + systemContext : '') +

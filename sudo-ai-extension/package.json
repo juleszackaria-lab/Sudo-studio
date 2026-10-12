@@ -277,6 +277,18 @@
         "icon": "$(trash)"
       },
       {
+        "command": "sudoStudio.openProvidersPanel",
+        "title": "Open AI Providers Page",
+        "category": "Sudo Studio",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "sudoStudio.selectAIProvider",
+        "title": "Select Active AI Provider",
+        "category": "Sudo Studio",
+        "icon": "$(list-selection)"
+      },
+      {
         "command": "sudoStudio.openRuntimePanel",
         "title": "Open Runtime & Models Panel",
         "category": "Sudo Studio",

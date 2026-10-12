@@ -13,6 +13,7 @@
  */
 const vscode = require('vscode');
 const axios  = require('axios');
+const { getAIProviderService } = require('../services/AIProviderService');
 const http   = require('http');
 const { exec } = require('child_process');
 
@@ -99,6 +100,12 @@ class ChatPanel {
             case 'openRuntime':   vscode.commands.executeCommand('sudoStudio.openRuntimePanel'); break;
             case 'openEnvironment': vscode.commands.executeCommand('sudoStudio.openEnvironmentPanel'); break;
             case 'openAgentMode': vscode.commands.executeCommand('sudoStudio.openAgentPanel'); break;
+            case 'setProvider': {
+                const _r = getAIProviderService().setActive(message.id);
+                if (!_r.ok) this.panel.webview.postMessage({ type: 'error', text: _r.error });
+                await this._pushProviders(); break;
+            }
+            case 'openProviders': vscode.commands.executeCommand('sudoStudio.openProvidersPanel'); break;
         }
     }
 
@@ -305,6 +312,12 @@ class ChatPanel {
                 data: { status: 'starting', model: { loaded: false, loading: true, download_progress: 0 } }
             });
         }
+        this._pushProviders().catch(() => {});
+    }
+
+    async _pushProviders() {
+        const list = getAIProviderService().listProviders();
+        this.panel.webview.postMessage({ type: 'providerList', providers: list.providers, activeId: list.activeId });
     }
 
     async downloadModel(modelId) {
@@ -585,6 +598,14 @@ class ChatPanel {
     }
 
     async _sendToAI(text) {
+        // P2-a: cloud provider routing (shared selector). Local path below unchanged.
+        try {
+            const _svc = getAIProviderService();
+            if (_svc.getActive().type !== 'local') {
+                const _r = await _svc.complete({ prompt: text, max_tokens: 512, temperature: 0.7, purpose: 'chat' });
+                return { reply: _r.reply, model: _r.model, provider: _r.provider, masked: _r.masked };
+            }
+        } catch (_e) { throw new Error(_e.message); }
         // PRIMARY PATH: Direct call to Python runtime on port 6000
         console.log('[EXT] _sendToAI - calling http://127.0.0.1:6000/infer');
         // This is always tried first — no auth required, most reliable
@@ -828,6 +849,8 @@ body {
         <button class="sbtn" id="retryBtn" title="Réessayer">↩ Retry</button>
         <button class="sbtn" id="statusBtn">⟳ Status</button>
         <button class="sbtn" id="clearBtn">🗑 Clear</button>
+        <select class="sbtn" id="providerSel" title="Fournisseur IA (agent + chat)" onchange="vscPost({type:'setProvider', id:this.value})"></select>
+        <button class="sbtn" id="providersBtn" title="Configurer les fournisseurs" onclick="vscPost({type:'openProviders'})">Providers</button>
     </div>
 </div>
 
@@ -836,6 +859,8 @@ body {
     <span id="statusTxt">Vérification runtime...</span>
     <button class="sbtn" id="dlBtn" style="display:none">⬇ Download Model</button>
 </div>
+
+<div id="cloudBanner" style="display:none;padding:6px 14px;background:#3a2a00;border-bottom:2px solid #d29922;color:#f0c060;font-size:12px;font-weight:600;flex-shrink:0;align-items:center;gap:8px;"></div>
 
 <div id="dlBar">
     <div style="font-size:10px;margin-bottom:3px" id="dlLabel">Téléchargement modèle...</div>
@@ -1243,6 +1268,17 @@ window.addEventListener('message', ev => {
             if (sc) {
                 sc.textContent += msg.token || '';
                 chat.scrollTop = chat.scrollHeight;
+            }
+            break;
+        }
+        case 'providerList': {
+            const sel = document.getElementById('providerSel');
+            if (sel) sel.innerHTML = (msg.providers||[]).map(p=>'<option value="'+p.id+'"'+(p.id===msg.activeId?' selected':'')+'>'+p.name+'</option>').join('');
+            const b = document.getElementById('cloudBanner');
+            const act = (msg.providers||[]).find(p=>p.id===msg.activeId);
+            if (b) {
+                if (act && act.type !== 'local') { b.style.display='flex'; b.textContent = 'Mode connect\u00e9 : ' + act.name; }
+                else b.style.display='none';
             }
             break;
         }

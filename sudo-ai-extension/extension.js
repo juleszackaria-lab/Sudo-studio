@@ -31,6 +31,9 @@ const { ChatPanel }            = require('./src/panels/ChatPanel');
 const { DoctorPanel }          = require('./src/panels/DoctorPanel');
 const { SDKPanel, SdkInstallPanel } = require('./src/panels/SDKPanel');
 const { RuntimePanel }         = require('./src/panels/RuntimePanel');
+const { ProvidersPanel }       = require('./src/panels/ProvidersPanel');
+const { setExtensionContext }  = require('./src/services/extensionContext');
+const { getAIProviderService } = require('./src/services/AIProviderService');
 const { DevOpsPanel }          = require('./src/panels/DevOpsPanel');
 const { ProjectAnalysisPanel } = require('./src/panels/ProjectAnalysisPanel');
 const { EnvironmentPanel }     = require('./src/panels/EnvironmentPanel');
@@ -56,6 +59,7 @@ let startupProcess = null;      // Child process for start.bat/start.sh
  * v4.4: Non-blocking - UI loads immediately, backend connects in background
  */
 async function activate(ctx) {
+    try { setExtensionContext(ctx); } catch (_) { /* secrets bridge */ }
     context = ctx;
     console.log('Sudo AI extension activating...');
     console.log('Sudo Studio Enterprise - Activation starting...');
@@ -265,6 +269,8 @@ function registerCommands() {
         ['sudoStudio.openCentralMgmtPanel',  openCentralMgmtPanel],
         ['sudoStudio.openLicensePanel',      openLicensePanel],
         ['sudoStudio.openSdkInstallPanel',   openSdkInstallPanel],
+        ['sudoStudio.openProvidersPanel',    openProvidersPanel],
+        ['sudoStudio.selectAIProvider',      selectAIProvider],
         ['sudoStudio.runSecurityAudit',      openSecurityPanel],
         ['sudoStudio.cloneEnterprise',       openDuplicationPanel],
     ];
@@ -661,6 +667,17 @@ let _runtimeOfflineCount = 0;
 const _OFFLINE_THRESHOLD = 3; // show "hors ligne" only after 3 consecutive failures
 
 async function pollRuntimeStatus() {
+    try {
+        const _ap = getAIProviderService().getActive();
+        if (_ap && _ap.type !== 'local') {
+            statusBarItem.text = '$(globe) Mode connect\u00e9 : ' + _ap.name;
+            statusBarItem.tooltip = 'Fournisseur cloud actif : ' + _ap.name + ' (' + _ap.model + ')\nCliquez pour g\u00e9rer les fournisseurs';
+            statusBarItem.command = 'sudoStudio.openProvidersPanel';
+            statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+            return;
+        }
+        statusBarItem.command = 'sudoStudio.openRuntimePanel';
+    } catch (_) { /* fall through to runtime status */ }
     if (!statusBarItem) return;
     try {
         const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 2500 });
@@ -1516,6 +1533,25 @@ async function analyzeProject() {
 
 function openRuntimePanel() {
     RuntimePanel.createOrShow(context.extensionUri);
+}
+
+function openProvidersPanel() {
+    ProvidersPanel.createOrShow(context.extensionUri);
+}
+
+async function selectAIProvider() {
+    try {
+        const svc = getAIProviderService();
+        const list = svc.listProviders();
+        const pick = await vscode.window.showQuickPick(
+            list.providers.map(p => ({ label: (p.id === list.activeId ? '$(check) ' : '') + p.name, description: p.type === 'local' ? 'hors ligne' : p.baseUrl, detail: p.model, id: p.id })),
+            { placeHolder: 'Fournisseur IA actif (agent + chat)' }
+        );
+        if (!pick) return;
+        const r = svc.setActive(pick.id);
+        if (!r.ok) vscode.window.showErrorMessage(r.error);
+        else vscode.window.showInformationMessage('Fournisseur actif : ' + pick.label.replace('$(check) ', ''));
+    } catch (e) { vscode.window.showErrorMessage(e.message); }
 }
 
 function openDevOpsPanel() {
