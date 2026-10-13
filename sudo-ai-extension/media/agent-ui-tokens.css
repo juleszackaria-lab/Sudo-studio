@@ -1,0 +1,102 @@
+/* SUDO STUDIO - Agent UI design tokens (PROMPT 13).
+ * Single source of visual values for the Agent + Chat webview.
+ * Every token inherits its VS Code variable first, with a dark-reference
+ * fallback. Light theme overrides under body.vscode-light.
+ * No gradients, no shadows, no emoji, no remote resources. ASCII-only. */
+
+/* ---- Embedded interface + code faces (OFL, see fonts/OFL.txt) ---- */
+@font-face {
+  font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url("fonts/sans-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500;
+  font-display: swap; src: url("fonts/sans-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600;
+  font-display: swap; src: url("fonts/sans-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono"; font-style: normal; font-weight: 400;
+  font-display: swap; src: url("fonts/mono-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono"; font-style: normal; font-weight: 500;
+  font-display: swap; src: url("fonts/mono-500.woff2") format("woff2");
+}
+
+/* ---- Core tokens (dark reference) ---- */
+:root {
+  --sudo-surface: var(--vscode-editor-background, #14171C);
+  --sudo-raised: var(--vscode-editorWidget-background, #1B1F26);
+  --sudo-input: var(--vscode-input-background, #1B1F26);
+  --sudo-border: var(--vscode-editorWidget-border, #2A303A);
+  --sudo-text: var(--vscode-editor-foreground, #E6E8EB);
+  --sudo-dim: var(--vscode-descriptionForeground, #8B94A1);
+  --sudo-accent: #06B6D4;
+  --sudo-accent-ink: #062A33;
+  --sudo-ok: #3FB27F;
+  --sudo-warn: #D9A441;
+  --sudo-err: #E5534B;
+  --sudo-code-bg: var(--vscode-textCodeBlock-background, #10131A);
+  --sudo-font-ui: "IBM Plex Sans", var(--vscode-font-family, sans-serif), sans-serif;
+  --sudo-font-code: "IBM Plex Mono", var(--vscode-editor-font-family, monospace), monospace;
+  --fs-0: 12px;
+  --fs-1: 13px;
+  --fs-2: 14px;
+  --fs-3: 16px;
+  --fs-4: 20px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-12: 48px;
+  --r-ctl: 6px;
+  --r-surf: 10px;
+  /* Code token colors on dark code background. */
+  --sudo-c-keyword: #6FD3E7;
+  --sudo-c-string: #9ECE8F;
+  --sudo-c-number: #E8B86D;
+  --sudo-c-comment: #7D8590;
+  --sudo-c-fn: #8FB8F0;
+  --sudo-c-type: #6FD3E7;
+}
+
+/* ---- Light theme equivalents (WCAG AA on light surfaces) ---- */
+body.vscode-light {
+  --sudo-surface: var(--vscode-editor-background, #F4F5F7);
+  --sudo-raised: var(--vscode-editorWidget-background, #FFFFFF);
+  --sudo-input: var(--vscode-input-background, #FFFFFF);
+  --sudo-border: var(--vscode-editorWidget-border, #DDE1E7);
+  --sudo-text: var(--vscode-editor-foreground, #1A1D21);
+  --sudo-dim: var(--vscode-descriptionForeground, #5B6470);
+  --sudo-accent: #0A6E85;
+  --sudo-accent-ink: #FFFFFF;
+  --sudo-ok: #1E7E52;
+  --sudo-warn: #8F6318;
+  --sudo-err: #C9342C;
+  --sudo-code-bg: var(--vscode-textCodeBlock-background, #EFF1F4);
+  --sudo-c-keyword: #0A6E85;
+  --sudo-c-string: #2C6E3F;
+  --sudo-c-number: #8A5A12;
+  --sudo-c-comment: #5F6B76;
+  --sudo-c-fn: #2456A6;
+  --sudo-c-type: #0A6E85;
+}
+
+/* ---- Local syntax theme (highlight.js classes, both themes) ---- */
+.hljs { color: var(--sudo-text); background: transparent; }
+.hljs-keyword, .hljs-selector-tag, .hljs-doctag, .hljs-template-tag { color: var(--sudo-c-keyword); }
+.hljs-string, .hljs-regexp, .hljs-addition, .hljs-meta .hljs-string { color: var(--sudo-c-string); }
+.hljs-number, .hljs-literal { color: var(--sudo-c-number); }
+.hljs-comment, .hljs-quote { color: var(--sudo-c-comment); }
+.hljs-title, .hljs-title.function_, .hljs-section { color: var(--sudo-c-fn); }
+.hljs-type, .hljs-class .hljs-title, .hljs-built_in, .hljs-builtin-name { color: var(--sudo-c-type); }
+.hljs-name, .hljs-selector-id, .hljs-selector-class, .hljs-attribute { color: var(--sudo-c-fn); }
+.hljs-symbol, .hljs-bullet, .hljs-link, .hljs-operator, .hljs-punctuation { color: var(--sudo-text); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+.hljs-deletion { color: var(--sudo-err); }

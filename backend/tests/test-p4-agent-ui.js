@@ -137,7 +137,8 @@ async function main() {
   check('A13: reduced motion respected', html.includes('prefers-reduced-motion'));
   const offScale = html.match(/\b(10|14|15|13\.5|11\.5|12\.5|9|7|5)px/g) || [];
   check('A14: 4px spacing scale only', offScale.length === 0, offScale.slice(0, 4));
-  check('A15: centered column + responsive', html.includes('max-width:880px')
+  // P13 supersedes the 880px column with an 820px centered column (spec rule c).
+  check('A15: centered column + responsive', html.includes('max-width:820px')
     && html.includes('@media (max-width: 640px)'));
   check('A16: aria roles/labels', html.includes('role="log"') && html.includes('aria-label='));
   check('A17: composer footer + rt button', html.includes('class="crow"')

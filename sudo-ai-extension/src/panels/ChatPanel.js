@@ -147,6 +147,10 @@ class ChatPanel {
             cspSource: webview.cspSource,
             codiconUri: webview.asWebviewUri(
                 vscode.Uri.joinPath(this.extensionUri, 'media', 'codicon.css')).toString(),
+            tokensUri: webview.asWebviewUri(
+                vscode.Uri.joinPath(this.extensionUri, 'media', 'agent-ui-tokens.css')).toString(),
+            hljsUri: webview.asWebviewUri(
+                vscode.Uri.joinPath(this.extensionUri, 'media', 'vendor', 'highlight.min.js')).toString(),
             variant: 'chat',
         });
         panel.onDidDispose(() => this.dispose(), null, this.disposables);
