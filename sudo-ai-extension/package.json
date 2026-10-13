@@ -615,6 +615,11 @@
           "default": "http://localhost:5000",
           "description": "URL of the Sudo Studio backend server"
         },
+        "sudoStudio.offlineInstallersDir": {
+          "type": "string",
+          "default": "",
+          "description": "Offline installers folder used by AutoFix when there is no Internet (empty = ~/.sudo_studio/installers). Each installer requires a .sha256 sidecar."
+        },
         "sudoStudio.runtimeUrl": {
           "type": "string",
           "default": "http://127.0.0.1:6000",

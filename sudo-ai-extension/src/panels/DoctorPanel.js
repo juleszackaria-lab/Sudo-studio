@@ -6,6 +6,8 @@ const vscode = require('vscode');
 const axios  = require('axios');
 const { exec } = require('child_process');
 const os = require('os');
+const { fixAll, fixOne, isKnownTool } = require('../doctor/autoFix');
+const { appendAudit } = require('../utils/auditLog');
 
 class DoctorPanel {
     static currentPanel = undefined;
@@ -14,6 +16,8 @@ class DoctorPanel {
         this.panel = panel;
         this.extensionUri = extensionUri;
         this.disposables = [];
+        this._dlPollMs = 2000;    // test seam: model-download verify polling
+        this._dlPollTries = 15;
         this.panel.webview.html = this.getHtmlContent();
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
         this.panel.webview.onDidReceiveMessage(m => this.handleMessage(m), null, this.disposables);
@@ -33,9 +37,11 @@ class DoctorPanel {
     }
 
     async handleMessage(msg) {
+        if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
             case 'runDiagnostic': await this.runDiagnostic(); break;
             case 'autoFix':       await this.autoFix(msg.issue); break;
+            case 'autoFixAll':    await this.autoFixAll(); break;
             case 'installSDK':    await this.installSDK(msg.sdk); break;
         }
     }
@@ -98,92 +104,169 @@ class DoctorPanel {
         return results;
     }
 
+    // PROMPT 7: every fix is EXECUTED by the app (winget/offline installers),
+    // verified with --version, and audited. The browser is never opened.
+    _engineDeps(onProgress) {
+        let offlineDir = '';
+        try {
+            offlineDir = vscode.workspace.getConfiguration('sudoStudio').get('offlineInstallersDir', '') || '';
+        } catch (_) { offlineDir = ''; }
+        return {
+            platform: process.platform,
+            offlineDir: offlineDir || undefined, // engine default (~/.sudo_studio/installers) otherwise
+            onProgress: onProgress || (() => {}),
+            audit: (action, detail, result) => {
+                try { appendAudit(action, detail, { actor: 'admin', result, verified: true }); }
+                catch (_) { /* audit never breaks the fix */ }
+            },
+            askElevation: async (text) => {
+                const choice = await vscode.window.showInformationMessage(
+                    'AutoFix - elevation requise : ' + text,
+                    { modal: true }, 'Elever et continuer', 'Annuler');
+                return choice === 'Elever et continuer';
+            },
+        };
+    }
+
+    _manualRow(issue) {
+        if (issue === 'startBackend' || issue === 'startRuntime') {
+            const cmd = issue === 'startBackend'
+                ? 'cd backend && node server.js'
+                : 'cd backend/runtime && python server.py';
+            return { issue, status: 'manual', method: 'none',
+                reason: 'demarrage manuel requis : ' + cmd };
+        }
+        return { issue, status: 'manual', method: 'none',
+            reason: 'aucune correction automatique disponible pour : ' + issue };
+    }
+
+    _auditRow(row) {
+        try {
+            appendAudit(row.status === 'fixed' ? 'AUTOFIX_OK' : 'AUTOFIX_MANUAL',
+                row.issue + ' [' + (row.method || 'none') + '] ' + row.reason,
+                { actor: 'admin', result: row.status === 'fixed' ? 'ok' : row.status, verified: true });
+        } catch (_) {}
+    }
+
+    _rowLabel(row) {
+        const head = row.status === 'fixed' ? 'Corrige' : row.status === 'restart' ? 'Redemarrage requis'
+            : row.status === 'manual' ? 'Action manuelle requise' : 'Echec';
+        return head + ' (' + row.issue + ') : ' + row.reason;
+    }
+
+    async _downloadModelFix() {
+        const issue = 'downloadModel';
+        try {
+            await axios.post('http://127.0.0.1:6000/download',
+                { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
+        } catch (e) {
+            const row = { issue, status: 'failed', method: 'runtime', reason: 'runtime injoignable : ' + e.message };
+            this._auditRow(row);
+            return row;
+        }
+        for (let i = 0; i < this._dlPollTries; i++) {
+            await new Promise((r) => setTimeout(r, this._dlPollMs));
+            try {
+                const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });
+                const m = (r.data && r.data.model) || {};
+                if (m.loaded || m.loading) {
+                    const row = { issue, status: 'fixed', method: 'runtime',
+                        reason: 'telechargement ' + (m.loaded ? 'termine' : 'en cours (' + (m.download_progress || 0) + '%)') };
+                    this._auditRow(row);
+                    return row;
+                }
+            } catch (_) { /* keep polling */ }
+        }
+        const row = { issue, status: 'failed', method: 'runtime',
+            reason: 'aucun chargement constate cote runtime apres ' + Math.round(this._dlPollMs * this._dlPollTries / 1000) + ' s' };
+        this._auditRow(row);
+        return row;
+    }
+
     async autoFix(issue) {
         this.panel.webview.postMessage({ type: 'fixStarted', issue });
-        
-        const isWin = process.platform === 'win32';
-        let cmd = null;
-        let msg = '';
-
-        switch (issue) {
-            case 'Node.js':
-                if (isWin) {
-                    vscode.env.openExternal(vscode.Uri.parse('https://nodejs.org/en/download/'));
-                    msg = 'Ouverture du site Node.js pour téléchargement Windows';
-                } else {
-                    cmd = 'curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash - && sudo apt-get install -y nodejs';
-                    msg = 'Installation de Node.js via nodesource...';
-                }
-                break;
-            case 'Python':
-                if (isWin) {
-                    vscode.env.openExternal(vscode.Uri.parse('https://www.python.org/downloads/'));
-                    msg = 'Ouverture du site Python pour téléchargement Windows';
-                } else {
-                    cmd = 'sudo apt-get install -y python3 python3-pip';
-                    msg = 'Installation de Python3...';
-                }
-                break;
-            case 'Git':
-                if (isWin) {
-                    vscode.env.openExternal(vscode.Uri.parse('https://git-scm.com/download/win'));
-                    msg = 'Ouverture du site Git pour Windows';
-                } else {
-                    cmd = 'sudo apt-get install -y git';
-                    msg = 'Installation de Git...';
-                }
-                break;
-            case 'Docker':
-                vscode.env.openExternal(vscode.Uri.parse('https://docs.docker.com/get-docker/'));
-                msg = 'Ouverture du site Docker';
-                break;
-            case 'downloadModel':
-                try {
-                    await axios.post('http://127.0.0.1:6000/download',
-                        { model: 'TinyLlama/TinyLlama-1.1B-Chat-v1.0' }, { timeout: 5000 });
-                    msg = '⬇ Téléchargement du modèle démarré...';
-                } catch (e) {
-                    msg = `Impossible de contacter le runtime: ${e.message}`;
-                }
-                break;
-            default:
-                msg = `Aucune correction automatique disponible pour: ${issue}`;
+        let row;
+        if (isKnownTool(issue)) {
+            const out = await fixOne(issue, this._engineDeps((p) => {
+                try { this.panel.webview.postMessage({ type: 'fixProgress', ...p, scope: 'one' }); }
+                catch (_) {}
+            }));
+            if (out.terminalCmd) this._showTerminal(out.terminalCmd);
+            row = out.row;
+        } else if (issue === 'downloadModel') {
+            row = await this._downloadModelFix();
+        } else {
+            row = this._manualRow(issue);
+            this._auditRow(row);
         }
+        const msg = this._rowLabel(row);
+        vscode.window.showInformationMessage('AutoFix: ' + msg);
+        this.panel.webview.postMessage({ type: 'fixDone', issue, message: msg, ok: row.status === 'fixed', row });
+    }
 
-        if (cmd) {
-            vscode.window.showInformationMessage(`AutoFix: ${msg}`);
+    _showTerminal(cmd) {
+        try {
             const terminal = vscode.window.createTerminal('Sudo AutoFix');
             terminal.show();
             terminal.sendText(cmd);
-            msg += ' (voir le terminal)';
-        } else if (msg) {
-            vscode.window.showInformationMessage(`AutoFix: ${msg}`);
-        }
-
-        this.panel.webview.postMessage({ type: 'fixDone', issue, message: msg });
+        } catch (_) {}
     }
 
-    // FIX BUG: installSDK method was missing — handleMessage case 'installSDK' called this.installSDK()
-    // which threw TypeError: this.installSDK is not a function
-    async installSDK(sdkId) {
-        const isWin = process.platform === 'win32';
-        const isMac = process.platform === 'darwin';
-        const sdkCmds = {
-            'Node.js':  isWin ? 'winget install OpenJS.NodeJS.LTS' : isMac ? 'brew install node' : 'sudo apt-get install -y nodejs npm',
-            'Python':   isWin ? 'winget install Python.Python.3.11' : isMac ? 'brew install python@3.11' : 'sudo apt-get install -y python3 python3-pip',
-            'Git':      isWin ? 'winget install Git.Git' : isMac ? 'brew install git' : 'sudo apt-get install -y git',
-            'Docker':   'start https://www.docker.com/products/docker-desktop'
+    async autoFixAll() {
+        const results = await this._gatherDiagnostics();
+        const wanted = [];
+        for (const r of results) {
+            // NOTE: tool rows carry no `fix` field (only a name) - the old
+            // client filtered on r.fix and silently skipped them (PROMPT 7
+            // proven bug "Auto Fix All ne corrige pas tout"). Map to fix||name.
+            if (r.status === 'error' || r.status === 'warn') {
+                const key = r.fix || r.name;
+                if (key && !wanted.includes(key)) wanted.push(key);
+            }
+        }
+        this.panel.webview.postMessage({ type: 'fixAllStarted', total: wanted.length, issues: wanted });
+        if (!wanted.length) {
+            this.panel.webview.postMessage({ type: 'fixAllDone', rows: [] });
+            return;
+        }
+        const rows = [];
+        const pushRow = (row) => {
+            rows.push(row);
+            try { this.panel.webview.postMessage({ type: 'fixAllRow', row, done: rows.length, total: wanted.length }); }
+            catch (_) {}
         };
-        const cmd = sdkCmds[sdkId];
-        if (!cmd) {
+        const tools = wanted.filter(isKnownTool);
+        if (tools.length) {
+            const out = await fixAll(tools, this._engineDeps((p) => {
+                try { this.panel.webview.postMessage({ type: 'fixProgress', ...p, scope: 'all' }); }
+                catch (_) {}
+            }));
+            if (out.terminalCmd) this._showTerminal(out.terminalCmd);
+            for (const r of out.rows) pushRow(r);
+        }
+        for (const issue of wanted.filter((w) => !isKnownTool(w))) {
+            if (issue === 'downloadModel') pushRow(await this._downloadModelFix());
+            else { const row = this._manualRow(issue); this._auditRow(row); pushRow(row); }
+        }
+        rows.sort((a, b) => wanted.indexOf(a.issue) - wanted.indexOf(b.issue));
+        try {
+            appendAudit('AUTOFIX_ALL_DONE',
+                'tableau final : ' + rows.map((r) => r.issue + '=' + r.status).join(', '),
+                { actor: 'admin', result: 'ok', verified: true });
+        } catch (_) {}
+        this.panel.webview.postMessage({ type: 'fixAllDone', rows });
+    }
+
+    // PROMPT 7: installSDK is executed + verified through the same engine
+    // (the old Docker branch opened a browser page - never again).
+    async installSDK(sdkId) {
+        const known = { 'Node.js': 'Node.js', Python: 'Python', Git: 'Git', Docker: 'Docker' };
+        const issue = known[sdkId];
+        if (!issue) {
             vscode.window.showInformationMessage(`SDK not recognized: ${sdkId}`);
             return;
         }
-        const terminal = vscode.window.createTerminal(`Install ${sdkId}`);
-        terminal.show();
-        terminal.sendText(cmd);
-        vscode.window.showInformationMessage(`⚡ Installing ${sdkId}... Check the terminal.`);
-        this.panel.webview.postMessage({ type: 'fixDone', issue: sdkId, message: `Installing ${sdkId} via terminal` });
+        await this.autoFix(issue);
     }
 
     dispose() {
@@ -302,6 +385,8 @@ body {
 </div>
 
 <div id="status-msg"></div>
+<div id="fixprogress"></div>
+<div id="fixreport"></div>
 
 <div class="score-card" id="scoreCard" style="display:none">
     <div class="score-value" id="scoreValue">—</div>
@@ -324,12 +409,9 @@ function runDiag() {
 }
 
 function autoFixAll() {
-    const errors = lastResults.filter(r => (r.status === 'error' || r.status === 'warn') && r.fix);
-    if (errors.length === 0) {
-        setStatus('✅ Aucun problème à corriger!');
-        return;
-    }
-    errors.forEach(r => fixIssue(r.fix || r.name));
+    document.getElementById('fixreport').innerHTML = '';
+    setStatus('Correction de tous les problemes en cours...');
+    vscode.postMessage({ type: 'autoFixAll' });
 }
 
 function fixIssue(issue) {
@@ -342,6 +424,81 @@ function setStatus(msg) {
     el.textContent = msg;
     el.classList.add('show');
     setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+function fixBadge(status) {
+    if (status === "fixed") return "ok";
+    if (status === "failed") return "error";
+    if (status === "restart") return "warn";
+    return "info";
+}
+
+function fixLabel(status) {
+    if (status === "fixed") return "CORRIGÉ";
+    if (status === "failed") return "ÉCHEC";
+    if (status === "restart") return "REDÉMARRAGE";
+    return "MANUEL";
+}
+
+function showFixProgress(done, total, label) {
+    const host = document.getElementById("fixprogress");
+    host.innerHTML = "";
+    const wrap = document.createElement("div");
+    wrap.setAttribute("style", "padding:12px 16px;font-size:12px;");
+    const txt = document.createElement("div");
+    txt.textContent = label + " (" + done + "/" + total + ")";
+    const bar = document.createElement("div");
+    bar.setAttribute("style", "background:#21262d;border-radius:6px;margin-top:6px;");
+    const fill = document.createElement("div");
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    fill.setAttribute("style", "width:" + pct + "%;background:#2ea043;border-radius:6px;height:8px;");
+    bar.appendChild(fill);
+    wrap.appendChild(txt);
+    wrap.appendChild(bar);
+    host.appendChild(wrap);
+}
+
+function renderFixTable(rows) {
+    const host = document.getElementById("fixreport");
+    host.innerHTML = "";
+    const box = document.createElement("div");
+    box.setAttribute("style", "margin:0 16px 16px;padding:12px 14px;background:var(--vscode-editorWidget-background);border:1px solid var(--vscode-panel-border);border-radius:8px;");
+    const title = document.createElement("div");
+    title.setAttribute("style", "font-size:13px;font-weight:600;margin-bottom:8px;");
+    title.textContent = "Résultat AutoFix";
+    box.appendChild(title);
+    if (!rows.length) {
+        const none = document.createElement("div");
+        none.setAttribute("style", "font-size:12px;opacity:.7;");
+        none.textContent = "Aucun problème à corriger.";
+        box.appendChild(none);
+    }
+    rows.forEach(function(r) {
+        const div = document.createElement("div");
+        div.className = "check-item";
+        const left = document.createElement("div");
+        left.className = "check-left";
+        const inner = document.createElement("div");
+        const nm = document.createElement("div");
+        nm.className = "check-name";
+        nm.textContent = r.issue;
+        const rs = document.createElement("div");
+        rs.setAttribute("style", "font-size:11px;opacity:.6;white-space:normal;");
+        rs.textContent = r.reason;
+        inner.appendChild(nm);
+        inner.appendChild(rs);
+        left.appendChild(inner);
+        const right = document.createElement("div");
+        right.className = "check-right";
+        const badge = document.createElement("span");
+        badge.className = "badge " + fixBadge(r.status);
+        badge.textContent = fixLabel(r.status);
+        right.appendChild(badge);
+        div.appendChild(left);
+        div.appendChild(right);
+        box.appendChild(div);
+    });
+    host.appendChild(box);
 }
 
 function calcScore(results) {
@@ -407,8 +564,23 @@ window.addEventListener('message', ev => {
             setStatus('🔧 Correction: ' + msg.issue);
             break;
         case 'fixDone':
-            setStatus('✅ ' + msg.message);
+            setStatus((msg.ok === false ? 'A VERIFIER : ' : 'OK : ') + msg.message);
             setTimeout(runDiag, 2000);
+            break;
+        case 'fixProgress':
+            showFixProgress(msg.index || 0, msg.total || 0, (msg.phase || '') + ' : ' + (msg.issue || ''));
+            break;
+        case 'fixAllStarted':
+            document.getElementById('fixreport').innerHTML = '';
+            showFixProgress(0, msg.total || 0, 'Préparation');
+            break;
+        case 'fixAllRow':
+            showFixProgress(msg.done, msg.total, msg.row.issue + ' : ' + msg.row.status);
+            break;
+        case 'fixAllDone':
+            document.getElementById('fixprogress').innerHTML = '';
+            renderFixTable(msg.rows || []);
+            setTimeout(runDiag, 2500);
             break;
     }
 });
