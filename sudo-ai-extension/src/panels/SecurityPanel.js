@@ -13,6 +13,7 @@ const vscode = require('vscode');
 const { exec } = require('child_process');
 const { appendAudit } = require('../utils/auditLog');
 const { loadAdvisories, collectPackages, matchAdvisories, dbIsStale, userDbPath } = require('../utils/localAudit');
+const securityScore = require('../utils/securityScore');
 const coverageUtil = require('../utils/coverage');
 const fs   = require('fs');
 const path = require('path');
@@ -101,6 +102,12 @@ class SecurityPanel {
             case 'exportSecrets':
                 this._exportSecrets();
                 break;
+            case 'exportReport':
+                this._exportReport('json');
+                break;
+            case 'exportReportHtml':
+                this._exportReport('html');
+                break;
             case 'importAdvisories':
                 this._importAdvisories();
                 break;
@@ -125,7 +132,8 @@ class SecurityPanel {
             localAudit:  null,
             gitHooks:    null,
             envFiles:    [],
-            score:       100,
+            score:       null,
+            scoreResult: null,
             issues:      0,
         };
 
@@ -215,15 +223,32 @@ class SecurityPanel {
             }
         }
 
-        // Score: subtract penalties
-        audit.score = Math.max(0, 100
-            - audit.secrets.length * 20
-            - (audit.gitignore.missing.length > 0 ? 10 : 0)
-            - (audit.npmAudit?.critical || 0) * 10
-            - (audit.npmAudit?.high     || 0) * 5
-            - (audit.localAudit?.matches || []).filter(m => m.severity === 'critical').length * 10
-            - (audit.localAudit?.matches || []).filter(m => m.severity === 'high').length * 5
-        );
+        // P10: real score from real findings (formula in SECURITY_SCORING.md).
+        // The old "100 minus fixed gitignore 10" pinned every clean project
+        // at the same value; it is replaced, never defaulted.
+        let scored;
+        if (!wsRoot) {
+            scored = securityScore.unavailable('aucun dossier de projet ouvert');
+        } else {
+            const matches = (audit.localAudit && audit.localAudit.matches) || [];
+            for (const m of matches) {
+                if (m && m.line === undefined) {
+                    m.line = securityScore.locateDepLine(wsRoot, m.source, m.package, m.version);
+                }
+            }
+            scored = securityScore.computeSecurityScore({
+                secrets: audit.secrets,
+                advisories: matches,
+                files: securityScore.checkSecurityFiles(wsRoot),
+                hasTests: securityScore.hasTests(wsRoot),
+                db: (audit.localAudit && !audit.localAudit.error)
+                    ? { date: audit.localAudit.dbDate, source: audit.localAudit.dbSource,
+                        stale: audit.localAudit.stale }
+                    : null,
+            });
+        }
+        audit.scoreResult = scored;
+        audit.score = scored.score;
 
         this.results = audit;
         this.panel.webview.postMessage({ type: 'auditResult', audit });
@@ -234,6 +259,12 @@ class SecurityPanel {
     async _scanSecrets(root) {
         const hits = [];
         this._lastSecretsSkipped = 0;
+        // P10: shared patterns + local unquoted-assignment pattern; each hit
+        // carries its severity for the score. match() without /g behaves
+        // exactly like the previous test() for the shared patterns.
+        const patterns = SECRET_PATTERNS.concat(securityScore.EXTRA_SECRET_PATTERNS);
+        const scannable = (name) => name.startsWith('.env')
+            || /\.(js|ts|py|env|json|yaml|yml|sh|bat|ps1|config|conf|ini|txt|npmrc|pem|key|dart|go|java|cs|rb|php|toml)$/.test(name);
         const walk = (dir, depth) => {
             if (depth > 6) return;
             let entries;
@@ -242,26 +273,28 @@ class SecurityPanel {
                 if (SKIP_DIRS.has(e.name)) continue;
                 const full = path.join(dir, e.name);
                 if (e.isDirectory()) { walk(full, depth + 1); continue; }
-                if (!/\.(js|ts|py|env|json|yaml|yml|sh|bat|ps1|config|conf|ini|txt|npmrc|pem|key)$/.test(e.name)) continue;
+                if (!scannable(e.name)) continue;
                 // TASK 7c: skip huge files (never freeze the audit on a 500 MB log).
                 try { if (fs.statSync(full).size > 1024 * 1024) { this._lastSecretsSkipped++; continue; } } catch { continue; }
                 let content;
                 try { content = fs.readFileSync(full, 'utf8'); } catch { continue; }
                 const lines = content.split('\n');
                 lines.forEach((line, idx) => {
-                    for (const { label, re } of SECRET_PATTERNS) {
-                        if (re.test(line)) {
-                            // Redact the match itself — show only surrounding context
-                            const redacted = line.trim()
-                                .replace(re, '[REDACTED]')
-                                .slice(0, 100);
-                            hits.push({
-                                label,
-                                file: path.relative(root, full),
-                                line: idx + 1,
-                                snippet: redacted,
-                            });
-                        }
+                    for (const pat of patterns) {
+                        const m = line.match(pat.re);
+                        if (!m) continue;
+                        if (typeof pat.check === 'function' && !pat.check(m)) continue;
+                        // Redact the match itself — show only surrounding context
+                        const redacted = line.trim()
+                            .replace(pat.re, '[REDACTED]')
+                            .slice(0, 100);
+                        hits.push({
+                            label: pat.label,
+                            severity: securityScore.severityOfSecret(pat.label),
+                            file: path.relative(root, full),
+                            line: idx + 1,
+                            snippet: redacted,
+                        });
                     }
                 });
             }
@@ -329,6 +362,40 @@ class SecurityPanel {
         } catch {
             vscode.window.showErrorMessage('Export failed - check folder permissions.');
             appendAudit('SECURITY_EXPORT_SECRETS', 'export failed', { result: 'error', verified: false });
+        }
+    }
+
+    // P10: full security report export (JSON or standalone HTML), verified.
+    async _exportReport(format) {
+        try {
+            const audit = this.results;
+            if (!audit || !audit.scoreResult) {
+                vscode.window.showWarningMessage('No audit result to export - run Refresh first.');
+                return;
+            }
+            const wantHtml = format === 'html';
+            const saveUri = await vscode.window.showSaveDialog({
+                defaultUri: vscode.Uri.file(path.join(os.homedir(),
+                    wantHtml ? 'sudo-security-report.html' : 'sudo-security-report.json')),
+                filters: wantHtml ? { 'HTML': ['html'] } : { 'JSON': ['json'] }
+            });
+            if (!saveUri) return;
+            const payload = wantHtml
+                ? securityScore.buildReportHtml(audit)
+                : JSON.stringify({ exportedAt: new Date().toISOString(), wsRoot: audit.wsRoot,
+                    scoreResult: audit.scoreResult, secrets: audit.secrets,
+                    secretsSkipped: audit.secretsSkipped || 0,
+                    localAudit: audit.localAudit, npmAudit: audit.npmAudit }, null, 2);
+            fs.writeFileSync(saveUri.fsPath, payload, 'utf8');
+            const back = fs.readFileSync(saveUri.fsPath, 'utf8');
+            if (wantHtml ? back.indexOf('</html>') === -1 : JSON.parse(back).scoreResult === undefined) {
+                throw new Error('verify-mismatch');
+            }
+            appendAudit('SECURITY_EXPORT_REPORT', `${format} report exported to ${path.basename(saveUri.fsPath)}`, { result: 'ok', verified: true });
+            vscode.window.showInformationMessage(`Security report exported (${format}).`);
+        } catch {
+            vscode.window.showErrorMessage('Export failed - check folder permissions.');
+            appendAudit('SECURITY_EXPORT_REPORT', 'export failed', { result: 'error', verified: false });
         }
     }
 
@@ -484,6 +551,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <button class="btn" onclick="refresh()" id="refreshBtn">🔄 Refresh</button>
   <button class="btn" onclick="exportVulns()">Export vulns (JSON)</button>
   <button class="btn" onclick="exportSecrets()">Export secrets (JSON)</button>
+  <button class="btn" onclick="exportReport()">Export report (JSON)</button>
+  <button class="btn" onclick="exportReportHtml()">Export report (HTML)</button>
   <button class="btn" onclick="importDb()">Import advisory DB</button>
   <button class="btn" onclick="measureCoverage()" id="coverageBtn">Measure coverage</button>
 </div>
@@ -499,6 +568,9 @@ function openFile(f,l){ vscode.postMessage({type:'openFile',filePath:f,line:l});
 function fixGi(e){ vscode.postMessage({type:'fixGitignore',entry:e}); }
 function exportVulns(){ vscode.postMessage({type:'exportLocalAudit'}); }
 function exportSecrets(){ vscode.postMessage({type:'exportSecrets'}); }
+function exportReport(){ vscode.postMessage({type:'exportReport'}); }
+function exportReportHtml(){ vscode.postMessage({type:'exportReportHtml'}); }
+function openWhyFile(el){ openFile(el.getAttribute("data-f"), parseInt(el.getAttribute("data-l") || "0", 10)); }
 function importDb(){ vscode.postMessage({type:'importAdvisories'}); }
 function measureCoverage(){ vscode.postMessage({type:'measureCoverage'}); }
 function renderCoverage(c){
@@ -532,16 +604,42 @@ function renderAudit(a){
 
   let html='';
 
-  // Score
-  const sc = a.score;
-  const cls = sc>=80?'':'sc>=50?warn:danger';
-  const ringCls = sc>=80?'score-ring':(sc>=50?'score-ring warn':'score-ring danger');
-  html+=\`<div style="text-align:center;margin-bottom:16px">
-    <div class="\${ringCls}">\${sc}</div>
-    <div style="font-size:13px;color:var(--muted)">Security Score / 100</div>
-    <div style="font-size:12px;margin-top:4px">\${a.issues} issue\${a.issues!==1?'s':''} found</div>
-  </div>\`;
-
+  // P10 score + why-table (concat style: backtick-free inside the server template)
+  var sr = a.scoreResult || { status: "ok", score: a.score, penalties: [] };
+  if (sr.status === "unavailable") {
+    html += '<div class="section" style="border-color:var(--red)"><h2>Security Score</h2>';
+    html += '<p style="font-size:14px;font-weight:700;color:#f85149">Score non calculable : ' + escHtml(sr.reason || "") + "</p>";
+    html += "</div>";
+  } else {
+    var ringCls = sr.score >= 80 ? "score-ring" : (sr.score >= 50 ? "score-ring warn" : "score-ring danger");
+    html += '<div style="text-align:center;margin-bottom:16px">';
+    html += '<div class="' + ringCls + '">' + sr.score + "</div>";
+    html += '<div style="font-size:13px;color:var(--muted)">Security Score / 100</div>';
+    html += '<div style="font-size:12px;margin-top:4px">' + a.issues + " issue" + (a.issues !== 1 ? "s" : "") + " found</div>";
+    if (sr.status === "partial") {
+      html += '<p style="font-size:13px;font-weight:700;color:#e3b341">Score partiel : ' + escHtml(sr.reason || "") + "</p>";
+    }
+    html += '<p style="font-size:11px;color:var(--muted)">Calcule le ' + escHtml(sr.computedAt || "") + " - base d'avis : " + escHtml(sr.dbDate || "absente") + " (" + escHtml(sr.dbSource || "-") + ")</p>";
+    html += "</div>";
+    html += '<div class="section"><h2>Pourquoi ce score</h2>';
+    if (!sr.penalties || sr.penalties.length === 0) {
+      html += '<p class="empty">Aucune penalite.</p>';
+    } else {
+      html += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+      for (var i = 0; i < sr.penalties.length; i++) {
+        var p = sr.penalties[i];
+        var pts = p.applied ? "-" + p.points : "-" + p.points + " (plafond)";
+        var where = "-";
+        if (p.file) {
+          var ln = p.line || 0;
+          where = '<span class="file-link" data-f="' + escHtml(p.file) + '" data-l="' + ln + '" onclick="openWhyFile(this)">' + escHtml(p.file) + (p.line ? ":" + p.line : "") + "</span>";
+        }
+        html += "<tr><td>" + pts + "</td><td>" + escHtml(p.category) + "</td><td>" + escHtml(p.detail) + "</td><td>" + where + "</td></tr>";
+      }
+      html += "</table>";
+    }
+    html += "</div>";
+  }
   // Secrets
   html+=\`<div class="section"><h2>🔑 Secrets / Credential Leaks (\${a.secrets.length})</h2>\`;
   if(a.secrets.length===0){html+='<p class="empty">✅ No secrets detected in workspace files.</p>';}
