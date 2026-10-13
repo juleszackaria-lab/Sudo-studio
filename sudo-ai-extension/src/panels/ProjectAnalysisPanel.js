@@ -8,6 +8,9 @@ const axios  = require('axios');
 const path   = require('path');
 const fs     = require('fs');
 const { exec } = require('child_process');
+// P9: deterministic analysis engine + shared audit (ASCII additions only).
+const analyzer = require('../analysis/projectAnalyzer');
+const { appendAudit } = require('../utils/auditLog');
 
 class ProjectAnalysisPanel {
     static currentPanel = undefined;
@@ -16,6 +19,11 @@ class ProjectAnalysisPanel {
         this.panel = panel;
         this.extensionUri = extensionUri;
         this.disposables = [];
+        // P9: run state (cancel/timeout) + last deterministic report.
+        this._abort = null;
+        this._analyzing = false;
+        this._lastAnalysis = null;
+        this._aiComplete = null; // injectable (tests) else AIProviderService
 
         this.panel.webview.html = this.getHtmlContent();
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
@@ -53,6 +61,11 @@ class ProjectAnalysisPanel {
             case 'autoFix':       await this.runAutoFix(msg.issue); break;
             case 'aiRecommend':   await this.aiRecommendations(); break;
             case 'openFile':      await this.openFile(msg.file); break;
+            case 'cancelAnalysis': this.cancelAnalysis(); break;
+            case 'exportJson':     await this.exportJson(); break;
+            case 'aiSummary':      await this.aiSummary(); break;
+            case 'genAgents':      await this.genAgents(); break;
+            case 'confirmAgents':  await this.confirmAgents(); break;
         }
     }
 
@@ -62,18 +75,41 @@ class ProjectAnalysisPanel {
             this.panel.webview.postMessage({ type: 'noWorkspace' });
             return;
         }
-        // 10-second safety timeout — if analysis hangs, show an error
-        const safetyTimeout = setTimeout(() => {
-            this.panel.webview.postMessage({
-                type: 'noWorkspace',
-                // Re-use noWorkspace message slot but with a timeout message
-            });
-            this.panel.webview.postMessage({ type: 'analysisTimeout' });
-        }, 10000);
+        // P9: one run at a time; cancel/timeout handled by the analyzer.
+        if (this._analyzing) return;
+        this._analyzing = true;
+        if (this._abort) { try { this._abort.abort(); } catch (_) {} }
+        this._abort = new AbortController();
 
         this.panel.webview.postMessage({ type: 'analyzing' });
 
         const root = folder.uri.fsPath;
+        let analysis = null;
+        try {
+            analysis = await analyzer.analyzeProject(root, {
+                signal: this._abort.signal,
+                timeoutMs: 120000,
+                onProgress: (p) => {
+                    try { this.panel.webview.postMessage({ type: 'progress', progress: p }); }
+                    catch (_) {}
+                },
+            });
+        } catch (e) {
+            this._analyzing = false;
+            if (e && e.code === 'ANALYSIS_ABORTED') {
+                const n = e.partial && e.partial.stats ? e.partial.stats.files : 0;
+                this.panel.webview.postMessage({ type: 'analysisCancelled',
+                    text: 'Analyse annulee (' + n + ' fichiers parcourus)' });
+                return;
+            }
+            const msg = e && e.code === 'ANALYSIS_TIMEOUT' ? e.message
+                : 'Erreur d analyse: ' + ((e && e.message) || e);
+            this.panel.webview.postMessage({ type: 'analysisError', text: String(msg).slice(0, 300) });
+            return;
+        }
+        this._analyzing = false;
+        this._lastAnalysis = analysis;
+
         const result = {
             name: path.basename(root),
             root,
@@ -92,10 +128,13 @@ class ProjectAnalysisPanel {
                 try { return fs.readFileSync(path.join(root, f), 'utf8'); } catch { return null; }
             };
 
-            // Count files by extension
-            const fileCounts = await this._countFiles(root);
-            result.metrics.fileCount = fileCounts.total;
-            result.metrics.fileCounts = fileCounts.byExt;
+            // P9: exact file metrics from the deterministic walk (verifiable).
+            result.metrics.fileCount = analysis.stats.files;
+            result.metrics.fileCounts = {};
+            for (const [lang, v] of Object.entries(analysis.stats.byLang)) {
+                result.metrics.fileCounts[lang] = v.files;
+            }
+            result.metrics.lineCount = analysis.stats.lines;
 
             // ── Stack detection ────────────────────────────────────────────
             if (has('package.json')) {
@@ -192,32 +231,121 @@ class ProjectAnalysisPanel {
             result.issues.push({ level: 'error', area: 'Analyse', msg: `Erreur: ${e.message}`, fix: null });
         }
 
-        // Cancel the 10s safety timeout since analysis completed
-        if (safetyTimeout) clearTimeout(safetyTimeout);
-        this.panel.webview.postMessage({ type: 'analysisResult', result });
+        this.panel.webview.postMessage({ type: 'analysisResult', result, analysis });
     }
 
-    async _countFiles(dir, depth = 0) {
-        if (depth > 3) return { total: 0, byExt: {} };
-        const counts = { total: 0, byExt: {} };
+    // P9: _countFiles removed (superseded by the deterministic analyzer).
+
+    cancelAnalysis() {
+        try { if (this._abort) this._abort.abort(); } catch (_) {}
+    }
+
+    async ensureAnalysis() {
+        if (this._lastAnalysis) return this._lastAnalysis;
+        await this.analyzeProject();
+        return this._lastAnalysis;
+    }
+
+    async exportJson() {
+        const analysis = await this.ensureAnalysis();
+        if (!analysis) return;
+        let uri = null;
         try {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const e of entries) {
-                if (['node_modules', '.git', 'dist', 'build', '.next', '__pycache__'].includes(e.name)) continue;
-                if (e.isDirectory()) {
-                    const sub = await this._countFiles(path.join(dir, e.name), depth + 1);
-                    counts.total += sub.total;
-                    for (const [ext, n] of Object.entries(sub.byExt)) {
-                        counts.byExt[ext] = (counts.byExt[ext] || 0) + n;
-                    }
-                } else {
-                    const ext = path.extname(e.name) || 'other';
-                    counts.total++;
-                    counts.byExt[ext] = (counts.byExt[ext] || 0) + 1;
-                }
+            uri = await vscode.window.showSaveDialog({
+                filters: { 'JSON': ['json'] },
+                saveLabel: 'Exporter',
+                title: 'Exporter le rapport d analyse (JSON)',
+            });
+        } catch (_) { uri = null; }
+        if (!uri) return;
+        try {
+            fs.writeFileSync(uri.fsPath, JSON.stringify(analysis, null, 2), 'utf8');
+            try { appendAudit('ANALYSIS_EXPORT', 'rapport JSON: ' + uri.fsPath, { actor: 'user', result: 'ok' }); }
+            catch (_) {}
+            vscode.window.showInformationMessage('Rapport exporte: ' + uri.fsPath);
+            this.panel.webview.postMessage({ type: 'exportDone', path: uri.fsPath });
+        } catch (e) {
+            vscode.window.showErrorMessage('Export impossible: ' + e.message);
+        }
+    }
+
+    async aiSummary() {
+        const analysis = await this.ensureAnalysis();
+        if (!analysis) return;
+        this.panel.webview.postMessage({ type: 'aiSummary', text: '', loading: true });
+        const prompt = analyzer.aiSummaryPrompt(analysis);
+        try {
+            let complete = this._aiComplete;
+            if (!complete) {
+                const { getAIProviderService } = require('../services/AIProviderService');
+                const svc = getAIProviderService();
+                complete = (p) => svc.complete({ prompt: p, max_tokens: 600,
+                    temperature: 0.2, purpose: 'analysis' });
             }
-        } catch (_) {}
-        return counts;
+            const r = await complete(prompt);
+            const text = r && (r.reply || r.text) ? (r.reply || r.text) : '';
+            this.panel.webview.postMessage({ type: 'aiSummary', text: String(text).slice(0, 4000) });
+        } catch (e) {
+            this.panel.webview.postMessage({ type: 'aiSummary', text: '',
+                error: 'Resume IA indisponible: ' + String((e && e.message) || e).slice(0, 200) });
+        }
+    }
+
+    async genAgents() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            this.panel.webview.postMessage({ type: 'noWorkspace' });
+            return;
+        }
+        const analysis = await this.ensureAnalysis();
+        if (!analysis) return;
+        const target = path.join(folder.uri.fsPath, 'AGENTS.md');
+        const content = analyzer.buildAgentsMd(analysis);
+        let old = null;
+        try { old = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : null; }
+        catch (_) { old = null; }
+        if (old == null) {
+            try {
+                fs.writeFileSync(target, content, 'utf8');
+                try { appendAudit('ANALYSIS_AGENTS_MD', 'AGENTS.md cree: ' + target, { actor: 'user', result: 'ok' }); }
+                catch (_) {}
+                this.panel.webview.postMessage({ type: 'agentsWritten', created: true });
+            } catch (e) {
+                this.panel.webview.postMessage({ type: 'analysisError',
+                    text: 'Ecriture AGENTS.md impossible: ' + String(e.message).slice(0, 200) });
+            }
+            return;
+        }
+        const d = analyzer.diffLines(old, content);
+        if (d.same) {
+            this.panel.webview.postMessage({ type: 'agentsWritten', created: false, unchanged: true });
+            return;
+        }
+        const cap = (arr) => arr.slice(0, 200);
+        this.panel.webview.postMessage({ type: 'agentsDiff',
+            diff: { oldLines: d.oldLines, newLines: d.newLines,
+                commonPrefix: d.commonPrefix, commonSuffix: d.commonSuffix,
+                oldMiddle: cap(d.oldMiddle), newMiddle: cap(d.newMiddle),
+                truncated: d.oldMiddle.length > 200 || d.newMiddle.length > 200 } });
+    }
+
+    async confirmAgents() {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) return;
+        const analysis = await this.ensureAnalysis();
+        if (!analysis) return;
+        // Regenerated server-side (deterministic): the webview never sends content back.
+        const content = analyzer.buildAgentsMd(analysis);
+        const target = path.join(folder.uri.fsPath, 'AGENTS.md');
+        try {
+            fs.writeFileSync(target, content, 'utf8');
+            try { appendAudit('ANALYSIS_AGENTS_MD', 'AGENTS.md ecrase (confirme): ' + target, { actor: 'user', result: 'ok' }); }
+            catch (_) {}
+            this.panel.webview.postMessage({ type: 'agentsWritten', created: false });
+        } catch (e) {
+            this.panel.webview.postMessage({ type: 'analysisError',
+                text: 'Ecriture AGENTS.md impossible: ' + String(e.message).slice(0, 200) });
+        }
     }
 
     async runAutoFix(issue) {
@@ -365,7 +493,16 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div id="loadingOverlay" class="show">
         <div class="spinner" style="width:32px;height:32px;margin:0 auto 12px"></div>
         <div style="font-size:13px;color:var(--vscode-descriptionForeground)">Analyse du projet en cours...</div>
+        <div id="progressWrap" style="display:none;max-width:420px;margin:12px auto 0">
+            <div style="height:8px;background:var(--vscode-panel-border);border-radius:4px;overflow:hidden">
+                <div id="progressFill" style="height:100%;width:0%;background:var(--vscode-button-background)"></div>
+            </div>
+            <div id="progressText" style="font-size:11px;margin-top:6px"></div>
+            <button class="btn btn-sec btn-sm" style="margin-top:8px" onclick="cancelAnalysis()">Annuler</button>
+        </div>
     </div>
+
+    <div id="errorBox" style="display:none;margin:0 0 14px;padding:12px 14px;border-radius:6px;background:rgba(244,67,54,.1);border:1px solid rgba(244,67,54,.3);font-size:12px"></div>
 
     <div id="mainContent" style="display:none">
         <!-- Score Card -->
@@ -393,6 +530,41 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
         <div class="card">
             <div class="card-title">🏗️ Architecture</div>
             <div class="arch-grid" id="archGrid"></div>
+        </div>
+
+        <!-- Stats (P9 deterministic, no AI) -->
+        <div class="card">
+            <div class="card-title">Statistiques (deterministe, sans IA)</div>
+            <div id="statsGrid" style="font-size:12px"></div>
+            <div class="card-title" style="margin-top:10px">Arborescence resumee</div>
+            <div id="treeList" style="font-size:12px"></div>
+            <div class="card-title" style="margin-top:10px">Plus gros fichiers</div>
+            <div id="bigList" style="font-size:12px"></div>
+            <div class="card-title" style="margin-top:10px">Points d entree</div>
+            <div id="entryList" style="font-size:12px"></div>
+            <div class="card-title" style="margin-top:10px">Tests</div>
+            <div id="testInfo" style="font-size:12px"></div>
+            <div class="card-title" style="margin-top:10px">CI / README / TODO</div>
+            <div id="miscInfo" style="font-size:12px"></div>
+        </div>
+
+        <!-- Deps (P9 lockfiles) -->
+        <div class="card">
+            <div class="card-title">Dependances (verrouillage)</div>
+            <div id="depsList" style="font-size:12px"></div>
+        </div>
+
+        <!-- Actions (P9) -->
+        <div class="card">
+            <div class="card-title">Actions</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-sm" onclick="exportJson()">Exporter JSON</button>
+                <button class="btn btn-sm" onclick="aiSummary()">Resume IA</button>
+                <button class="btn btn-sm" onclick="genAgents()">Generer AGENTS.md</button>
+            </div>
+            <div id="actionStatus" style="font-size:12px;margin-top:8px;color:var(--vscode-descriptionForeground)"></div>
+            <div id="aiSummaryBox" style="display:none;background:var(--vscode-editorWidget-background);border-radius:8px;padding:12px;font-size:13px;line-height:1.6;margin-top:10px;white-space:pre-wrap"></div>
+            <div id="agentsBox" style="display:none;margin-top:10px;font-size:12px"></div>
         </div>
 
         <!-- Issues -->
@@ -430,6 +602,21 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 const vscode = acquireVsCodeApi();
 function reanalyze() { vscode.postMessage({type:'reanalyze'}); }
 function aiRec()     { vscode.postMessage({type:'aiRecommend'}); }
+function exportJson() { vscode.postMessage({type:'exportJson'}); }
+function aiSummary() { vscode.postMessage({type:'aiSummary'}); }
+function genAgents() { vscode.postMessage({type:'genAgents'}); }
+function confirmAgents() { vscode.postMessage({type:'confirmAgents'}); }
+function cancelAgents() { document.getElementById('agentsBox').style.display='none'; }
+function cancelAnalysis() { vscode.postMessage({type:'cancelAnalysis'}); }
+function esc(s) {
+    return String(s == null ? '' : s).split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;');
+}
+function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + ' o';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' Ko';
+    return (n / 1048576).toFixed(1) + ' Mo';
+}
 
 function scoreColor(s) {
     if (s >= 80) return '#4caf50';
@@ -461,6 +648,40 @@ window.addEventListener('message', ev => {
             break;
         case 'analysisResult':
             renderResult(m.result);
+            renderAnalysis(m.analysis);
+            break;
+        case 'progress': {
+            const p = m.progress || {};
+            document.getElementById('progressWrap').style.display='block';
+            document.getElementById('progressFill').style.width = (10 + ((p.files || 0) % 80)) + '%';
+            document.getElementById('progressText').textContent =
+                (p.files || 0) + ' fichiers, ' + (p.dirs || 0) + ' dossiers' + (p.current ? ' — ' + p.current : '');
+            break;
+        }
+        case 'analysisError':
+            document.getElementById('loadingOverlay').classList.remove('show');
+            document.getElementById('progressWrap').style.display='none';
+            showError(m.text || 'Erreur inconnue');
+            break;
+        case 'analysisCancelled':
+            document.getElementById('loadingOverlay').classList.remove('show');
+            document.getElementById('progressWrap').style.display='none';
+            showError(m.text || 'Analyse annulee', true);
+            break;
+        case 'exportDone':
+            document.getElementById('actionStatus').textContent = 'Rapport exporte : ' + (m.path || '');
+            break;
+        case 'aiSummary':
+            renderAiSummary(m);
+            break;
+        case 'agentsDiff':
+            renderAgentsDiff(m.diff);
+            break;
+        case 'agentsWritten':
+            document.getElementById('agentsBox').style.display='none';
+            document.getElementById('actionStatus').textContent = m.unchanged
+                ? 'AGENTS.md deja a jour (aucun changement).'
+                : (m.created ? 'AGENTS.md cree.' : 'AGENTS.md mis a jour (ecrasement confirme).');
             break;
         case 'aiLoading':
             document.getElementById('aiBox').className='show';
@@ -536,11 +757,122 @@ function renderResult(r) {
         document.getElementById('issuesList').innerHTML = '<div style="color:#4caf50;font-size:12px">✅ Aucun problème détecté!</div>';
     } else {
         document.getElementById('issuesList').innerHTML = issues.map(i => {
-            const fixBtn = i.fix ? '<button class="btn btn-sm btn-sec" onclick="runFix(\''+i.fix+'\')" style="margin-left:auto;flex-shrink:0">🔧 AutoFix</button>' : '';
+            const fixBtn = i.fix ? '<button class="btn btn-sm btn-sec" onclick="runFix(\\''+i.fix+'\\')" style="margin-left:auto;flex-shrink:0">🔧 AutoFix</button>' : '';
             const badge = i.level === 'error' ? '🔴 ERREUR' : i.level === 'warn' ? '🟡 AVERT.' : 'ℹ️ INFO';
             return '<div class="issue '+i.level+'"><span class="issue-badge">'+badge+'</span><span style="flex:1"><strong>['+i.area+']</strong> '+i.msg+'</span>'+fixBtn+'</div>';
         }).join('');
     }
+}
+
+function showError(t, info) {
+    const box = document.getElementById('errorBox');
+    box.style.display='block';
+    box.style.background = info ? 'rgba(33,150,243,.1)' : 'rgba(244,67,54,.1)';
+    box.style.border = '1px solid ' + (info ? 'rgba(33,150,243,.3)' : 'rgba(244,67,54,.3)');
+    box.textContent = t;
+}
+
+function renderAnalysis(a) {
+    document.getElementById('progressWrap').style.display='none';
+    document.getElementById('errorBox').style.display='none';
+    if (!a) return;
+    const st = a.stats || {};
+    const langs = Object.keys(st.byLang || {}).map(function(k) {
+        return { lang: k, files: st.byLang[k].files, lines: st.byLang[k].lines };
+    }).sort(function(x, y) { return y.lines - x.lines; });
+    let h = '<div style="margin-bottom:6px"><strong>' + (st.files || 0) + ' fichiers</strong>, ' +
+        '<strong>' + (st.lines || 0) + ' lignes</strong>, ' + (st.dirs || 0) + ' dossiers, ' +
+        'duree ' + (a.durationMs || 0) + ' ms</div>';
+    if (a.truncated) h += '<div>Analyse tronquee (plafond maxFiles atteint) — chiffres partiels.</div>';
+    if (st.skippedLarge) h += '<div>' + st.skippedLarge + ' gros fichiers non lus (lignes non comptees).</div>';
+    if (st.binary) h += '<div>' + st.binary + ' fichiers binaires (lignes non comptees).</div>';
+    h += langs.map(function(l) {
+        return '<div>' + esc(l.lang) + ' : ' + l.files + ' fichiers, ' + l.lines + ' lignes</div>';
+    }).join('');
+    document.getElementById('statsGrid').innerHTML = h;
+    document.getElementById('treeList').innerHTML = (a.tree || []).map(function(t) {
+        return '<div>' + esc(t.path) + ' : ' + t.files + ' fichiers</div>';
+    }).join('') + (a.treeOverflow ? '<div>+' + a.treeOverflow + ' dossiers mineurs.</div>' : '');
+    document.getElementById('bigList').innerHTML = (a.biggest || []).map(function(b) {
+        return '<div>' + esc(b.path) + ' — ' + fmtBytes(b.bytes) +
+            (b.lines == null ? ' (lignes non comptees)' : ', ' + b.lines + ' lignes') + '</div>';
+    }).join('') || '<div>Aucun</div>';
+    document.getElementById('entryList').innerHTML = ((a.entryPoints || []).map(function(e) {
+        return '<div>[' + esc(e.type) + '] ' + esc(e.path) + '</div>';
+    }).join('') || '<div>Non detecte</div>');
+    const t = a.tests || {};
+    document.getElementById('testInfo').innerHTML =
+        '<div><strong>' + (t.count || 0) + '</strong> fichiers de test' +
+        ((t.frameworks || []).length ? ' (' + t.frameworks.map(esc).join(', ') + ')' : '') + '</div>' +
+        (t.dirs || []).map(function(d) {
+            return '<div>' + esc(d.path) + ' : ' + d.count + '</div>';
+        }).join('');
+    const ci = (a.ci || []).map(function(c) {
+        return '[' + esc(c.system) + '] ' + esc(c.path);
+    }).join(', ') || 'aucune';
+    const rd = a.readme || {};
+    const td = a.todos || {};
+    document.getElementById('miscInfo').innerHTML =
+        '<div>CI : ' + ci + '</div>' +
+        '<div>README : ' + (rd.present ? esc(rd.path) + ' (' + fmtBytes(rd.bytes) + ')' : 'absent') + '</div>' +
+        '<div>TODO : ' + (td.todo || 0) + ' / FIXME : ' + (td.fixme || 0) + '</div>' +
+        (td.sample || []).slice(0, 8).map(function(s) {
+            return '<div>' + esc(s.kind) + ' ' + esc(s.path) + ':' + s.line + ' — ' + esc(s.text) + '</div>';
+        }).join('');
+    document.getElementById('depsList').innerHTML = ((a.deps || []).map(function(d) {
+        let x = '<div style="margin-bottom:8px"><strong>' + esc(d.ecosystem) + '</strong> (' +
+            esc(d.manifest) + ') : ' + (d.manifestDeps || []).length + ' declarees, ' +
+            (d.locked || []).length + ' verrouillees';
+        x += d.lockfile ? ' [' + esc(d.lockfile) + ']' : ' <strong>[SANS VERROUILLAGE]</strong>';
+        x += '</div>';
+        if ((d.locked || []).length) {
+            x += '<div>' + d.locked.slice(0, 12).map(function(l) {
+                return esc(l.name) + '@' + esc(l.version);
+            }).join(', ') + (d.locked.length > 12 ? '…' : '') + '</div>';
+        }
+        if ((d.unlocked || []).length) {
+            x += '<div>Non verrouillees : ' + d.unlocked.slice(0, 12).map(esc).join(', ') +
+                (d.unlocked.length > 12 ? '…' : '') + '</div>';
+        }
+        if (d.note) x += '<div>' + esc(d.note) + '</div>';
+        return x;
+    }).join('') || '<div>Aucune dependance detectee</div>');
+}
+
+function renderAiSummary(m) {
+    const box = document.getElementById('aiSummaryBox');
+    box.style.display='block';
+    if (m.loading) { box.textContent = 'Resume IA en cours...'; return; }
+    if (m.error) { box.textContent = m.error; return; }
+    box.innerHTML = '';
+    const lab = document.createElement('div');
+    lab.style.fontSize = '11px';
+    lab.style.color = 'var(--vscode-descriptionForeground)';
+    lab.style.marginBottom = '6px';
+    lab.textContent = 'Resume IA — genere par IA (faits ci-dessus uniquement, ne remplace pas les faits)';
+    const txt = document.createElement('div');
+    txt.textContent = m.text || '(vide)';
+    box.appendChild(lab);
+    box.appendChild(txt);
+}
+
+function renderAgentsDiff(d) {
+    const box = document.getElementById('agentsBox');
+    box.style.display='block';
+    if (!d) { box.textContent = 'Aucun diff.'; return; }
+    let h = '<div style="margin-bottom:6px"><strong>AGENTS.md existe deja</strong> (' +
+        d.oldLines + ' lignes → ' + d.newLines + ' lignes). Confirmer l ecrasement ?</div>';
+    h += '<div style="margin-bottom:4px">Ancien (supprime) :</div>';
+    h += '<pre style="background:rgba(244,67,54,.1);padding:8px;border-radius:6px;white-space:pre-wrap">' +
+        esc(d.oldMiddle.join('\\n')) + '</pre>';
+    h += '<div style="margin:4px 0">Nouveau (ajoute) :</div>';
+    h += '<pre style="background:rgba(46,160,67,.12);padding:8px;border-radius:6px;white-space:pre-wrap">' +
+        esc(d.newMiddle.join('\\n')) + '</pre>';
+    if (d.truncated) h += '<div>Diff tronque (200 lignes max par cote).</div>';
+    h += '<div style="display:flex;gap:8px;margin-top:8px">' +
+        '<button class="btn btn-sm" onclick="confirmAgents()">Confirmer l ecrasement</button>' +
+        '<button class="btn btn-sec btn-sm" onclick="cancelAgents()">Annuler</button></div>';
+    box.innerHTML = h;
 }
 
 function runFix(fix) { vscode.postMessage({type:'autoFix',issue:fix}); }
