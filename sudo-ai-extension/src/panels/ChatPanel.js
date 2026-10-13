@@ -129,6 +129,7 @@ class ChatPanel {
         this._engineFactory = opts.engineFactory || ((o) => new AgentEngine(o));
         this.engine = null;
         this.projectRoot = null;
+        this._sandboxLevel = 'auto'; // P8: auto | l1 | l2 (memory only)
         this.history = [];
         this.lastUserMsg = '';
         this._running = false;
@@ -193,6 +194,11 @@ class ChatPanel {
                 case 'stop': this.stopChat(); break;
                 case 'approve': await this._handleApprove(msg.id, msg.choice); break;
                 case 'setProvider': this._handleProvider(msg.id); break;
+                case 'setSandboxLevel':
+                    if (msg.level === 'auto' || msg.level === 'l1' || msg.level === 'l2') {
+                        this._sandboxLevel = msg.level;
+                    }
+                    break;
                 case 'openRuntime':
                     vscode.commands.executeCommand('sudoStudio.openRuntimePanel');
                     break;
@@ -260,7 +266,7 @@ class ChatPanel {
         this._resolved = new Set();
         this._post({ type: 'started', mode: 'plan' });
         try {
-            await this.engine.run({ prompt: buildChatPrompt(cx, text), mode: 'plan' });
+            await this.engine.run({ prompt: buildChatPrompt(cx, text), mode: 'plan', sandboxMode: this._sandboxLevel });
         } catch (e) {
             this._running = false;
             this._post({ type: 'error', message: e.message });
@@ -280,6 +286,8 @@ class ChatPanel {
         this.engine.on('error', (d) => this._post({ type: 'error', message: d.message }));
         this.engine.on('approval_needed', (d) => this._onApproval(d));
         this.engine.on('done', (d) => this._onDone(d));
+        this.engine.on('sandbox', (d) => this._post({ type: 'sandbox', level: d.level, via: d.via,
+            token: d.token, job: d.job, network: d.network, note: d.note, requested: d.requested }));
         const drv = this.engine.driver;
         if (drv && typeof drv.on === 'function') drv.on('bus', (ev) => this._onBus(ev));
     }

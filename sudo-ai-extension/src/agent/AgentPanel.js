@@ -164,6 +164,9 @@ function getWebviewHtml(opts) {
     '@media (prefers-reduced-motion: reduce) {\n' +
     '.codicon-modifier-spin { animation:none; }\n' +
     '}\n' +
+    '.sandbox { font-size:12px; color:var(--vscode-descriptionForeground); border:1px solid var(--vscode-editorWidget-border); border-radius:6px; padding:2px 8px; display:inline-flex; gap:4px; align-items:center; white-space:nowrap; }\n' +
+    '.sandbox.l2 { color:var(--vscode-testing-iconPassed); }\n' +
+    '.sandboxnote { font-size:11px; color:var(--vscode-editorWarning-foreground); display:none; white-space:nowrap; }\n' +
     '.planbadge { font-size:12px; color:var(--vscode-descriptionForeground); display:inline-flex; gap:8px; align-items:center; white-space:nowrap; }\n' +
     '#ctxbar { width:100%; max-width:880px; margin:0 auto; display:flex; gap:8px; padding:8px 16px 0; flex-wrap:wrap; }\n' +
     '#ctxbar:empty { display:none; }\n' +
@@ -175,6 +178,10 @@ function getWebviewHtml(opts) {
     (isChat ? '' : '  <select id="modeSel"><option value="build">Build</option><option value="plan">Plan</option></select>\n') +
     '  <label for="providerSel">Fournisseur</label>\n' +
     '  <select id="providerSel"></select>\n' +
+    '  <span id="sandboxBadge" class="sandbox" title="Niveau par defaut du prochain run">Mode restreint</span>\n' +
+    '  <label for="sandboxSel">Sandbox</label>\n' +
+    '  <select id="sandboxSel"><option value="auto">Auto</option><option value="l1">Restreint</option><option value="l2">Isolee</option></select>\n' +
+    '  <span id="sandboxNote" class="sandboxnote"></span>\n' +
     (isChat ? '  <button class="btn" id="toAgentBtn"><span class="codicon codicon-robot"></span>Passer en mode Agent</button>\n' : '') +
     '  <button id="rt" class="rtbtn" title="Cliquer pour actualiser"><span class="dot bad" id="rtDot"></span><span id="rtTxt">Runtime : ?</span></button>\n' +
     '</div>\n' +
@@ -240,6 +247,8 @@ function getWebviewHtml(opts) {
     '});\n' +
     'if (modeSel) modeSel.addEventListener("change", function() { post({ type: "setMode", mode: modeSel.value }); });\n' +
     'providerSel.addEventListener("change", function() { post({ type: "setProvider", id: providerSel.value }); });\n' +
+    'var sandboxSel = document.getElementById("sandboxSel");\n' +
+    'if (sandboxSel) sandboxSel.addEventListener("change", function() { post({ type: "setSandboxLevel", level: sandboxSel.value }); });\n' +
     'var toAgentBtn = document.getElementById("toAgentBtn");\n' +
     'if (toAgentBtn) toAgentBtn.addEventListener("click", function() { post({ type: "toAgent" }); });\n' +
     'document.getElementById("rt").addEventListener("click", function() { post({ type: "refreshRuntime" }); });\n' +
@@ -507,6 +516,24 @@ function getWebviewHtml(opts) {
     '  });\n' +
     '  providerSel.value = activeId;\n' +
     '}\n' +
+    'function setSandbox(m) {\n' +
+    '  var badge = document.getElementById("sandboxBadge");\n' +
+    '  var note = document.getElementById("sandboxNote");\n' +
+    '  if (!badge) return;\n' +
+    '  var label = "Mode restreint";\n' +
+    '  if (m.level === "l2") label = "Sandbox isolee (" + (m.via === "wsb" ? "WSB" : "docker") + ")";\n' +
+    '  badge.textContent = label;\n' +
+    '  badge.className = "sandbox" + (m.level === "l2" ? " l2" : "");\n' +
+    '  var det = [];\n' +
+    '  if (m.via) det.push("via " + m.via);\n' +
+    '  det.push("jeton " + (m.token ? "restreint" : "standard"));\n' +
+    '  if (m.job) det.push("job actif");\n' +
+    '  det.push("reseau " + (m.network === "blocked" ? "bloque" : "ouvert"));\n' +
+    '  badge.title = det.join(", ");\n' +
+    '  if (note) { note.textContent = m.note || ""; note.style.display = m.note ? "inline" : "none"; }\n' +
+    '  var sel = document.getElementById("sandboxSel");\n' +
+    '  if (sel && m.requested) sel.value = m.requested;\n' +
+    '}\n' +
     'function setContext(c) {\n' +
     '  var bar = document.getElementById("ctxbar");\n' +
     '  if (!bar) return;\n' +
@@ -564,6 +591,7 @@ function getWebviewHtml(opts) {
     '  else if (m.type === "runtime") setRuntime(m);\n' +
     '  else if (m.type === "providers") setProviders(m.providers, m.activeId);\n' +
     '  else if (m.type === "mode") { if (modeSel) modeSel.value = m.mode; }\n' +
+    '  else if (m.type === "sandbox") setSandbox(m);\n' +
     '  else if (m.type === "cleared") { thread.innerHTML = ""; currentAgent = null; parts = {}; approvals = {}; }\n' +
     '  else if (m.type === "context") setContext(m);\n' +
     '  else if (m.type === "history") renderHistory(m.turns || []);\n' +
@@ -585,6 +613,7 @@ class AgentPanel {
         this.engine = null;
         this.projectRoot = null;
         this.mode = 'build';
+        this._sandboxLevel = 'auto'; // P8: auto | l1 | l2 (memory only)
         this._running = false;
         this._queue = [];
         this._approvals = [];
@@ -634,6 +663,7 @@ class AgentPanel {
                 case 'stop': this.stopAgent(); break;
                 case 'approve': await this._handleApprove(msg.id, msg.choice); break;
                 case 'setMode': this._handleMode(msg.mode); break;
+                case 'setSandboxLevel': this._handleSandboxLevel(msg.level); break;
                 case 'setProvider': this._handleProvider(msg.id); break;
                 case 'openDiff': await this._handleDiff(msg.file); break;
                 case 'undo': await this._handleUndo(); break;
@@ -694,7 +724,7 @@ class AgentPanel {
         this._resolved = new Set();
         this._post({ type: 'started', mode: this.mode });
         try {
-            await this.engine.run({ prompt: text, mode: this.mode });
+            await this.engine.run({ prompt: text, mode: this.mode, sandboxMode: this._sandboxLevel });
         } catch (e) {
             this._running = false;
             this._post({ type: 'error', message: e.message });
@@ -715,6 +745,8 @@ class AgentPanel {
         this.engine.on('error', (d) => this._post({ type: 'error', message: d.message }));
         this.engine.on('approval_needed', (d) => this._onApproval(d));
         this.engine.on('done', (d) => this._onDone(d));
+        this.engine.on('sandbox', (d) => this._post({ type: 'sandbox', level: d.level, via: d.via,
+            token: d.token, job: d.job, network: d.network, note: d.note, requested: d.requested }));
         const drv = this.engine.driver;
         if (drv && typeof drv.on === 'function') drv.on('bus', (ev) => this._onBus(ev));
     }
@@ -795,6 +827,11 @@ class AgentPanel {
         this.mode = mode;
         if (this.engine) { try { this.engine.setMode(mode); } catch (_) {} }
         this._post({ type: 'mode', mode });
+    }
+
+    _handleSandboxLevel(level) {
+        if (level !== 'auto' && level !== 'l1' && level !== 'l2') return;
+        this._sandboxLevel = level;
     }
 
     _handleProvider(id) {

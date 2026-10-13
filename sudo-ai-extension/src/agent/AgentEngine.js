@@ -28,6 +28,7 @@ const { getAIProviderService } = require('../services/AIProviderService');
 const { getSecretsStore } = require('../services/extensionContext');
 const { getCentralDir } = require('../utils/auditLog');
 const { OpenCodeDriver, RUNTIME_BASE_URL } = require('./OpenCodeDriver');
+const sandbox = require('./sandbox'); // P8: command policy + audit + watchdog
 
 const AI_TIMEOUT_MS = 120000;
 const STATUS = { DONE: 'TERMINE', FAIL: 'ECHEC', PARTIAL: 'PARTIEL' };
@@ -136,6 +137,15 @@ class AgentEngine extends EventEmitter {
         this._pending = [];   // [{perm, sessionId, resolve}]
         this._lastRun = null; // {sessionId, messageIDs, before, after}
         this._permListener = null;
+        // P8 sandbox: active level (UI badge), policy lists, run watchdog.
+        this.sandboxState = null;
+        this._sandboxExtra = { allow: [], block: [] };
+        this._runTimer = null;
+        this._finished = false;
+        this._sandboxDenyReason = null;
+        this._sandboxDenyCommand = null;
+        this._sandboxAllowReason = null;
+        this._sandboxAllowCommand = null;
     }
 
     setMode(m) {
@@ -238,6 +248,7 @@ class AgentEngine extends EventEmitter {
         this._stopped = false;
         this._pending = [];
         this._lastRun = null;
+        this._finished = false;
         this._emit('step', { phase: 'start', message: `Sudo Agent (OpenCode) started - mode=${mode}` });
         if (!prompt.trim()) return this._finish(STATUS.FAIL, 'empty task', [], null);
         if (!this.projectRoot || !fs.existsSync(this.projectRoot)) {
@@ -250,10 +261,41 @@ class AgentEngine extends EventEmitter {
             return this._finish(STATUS.FAIL, e.message, [], null);
         }
         try {
+            // P8: sandbox level requested by the UI (auto/l1/l2) + policy lists.
+            spec.sandbox = {
+                mode: opts.sandboxMode === 'l1' || opts.sandboxMode === 'l2'
+                    ? opts.sandboxMode : 'auto',
+            };
+            if (opts.localOnly !== undefined) spec.sandbox.localOnly = !!opts.localOnly;
+            this._sandboxExtra = this._loadSandboxLists();
             await this.driver.start(spec);
         } catch (e) {
             return this._finish(STATUS.FAIL, 'agent server: ' + e.message, [], null);
         }
+        // P8: report the REAL active level to the UI badge (never faked).
+        try {
+            this.sandboxState = this.driver.getSandboxState();
+            this._emit('sandbox', Object.assign({ requested: spec.sandbox.mode }, this.sandboxState));
+        } catch (_) { /* stub drivers in tests may lack getSandboxState */ }
+        // P8: run-level watchdog (delai maximal). The timer promise rejects
+        // the postMessage race below, so a hung model call cannot wedge run().
+        // Unref'd so tests and idle hosts never hang; noop-caught so a timer
+        // firing before the race attaches is still a handled rejection.
+        const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs)
+            : sandbox.RUN_TIMEOUT_DEFAULT_MS;
+        const runT0 = Date.now();
+        let timedOut = false;
+        this._clearRunTimer();
+        const runTimer = new Promise((_, reject) => {
+            this._runTimer = setTimeout(() => {
+                timedOut = true;
+                reject(this._timeoutRun(timeoutMs));
+            }, timeoutMs);
+            if (this._runTimer && typeof this._runTimer.unref === 'function') {
+                this._runTimer.unref();
+            }
+        });
+        runTimer.catch(() => {});
         const before = snapshotFiles(this.projectRoot);
         let session;
         try {
@@ -284,12 +326,14 @@ class AgentEngine extends EventEmitter {
         this.driver.startEvents();
         let resp;
         try {
-            resp = await this.driver.postMessage(sid, body);
+            resp = await Promise.race([this.driver.postMessage(sid, body), runTimer]);
         } catch (e) {
             this._cleanupEvents();
+            if (timedOut) return this._finish(STATUS.FAIL, e.message, [], sid);
             if (this._stopped) return this._finish(STATUS.FAIL, 'stopped by user', [], sid);
             return this._finish(STATUS.FAIL, 'model connection: ' + e.message, [], sid);
         }
+        this._auditToolParts(resp, Date.now() - runT0);
         this._cleanupEvents();
         const after = snapshotFiles(this.projectRoot);
         const files = diffSnapshots(before, after);
@@ -323,6 +367,9 @@ class AgentEngine extends EventEmitter {
     }
 
     _finish(status, reason, filesModified, sessionId, reply = '') {
+        if (this._finished) return { status, reason, filesModified, sessionId };
+        this._finished = true;
+        this._clearRunTimer();
         const summary = { status, reason, reply, filesModified, sessionId, mode: this.mode,
             at: new Date().toISOString() };
         this._emit('done', summary);
@@ -335,6 +382,65 @@ class AgentEngine extends EventEmitter {
             const info = ev.properties.info;
             this._emit('step', { phase: 'message', message: `${info.role} message ${info.id}` });
         }
+    }
+
+    // -- P8 sandbox helpers -------------------------------------------------------
+    _loadSandboxLists() {
+        try {
+            const file = path.join(getCentralDir(), 'central_policies.json');
+            const raw = fs.readFileSync(file, 'utf8');
+            return sandbox.coerceLists(JSON.parse(raw));
+        } catch (_) {
+            return { allow: [], block: [] };
+        }
+    }
+
+    _clearRunTimer() {
+        if (this._runTimer) {
+            try { clearTimeout(this._runTimer); } catch (_) {}
+            this._runTimer = null;
+        }
+    }
+
+    _timeoutRun(timeoutMs) {
+        this._runTimer = null;
+        this._stopped = true;
+        this._emit('step', { phase: 'timeout', message: 'delai maximal depasse, arret du run' });
+        sandbox.auditTimeout({ afterMs: timeoutMs });
+        for (const p of this._pending.splice(0)) {
+            try { p.resolve(); } catch (_) {}
+            try { this.driver.replyPermission(p.sessionId, p.perm.id, 'reject').catch(() => {}); }
+            catch (_) {}
+        }
+        try { this._cleanupEvents(); } catch (_) {}
+        try {
+            const r = this.driver.stop();
+            if (r && typeof r.catch === 'function') r.catch(() => {});
+        } catch (_) {}
+        return new Error('delai maximal depasse (' + Math.round(timeoutMs / 1000) + 's)');
+    }
+
+    _auditToolParts(resp, runElapsedMs) {
+        try {
+            const parts = (resp && resp.parts) || [];
+            for (const p of parts) {
+                if (!p || p.type !== 'tool') continue;
+                const ex = sandbox.extractToolExec(p);
+                sandbox.auditExec({ tool: ex.tool, command: ex.command, status: ex.status,
+                    exitCode: ex.exitCode, timeMs: ex.timeMs, observedAtMs: runElapsedMs });
+            }
+        } catch (_) { /* audit never breaks the run */ }
+    }
+
+    _isCommandPerm(perm) {
+        const t = String((perm && perm.type) || '');
+        if (t === 'bash' || t === 'shell' || t === 'execute' || t === 'exec' ||
+            t === 'command' || t === 'run') return true;
+        const fileish = ['edit', 'write', 'read', 'glob', 'grep', 'apply_patch', 'task',
+            'webfetch', 'websearch', 'external_directory', 'todowrite', 'todoread', 'create'];
+        if (fileish.indexOf(t) !== -1) return false;
+        // Unknown tool carrying a command-looking pattern: inspect, ask by default.
+        return sandbox.extractCommand(perm) !== '';
     }
 
     // -- permissions --------------------------------------------------------------
@@ -351,9 +457,34 @@ class AgentEngine extends EventEmitter {
         if (allows.some(a => a.tool === perm.type && (a.pattern || '') === pat)) return 'once';
         // Writes outside the project: always refused.
         if (perm.type === 'external_directory') return 'deny';
+        // P8: symlink-aware containment for file tools (legacy check kept below).
+        if (perm.type === 'edit' || perm.type === 'write' || perm.type === 'apply_patch' ||
+            perm.type === 'create') {
+            const v = sandbox.evaluateEdit(extractPaths(perm), { projectRoot: this.projectRoot });
+            if (v.verdict === 'deny') {
+                this._sandboxDenyReason = v.reason;
+                return 'deny';
+            }
+        }
         if (perm.type === 'edit') {
             for (const p of extractPaths(perm)) {
                 if (!isPathInside(this.projectRoot, p)) return 'deny';
+            }
+        }
+        // P8: command allow/block lists + danger patterns for shell tools.
+        if (this._isCommandPerm(perm)) {
+            const cmd = sandbox.extractCommand(perm);
+            const v = sandbox.evaluateBash(cmd, { projectRoot: this.projectRoot,
+                extraAllow: this._sandboxExtra.allow, extraBlock: this._sandboxExtra.block });
+            if (v.verdict === 'deny') {
+                this._sandboxDenyReason = v.reason;
+                this._sandboxDenyCommand = cmd;
+                return 'deny';
+            }
+            if (v.verdict === 'allow') {
+                this._sandboxAllowReason = v.reason;
+                this._sandboxAllowCommand = cmd;
+                return 'once';
             }
         }
         return null; // ask the user
@@ -363,12 +494,26 @@ class AgentEngine extends EventEmitter {
         const auto = this._evaluatePermission(perm);
         if (auto === 'deny') {
             await this.driver.replyPermission(sessionId, perm.id, 'reject');
-            this._emit('step', { phase: 'permission', message: `auto-denied ${perm.type} (outside project)` });
+            const reason = this._sandboxDenyReason || 'outside project';
+            this._sandboxDenyReason = null;
+            this._emit('step', { phase: 'permission', message: `auto-denied ${perm.type} (${reason})` });
+            sandbox.auditPerm({ tool: perm.type, verdict: 'deny', reason,
+                command: this._sandboxDenyCommand || '' });
+            this._sandboxDenyCommand = null;
             return;
         }
         if (auto === 'once') {
             await this.driver.replyPermission(sessionId, perm.id, 'once');
-            this._emit('step', { phase: 'permission', message: `auto-allowed ${perm.type} (project rule)` });
+            const why = this._sandboxAllowReason;
+            this._sandboxAllowReason = null;
+            this._emit('step', { phase: 'permission',
+                message: why ? `auto-allowed ${perm.type} (${why})`
+                    : `auto-allowed ${perm.type} (project rule)` });
+            if (why) {
+                sandbox.auditPerm({ tool: perm.type, verdict: 'allow', reason: why,
+                    command: this._sandboxAllowCommand || '' });
+            }
+            this._sandboxAllowCommand = null;
             return;
         }
         await new Promise((resolve) => {
@@ -405,6 +550,12 @@ class AgentEngine extends EventEmitter {
         } finally {
             next.resolve();
         }
+        // P8: user decisions are audited like automatic ones (actor=user).
+        sandbox.auditPerm({ tool: next.perm.type,
+            verdict: opencode === 'reject' ? 'deny' : 'allow',
+            reason: 'decision utilisateur (' + opencode + ')',
+            command: this._isCommandPerm(next.perm) ? sandbox.extractCommand(next.perm) : '',
+            actor: 'user' });
         return { ok: true, response: opencode };
     }
 
@@ -428,6 +579,7 @@ class AgentEngine extends EventEmitter {
 
     stop() {
         this._stopped = true;
+        this._clearRunTimer();
         for (const p of this._pending.splice(0)) {
             try { p.resolve(); } catch (_) {}
             this.driver.replyPermission(p.sessionId, p.perm.id, 'reject').catch(() => {});
