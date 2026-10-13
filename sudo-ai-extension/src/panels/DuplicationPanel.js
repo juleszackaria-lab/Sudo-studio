@@ -118,6 +118,79 @@ function countZipEntries(zipPath) {
     });
 }
 
+// P12: project duplication (pure helpers, ASCII-only).
+const DUP_DEFAULT_EXCLUDES = ['node_modules', 'build', '.dart_tool'];
+const DUP_SAMPLE_MAX = 25;
+const DUP_HASH_FULL_MAX = 4 * 1024 * 1024;
+const DUP_HASH_PREFIX = 1024 * 1024;
+
+function collectDupFiles(root, excludes) {
+    // Sorted relative file list (posix separators); excluded dir names skipped
+    // at any depth; symlinks skipped and counted (never followed).
+    const skip = new Set(excludes || []);
+    const files = [];
+    let skippedSymlinks = 0;
+    const walk = (dir, rel) => {
+        let entries;
+        try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+        catch { return; }
+        for (const e of entries) {
+            if (skip.has(e.name)) continue;
+            const full = path.join(dir, e.name);
+            const relp = rel ? rel + '/' + e.name : e.name;
+            let st;
+            try { st = fs.lstatSync(full); } catch { continue; }
+            if (st.isSymbolicLink()) { skippedSymlinks++; continue; }
+            if (st.isDirectory()) walk(full, relp);
+            else if (st.isFile()) files.push(relp);
+        }
+    };
+    walk(root, '');
+    files.sort();
+    return { files, skippedSymlinks };
+}
+
+function hashDupFile(absPath) {
+    // { sha256, bytes, partial } - full hash up to 4 MB, else 1 MB prefix + size.
+    const st = fs.statSync(absPath);
+    const fd = fs.openSync(absPath, 'r');
+    try {
+        const n = Math.min(st.size, st.size > DUP_HASH_FULL_MAX ? DUP_HASH_PREFIX : st.size);
+        const buf = Buffer.alloc(n);
+        fs.readSync(fd, buf, 0, n, 0);
+        const h = require('crypto').createHash('sha256').update(buf).digest('hex');
+        return { sha256: h, bytes: st.size, partial: st.size > DUP_HASH_FULL_MAX };
+    } finally {
+        try { fs.closeSync(fd); } catch {}
+    }
+}
+
+function verifyDupCopy(srcRoot, files, destRoot, sampleMax) {
+    // Re-hash a deterministic sample of the copied files (every Nth, max 25).
+    const max = sampleMax || DUP_SAMPLE_MAX;
+    const step = Math.max(1, Math.floor(files.length / max));
+    const sampleIdx = [];
+    for (let i = 0; i < files.length && sampleIdx.length < max; i += step) sampleIdx.push(i);
+    const sample = [];
+    const mismatches = [];
+    let errors = 0;
+    for (const i of sampleIdx) {
+        const rel = files[i];
+        try {
+            const a = hashDupFile(path.join(srcRoot, rel));
+            const b = hashDupFile(path.join(destRoot, rel));
+            const match = a.sha256 === b.sha256 && a.bytes === b.bytes && a.partial === b.partial;
+            sample.push({ file: rel, sha256: b.sha256.slice(0, 16), bytes: b.bytes,
+                partial: b.partial, match });
+            if (!match) mismatches.push(rel);
+        } catch { errors++; mismatches.push(rel); }
+    }
+    let destCount = 0;
+    try { destCount = collectDupFiles(destRoot, []).files.length; } catch { destCount = -1; }
+    return { checked: sampleIdx.length, matched: sample.filter(x => x.match).length,
+        mismatches, errors, sample, destCount };
+}
+
 function countFilesRecursive(dir, cap = 5000) {
     let n = 0;
     const walk = d => {
@@ -170,6 +243,7 @@ class DuplicationPanel {
             case 'importProfile':  await this._importProfile(); break;
             case 'createTemplate': await this._createTemplate(); break;
             case 'deployTemplate': await this._deployTemplate(); break;
+            case 'duplicateProject': await this._duplicateProject(); break;
             case 'openUrl': {
                 if (typeof msg.url !== 'string' || !/^https?:\/\//.test(msg.url)) return;
                 vscode.env.openExternal(vscode.Uri.parse(msg.url));
@@ -343,6 +417,73 @@ class DuplicationPanel {
         }
     }
 
+    async _duplicateProject() {
+        const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath;
+        if (!wsRoot) {
+            vscode.window.showWarningMessage('Ouvrez d\'abord un dossier de projet a dupliquer.');
+            return;
+        }
+        const picked = await vscode.window.showOpenDialog({
+            canSelectFolders: true, canSelectFiles: false, canSelectMany: false,
+            openLabel: 'Dupliquer ici'
+        });
+        if (!picked || !picked.length) return; // cancel = silent no-op
+        const dest = path.resolve(picked[0].fsPath);
+        const src = path.resolve(wsRoot);
+        const fail = (msg) => {
+            vscode.window.showErrorMessage(msg);
+            this.panel.webview.postMessage({ type: 'duplicateDone', success: false, error: msg });
+            appendAudit('DUP_DUPLICATE', 'refused: ' + msg, { result: 'error', verified: false });
+        };
+        if (dest === src) { fail('Destination identique a la source.'); return; }
+        if (dest.startsWith(src + path.sep)) { fail('Le dossier de destination est dans le projet source.'); return; }
+        if (src.startsWith(dest + path.sep)) { fail('Le projet source est dans la destination.'); return; }
+        try {
+            if (fs.existsSync(dest) && fs.readdirSync(dest).length > 0) {
+                fail('Le dossier de destination n\'est pas vide.'); return;
+            }
+        } catch { fail('Destination illisible.'); return; }
+        let list;
+        try { list = collectDupFiles(src, DUP_DEFAULT_EXCLUDES); }
+        catch { fail('Inventaire du projet impossible.'); return; }
+        const total = list.files.length;
+        const tick = () => new Promise(r => setImmediate(r));
+        const post = (copied, current) => {
+            try { this.panel.webview.postMessage({ type: 'duplicateProgress', copied, total, current }); } catch {}
+        };
+        try { fs.mkdirSync(dest, { recursive: true }); }
+        catch { fail('Creation du dossier impossible (permissions).'); return; }
+        post(0, '');
+        const copyErrors = [];
+        for (let i = 0; i < total; i++) {
+            const rel = list.files[i];
+            try {
+                const target = path.join(dest, rel);
+                fs.mkdirSync(path.dirname(target), { recursive: true });
+                fs.copyFileSync(path.join(src, rel), target);
+            } catch { copyErrors.push(rel); }
+            if ((i + 1) % 20 === 0 || i + 1 === total) { post(i + 1, rel); await tick(); }
+        }
+        let rep;
+        try { rep = verifyDupCopy(src, list.files, dest); }
+        catch { fail('Verification impossible.'); return; }
+        const success = copyErrors.length === 0 && rep.errors === 0 &&
+            rep.mismatches.length === 0 && rep.destCount === total;
+        const report = { total, copied: total - copyErrors.length,
+            skippedSymlinks: list.skippedSymlinks, excludes: DUP_DEFAULT_EXCLUDES.slice(),
+            copyErrors, checked: rep.checked, matched: rep.matched,
+            mismatches: rep.mismatches, sample: rep.sample, destCount: rep.destCount };
+        this.panel.webview.postMessage({ type: 'duplicateDone', success, dest, report });
+        appendAudit('DUP_DUPLICATE', `${path.basename(src)} -> ${path.basename(dest)}: ` +
+            `${report.copied}/${total} files, sample ${rep.matched}/${rep.checked} match` +
+            (success ? '' : ' - FAILED'), { result: success ? 'ok' : 'error', verified: success });
+        if (success) {
+            vscode.window.showInformationMessage(`Projet duplique (${report.copied} fichiers, echantillon verifie).`);
+        } else {
+            vscode.window.showErrorMessage('Duplication echouee - voir le rapport de verification.');
+        }
+    }
+
     dispose() {
         DuplicationPanel.currentPanel = undefined;
         this.panel.dispose();
@@ -411,6 +552,8 @@ window.addEventListener('message', e => {
   if(m.type==='diffResult') { renderDiff(m); return; }
   if(m.type==='templateCreated') { appendLog('Template created: '+m.file+' ('+m.sizeMb+' MB)'); return; }
   if(m.type==='deployDone')      { appendLog('Template deployed to: '+m.dest); return; }
+  if(m.type==='duplicateProgress') { renderDupProgress(m); return; }
+  if(m.type==='duplicateDone')     { renderDupDone(m); return; }
   if(m.type==='exportDone')      { appendLog('Profile exported: '+m.file); return; }
   if(m.type==='templateProgress') { appendLog(m.msg); return; }
   if(m.type==='error')           { appendLog('[FAIL] '+m.msg); return; }
@@ -439,6 +582,10 @@ function renderMain(p){
     <div class="action-card" onclick="vscode.postMessage({type:'createTemplate'})">
       <h3>📦 Create Template</h3>
       <p>Package the current workspace into a .zip template for instant team duplication.</p>
+    </div>
+    <div class="action-card" onclick="vscode.postMessage({type:'duplicateProject'})">
+      <h3>&#128193; Dupliquer ce projet vers un nouveau dossier...</h3>
+      <p>Copy this project to a new folder (skips node_modules, build, .dart_tool) with progress and a verification report.</p>
     </div>
     <div class="action-card" onclick="vscode.postMessage({type:'deployTemplate'})">
       <h3>🚀 Deploy Template</h3>
@@ -484,6 +631,50 @@ function renderDiff(m){
   document.getElementById('content').innerHTML=html;
 }
 
+function dupZone(){
+  let z = document.getElementById('dupZone');
+  if(!z){
+    z = document.createElement('div');
+    z.id = 'dupZone';
+    z.className = 'section';
+    const c = document.getElementById('content');
+    c.insertBefore(z, c.firstChild);
+  }
+  return z;
+}
+function renderDupProgress(m){
+  const pct = m.total > 0 ? Math.round(m.copied / m.total * 100) : 0;
+  dupZone().innerHTML =
+    '<h2>Duplication en cours</h2>' +
+    '<div style="background:#222;border-radius:4px;height:14px;overflow:hidden">' +
+    '<div style="background:#4caf50;height:14px;width:' + pct + '%"></div></div>' +
+    '<div class="muted">' + m.copied + ' / ' + m.total + ' fichiers (' + pct + '%)' +
+    (m.current ? ' - ' + escHtml(m.current) : '') + '</div>';
+}
+function renderDupDone(m){
+  if(!m.success){
+    dupZone().innerHTML = '<h2>Echec de la duplication</h2>' +
+      '<div><span class="badge badge-miss">REJECTED</span> ' + escHtml(m.error || 'Erreur inconnue') + '</div>';
+    appendLog('DUPLICATION ECHEC: ' + escHtml(m.error || ''));
+    return;
+  }
+  const r = m.report || {};
+  let rows = '';
+  (r.sample || []).forEach(x => {
+    rows += '<tr><td>' + escHtml(x.file) + '</td><td class="muted">' + x.sha256 +
+      (x.partial ? ' (partiel)' : '') + '</td><td>' + (x.match ? 'OK' : 'KO') + '</td></tr>';
+  });
+  dupZone().innerHTML =
+    '<h2>Duplication terminee</h2>' +
+    '<div><span class="badge badge-ok">MATCH</span> ' + escHtml(m.dest || '') + '</div>' +
+    '<div class="muted">' + r.copied + ' / ' + r.total + ' fichiers copies' +
+    (r.skippedSymlinks ? ', ' + r.skippedSymlinks + ' liens symboliques ignores' : '') +
+    ' - echantillon verifie: ' + r.matched + ' / ' + r.checked + '</div>' +
+    (rows ? '<table><tr><th>Fichier</th><th>sha256 (16)</th><th>Resultat</th></tr>' + rows + '</table>' : '') +
+    ((r.copyErrors && r.copyErrors.length) ? '<div>Erreurs de copie: ' + r.copyErrors.length + '</div>' : '') +
+    ((r.mismatches && r.mismatches.length) ? '<div>Discordances: ' + r.mismatches.map(escHtml).join(', ') + '</div>' : '');
+  appendLog('DUPLICATION REUSSIE: ' + r.copied + ' fichiers -> ' + escHtml(m.dest || ''));
+}
 function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 </script>
 </body>
@@ -491,4 +682,4 @@ function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').r
     }
 }
 
-module.exports = { DuplicationPanel };
+module.exports = { DuplicationPanel, DUP_DEFAULT_EXCLUDES, collectDupFiles, verifyDupCopy, hashDupFile };

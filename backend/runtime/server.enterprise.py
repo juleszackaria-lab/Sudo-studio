@@ -417,11 +417,34 @@ def ram_fits(required_gb: float, avail_gb: float = None) -> bool:
     return avail_gb >= required_with_margin(required_gb)
 
 
+def _current_model_ram_gb() -> float:
+    """Catalogue ram_gb held by the currently loaded model, else 0.0 (P12)."""
+    try:
+        if not (state.loaded and state.model_name):
+            return 0.0
+        for m in gguf_catalogue():
+            mid = m.get("id")
+            if mid and mid in state.model_name:
+                return float(m.get("ram_gb", 0.0) or 0.0)
+    except Exception:
+        pass
+    return 0.0
+
+
+def comparable_ram_gb(avail_gb: float = None) -> float:
+    """Available RAM plus the loaded model's RAM (a switch frees it) (P12)."""
+    if avail_gb is None:
+        avail_gb = get_available_ram_gb()
+    return avail_gb + _current_model_ram_gb()
+
+
 def check_ram_for_model(model_id: str):
     required   = MODEL_RAM_REQUIREMENTS.get(model_id, 3.0)
     with_margin = required_with_margin(required)
     available  = get_available_ram_gb()
-    if available < with_margin:
+    # P12: compare against comparable RAM (a switch frees the current model);
+    # the reported figures below stay raw (honest display).
+    if comparable_ram_gb(available) < with_margin:
         msg = (f"RAM insuffisante : {available:.1f} Go disponibles, "
                f"{with_margin:.1f} Go requis minimum "
                f"(base {required:.1f} Go x marge {RAM_SAFETY_MARGIN}) "
@@ -2593,6 +2616,10 @@ def models_catalogue():
     """
     avail_ram = get_available_ram_gb()
     total_ram = get_total_ram_gb()
+    # P12: switching unloads the current model first, so compare others
+    # against available + its RAM instead of raw available.
+    compare_ram = comparable_ram_gb(avail_ram)
+    current_ram = round(compare_ram - avail_ram, 2)
 
     # Scan local GGUF files (offline, fast)
     hf_hub_dir = Path(os.environ.get("HF_HOME", str(Path.home() / ".sudo_studio"))) / "hub"
@@ -2641,7 +2668,9 @@ def models_catalogue():
         elif model["type"] == "transformers":
             downloaded = (model["id"] in local_hf_models)
 
-        can_load = ram_fits(model["ram_gb"], avail_ram)
+        is_current = bool(state.loaded and state.model_name and model["id"] in state.model_name)
+        # P12: the loaded model fits by definition; others use comparable RAM.
+        can_load = True if is_current else ram_fits(model["ram_gb"], compare_ram)
 
         if downloaded and can_load and model["ram_gb"] > best_local_ram:
             best_local_ram = model["ram_gb"]
@@ -2652,7 +2681,7 @@ def models_catalogue():
             "downloaded":  downloaded,
             "local_path":  local_path,
             "can_load":    can_load,
-            "currently_loaded": (state.loaded and state.model_name and model["id"] in state.model_name),
+            "currently_loaded": is_current,
         })
 
     # Smallest catalogue model that fits current RAM (with margin).
@@ -2662,6 +2691,8 @@ def models_catalogue():
     return jsonify({
         "catalogue":         catalogue,
         "ram_available_gb":  round(avail_ram, 2),
+        "ram_comparable_gb": round(compare_ram, 2),
+        "ram_current_model_gb": current_ram,
         "ram_total_gb":      round(total_ram, 2),
         "ram_margin":        RAM_SAFETY_MARGIN,
         "ram_critical_min_gb": RAM_CRITICAL_MIN_GB,

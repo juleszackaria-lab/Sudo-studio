@@ -11,6 +11,17 @@ const { appendAudit } = require('../utils/auditLog');
 installAxiosConnRetry(axios);
 const os     = require('os');
 
+// P12: human-readable uptime ("9 h 13 min" instead of raw seconds).
+function fmtUptime(totalSeconds) {
+    const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return h + ' h ' + m + ' min';
+    if (m > 0) return m + ' min ' + sec + ' s';
+    return sec + ' s';
+}
+
 // Full model catalogue matching server.enterprise.py MODEL_CATALOGUE
 const MODEL_CATALOGUE = [
     { id: 'Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF',        name: 'Qwen2.5 Coder 1.5B Q4',       sizeGb: 1.0,  ramGb: 1.5,  type: 'gguf', desc: '⭐ Recommandé — Code spécialisé, très léger',  recommended: true },
@@ -160,6 +171,8 @@ class RuntimePanel {
             catalogue:    this._catalogue,
             catalogueMeta: catalogueData ? {
                 ramAvailableGb: catalogueData.ram_available_gb,
+                ramComparableGb: catalogueData.ram_comparable_gb,
+                ramCurrentModelGb: catalogueData.ram_current_model_gb,
                 bestLocalModel: catalogueData.best_local_model,
                 recommendedDownload: catalogueData.recommended_download,
                 recommendedDownloadName: catalogueData.recommended_download_name,
@@ -339,7 +352,7 @@ class RuntimePanel {
                 `RAM available: ${r.data.system?.ram_available_gb || 'N/A'} GB`,
                 `RAM total: ${r.data.system?.ram_total_gb || 'N/A'} GB`,
                 `Requests served: ${r.data.requests_served || 0}`,
-                `Uptime: ${r.data.uptime_seconds || 0}s`,
+                `Uptime: ${fmtUptime(r.data.uptime_seconds)},`,
                 ``,
                 `=== Detection Log ===`,
                 ...(logs.length > 0 ? logs : ['(aucun log de détection disponible)']),
@@ -743,6 +756,7 @@ function renderCatalogue(catalogue, meta) {
     }
 
     const ramAvailGb = meta ? meta.ramAvailableGb : 0;
+    const ramCmpGb = (meta && meta.ramComparableGb) || ramAvailGb;
     const bestLocal  = meta ? meta.bestLocalModel : null;
 
     if (infoEl) {
@@ -759,7 +773,7 @@ function renderCatalogue(catalogue, meta) {
     list.innerHTML = catalogue.map(function(m) {
         const isLoaded   = m.currently_loaded || false;
         const isDl       = m.downloaded       || false;
-        const canLoad    = m.can_load !== undefined ? m.can_load : (ramAvailGb >= ((m.ram_gb || m.ramGb || 99) * 1.3));
+        const canLoad    = m.can_load !== undefined ? m.can_load : (ramCmpGb >= ((m.ram_gb || m.ramGb || 99) * 1.3));
         const isBest     = m.id === bestLocal;
         const sizeGb     = m.size_gb || m.sizeGb || 0;
         const ramGb      = m.ram_gb  || m.ramGb  || 0;
@@ -775,8 +789,10 @@ function renderCatalogue(catalogue, meta) {
         if (isDl)     badges += '<span class="badge badge-dl">💾 Téléchargé</span>';
         else          badges += '<span class="badge badge-notdl">☁️ Non téléchargé</span>';
         if (m.type === 'gguf') badges += '<span class="badge badge-gguf">GGUF</span>';
+        if (!isLoaded) { // P12: loaded fits by definition, button already says Charge
         if (canLoad)  badges += '<span class="badge badge-canload">✅ RAM ok</span>';
         else          badges += '<span class="badge badge-noram">❌ RAM insuffisante (' + ramGb + 'GB)</span>';
+        }
 
         let actionBtns = '';
         if (!isDl) {
@@ -1007,4 +1023,4 @@ console.log('[RUNTIME] Script init complete');
     }
 }
 
-module.exports = { RuntimePanel };
+module.exports = { RuntimePanel, fmtUptime };
