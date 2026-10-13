@@ -10,8 +10,8 @@
  * 5. Export/import license config for air-gapped deployments
  *
  * Storage: ~/.sudo_studio/license.json
- * License validation: HMAC-SHA256 signature over key fields (offline mode)
- * No external server required for demo — demo licenses validated locally.
+ * License validation: Ed25519 signature, verified offline with the embedded
+ * product public key (see src/license/license.js). No demo key, no bypass.
  */
 'use strict';
 
@@ -19,66 +19,16 @@ const vscode = require('vscode');
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
-const crypto = require('crypto');
 const { appendAudit } = require('../utils/auditLog');
+const licCore = require('../license/license');
 
 // ── License definitions ───────────────────────────────────────────────────────
-// Format: SSENT-XXXXX-XXXXX-XXXXX (Sudo Studio ENTerprise)
-// Demo key: SSENT-DEMO0-00000-0001 → unlocks all features, 25 seats, 90-day trial
-const EDITIONS = {
-    community:   { label: 'Community',   seats: 1,   features: ['chat','doctor','sdk'] },
-    team:        { label: 'Team',         seats: 10,  features: ['chat','doctor','sdk','devops','environment','agent'] },
-    enterprise:  { label: 'Enterprise',  seats: 999, features: ['chat','doctor','sdk','devops','environment','agent','security','duplication','central','cicd','license'] },
-    trial:       { label: 'Trial',        seats: 25,  features: ['chat','doctor','sdk','devops','environment','agent','security','duplication','central','cicd','license'] },
-};
+// Key format: base64url(payload).base64url(Ed25519 signature). Editions below
+// come from src/license/license.js (single source of truth).
+const EDITIONS = licCore.EDITIONS;
 
-const DEMO_KEYS = {
-    'SSENT-DEMO0-00000-0001': { edition: 'trial',      seats: 25,  expiresAt: null, company: 'Demo Company',     issuedTo: 'demo@sudostudio.local' },
-    'SSENT-TEAM0-00001-2025': { edition: 'team',        seats: 10,  expiresAt: null, company: 'Acme Corp',        issuedTo: 'admin@acme.com' },
-    'SSENT-ENT00-00001-2025': { edition: 'enterprise',  seats: 999, expiresAt: null, company: 'Enterprise Corp',  issuedTo: 'cto@enterprise.com' },
-};
 
-// ── Storage helpers ───────────────────────────────────────────────────────────
-function getLicensePath() {
-    const d = path.join(process.env.SUDO_STUDIO_HOME || os.homedir(), '.sudo_studio');
-    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-    return path.join(d, 'license.json');
-}
-
-function readLicense() {
-    try {
-        const p = getLicensePath();
-        return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null;
-    } catch { return null; }
-}
-
-function writeLicense(lic) {
-    fs.writeFileSync(getLicensePath(), JSON.stringify(lic, null, 2), 'utf8');
-}
-
-// ── Offline license validation ────────────────────────────────────────────────
-// A real product would use asymmetric crypto. For demo: check against known keys.
-function validateKey(key) {
-    const cleaned = key.trim().toUpperCase();
-    if (DEMO_KEYS[cleaned]) {
-        const def = DEMO_KEYS[cleaned];
-        return {
-            valid: true,
-            key: cleaned,
-            ...def,
-            edition: def.edition,
-            editionLabel: EDITIONS[def.edition]?.label || def.edition,
-            features: EDITIONS[def.edition]?.features || [],
-            activatedAt: new Date().toISOString(),
-            machineId: os.hostname(),
-        };
-    }
-    // Offline signature check: key format SSENT-XXXXX-XXXXX-XXXXX
-    if (!/^SSENT-[A-Z0-9]{5}-[A-Z0-9]{5}-[A-Z0-9]{4}$/.test(cleaned)) {
-        return { valid: false, reason: 'Invalid key format. Expected: SSENT-XXXXX-XXXXX-XXXX' };
-    }
-    return { valid: false, reason: 'Key not recognized. Use a valid license key or the demo key: SSENT-DEMO0-00000-0001' };
-}
+// License state and crypto live in src/license/license.js (single source).
 
 // ── Panel class ───────────────────────────────────────────────────────────────
 class LicensePanel {
@@ -113,9 +63,9 @@ class LicensePanel {
             case 'activate': {
                 // Validate key: must be a string in expected format
                 const key = msg.key;
-                if (typeof key !== 'string' || key.length === 0 || key.length > 64) return;
-                // Only allow expected characters
-                if (!/^[A-Za-z0-9\-\s]+$/.test(key)) return;
+                if (typeof key !== 'string' || key.length === 0 || key.length > 4096) return;
+                // License keys are base64url(payload).base64url(signature)
+                if (!/^[A-Za-z0-9\-_.]+$/.test(key)) return;
                 this._activate(key);
                 break;
             }
@@ -135,6 +85,7 @@ class LicensePanel {
             }
             case 'export':  this._exportLicense(); break;
             case 'import':  this._importLicense(); break;
+            case 'importRevocation': this._importRevocation(); break;
             case 'openUrl': {
                 if (typeof msg.url !== 'string' || !/^https?:\/\//.test(msg.url)) return;
                 vscode.env.openExternal(vscode.Uri.parse(msg.url));
@@ -144,65 +95,54 @@ class LicensePanel {
     }
 
     _load() {
-        const lic = readLicense();
-        this.panel.webview.postMessage({ type: 'licenseData', license: lic, editions: EDITIONS });
+        const st = licCore.getStatus();
+        const view = {
+            active: st.state === 'active',
+            status: st.state,
+            reason: st.reason,
+            edition: st.edition,
+            editionLabel: st.editionLabel,
+            features: st.features,
+            company: st.client,
+            licenseId: st.licenseId,
+            seats: { max: st.seatsMax, allocated: st.seatsAllocated },
+            issuedAt: st.issuedAt,
+            expiresAt: st.expiresAt,
+            machineId: st.machineId,
+            activatedAt: st.activatedAt,
+            revokedCount: st.revokedCount,
+        };
+        this.panel.webview.postMessage({ type: 'licenseData', license: view, editions: EDITIONS });
     }
 
     _activate(key) {
-        const result = validateKey(key);
-        if (!result.valid) {
+        const result = licCore.activate(key);
+        if (!result.ok) {
             this.panel.webview.postMessage({ type: 'activateError', msg: result.reason });
-            // Never expose raw reason in showErrorMessage (could contain key details)
-            vscode.window.showErrorMessage('Activation échouée — clé invalide ou non reconnue.');
+            vscode.window.showErrorMessage('Activation failed - invalid key.');
+            appendAudit('LICENSE_ACTIVATE', 'rejected: ' + result.reason, { result: 'error', verified: false });
             return;
         }
-        const lic = {
-            ...result,
-            seats: {
-                max: result.seats,
-                allocated: [],
-            },
-        };
-        try {
-            writeLicense(lic);
-        } catch {
-            vscode.window.showErrorMessage('Activation échouée - impossible de sauvegarder la licence. Vérifiez les permissions.');
-            appendAudit('LICENSE_ACTIVATE', 'save failed', { result: 'error', verified: false });
-            return;
-        }
-        // TASK 7: post-condition - re-read the stored license and confirm key + edition.
-        const back = readLicense();
-        if (!back || back.key !== lic.key || back.edition !== lic.edition) {
-            vscode.window.showErrorMessage('Activation incertaine : relecture differente. Reessayez.');
-            appendAudit('LICENSE_ACTIVATE', 'stored but not confirmed on re-read', { result: 'error', verified: false });
-            return;
-        }
-        appendAudit('LICENSE_ACTIVATE', `${result.editionLabel} for ${result.company} (demo-key validation)`, { result: 'ok', verified: true });
-        vscode.window.showInformationMessage(`✅ Sudo Studio ${result.editionLabel} activé pour ${result.company}`);
+        appendAudit('LICENSE_ACTIVATE', `${result.status.editionLabel} for ${result.status.client}`, { result: 'ok', verified: true });
+        vscode.window.showInformationMessage(`Sudo Studio ${result.status.editionLabel} active pour ${result.status.client}`);
         this._load();
     }
 
     _deactivate() {
-        try {
-            const p = getLicensePath();
-            if (fs.existsSync(p)) fs.unlinkSync(p);
-            // TASK 7: post-condition - the license file must be gone.
-            if (fs.existsSync(p)) {
-                vscode.window.showErrorMessage('Desactivation incertaine : fichier toujours present.');
-                appendAudit('LICENSE_DEACTIVATE', 'file still present after delete', { result: 'error', verified: false });
-                return;
-            }
-            appendAudit('LICENSE_DEACTIVATE', 'license removed (Community)', { result: 'ok', verified: true });
-            vscode.window.showInformationMessage('Licence désactivée. Retour à l\'édition Community.');
-            this._load();
-        } catch {
-            vscode.window.showErrorMessage('Désactivation échouée — vérifiez les permissions.');
+        const r = licCore.deactivate();
+        if (!r.ok) {
+            vscode.window.showErrorMessage('Deactivation failed - file still present.');
+            appendAudit('LICENSE_DEACTIVATE', 'file still present after delete', { result: 'error', verified: false });
+            return;
         }
+        appendAudit('LICENSE_DEACTIVATE', 'license removed (Community)', { result: 'ok', verified: true });
+        vscode.window.showInformationMessage('Licence desactivee. Retour a l\'edition Community.');
+        this._load();
     }
 
     _addSeat(email) {
         try {
-            const lic = readLicense();
+            const lic = licCore.readStoredLicense();
             if (!lic) { vscode.window.showWarningMessage('Aucune licence active.'); return; }
             if (!lic.seats?.allocated) lic.seats = { max: lic.seats?.max || 1, allocated: [] };
             if (lic.seats.allocated.includes(email)) {
@@ -214,9 +154,9 @@ class LicensePanel {
                 return;
             }
             lic.seats.allocated.push(email);
-            writeLicense(lic);
+            licCore.writeStoredLicense(lic);
             // TASK 7: post-condition - re-read and confirm the seat.
-            const back = readLicense();
+            const back = licCore.readStoredLicense();
             if (!back || !(back.seats?.allocated || []).includes(email)) {
                 vscode.window.showErrorMessage('Attribution incertaine - relecture impossible. Reessayez.');
                 appendAudit('LICENSE_ADD_SEAT', `seat for ${email} not confirmed`, { result: 'error', verified: false });
@@ -232,7 +172,7 @@ class LicensePanel {
 
     _removeSeat(email) {
         try {
-            const lic = readLicense();
+            const lic = licCore.readStoredLicense();
             if (!lic) return;
             if (!lic.seats?.allocated) return;
             // TASK 7: never announce a release that changed nothing.
@@ -241,8 +181,8 @@ class LicensePanel {
                 return;
             }
             lic.seats.allocated = lic.seats.allocated.filter(e => e !== email);
-            writeLicense(lic);
-            const back = readLicense();
+            licCore.writeStoredLicense(lic);
+            const back = licCore.readStoredLicense();
             const freed = back && !(back.seats?.allocated || []).includes(email);
             appendAudit('LICENSE_REMOVE_SEAT', `seat released for ${email}`, { result: freed ? 'ok' : 'error', verified: !!freed });
             if (!freed) {
@@ -258,7 +198,7 @@ class LicensePanel {
 
     async _exportLicense() {
         try {
-            const lic = readLicense();
+            const lic = licCore.readStoredLicense();
             if (!lic) { vscode.window.showWarningMessage('Aucune licence active à exporter.'); return; }
             const saveUri = await vscode.window.showSaveDialog({
                 defaultUri: vscode.Uri.file(path.join(os.homedir(), 'sudo-studio-license.json')),
@@ -280,54 +220,80 @@ class LicensePanel {
         try {
             const uris = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: false, filters: { 'License File': ['json'] } });
             if (!uris || !uris.length) return;
-
-            // Size guard (license files should be tiny)
             const stat = fs.statSync(uris[0].fsPath);
             if (stat.size > 64 * 1024) {
-                vscode.window.showErrorMessage('Fichier de licence invalide — trop volumineux.');
+                vscode.window.showErrorMessage('Fichier de licence invalide - trop volumineux.');
                 return;
             }
-
             let raw;
             try {
                 raw = JSON.parse(fs.readFileSync(uris[0].fsPath, 'utf8'));
             } catch {
-                vscode.window.showErrorMessage('Fichier de licence invalide — le JSON est malformé.');
+                vscode.window.showErrorMessage('Fichier de licence invalide - JSON malforme.');
                 return;
             }
-
-            // Re-validate the imported license key against our known keys
-            // (Never trust the edition/features stored in the file — always re-derive from the key)
+            // Re-validate the imported key (never trust edition/features in the file).
             if (!raw || typeof raw.key !== 'string') {
-                vscode.window.showErrorMessage('Fichier de licence invalide — clé manquante.');
+                vscode.window.showErrorMessage('Fichier de licence invalide - cle manquante.');
                 return;
             }
-            const validated = validateKey(raw.key);
-            if (!validated.valid) {
-                vscode.window.showErrorMessage('Fichier de licence invalide — clé non reconnue.');
+            const v = licCore.verifyLicenseKey(raw.key);
+            if (!v.valid) {
+                vscode.window.showErrorMessage('Fichier de licence invalide - ' + v.reason);
+                appendAudit('LICENSE_IMPORT', 'rejected: ' + v.reason, { result: 'error', verified: false });
                 return;
             }
-            // Build clean license from validated data (ignore file-supplied edition/features)
             const cleanLic = {
-                ...validated,
+                key: raw.key,
+                activatedAt: new Date().toISOString(),
                 seats: {
-                    max: validated.seats,
-                    allocated: Array.isArray(raw.seats?.allocated) ? raw.seats.allocated.filter(e => typeof e === 'string' && e.length < 128) : [],
+                    max: v.payload.seats,
+                    allocated: Array.isArray(raw.seats?.allocated) ? raw.seats.allocated.filter(e => typeof e === 'string' && e.length < 128).slice(0, v.payload.seats) : [],
                 },
             };
-            writeLicense(cleanLic);
-            // TASK 7: post-condition - re-read and confirm key + edition.
-            const back = readLicense();
-            if (!back || back.key !== cleanLic.key || back.edition !== cleanLic.edition) {
+            licCore.writeStoredLicense(cleanLic);
+            const back = licCore.readStoredLicense();
+            if (!back || back.key !== cleanLic.key) {
                 vscode.window.showErrorMessage('Import incertain : relecture differente. Reessayez.');
                 appendAudit('LICENSE_IMPORT', 'stored but not confirmed on re-read', { result: 'error', verified: false });
                 return;
             }
-            appendAudit('LICENSE_IMPORT', `${validated.editionLabel} for ${validated.company}`, { result: 'ok', verified: true });
-            vscode.window.showInformationMessage(`✅ Licence importée : ${validated.editionLabel} pour ${validated.company}`);
+            const label = licCore.EDITIONS[v.payload.edition].label;
+            appendAudit('LICENSE_IMPORT', `${label} for ${v.payload.client}`, { result: 'ok', verified: true });
+            vscode.window.showInformationMessage(`Licence importee : ${label} pour ${v.payload.client}`);
             this._load();
         } catch {
-            vscode.window.showErrorMessage('Import échoué — vérifiez le fichier et les permissions.');
+            vscode.window.showErrorMessage('Import echoue - verifiez le fichier et les permissions.');
+        }
+    }
+
+    async _importRevocation() {
+        try {
+            const uris = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: false, filters: { 'JSON': ['json'] } });
+            if (!uris || !uris.length) return;
+            const stat = fs.statSync(uris[0].fsPath);
+            if (stat.size > 64 * 1024) {
+                vscode.window.showErrorMessage('Revocation file too large.');
+                return;
+            }
+            let raw;
+            try {
+                raw = JSON.parse(fs.readFileSync(uris[0].fsPath, 'utf8'));
+            } catch {
+                vscode.window.showErrorMessage('Revocation file is not valid JSON.');
+                return;
+            }
+            const r = licCore.importRevocationList(raw);
+            if (!r.ok) {
+                vscode.window.showErrorMessage('Revocation import failed - ' + r.reason);
+                appendAudit('LICENSE_IMPORT_REVOCATION', r.reason, { result: 'error', verified: false });
+                return;
+            }
+            appendAudit('LICENSE_IMPORT_REVOCATION', `${r.total} revoked id(s), ${r.added} new`, { result: 'ok', verified: true });
+            vscode.window.showInformationMessage(`Revocation list imported (${r.total} ids).`);
+            this._load();
+        } catch {
+            vscode.window.showErrorMessage('Revocation import failed.');
         }
     }
 
@@ -383,6 +349,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div style="display:flex;gap:6px">
     <button class="btn btn-secondary" onclick="vscode.postMessage({type:'export'})">📤 Export</button>
     <button class="btn btn-secondary" onclick="vscode.postMessage({type:'import'})">📥 Import</button>
+    <button class="btn btn-secondary" onclick="vscode.postMessage({type:'importRevocation'})">Revocations</button>
     <button class="btn btn-secondary" onclick="vscode.postMessage({type:'load'})">🔄 Refresh</button>
   </div>
 </div>
@@ -403,20 +370,21 @@ window.addEventListener('message', e=>{
 
 function renderLicense(lic){
   const cnt = document.getElementById('content');
-  if(!lic){
+  if(!lic || !lic.active){
+    const reason = (lic && lic.reason) ? lic.reason : '';
     cnt.innerHTML=\`
     <div class="activate-area">
-      <h2 style="font-size:16px;margin-bottom:8px">🔓 Activate Sudo Studio</h2>
+      <h2 style="font-size:16px;margin-bottom:8px">Activate Sudo Studio</h2>
       <p style="font-size:13px;color:var(--muted);margin-bottom:12px">
-        Enter your license key to unlock Enterprise features.<br>
-        Demo key: <code>SSENT-DEMO0-00000-0001</code><br>
-        Local demo validation - production keys require a license server.
+        Enter your license key to unlock Team and Enterprise features.<br>
+        Keys are verified offline (Ed25519 signature, no server needed).<br>
+        Format: <code>payload.signature</code> (base64url).
       </p>
       <div class="input-row">
-        <input id="keyInput" placeholder="SSENT-XXXXX-XXXXX-XXXX" spellcheck="false">
+        <input id="keyInput" placeholder="Paste license key (payload.signature)" spellcheck="false">
         <button class="btn btn-green" onclick="activate()">Activate</button>
       </div>
-      <div id="errMsg" class="err-msg"></div>
+      <div id="errMsg" class="err-msg">\${escH(reason)}</div>
     </div>
     <div class="section"><h2>Edition Comparison</h2>
       \${renderEditions()}
@@ -435,8 +403,9 @@ function renderLicense(lic){
   <div class="lic-card">
     <div class="lic-edition">\${lic.editionLabel||lic.edition} Edition</div>
     <div class="lic-meta">
-      \${lic.company||'—'} · \${lic.issuedTo||'—'} · Machine: \${lic.machineId||'—'}<br>
-      Key: <code>\${lic.key}</code> · Expires: \${expiry} · Activated: \${lic.activatedAt?.slice(0,10)||'—'}
+      Status: \${lic.active ? 'Actif' : 'Inactif (' + lic.status + ')'} | ID: <code>\${lic.licenseId||'-'}</code><br>
+      \${lic.company||'-'} | Machine: \${lic.machineId||'-'}<br>
+      Expires: \${expiry} | Activated: \${lic.activatedAt?.slice(0,10)||'-'}
     </div>
     <div class="feature-grid">
       \${ALL_FEATURES.map(f=>\`<span class="feat-badge \${features.includes(f)?'':'off'}">\${features.includes(f)?'✓':''} \${FEAT_LABELS[f]||f}</span>\`).join('')}

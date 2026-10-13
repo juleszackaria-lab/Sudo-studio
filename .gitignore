@@ -44,3 +44,9 @@ Thumbs.db
 # Runtime logs
 backend/ai/*.err.log
 backend/ai/*.out.log
+
+# P11: license private keys must never be committed.
+*.private.pem
+license-private*
+*-private.key
+private-keys/

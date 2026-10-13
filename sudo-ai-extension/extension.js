@@ -22,6 +22,7 @@ const { DevOpsProvider } = require('./src/providers/DevOpsProvider');
 const { EnvironmentProvider } = require('./src/providers/EnvironmentProvider');
 const { RuntimeProvider } = require('./src/providers/RuntimeProvider');
 const { SecurityProvider } = require('./src/providers/SecurityProvider');
+const licCore = require('./src/license/license'); // P11: edition gates
 const { DuplicationProvider } = require('./src/providers/DuplicationProvider');
 const { CentralProvider } = require('./src/providers/CentralProvider');
 const { LicenseProvider } = require('./src/providers/LicenseProvider');
@@ -1423,6 +1424,7 @@ async function restoreEnvironment() {
 }
 
 async function cloneEnvironment() {
+    { const g = licCore.guardFeature('environment'); if (!g.allowed) { vscode.window.showWarningMessage(g.message); return; } }
     // Export current env to a new file, then let user choose destination
     try {
         const saveUri = await vscode.window.showSaveDialog({
@@ -1630,14 +1632,17 @@ function openAgentPanel() {
 // ── Enterprise Panel Handlers ────────────────────────────────────────────────
 
 function openSecurityPanel() {
+    { const g = licCore.guardFeature('security'); if (!g.allowed) { vscode.window.showWarningMessage(g.message); return; } }
     SecurityPanel.createOrShow(context.extensionUri);
 }
 
 function openDuplicationPanel() {
+    { const g = licCore.guardFeature('duplication'); if (!g.allowed) { vscode.window.showWarningMessage(g.message); return; } }
     DuplicationPanel.createOrShow(context.extensionUri);
 }
 
 function openCentralMgmtPanel() {
+    { const g = licCore.guardFeature('central'); if (!g.allowed) { vscode.window.showWarningMessage(g.message); return; } }
     CentralMgmtPanel.createOrShow(context.extensionUri);
 }
 

@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs'); // pure-JS, zero native .node — compatible
 const logger = require('../utils/logger');
 const { getUserByUsername, createUser } = require('../models/user.model');
 const { verifyToken, requireAdmin } = require('../middleware/auth.middleware');
+const { requireFeature } = require('../middleware/license.middleware');
 
 const router = express.Router();
 const JWT_SECRET = process.env.ENTERPRISE_JWT_SECRET || 'enterprise-secret';
@@ -37,7 +38,7 @@ router.post('/login', [
 });
 
 // Admin-only: create a new user
-router.post('/admin/users', verifyToken, requireAdmin, [
+router.post('/admin/users', verifyToken, requireFeature('central'), requireAdmin, [
   body('username').isString().notEmpty(),
   body('password').isString().isLength({ min: 6 }),
   body('role').isIn(['admin', 'developer']),

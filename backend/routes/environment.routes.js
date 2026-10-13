@@ -7,6 +7,7 @@ const path = require('path');
 const os = require('os');
 const logger = require('../utils/logger');
 const { verifyToken } = require('../middleware/auth.middleware');
+const { requireFeature } = require('../middleware/license.middleware');
 
 const execPromise = promisify(exec);
 
@@ -67,7 +68,7 @@ async function scanEnvironment() {
  * GET /api/environment/status
  * Retourne l'état complet de l'environnement développeur (outils, système, versions)
  */
-router.get('/api/environment/status', verifyToken, async (req, res) => {
+router.get('/api/environment/status', verifyToken, requireFeature('environment'), async (req, res) => {
   try {
     logger.info('Getting environment status', { user: req.user.username });
 
@@ -99,7 +100,7 @@ router.get('/api/environment/status', verifyToken, async (req, res) => {
  * Exporte un snapshot complet de l'environnement (.env-profile.json)
  * Permet de reproduire exactement l'environnement sur une autre machine.
  */
-router.post('/api/environment/export', verifyToken, async (req, res) => {
+router.post('/api/environment/export', verifyToken, requireFeature('environment'), async (req, res) => {
   try {
     logger.info('Exporting environment snapshot', { user: req.user.username });
 
@@ -172,7 +173,7 @@ router.post('/api/environment/export', verifyToken, async (req, res) => {
  * Compare l'environnement local avec un profil importé et détecte les écarts.
  * Body: { profile: object }  -- env-profile.json content
  */
-router.post('/api/environment/sync', verifyToken, async (req, res) => {
+router.post('/api/environment/sync', verifyToken, requireFeature('environment'), async (req, res) => {
   try {
     const { profile } = req.body;
 
@@ -245,7 +246,7 @@ router.post('/api/environment/sync', verifyToken, async (req, res) => {
  * Alias de /export — crée un snapshot nommé stocké côté serveur
  * Body: { name: string }
  */
-router.post('/api/environment/snapshot', verifyToken, async (req, res) => {
+router.post('/api/environment/snapshot', verifyToken, requireFeature('environment'), async (req, res) => {
   try {
     const { name = `snapshot-${Date.now()}` } = req.body;
     logger.info('Creating environment snapshot', { user: req.user.username, name });
@@ -280,7 +281,7 @@ router.post('/api/environment/snapshot', verifyToken, async (req, res) => {
  * GET /api/environment/requirements
  * Retourne les requirements Sudo Studio (outils minimum requis)
  */
-router.get('/api/environment/requirements', verifyToken, async (req, res) => {
+router.get('/api/environment/requirements', verifyToken, requireFeature('environment'), async (req, res) => {
   try {
     const env = await scanEnvironment();
 
