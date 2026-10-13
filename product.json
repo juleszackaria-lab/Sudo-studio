@@ -630,6 +630,6 @@
   "win32BackgroundUpdates": true,
   "darwinBundleIdentifier": "com.sudostudio.app",
   "linuxIconName": "sudo-studio",
-  "reportIssueUrl": "https://github.com/juleszackeria-lab/Sudo-studio/issues",
+  "reportIssueUrl": "https://github.com/juleszackaria-lab/Sudo-studio/issues",
   "urlProtocol": "sudo-studio"
 }
