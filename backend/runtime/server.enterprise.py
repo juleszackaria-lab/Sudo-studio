@@ -115,6 +115,7 @@ dlog("stdlib imports OK")
 dlog("Importing flask...")
 from flask import Flask, request, jsonify, Response, stream_with_context
 import openai_compat  # P1: OpenAI API + n_ctx policy (sibling module, no cycle: stdlib only)
+import policy_gate  # P15 3b: admin allow-list gate for /reload + /download (sibling, stdlib only)
 dlog("flask imported OK")
 
 dlog("Importing flask_cors...")
@@ -2441,6 +2442,11 @@ def models():
 def reload_model():
     data     = request.get_json(silent=True) or {}
     model_id = data.get('model', DEFAULT_MODEL)
+    if not policy_gate.is_model_allowed(model_id):  # P15 3b: admin policy first
+        msg = policy_gate.POLICY_MSG + ' : ' + str(model_id)
+        dlog("policy refuse reload_model: " + str(model_id))
+        return jsonify({"status": "refused", "model": model_id,
+                        "error": msg, "reason": "policy", "detail": msg}), 403
     force    = data.get('force_download', False)
     req_n_ctx = openai_compat.clamp_n_ctx(data.get('n_ctx'))  # None = auto default
     ok, avail, req, msg = check_ram_for_model(model_id)
@@ -2485,6 +2491,11 @@ def download_model():
     """
     data     = request.get_json(silent=True) or {}
     model_id = data.get('model', DEFAULT_MODEL)
+    if not policy_gate.is_model_allowed(model_id):  # P15 3b: admin policy first
+        msg = policy_gate.POLICY_MSG + ' : ' + str(model_id)
+        dlog("policy refuse download_model: " + str(model_id))
+        return jsonify({"status": "refused", "model": model_id,
+                        "error": msg, "reason": "policy", "detail": msg}), 403
     ok, avail, req, msg = check_ram_for_model(model_id)
     if not ok:
         _refuse_load_for_ram(model_id, avail, req, where="download")
