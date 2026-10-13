@@ -408,6 +408,12 @@
         "icon": "$(settings-gear)"
       },
       {
+        "command": "sudoStudio.openAuditLog",
+        "title": "Open Audit Log",
+        "category": "Sudo Studio",
+        "icon": "$(history)"
+      },
+      {
         "command": "sudoStudio.openLicensePanel",
         "title": "🔑 License Management",
         "category": "Sudo Studio",

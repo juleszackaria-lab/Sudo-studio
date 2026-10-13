@@ -18,7 +18,9 @@ function getCentralDir() {
 }
 
 function appendAudit(action, detail, opts = {}) {
-    const file = path.join(getCentralDir(), 'audit.json');
+    let file;
+    try { file = path.join(getCentralDir(), 'audit.json'); }
+    catch { return false; } // PROMPT 6: central dir uncreatable -> fail silent, never crash caller
     let log = [];
     try {
         const raw = fs.readFileSync(file, 'utf8');

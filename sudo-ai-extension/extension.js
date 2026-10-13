@@ -280,6 +280,7 @@ function registerCommands() {
         ['sudoStudio.openSecurityPanel',     openSecurityPanel],
         ['sudoStudio.openDuplicationPanel',  openDuplicationPanel],
         ['sudoStudio.openCentralMgmtPanel',  openCentralMgmtPanel],
+        ['sudoStudio.openAuditLog',          openAuditLog],
         ['sudoStudio.openLicensePanel',      openLicensePanel],
         ['sudoStudio.openSdkInstallPanel',   openSdkInstallPanel],
         ['sudoStudio.openProvidersPanel',    openProvidersPanel],
@@ -1638,6 +1639,10 @@ function openDuplicationPanel() {
 
 function openCentralMgmtPanel() {
     CentralMgmtPanel.createOrShow(context.extensionUri);
+}
+
+function openAuditLog() {
+    CentralMgmtPanel.createOrShow(context.extensionUri, 'audit');
 }
 
 function openLicensePanel() {

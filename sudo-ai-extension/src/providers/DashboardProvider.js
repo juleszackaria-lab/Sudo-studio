@@ -85,6 +85,8 @@ class DashboardProvider {
             this.createActionItem('🚀 DevOps Automation',    'sudoStudio.openDevOpsPanel',    'rocket'),
             this.createActionItem('🔍 Analyze Project',      'sudoStudio.openAnalysisPanel',  'search'),
             this.createActionItem('📋 View Logs',            'sudoStudio.openLogsFolder',     'output'),
+            this.createActionItem('Open Central Management', 'sudoStudio.openCentralMgmtPanel', 'organization'),
+            this.createActionItem('Open Audit Log',          'sudoStudio.openAuditLog',         'history'),
         ];
     }
 

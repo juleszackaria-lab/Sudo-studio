@@ -6,6 +6,8 @@
 const vscode = require('vscode');
 const axios  = require('axios');
 const { installAxiosConnRetry } = require('../utils/httpRetry');
+const { isModelAllowed } = require('./CentralMgmtPanel');
+const { appendAudit } = require('../utils/auditLog');
 installAxiosConnRetry(axios);
 const os     = require('os');
 
@@ -169,6 +171,13 @@ class RuntimePanel {
 
     async downloadModel(modelId) {
         if (!modelId) return;
+        if (!isModelAllowed(modelId)) {
+            const msg = 'Modele bloque par la politique administrateur : ' + modelId;
+            this.panel.webview.postMessage({ type: 'error', text: msg });
+            vscode.window.showErrorMessage(msg);
+            try { appendAudit('MODEL_BLOCKED', 'Telechargement refuse : ' + modelId, { actor: 'admin', result: 'refused_policy', verified: true }); } catch (_) {}
+            return;
+        }
         console.log('[RUNTIME] downloadModel:', modelId);
         try {
             const r = await axios.post('http://127.0.0.1:6000/download',
@@ -257,6 +266,13 @@ class RuntimePanel {
 
     async switchModel(modelId, nCtx) {
         if (!modelId) return;
+        if (!isModelAllowed(modelId)) {
+            const msg = 'Modele bloque par la politique administrateur : ' + modelId;
+            this.panel.webview.postMessage({ type: 'error', text: msg });
+            vscode.window.showErrorMessage('Chargement refuse : ' + msg);
+            try { appendAudit('MODEL_BLOCKED', 'Chargement refuse : ' + modelId, { actor: 'admin', result: 'refused_policy', verified: true }); } catch (_) {}
+            return;
+        }
         console.log('[RUNTIME] switchModel:', modelId, 'nCtx=', nCtx);
         const payload = { model: modelId, force_download: false };
         const n = parseInt(nCtx, 10);
