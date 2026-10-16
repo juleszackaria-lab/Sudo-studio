@@ -230,7 +230,7 @@ async function main() {
     assert.strictEqual(lic.activate(teamKey, OPTS).ok, true);
     const e6 = lic.guardFeature('central');
     check('E6: blocked guard names the required edition',
-        e6.allowed === false && e6.message === 'Necessite l\'edition Enterprise' && e6.need === 'enterprise');
+        e6.allowed === false && e6.message === 'N\u00e9cessite l\'\u00e9dition Enterprise' && e6.need === 'enterprise');
 
     // -- F: backend middleware (guard seam substituted with the ephemeral key;
     // the allow/block plumbing, codes and messages stay on the real path) ------------
@@ -248,7 +248,7 @@ async function main() {
     const f2 = runMw('central');
     check('F2: Team is blocked from Enterprise with the edition message',
         f2.nexted === false && f2.res.code === 403 &&
-        f2.res.body.error === 'Necessite l\'edition Enterprise' && f2.res.body.need === 'enterprise');
+        f2.res.body.error === 'N\u00e9cessite l\'\u00e9dition Enterprise' && f2.res.body.need === 'enterprise');
     assert.strictEqual(lic.activate(entKey, OPTS).ok, true);
     check('F3: Enterprise passes the central gate', runMw('central').nexted === true);
     lic.deactivate();
@@ -274,7 +274,7 @@ async function main() {
     check('G4: extension activation + status agree',
         gSt.state === 'active' && gSt.edition === 'team' && gSt.seatsMax === 10);
     check('G5: extension guard message matches backend',
-        licX.guardFeature('central', gSt).message === 'Necessite l\'edition Enterprise');
+        licX.guardFeature('central', gSt).message === 'N\u00e9cessite l\'\u00e9dition Enterprise');
     let g6ok = false;
     try {
         crypto.createPublicKey({ key: Buffer.from(lic.PRODUCT_PUBLIC_KEY_SPKI_B64, 'base64'),

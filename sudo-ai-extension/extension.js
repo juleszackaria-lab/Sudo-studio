@@ -1179,6 +1179,7 @@ async function generateDockerCompose() {
 }
 
 async function generateCICD(platform = 'github') {
+    { const g = licCore.guardFeature('cicd'); if (!g.allowed) { vscode.window.showWarningMessage(g.message); return; } }
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) return;
     
@@ -1583,6 +1584,7 @@ async function selectAIProvider() {
 }
 
 function openDevOpsPanel() {
+    { const g = licCore.guardFeature('devops'); if (!g.allowed) { vscode.window.showWarningMessage(g.message); return; } }
     DevOpsPanel.createOrShow(context.extensionUri);
 }
 
@@ -1609,6 +1611,7 @@ function stopSudoAgent() {
 }
 
 function openAgentPanel() {
+    { const g = licCore.guardFeature('agent'); if (!g.allowed) { vscode.window.showWarningMessage(g.message); return; } }
     console.log('[EXT] openAgentPanel() called');
     const panel = AgentPanel.createOrShow(context.extensionUri);
     console.log('[EXT] AgentPanel.createOrShow() returned:', panel ? 'panel OK' : 'null');

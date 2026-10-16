@@ -317,7 +317,7 @@ function guardFeature(feature, status) {
     }
     const st = status || getStatus();
     return { allowed: false, feature, edition: st.edition, need,
-        message: 'Necessite l\'edition ' + EDITIONS[need].label };
+        message: 'N\u00e9cessite l\'\u00e9dition ' + EDITIONS[need].label };
 }
 
 module.exports = {

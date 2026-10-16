@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const { verifyToken, requireAdmin } = require('../middleware/auth.middleware');
+const { requireFeature } = require('../middleware/license.middleware'); // P16: edition gates
+const licCore = require('../src/license/license'); // P16: per-type cicd check
 
 /**
  * PHASE 2 - DEVOPS SIMULATOR
@@ -18,7 +20,7 @@ const { verifyToken, requireAdmin } = require('../middleware/auth.middleware');
  *   intensity: 'low' | 'medium' | 'high'
  * }
  */
-router.post('/api/devops/simulate', verifyToken, requireAdmin, async (req, res) => {
+router.post('/api/devops/simulate', verifyToken, requireFeature('devops'), requireAdmin, async (req, res) => {
   try {
     const { scenario, duration = 60, intensity = 'medium' } = req.body;
 
@@ -137,7 +139,7 @@ router.post('/api/devops/simulate', verifyToken, requireAdmin, async (req, res) 
  * GET /api/devops/metrics
  * Retourne les métriques système en temps réel
  */
-router.get('/api/devops/metrics', verifyToken, (req, res) => {
+router.get('/api/devops/metrics', verifyToken, requireFeature('devops'), (req, res) => {
   const metrics = {
     timestamp: new Date().toISOString(),
     system: {
@@ -188,7 +190,7 @@ router.get('/api/devops/metrics', verifyToken, (req, res) => {
  *   strategy: 'blue-green' | 'rolling' | 'canary'
  * }
  */
-router.post('/api/devops/deploy', verifyToken, requireAdmin, async (req, res) => {
+router.post('/api/devops/deploy', verifyToken, requireFeature('devops'), requireAdmin, async (req, res) => {
   try {
     const { environment, version, strategy = 'rolling' } = req.body;
 
@@ -240,7 +242,7 @@ router.post('/api/devops/deploy', verifyToken, requireAdmin, async (req, res) =>
  * GET /api/devops/deployments
  * Liste l'historique des déploiements
  */
-router.get('/api/devops/deployments', verifyToken, (req, res) => {
+router.get('/api/devops/deployments', verifyToken, requireFeature('devops'), (req, res) => {
   const { limit = 10, environment } = req.query;
 
   const deployments = [
@@ -297,7 +299,7 @@ router.get('/api/devops/deployments', verifyToken, (req, res) => {
  *   reason: string
  * }
  */
-router.post('/api/devops/rollback', verifyToken, requireAdmin, async (req, res) => {
+router.post('/api/devops/rollback', verifyToken, requireFeature('devops'), requireAdmin, async (req, res) => {
   try {
     const { deployment_id, reason } = req.body;
 
@@ -334,7 +336,7 @@ router.post('/api/devops/rollback', verifyToken, requireAdmin, async (req, res) 
   }
 });
 
-router.post('/api/devops/generate', verifyToken, async (req, res) => {
+router.post('/api/devops/generate', verifyToken, requireFeature('devops'), async (req, res) => {
   try {
     const { type, stack = 'node', options = {} } = req.body;
 
@@ -343,6 +345,14 @@ router.post('/api/devops/generate', verifyToken, async (req, res) => {
         error: 'type is required',
         allowed_types: ['dockerfile', 'docker-compose', 'github-actions', 'gitlab-ci', 'kubernetes', 'nginx', 'env']
       });
+    }
+
+    // P16: CI/CD pipeline files are an Enterprise feature ('cicd'); the rest is Team ('devops').
+    if (type === 'github-actions' || type === 'gitlab-ci') {
+      const g = licCore.guardFeature('cicd');
+      if (!g.allowed) {
+        return res.status(403).json({ error: g.message, feature: 'cicd', edition: g.edition, need: g.need });
+      }
     }
 
     logger.info('DevOps file generation started', {

@@ -268,6 +268,8 @@ class LicensePanel {
     }
 
     async _importRevocation() {
+        // P16: intentionally NOT gated by edition (P11 H7/H8 spec): revocation only
+        // ever removes rights, and the License panel must stay usable by any holder.
         try {
             const uris = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: false, filters: { 'JSON': ['json'] } });
             if (!uris || !uris.length) return;
