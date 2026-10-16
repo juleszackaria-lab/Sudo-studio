@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const logger = require('../utils/logger');
 const { verifyToken } = require('../middleware/auth.middleware');
+const { requireModelAllowed } = require('../middleware/policy.middleware'); // P15 3b
 const axios = require('axios');
 
 const execPromise = promisify(exec);
@@ -174,7 +175,7 @@ router.get('/api/models/list', verifyToken, async (req, res) => {
  *
  * Body: { model: string }  -- HuggingFace model ID
  */
-router.post('/api/models/download', verifyToken, async (req, res) => {
+router.post('/api/models/download', verifyToken, requireModelAllowed, async (req, res) => {
   try {
     const { model } = req.body;
 
@@ -235,7 +236,7 @@ router.post('/api/models/download', verifyToken, async (req, res) => {
  *
  * Body: { model: string }
  */
-router.post('/api/models/switch', verifyToken, async (req, res) => {
+router.post('/api/models/switch', verifyToken, requireModelAllowed, async (req, res) => {
   try {
     const { model } = req.body;
 
