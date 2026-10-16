@@ -45,6 +45,7 @@ jobs:
                 "installers/**/*.js",
                 "config/**/*.js"
               )
+              assets = @("version.json")
             }
             $pkg | Add-Member -NotePropertyName "pkg" -NotePropertyValue $pkgConfig -Force
           }
