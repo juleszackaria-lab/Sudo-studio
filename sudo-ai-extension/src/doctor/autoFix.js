@@ -124,6 +124,15 @@ function tail(s, n) {
     return lines.slice(-(n || 3)).join(' | ').slice(0, 300);
 }
 
+// Last 30 lines of combined stdout+stderr for the audit journal (P19-a).
+function tail30(out, err) {
+    const all = (String(out || '') + '\n' + String(err || '')).replace(/\r/g, '').split('\n');
+    const lines = all.map((l) => l.replace(/\s+$/, ''));
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    while (lines.length && lines[0] === '') lines.shift();
+    return lines.slice(-30).join('\n').slice(0, 4000);
+}
+
 function psQuote(s) {
     return "'" + String(s).replace(/'/g, "''") + "'";
 }
@@ -216,12 +225,17 @@ function buildPsScript(steps, logFile) {
     const L = [];
     L.push("$ErrorActionPreference = 'Continue'");
     L.push('$log = ' + psQuote(logFile));
-    L.push('function L($s) { Add-Content -Path $log -Value $s }');
+    L.push('function L($s) { Add-Content -Path $log -Value ([string]$s) }');
     L.push("L 'START'");
     for (const s of steps) {
         L.push('L ' + psQuote('STEP ' + s.id));
-        L.push(s.cmd);
-        L.push("L ('DONE " + s.id + " code=' + $LASTEXITCODE)");
+        // P19: stream this step's stdout+stderr into the log (bounded), then a
+        // null-safe DONE marker (9009 = step never ran, e.g. winget missing from
+        // the elevated PATH). Piping through cmdlets preserves $LASTEXITCODE.
+        L.push('L ' + psQuote('OUTPUT ' + s.id));
+        L.push(s.cmd + ' *>&1 | Select-Object -First 150 | ForEach-Object { L ([string]$_) }');
+        L.push('L ' + psQuote('ENDOUTPUT ' + s.id));
+        L.push("$code = $LASTEXITCODE; if ($null -eq $code) { $code = 9009 }; L ('DONE " + s.id + " code=' + $code)");
     }
     L.push("L 'END'");
     return L.join('\r\n');
@@ -230,10 +244,50 @@ function buildPsScript(steps, logFile) {
 function parsePsLog(text) {
     const out = {};
     for (const line of String(text || '').split('\n')) {
-        const m = line.match(/DONE (\S+) code=(-?\d+)/);
-        if (m) out[m[1]] = parseInt(m[2], 10);
+        const m = line.match(/DONE (\S+) code=(-?\d*)/);
+        if (m) out[m[1]] = m[2] === '' ? 9009 : parseInt(m[2], 10);
     }
     return out;
+}
+
+// P19: per-step captured output between OUTPUT <id> / ENDOUTPUT <id> markers.
+function parsePsStepOutputs(text) {
+    const out = {};
+    let cur = null;
+    let buf = [];
+    for (const raw of String(text || '').split('\n')) {
+        const line = raw.replace(/\r$/, '');
+        let m = line.match(/^OUTPUT (\S+)\s*$/);
+        if (m) { cur = m[1]; buf = []; continue; }
+        m = line.match(/^ENDOUTPUT (\S+)\s*$/);
+        if (m && cur === m[1]) { out[cur] = buf.join('\n'); cur = null; buf = []; continue; }
+        if (cur) buf.push(line);
+    }
+    if (cur) { while (buf.length && buf[buf.length - 1] === '') buf.pop(); out[cur] = buf.join('\n'); }
+    return out;
+}
+
+// P19-c: precise cause for a step with no DONE marker.
+function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind) {
+    const lastLog = logText ? tail(logText, 4) : '';
+    if (launch && launch.timedOut) {
+        return { short: 'delai depasse',
+            reason: "delai depasse (" + launchMs + " ms) : " + kind + " n'a pas rendu la main (timeout)" };
+    }
+    if (!logRead || !/START/.test(String(logText || ''))) {
+        let reason = 'script non execute (journal vide ou absent)';
+        if (launch && launch.code !== 0) {
+            reason += ' : lancement echoue (code ' + launch.code + ')' +
+                (launch.stderr ? ' : ' + tail(launch.stderr, 3) : '');
+        } else {
+            reason += " : le processus fils n'a rien ecrit (UAC validee mais script non demarre - antivirus, GPO ou elevation partielle ?)";
+        }
+        return { short: 'script non execute', reason };
+    }
+    const ran = Object.keys(parsed || {}).length;
+    return { short: 'etape non executee',
+        reason: "etape non executee : le script s'est interrompu (" + ran + ' etape(s) terminee(s) avant)' +
+            (lastLog ? ' - dernieres lignes : ' + lastLog : '') };
 }
 
 // -- main API -----------------------------------------------------------------------------------------
@@ -283,11 +337,29 @@ async function fixAll(issues, deps) {
 
     // Plan each issue: method + command (or immediate manual/failed row).
     const plan = [];
+    // P19-b pre-detection: journaled, never silent.
     let wingetPresent = false;
+    let wingetText = 'non teste';
     if (isWin && online) {
-        try { wingetPresent = (await execFn('winget --version', { timeout: 15000 })).code === 0; }
-        catch (_) { wingetPresent = false; }
+        try {
+            const w = await execFn('winget --version', { timeout: 15000 });
+            wingetPresent = w.code === 0;
+            wingetText = wingetPresent ? String(w.stdout || '').trim().split('\n')[0].slice(0, 120)
+                : 'absent (code ' + w.code + ')';
+        } catch (e) { wingetPresent = false; wingetText = 'absent (' + (e && e.message ? e.message : 'erreur') + ')'; }
+    } else if (isWin) {
+        wingetText = 'non teste (hors ligne)';
     }
+    let offlineList = 'dossier absent';
+    try {
+        if (fs.existsSync(offlineDir)) {
+            const names = fs.readdirSync(offlineDir).filter((n) => !n.endsWith('.sha256'));
+            offlineList = names.length ? names.length + ' fichier(s) : ' + names.slice(0, 12).join(', ') : 'dossier vide';
+        }
+    } catch (e) { offlineList = 'illisible (' + (e && e.message ? e.message : '?') + ')'; }
+    audit('AUTOFIX_PRECHECK', 'winget=[' + wingetText + '] reseau=' + (online ? 'oui' : 'non') +
+        ' installateurs=[' + offlineDir + '] ' + offlineList,
+        (wingetPresent || !isWin || !online) ? 'ok' : 'missing');
     for (const issue of ordered) {
         const f = resolveFix(issue);
         const checkCmd = isWin ? f.check.win : f.check.posix;
@@ -319,9 +391,13 @@ async function fixAll(issues, deps) {
         }
         const file = path.join(offlineDir, f.offline.file);
         if (!fs.existsSync(file)) {
-            const why = online && !wingetPresent ? 'winget introuvable et ' : 'hors ligne et ';
-            plan.push({ issue, kind: 'manual-missing', fix: f,
-                reason: why + "installateur hors ligne manquant : " + f.offline.file + " attendu dans " + offlineDir });
+            if (online && !wingetPresent) {
+                plan.push({ issue, kind: 'manual-missing', fix: f,
+                    reason: "winget absent : importez l'installateur " + issue + ' ' + f.offline.file + ' (dossier : ' + offlineDir + ')' });
+            } else {
+                plan.push({ issue, kind: 'manual-missing', fix: f,
+                    reason: 'hors ligne et installateur hors ligne manquant : ' + f.offline.file + ' attendu dans ' + offlineDir });
+            }
             continue;
         }
         const sidecar = file + '.sha256';
@@ -413,6 +489,7 @@ async function fixAll(issues, deps) {
                 return finish();
             }
             let launch;
+            const tLaunch0 = Date.now();
             if (elevated) {
                 launch = await execFn('powershell -NoProfile -Command ' +
                     psQuote('Start-Process powershell -Verb RunAs -Wait -ArgumentList ' +
@@ -422,13 +499,19 @@ async function fixAll(issues, deps) {
                 launch = await execFn('powershell -NoProfile -ExecutionPolicy Bypass -File ' + psQuote(scriptFile),
                     { timeout: installTimeout });
             }
-            let parsed = {};
-            try { parsed = parsePsLog(fs.readFileSync(logFile, 'utf8')); } catch (_) { parsed = {}; }
+            const launchMs = Date.now() - tLaunch0;
+            launch = launch || {};
+            let logText = '';
+            let logRead = true;
+            try { logText = fs.readFileSync(logFile, 'utf8'); } catch (_) { logText = ''; logRead = false; }
+            const parsed = parsePsLog(logText);
+            const stepOuts = parsePsStepOutputs(logText);
             try { fs.unlinkSync(scriptFile); } catch (_) {}
             try { fs.unlinkSync(logFile); } catch (_) {}
             if (elevated && launch.code !== 0 && Object.keys(parsed).length === 0) {
                 // UAC prompt itself refused/cancelled: nothing ran.
-                audit('AUTOFIX_ELEVATION', 'UAC refusee (code ' + launch.code + ')', 'refused');
+                audit('AUTOFIX_ELEVATION', 'UAC refusee (code ' + launch.code + ')' +
+                    (launch.stderr ? ' : ' + tail(launch.stderr, 3) : ''), 'refused');
                 for (const p of runnable) {
                     progress(ordered.indexOf(p.issue), p.issue, 'done');
                     push({ issue: p.issue, status: 'manual', method: p.kind, reason: "elevation UAC refusee" });
@@ -436,8 +519,18 @@ async function fixAll(issues, deps) {
                 return finish();
             }
             for (const [id, p] of Object.entries(byId)) {
-                results[p.issue] = Object.prototype.hasOwnProperty.call(parsed, id)
-                    ? { code: parsed[id] } : { code: null };
+                const has = Object.prototype.hasOwnProperty.call(parsed, id);
+                const full = stepOuts[id] || '';
+                // P19-a: journal EVERY step (exact cmd, code, last-30 output, duration, elevation).
+                const entry = has
+                    ? { code: parsed[id], out: full ? tail(full, 5) : (launch.stderr ? tail(launch.stderr, 3) : '') }
+                    : { code: null, out: '', cause: diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, p.kind) };
+                results[p.issue] = entry;
+                audit('AUTOFIX_STEP', p.issue + ' [' + p.kind + '] elevation=' + (elevated ? 'accordee' : 'non requise') +
+                    ' code=' + (has ? parsed[id] : 'aucun (' + entry.cause.short + ')') +
+                    ' lot_ms=' + launchMs + ' cmd=' + p.cmd +
+                    (full ? '\n' + tail30(full, '') : (launch.stderr ? '\n(lancement) ' + tail(launch.stderr, 3) : '')),
+                    has ? (parsed[id] === 0 ? 'ok' : 'fail') : 'fail');
             }
         } else {
             // Non-Windows: headless when no password needed, else ONE terminal command.
@@ -459,8 +552,13 @@ async function fixAll(issues, deps) {
             for (const p of runnable) {
                 progress(ordered.indexOf(p.issue), p.issue, 'start');
                 const cmd = (p.sudo && !/^sudo\b/.test(p.cmd)) ? 'sudo ' + p.cmd : p.cmd;
+                const t0 = Date.now();
                 const r = await execFn(cmd, { timeout: installTimeout });
+                const ms = Date.now() - t0;
                 results[p.issue] = { code: r.code, out: tail(r.stdout + '\n' + r.stderr) };
+                audit('AUTOFIX_STEP', p.issue + ' [' + p.kind + '] elevation=' + (p.sudo ? 'sudo' : 'non requise') +
+                    ' code=' + r.code + ' duree_ms=' + ms + ' cmd=' + cmd + '\n' + tail30(r.stdout, r.stderr),
+                    r.code === 0 ? 'ok' : 'fail');
                 progress(ordered.indexOf(p.issue), p.issue, 'done');
             }
         }
@@ -488,13 +586,20 @@ async function fixAll(issues, deps) {
         progress(ordered.indexOf(p.issue), p.issue, 'verify');
         const res = results[p.issue] || { code: null };
         if (res.code === null || res.code === undefined) {
-            const row = { issue: p.issue, status: 'failed', method: p.kind, reason: "etape interrompue (aucun resultat)" };
+            const cause = res.cause && res.cause.reason ? res.cause.reason
+                : ("resultat manquant pour " + p.kind + " (pas de marqueur DONE)" + (res.out ? ' : ' + res.out : ''));
+            const row = { issue: p.issue, status: 'failed', method: p.kind, reason: cause };
             progress(ordered.indexOf(p.issue), p.issue, 'done', row);
             push(row);
             continue;
         }
         await refreshPath(execFn, platform, (p.fix && p.fix.pathHints) || []);
+        const tV0 = Date.now();
         const v = await verifyCheck(execFn, p.checkCmd, p.fbCmd, DEFAULT_VERIFY_TIMEOUT_MS);
+        audit('AUTOFIX_STEP', p.issue + ' [' + p.kind + ':verification] elevation=non requise' +
+            ' code=' + (v.ok ? 0 : 1) + ' duree_ms=' + (Date.now() - tV0) + ' cmd=' + p.checkCmd +
+            (p.fbCmd ? ' (secours : ' + p.fbCmd + ')' : '') + '\n' + String(v.output || '').slice(0, 2000),
+            v.ok ? 'ok' : 'fail');
         const vtxt = v.ok ? v.output : v.output;
         if (RESTART_CODES[res.code]) {
             const row = { issue: p.issue, status: 'restart', method: p.kind,
@@ -550,4 +655,4 @@ async function fixOne(issue, deps) {
 }
 
 module.exports = { fixAll, fixOne, isKnownTool, orderIssues, resolveFix, buildPsScript, parsePsLog,
-    defaultOfflineDir, FIXES };
+    parsePsStepOutputs, diagnoseMissingStep, defaultOfflineDir, FIXES };
