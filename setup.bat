@@ -35,7 +35,7 @@ cd ..\..
 REM Step 3: Verify setup
 echo [3/4] Verifying setup...
 cd backend
-node -e "const m = require('./ai/aiModelsManager.js'); console.log('✓ Backend modules OK');"
+node --check server.js && node -e "require('./routes/system.routes.js'); console.log('Backend modules OK');"
 cd ..
 
 cd backend\runtime

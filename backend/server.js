@@ -31,7 +31,7 @@ fs.writeFileSync(
 const LOGS_DIR    = logDir;
 const BACKEND_LOG = path.join(LOGS_DIR, 'backend.log');
 
-// BASE_DIR: root directory for static assets (dist/, web-ui/)
+// BASE_DIR: root directory for static assets (dist/) and version.json
 // Same pkg-safe logic as logDir but without the /logs suffix
 const BASE_DIR = process.pkg
   ? path.join(path.dirname(process.execPath), '..')
@@ -130,7 +130,7 @@ function safeRequire(modPath, name) {
 
 earlyLog('Loading routes...');
 const adminRoutes       = safeRequire('./routes/admin.routes',       'admin');
-const papitoRoutes      = safeRequire('./routes/papito.routes',      'papito');
+const emulatorRoutes    = safeRequire('./routes/emulator.routes',    'emulator');
 const monitorRoutes     = safeRequire('./routes/monitor.routes',     'monitor');
 const systemRoutes      = safeRequire('./routes/system.routes',      'system');
 const authRoutes        = safeRequire('./routes/auth.routes',        'auth');
@@ -214,7 +214,7 @@ initDB()
 earlyLog('Mounting routes...');
 app.use('/', authRoutes);
 app.use('/', adminRoutes);
-app.use('/papito', papitoRoutes);
+app.use('/', emulatorRoutes);
 app.use('/', monitorRoutes);
 app.use('/', systemRoutes);
 app.use('/', environmentRoutes);
@@ -226,7 +226,7 @@ app.use('/', sdkRoutes);
 app.use('/', supervisorRoutes);
 
 // Static UI
-app.use('/ui', express.static(path.join(BASE_DIR, 'web-ui')));
+// P28: the former /ui mount was removed (backend/web-ui/ never existed).
 
 app.get('/', (req, res) => {
   const idx = path.join(BASE_DIR, 'dist', 'index.html');

@@ -25,8 +25,8 @@ Module._load = function (req, ...rest) {
     return origLoad.call(this, req, ...rest);
 };
 
-const Dup = require('./sudo-ai-extension/src/panels/DuplicationPanel.js');
-const Rt = require('./sudo-ai-extension/src/panels/RuntimePanel.js');
+const Dup = require('../../sudo-ai-extension/src/panels/DuplicationPanel.js');
+const Rt = require('../../sudo-ai-extension/src/panels/RuntimePanel.js');
 
 let pass = 0, fail = 0;
 function check(name, cond, extra) {
@@ -141,18 +141,18 @@ check('B10-uptime', Rt.fmtUptime(33180) === '9 h 13 min' && Rt.fmtUptime(805) ==
 
 // B11: loaded model labelled Charge (button), no RAM badge when loaded, uptime via fmtUptime
 const rhtml = Object.create(Rt.RuntimePanel.prototype).getHtmlContent();
-const rsrc = fs.readFileSync('./sudo-ai-extension/src/panels/RuntimePanel.js', 'utf8');
+const rsrc = fs.readFileSync('../../sudo-ai-extension/src/panels/RuntimePanel.js', 'utf8');
 check('B11-runtime-client', rhtml.includes('Charg\u00e9') && rhtml.includes('if (!isLoaded)') &&
     rhtml.includes('if (!canLoad && !isLoaded)') &&
     rsrc.includes('fmtUptime(r.data.uptime_seconds)') && !rsrc.includes('uptime_seconds || 0}s'));
 
 // B12: python server comparable-RAM wiring (source asserts + compile)
-const py = fs.readFileSync('./backend/runtime/server.enterprise.py', 'utf8');
+const py = fs.readFileSync('../runtime/server.enterprise.py', 'utf8');
 const needles = ['def comparable_ram_gb', 'def _current_model_ram_gb', '"ram_comparable_gb"',
     '"ram_current_model_gb"', 'is_current', 'compare_ram', 'ram_fits(model["ram_gb"], compare_ram)'];
 const missing = needles.filter((n) => !py.includes(n));
 let compiled = false;
-try { execSync('python3 -m py_compile backend/runtime/server.enterprise.py'); compiled = true; } catch {}
+try { execSync('python3 -m py_compile ../runtime/server.enterprise.py'); compiled = true; } catch {}
 check('B12-server', missing.length === 0 && compiled, 'missing=' + JSON.stringify(missing));
 
 console.log(`\nP12: ${pass} passed, ${fail} failed`);

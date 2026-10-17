@@ -5,7 +5,8 @@
 OpenCode v1.19.0 (https://github.com/sst/opencode) was integrated as a local
 agent server up to MISSION P26 and REMOVED in P27 (binary, manifest, driver,
 dependency closure: no longer shipped). The MIT attribution below is retained
-in this file as required; it is the only OpenCode mention left in the product.
+in this file as required. (Remaining historical mentions of OpenCode outside
+this notice live only in test/script comments documenting the P27 removal.)
 
 ```
 MIT License
@@ -64,3 +65,12 @@ ingestion terms (https://google.github.io/osv.dev/data/):
   https://github.com/cloudsecurityalliance/gsd-database
 - NVD enrichment (CVE ids, CVSS scores via OSV) - U.S. Government work,
   public domain, https://nvd.nist.gov ; CVE Program, https://www.cve.org
+
+## 4. Highlight.js + IBM Plex fonts (bundled webview assets, MISSION P13)
+
+- Highlight.js v11.10.0 (`media/vendor/highlight.min.js`), syntax coloring in
+  the agent/chat webviews. License: BSD-3-Clause, (c) 2006-2024 Josh Goebel
+  and other contributors (license text: `media/vendor/highlight-LICENSE`).
+- IBM Plex Sans/Mono subsets (`media/fonts/*.woff2`, Reserved Font Name
+  "Plex"). License: SIL Open Font License 1.1, (c) 2017 IBM Corp.
+  (license text: `media/fonts/OFL.txt`).

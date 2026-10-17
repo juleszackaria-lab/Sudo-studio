@@ -5,24 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "npx nodemon server.js",
-    "test": "jest --verbose --coverage",
-    "test:watch": "jest --watch",
-    "test:unit": "jest --testPathPattern=unit",
-    "test:integration": "jest --testPathPattern=integration"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "coverageDirectory": "coverage",
-    "collectCoverageFrom": [
-      "**/*.js",
-      "!node_modules/**",
-      "!coverage/**",
-      "!tests/**",
-      "!jest.config.js"
-    ],
-    "testMatch": [
-      "**/tests/**/*.test.js"
-    ]
+    "test": "node tests/run-all.js"
   },
   "dependencies": {
     "axios": "^1.4.0",
@@ -39,18 +22,13 @@
     "winston": "^3.9.0"
   },
   "devDependencies": {
-    "@types/jest": "^30.0.0",
-    "jest": "^30.3.0",
-    "nodemon": "^3.0.0",
-    "socket.io-client": "^4.8.3",
-    "supertest": "^7.2.2"
+    "nodemon": "^3.0.0"
   },
   "pkg": {
     "targets": [
       "node18-win-x64"
     ],
     "assets": [
-      "ai/models/**",
       "data/**"
     ],
     "scripts": [
@@ -58,7 +36,6 @@
       "middleware/**/*.js",
       "models/**/*.js",
       "utils/**/*.js",
-      "ai/**/*.js",
       "controllers/**/*.js",
       "security/**/*.js",
       "config/**/*.js",

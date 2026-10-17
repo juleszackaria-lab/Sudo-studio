@@ -6,7 +6,16 @@
  */
 
 const axios = require('axios');
-const colors = require('colors');
+// P28: 'colors' is not a dependency; try it, else install no-op getters
+// so the suite runs anywhere without crashing or printing 'undefined'.
+try { require('colors'); } catch (e) {
+  // NOTE: 'bold' overrides the native String.prototype.bold() HTML helper,
+  // which is unused by this suite; the override lives in this process only.
+  for (const k of ['green', 'red', 'yellow', 'cyan', 'bold', 'rainbow', 'gray', 'grey']) {
+    Object.defineProperty(String.prototype, k,
+      { get() { return String(this); }, configurable: true });
+  }
+}
 
 const BACKEND_URL = 'http://localhost:5000';
 const RUNTIME_URL = 'http://127.0.0.1:6000';
@@ -230,7 +239,7 @@ async function runTests() {
   if (!runtimeOk) {
     console.log('1. Start Python runtime:');
     console.log('   cd backend/runtime');
-    console.log('   python server.enterprise.py --port 6000 --auto-download');
+    console.log('   python server.enterprise.py --port 6000  (model download is automatic; pass --no-auto-download to disable)');
   }
   
   if (!backendOk) {

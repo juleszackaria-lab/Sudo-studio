@@ -50,3 +50,25 @@ backend/ai/*.out.log
 license-private*
 *-private.key
 private-keys/
+
+# P28: runtime-generated, never commit
+data/
+.sudo/
+coverage/
+.nyc_output/
+*.vsix
+*.log.1
+*.log.2
+*.log.3
+*.log.4
+*.log.5
+*.log.6
+*.log.7
+*.log.8
+*.log.9
+pc-verify-result.json
+preuves-*/
+sweep*.log
+# license material (private keys + issued keys)
+*.license
+license-keys/

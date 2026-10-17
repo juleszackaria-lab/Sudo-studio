@@ -2,11 +2,13 @@
 # Run on the user's PC:  powershell -ExecutionPolicy Bypass -File scripts\pc-verify.ps1
 # Optional: -InstallDir "C:\...\SudoStudio"  -RuntimeUrl http://127.0.0.1:6000
 # Writes pc-verify-result.json next to this script. No secret is ever written.
-# Threat model asserted (see src/agent/sandbox.js + OpenCodeDriver.js):
+# Threat model asserted (see sudo-ai-extension/src/agent/sandbox.js):
 #   L1-win = Job Object (kill-on-close) + restricted token + optional per-program
 #            outbound firewall block. L1 does NOT restrict filesystem reads/writes.
-#   L2     = docker / Windows Sandbox guest = filesystem + network isolation.
-# Escape tests PASS when the observed behavior matches this model.
+#   L2 (docker / Windows Sandbox guest) was REMOVED in P27: only L2 *detection*
+#   remains, so the UI reports an honest unavailability reason. The guest check
+#   in section 12 is informational only (a present guest is NOT used).
+# Escape tests PASS when the observed behavior matches the L1 model.
 # PowerShell 5.1 compatible. ASCII-only.
 param(
     [string]$InstallDir = "",
@@ -215,8 +217,8 @@ try {
 $l2 = @()
 if (Test-Path "$env:SystemRoot\System32\WindowsSandbox.exe") { $l2 += "wsb" }
 try { & docker info 2>$null | Out-Null; if ($LASTEXITCODE -eq 0) { $l2 += "docker" } } catch {}
-if ($l2.Count -gt 0) { Add-Result "l2-available" "L2 guest available" "PASS" ("via: " + ($l2 -join ",")) }
-else { Add-Result "l2-available" "L2 guest available" "SKIP" "no WindowsSandbox.exe nor working docker" }
+if ($l2.Count -gt 0) { Add-Result "l2-available" "L2 guest present (unused since P27)" "PASS" ("via: " + ($l2 -join ",") + " - product L2 execution removed, detection only") }
+else { Add-Result "l2-available" "L2 guest present (unused since P27)" "SKIP" "no WindowsSandbox.exe nor working docker" }
 
 # -- node-driven tests: score + license -------------------------------------------
 if (-not $nodeOk) {

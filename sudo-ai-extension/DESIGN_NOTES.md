@@ -29,7 +29,7 @@ vendore dans `media/fonts/` (~90 Ko), licence OFL jointe (`OFL.txt`).
 ## 3. Code : highlight.js vendore
 
 `media/vendor/highlight.min.js` 11.10.0 (build navigateur UMD, 37 langages
-dont Dart) + `LICENSE` (BSD-3). Re-coloration legere via CSS pour rester
+dont Dart) + `highlight-LICENSE` (BSD-3). Re-coloration legere via CSS pour rester
 dans la palette (mots-cles -> accent, chaines -> vert, commentaires ->
 gris >= 4.5). Pas de CDN, pas de `style-src` distant.
 

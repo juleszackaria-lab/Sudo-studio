@@ -1,85 +1,97 @@
-# Sudo Studio — Technical journals (PROMPT 21)
+# Sudo Studio — Journaux techniques (PROMPT 21)
 
-One unified folder for every component (backend, supervisor, sdk, extension,
-autofix, duplication, runtime). The business audit log (`audit.json`) is
-separate and unchanged; these journals are the technical ones.
+Un dossier unique pour tous les composants (backend, supervisor, sdk,
+extension, autofix, duplication, runtime). Le journal d'audit métier
+(`audit.json`) est séparé et inchangé ; ceux-ci sont les journaux
+techniques.
 
-## Folder
+## Dossier
 
-| Platform | Folder |
+| Plateforme | Dossier |
 |---|---|
 | Windows | `%LOCALAPPDATA%\SudoStudio\logs` |
 | macOS / Linux | `~/.sudo_studio/logs` |
 
-`SUDO_STUDIO_LOGS` overrides the folder (used by tests and enterprise
-packaging). The folder is created on first write, **append-only, never
-truncated on restart**: each boot appends a new session header.
+`SUDO_STUDIO_LOGS` surcharge le dossier (utilisé par les tests et la
+packaging entreprise). Le dossier est créé à la première écriture,
+**ajout uniquement, jamais tronqué au redémarrage** : chaque démarrage
+ajoute un nouvel en-tête de session.
 
-Open it from the app: command **"Sudo : Ouvrir le dossier des journaux"**,
-or the in-app viewer **"Sudo : Voir les journaux"** (component + level
-filters, refresh). Command **"Sudo : Exporter le diagnostic"** builds a
-`.zip` (recent log tails, versions, sanitized config, runtime state) with
-zero secrets and zero project content.
+L'ouvrir depuis l'app : commande **« Sudo : Ouvrir le dossier des
+journaux »**, ou la visionneuse intégrée **« Sudo : Voir les
+journaux »** (filtres composant + niveau, rafraîchir). La commande
+**« Sudo : Exporter le diagnostic »** construit un `.zip` (queues de
+logs récentes, versions, config assainie, état runtime) avec zéro
+secret et zéro contenu projet.
 
-## Files and rotation
+## Fichiers et rotation
 
-Per component `<c>`: `<c>.log` (human) + `<c>.jsonl` (JSON twin, one object
-per line), rotated at **10 MB**, **10 files kept** (`<c>.log`, `<c>.log.1`
-… `<c>.log.9`, same for `.jsonl`).
+Par composant `<c>` : `<c>.log` (humain) + `<c>.jsonl` (jumeau JSON, un
+objet par ligne), rotation à **10 Mo**, **10 fichiers conservés**
+(`<c>.log`, `<c>.log.1` … `<c>.log.9`, idem `.jsonl`).
 
-## Line format (v1, identical in Node and Python)
+## Format de ligne (v1, identique en Node et Python)
 
-Human:
+Humain :
 
 ```text
 2026-10-17T14:23:01.123+02:00 [INFO ] [backend] [req-a1b2c3d4] message | code=0 durationMs=45
 ```
 
-`timestamp+timezone [level] [component] [correlation] message | fields`.
-JSON twin: `{"v":1,"ts":...,"level":...,"component":...,"corr":...,
-"msg":...,"fields":{...}}`.
+`horodatage+fuseau [niveau] [composant] [correlation] message |
+champs`. Jumeau JSON : `{"v":1,"ts":...,"level":...,"component":...,
+"corr":...,"msg":...,"fields":{...}}`.
 
-Correlation: `X-Correlation-Id` / `X-Request-Id` request header when present,
-else `req-<8hex>` per request, `sess-<8hex>` per session.
+Corrélation : en-tête de requête `X-Correlation-Id` / `X-Request-Id`
+si présent, sinon `req-<8hex>` par requête, `sess-<8hex>` par session.
 
-## Session header
+## En-tête de session
 
-Every boot appends: build/version, Node or Python version, OS, CPU,
-llama.cpp variant (`SUDO_LLAMACPP_VARIANT`), RAM total/free, loaded model,
-ports, active-policy summary. **Never any secret** (headers are masked too).
+Chaque démarrage ajoute : build/version, version Node ou Python, OS,
+CPU, variante llama.cpp (`SUDO_LLAMACPP_VARIANT`), RAM totale/libre,
+modèle chargé, ports, résumé de la politique active. **Jamais aucun
+secret** (les en-têtes sont masqués aussi).
 
-## Secret filter
+## Filtre à secrets
 
-Before ANY write, values matching keys/tokens/passwords/credentialed URLs
-are replaced by `[REDACTED]` (private keys: `[REDACTED-PRIVATE-KEY]`).
-Covered: `sk-`, `ghp_`, `gsk_`, `xox[bpas]-`, `AKIA…`, `AIza…`, JWT,
-`password/passwd/pwd/secret/api_key/auth_token/access_token/client_secret`
-assignments, `Bearer` headers, `scheme://user:pass@host` URLs, PEM blocks,
-plus sensitive JSON keys (`authorization`, `cookie`, …). Fail closed.
+Avant TOUTE écriture, les valeurs ressemblant à clés/jetons/mots de
+passe/URL à identifiants sont remplacées par `[REDACTED]` (clés
+privées : `[REDACTED-PRIVATE-KEY]`). Couvert : `sk-`, `ghp_`, `gsk_`,
+`xox[bpas]-`, `AKIA…`, `AIza…`, JWT, affectations
+`password/passwd/pwd/secret/api_key/auth_token/access_token/client_secret`,
+en-têtes `Bearer`, URL `scheme://user:pass@host`, blocs PEM, plus les
+clés JSON sensibles (`authorization`, `cookie`, …). Échec fermé.
 
-## Component writers
+## Écrivains par composant
 
-- `backend`, `supervisor`: `backend/utils/techLog.js` (wired in `server.js`).
-- `sdk`: every installer command is journaled
+- `backend`, `supervisor` : `backend/utils/techLog.js` (câblé dans
+  `server.js`).
+- `sdk` : chaque commande d'installation est journalée
   (`backend/installers/sdkInstaller*.js`).
-- `extension`, `autofix`, `duplication`: `sudo-ai-extension/src/utils/techLog.js`
-  (byte-identical logic to the backend copy: the pkg bundle and the extension
-  host cannot share files; a test asserts identical output, format v1).
-- `runtime`: `backend/runtime/p21_journal.py` (shared by `server.py` and
-  `server.enterprise.py`): same line shape, same masking, `RotatingFileHandler`
-  10 x 10 MB for `runtime.log` + `runtime.jsonl`, per-request correlation ids.
+- `extension`, `autofix`, `duplication` :
+  `sudo-ai-extension/src/utils/techLog.js` (logique identique à l'octet
+  à la copie backend : le paquet pkg et l'hôte d'extension ne peuvent
+  pas partager de fichiers ; un test affirme une sortie identique,
+  format v1).
+- `runtime` : `backend/runtime/p21_journal.py` (partagé par `server.py`
+  et `server.enterprise.py`) : même forme de ligne, même masquage,
+  `RotatingFileHandler` 10 x 10 Mo pour `runtime.log` + `runtime.jsonl`,
+  identifiants de corrélation par requête.
 
-## Supervisor (runtime watchdog)
+## Superviseur (chien de garde du runtime)
 
-Every stop detection, restart attempt, restart outcome, suppression and
-supervisor start/stop is journaled (component `supervisor`) with reason,
-attempt number, backoff, kill result, spawn status and exit code (`null`
-when the platform reports none — detached spawn/taskkill — `error` on
-exception). Kill test: stop `runtime.exe` in Task Manager → the supervisor
-detects the outage after 3 failed polls (3 x 5 s = 15 s) and respawns in
-under 30 s; proof = `supervisor.log` entries + status-bar banner.
+Chaque détection d'arrêt, tentative de redémarrage, issue, suppression
+et démarrage/arrêt du superviseur est journalée (composant
+`supervisor`) avec motif, numéro de tentative, backoff, résultat du
+kill, statut du spawn et code de sortie (`null` quand la plateforme
+n'en rapporte aucun — spawn détaché/taskkill — `error` sur
+exception). Test de kill : arrêter `runtime.exe` dans le Gestionnaire
+des tâches → le superviseur détecte la panne après 3 sondages ratés
+(3 x 5 s = 15 s) et relance en moins de 30 s ; preuve = entrées
+`supervisor.log` + bannière de barre de statut.
 
-## Related tests
+## Tests liés
 
-`backend/tests/test-p21-logs.js` (format, headers, rotation, masking,
-export, viewer, supervisor, autofix/sdk/duplication journaling).
+`backend/tests/test-p21-logs.js` (format, en-têtes, rotation, masquage,
+export, visionneuse, superviseur, journalisation
+autofix/sdk/duplication).

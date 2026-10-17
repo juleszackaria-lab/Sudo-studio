@@ -75,9 +75,13 @@ check('B2: community features stay open without a license', () => {
 
 // -- C: static wiring ---------------------------------------------------------------
 function src(p) { return fs.readFileSync(path.join(ROOT, p), 'utf8'); }
-check('C1: all 6 devops routes carry requireFeature(devops)', () => {
+// P28: 5 simulated devops routes deleted; only the real /generate remains.
+check('C1: the only devops route carries requireFeature(devops); fakes gone', () => {
     const t = src('backend/routes/devops.routes.js');
-    assert.strictEqual((t.match(/requireFeature\('devops'\)/g) || []).length, 6);
+    assert.strictEqual((t.match(/requireFeature\('devops'\)/g) || []).length, 1);
+    for (const dead of ['/simulate', '/metrics', '/deploy', '/deployments', '/rollback']) {
+        assert.ok(!t.includes("'" + dead + "'"), dead + ' route deleted');
+    }
 });
 check('C2: /generate splits cicd types to the enterprise gate', () => {
     const t = src('backend/routes/devops.routes.js');
@@ -140,11 +144,9 @@ check('D1: HTTP 403s without a license (real routers + real JWT)', async () => {
     if (!express) { console.log('SKIP D1: express not installed'); return; }
     const auth = bearer();
     await withApp(['devops.routes', 'environment.routes'], async (port) => {
-        let r = await httpCall(port, 'GET', '/api/devops/metrics', null, auth);
-        assert.strictEqual(r.code, 403);
-        assert.strictEqual(r.body.error, MSG_TEAM);
-        assert.strictEqual(r.body.need, 'team');
-        r = await httpCall(port, 'POST', '/api/devops/generate', { type: 'dockerfile' }, auth);
+        // P28: GET /api/devops/metrics was a simulated endpoint and was deleted;
+        // the 403-without-license pin now uses the real /generate route only.
+        let r = await httpCall(port, 'POST', '/api/devops/generate', { type: 'dockerfile' }, auth);
         assert.strictEqual(r.code, 403);
         assert.strictEqual(r.body.need, 'team');
         r = await httpCall(port, 'GET', '/api/environment/status', null, auth);

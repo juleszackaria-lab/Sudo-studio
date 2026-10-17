@@ -1,8 +1,9 @@
-# sudo-agent (core server, step 1)
+# sudo-agent (serveur agent, étape 1)
 
-Standalone agent server for Sudo Studio. Stdlib only (zero dependencies).
+Serveur agent autonome pour Sudo Studio. Stdlib uniquement (zéro
+dépendance).
 
-## Run
+## Lancement
 
 ```sh
 SUDO_AGENT_TOKEN="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")" \
@@ -11,85 +12,104 @@ SUDO_AGENT_PROVIDER='{"type":"local","baseUrl":"http://127.0.0.1:6000","model":"
 node src/server.js
 ```
 
-The server prints ONE handshake line on stdout:
+Le serveur affiche UNE ligne de poignée de main sur stdout :
 
 ```json
 {"ready":true,"host":"127.0.0.1","port":12345,"pid":999,"version":"1.0.0"}
 ```
 
-## Build (Windows exe, same chain as the backend)
+## Build (exe Windows, même chaîne que le backend)
 
 ```sh
 npm run build:win   # pkg, node18-win-x64 -> dist/sudo-agent.exe
 ```
 
-## Protocol
+## Protocole
 
-- Base: `http://127.0.0.1:<port>`, every endpoint requires
-  `Authorization: Bearer <SUDO_AGENT_TOKEN>` (health included).
+- Base : `http://127.0.0.1:<port>`, chaque point d'accès exige
+  `Authorization: Bearer <SUDO_AGENT_TOKEN>` (santé incluse).
 - `GET /health` -> `{ ok, version, uptimeSec, sessions, provider }`
 - `POST /sessions { title?, projectRoot? }` -> session (201)
 - `GET /sessions` -> `{ sessions: [...] }`
-- `GET /sessions/:id` -> full session (resume)
+- `GET /sessions/:id` -> session complète (reprise)
 - `DELETE /sessions/:id` -> `{ removed: true }`
-- `POST /sessions/:id/messages { prompt }` -> `text/event-stream`:
+- `POST /sessions/:id/messages { prompt }` -> `text/event-stream` :
   `turn.start`, `message.delta`, `message.done`, `turn.done`, `turn.error`.
-  Offline runtime / empty model list => immediate JSON error (502), <5s.
-- `POST /sessions/:id/abort` -> `{ aborted }` (also kills running tool processes)
-- `GET /tools` -> `{ tools: [...] }` (read/list/glob/grep/write/edit/patch/bash/todo)
-- `GET /permissions` -> `{ mode: "ask-mutating", readonly, mutating, denyList, p8, l2 }`
-- `GET /providers` -> configured provider WITHOUT any secret
-- `POST /sessions/:id/tools/call { tool, args }` -> `{ status: done | need-approval | denied | error, ... }`
-  (409 while a turn runs; each direct mutating call is its own undo series)
-- `GET /sessions/:id/approvals` -> `{ pending: [...] }` (diffs included, capped)
-- `POST /sessions/:id/approvals { requestId, decision }` -> executed | denied
-  (decision: once | session | project | deny; project rules are stored OUTSIDE
-  the project, keyed by project-root hash)
-- `POST /sessions/:id/undo { scope: last | session }` -> hash-verified restore
-  (verified undo consumes history: last pops one series, session clears all)
-- `POST /sessions/:id/mode { mode: build | plan }` -> `{ mode }` (P26;
-  plan refuses mutating tools, 409 while a turn runs)
-- `POST .../messages` also accepts `"verify": false` (P26; default: run the
-  detected project check after modifications, under permissions)
+  Runtime hors ligne / liste de modèles vide => erreur JSON immédiate
+  (502), < 5 s.
+- `POST /sessions/:id/abort` -> `{ aborted }` (tue aussi les processus
+  d'outils en cours)
+- `GET /tools` -> `{ tools: [...] }`
+  (read/list/glob/grep/write/edit/patch/bash/todo)
+- `GET /permissions` -> `{ mode: "ask-mutating", readonly, mutating,
+  denyList, p8, l2 }` (`l2` = détection seule, exécution supprimée en P27)
+- `GET /providers` -> fournisseur configuré SANS aucun secret
+- `POST /sessions/:id/tools/call { tool, args }` ->
+  `{ status: done | need-approval | denied | error, ... }`
+  (409 pendant un tour ; chaque appel mutant direct est sa propre série
+  d'annulation)
+- `GET /sessions/:id/approvals` -> `{ pending: [...] }` (diffs inclus,
+  plafonnés)
+- `POST /sessions/:id/approvals { requestId, decision }` -> exécuté |
+  refusé (decision : once | session | project | deny ; les règles
+  project sont stockées HORS du projet, clé = hash de la racine projet)
+- `POST /sessions/:id/undo { scope: last | session }` -> restauration
+  vérifiée par hash (l'annulation vérifiée consomme l'historique : last
+  dépile une série, session vide tout)
+- `POST /sessions/:id/mode { mode: build | plan }` -> `{ mode }` (P26 ;
+  plan refuse les outils mutants, 409 pendant un tour)
+- `POST .../messages` accepte aussi `"verify": false` (P26 ; défaut :
+  exécuter le contrôle projet détecté après modifications, sous
+  permissions)
 
-Agent loop (P26): Build/Plan modes (distinct system prompts); size profiles
-(small <=3B or unknown local: 6 terse tools, chunked tasks, 6 iters; full
-7B+: 9 tools + MCP, 10 iters; override `SUDO_AGENT_PROFILE` or provider
-`profile`); one action per step (extras skipped, transcript kept valid);
-repeat-loop detection (3 identical calls -> PARTIEL); context budget from
-`SUDO_AGENT_CTX_TOKENS`, else runtime `n_ctx` (GET /v1/models), else
-local 2048 / cloud 8000; compression past 75% (model-written summary keeps
-decisions, modified files, ongoing errors; failure -> honest PARTIEL, never
-silent loss); verify loop after modifications (detected `npm test`, `pytest`,
-`flutter test`, ... or explicit `.sudo-verify`; failures fed back, 2 rounds,
-then honest ECHEC); MCP stdio tools (`mcp__server__tool`, full profile only)
-from global `<home>/.sudo_studio/agent/mcp.json`, admin allowlist
-`mcp_policy.json` (fail-closed), hidden-window spawn, every call
-permission-checked and journaled (MCP side effects are OUTSIDE snapshots:
-no undo claimed); deploys need `net_policy.json { deployAllowed: true }`
-AND a fresh operator approval every time (single-use, never memorized).
-`turn.done` adds `stopReason` (declared | max_iters | loop | context |
+Boucle agent (P26) : modes Build/Plan (prompts système distincts) ;
+profils de taille (small <= 3B ou local inconnu : 6 outils terses,
+tâches découpées, 6 itérations ; full 7B+ : 9 outils + MCP, 10
+itérations ; surcharge `SUDO_AGENT_PROFILE` ou `profile` du
+fournisseur) ; une action par étape (extras sautés, transcription
+gardée valide) ; détection de boucle (3 appels identiques -> PARTIEL) ;
+budget de contexte depuis `SUDO_AGENT_CTX_TOKENS`, sinon `n_ctx` du
+runtime (GET /v1/models), sinon 2048 local / 8000 cloud ; compression
+passé 75 % (résumé écrit par le modèle : décisions, fichiers modifiés,
+erreurs en cours ; échec -> PARTIEL honnête, jamais de perte
+silencieuse) ; boucle de vérification après modifications (`npm test`,
+`pytest`, `flutter test`, … détectés, ou `.sudo-verify` explicite ;
+échecs réinjectés, 2 rondes, puis ECHEC honnête) ; outils MCP stdio
+(`mcp__server__tool`, profil full uniquement) depuis
+`<home>/.sudo_studio/agent/mcp.json` global, liste blanche admin
+`mcp_policy.json` (échec fermé), spawn en fenêtre cachée, chaque appel
+contrôlé par les permissions et journalé (les effets de bord MCP sont
+HORS snapshots : aucune annulation promise) ; les déploiements exigent
+`net_policy.json { deployAllowed: true }` ET une approbation fraîche de
+l'opérateur à chaque fois (usage unique, jamais mémorisée).
+`turn.done` ajoute `stopReason` (declared | max_iters | loop | context |
 verify_approval | verify_denied | verify_failed | aborted).
-Measure tool-call rates: `node scripts/measure-toolcalls.js --mock valid|mixed`
-(self-test) or `--base-url <runtime> --model <id> --trials 20` (real model).
+Mesurer les taux d'appels d'outils :
+`node scripts/measure-toolcalls.js --mock valid|mixed` (auto-test) ou
+`--base-url <runtime> --model <id> --trials 20` (modèle réel).
 
-Tool turns (P25): a session WITH `projectRoot` lets the model call tools
-(`POST .../messages`, optional `"tools": false` for a legacy plain turn).
-SSE adds `tool.start` / `tool.result`; `turn.done` carries an honest status:
-`TERMINE` (declared + no unresolved tool error + modified-files list),
-`ECHEC`, or `PARTIEL` with a reason. Mid-turn calls that need approval do NOT
-execute in v1: the model sees `need_approval`, the operator approves via the
-API (result returned to the operator, not injected back into the finished
-turn). `AGENTS.md` at the project root is injected as system instructions.
-Tool results are secret-filtered before reaching a cloud provider.
+Tours d'outils (P25) : une session AVEC `projectRoot` laisse le modèle
+appeler des outils (`POST .../messages`, `"tools": false` optionnel
+pour un tour simple historique). SSE ajoute `tool.start` /
+`tool.result` ; `turn.done` porte un statut honnête : `TERMINE`
+(déclaré + aucune erreur d'outil non résolue + liste des fichiers
+modifiés), `ECHEC`, ou `PARTIEL` avec motif. Les appels en cours de
+tour nécessitant une approbation ne s'exécutent PAS en v1 : le modèle
+voit `need_approval`, l'opérateur approuve via l'API (résultat rendu à
+l'opérateur, non réinjecté dans le tour terminé). `AGENTS.md` à la
+racine du projet est injecté comme instructions système. Les résultats
+d'outils sont filtrés des secrets avant d'atteindre un fournisseur
+cloud.
 
-Sessions are stored OUTSIDE any project:
+Les sessions sont stockées HORS de tout projet :
 `<SUDO_STUDIO_HOME|~>/.sudo_studio/agent/sessions/<id>.json`.
-Logs: P21 format v1 in `<home>/.sudo_studio/logs/agent.log` (+ `.jsonl`).
+Logs : format P21 v1 dans `<home>/.sudo_studio/logs/agent.log`
+(+ `.jsonl`).
 
 ## Supervision
 
-The extension spawns this server hidden (`windowsHide`), passes the token and
-the provider config via ENVIRONMENT (never command line), reads the handshake
-from stdout, and restarts the server automatically on exit (backoff). See
+L'extension lance ce serveur caché (`windowsHide`), passe le jeton et
+la config fournisseur par l'ENVIRONNEMENT (jamais la ligne de
+commande), lit la poignée de main sur stdout, et relance le serveur
+automatiquement à la sortie (backoff). Voir
 `../sudo-ai-extension/src/agent/AgentServer.js`.
