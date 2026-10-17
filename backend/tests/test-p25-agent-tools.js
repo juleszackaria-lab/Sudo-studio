@@ -913,7 +913,11 @@ t('F3', 'AGENTS.md injected as project instructions', async () => {
     assert(done.status === 'TERMINE', 'status');
     assert(mock.chats.length >= 1, 'model called');
     const sys = mock.chats[0].messages.filter((m) => m.role === 'system');
-    assert(sys.length === 1 && sys[0].content.indexOf('FROBNICATE') !== -1, 'instructions missing');
+    // P26 evolution: a mode system prompt now precedes AGENTS.md (2 system
+    // messages; project instructions must still be injected intact).
+    const hasAgents = sys.some((m) => m.content.indexOf('FROBNICATE') !== -1);
+    const hasMode = sys.some((m) => m.content.indexOf('BUILD mode') !== -1);
+    assert(sys.length === 2 && hasAgents && hasMode, 'instructions missing');
   } finally { killChild(a.child); await mock.close(); }
 });
 

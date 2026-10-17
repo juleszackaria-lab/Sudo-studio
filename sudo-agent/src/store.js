@@ -119,6 +119,33 @@ class SessionStore {
     return s;
   }
 
+  // P26-c: replace the whole history (context compression). Messages are
+  // re-capped like append(); invalid entries are dropped, never stored raw.
+  setMessages(id, msgs) {
+    const s = this._read(id);
+    if (!s || !Array.isArray(msgs)) return null;
+    const clean = [];
+    for (const msg of msgs) {
+      const role = msg && msg.role;
+      if (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'tool') continue;
+      if (!msg || typeof msg.content !== 'string') continue;
+      const entry = { role, content: msg.content.slice(0, 200000), at: nowIso(), aborted: msg.aborted === true };
+      if (typeof msg.tool_call_id === 'string' && msg.tool_call_id) entry.tool_call_id = msg.tool_call_id.slice(0, 128);
+      if (typeof msg.name === 'string' && msg.name) entry.name = msg.name.slice(0, 64);
+      if (Array.isArray(msg.tool_calls)) entry.tool_calls = msg.tool_calls.slice(0, 20).map((c) => ({
+        id: String((c && c.id) || '').slice(0, 128),
+        name: String((c && c.name) || '').slice(0, 64),
+        argsText: String((c && c.argsText) || '').slice(0, 20000),
+      }));
+      clean.push(entry);
+      if (clean.length >= MAX_MESSAGES) break;
+    }
+    s.messages = clean;
+    s.updatedAt = nowIso();
+    this._writeAtomic(this._file(id), s);
+    return s;
+  }
+
   // Generic atomic mutation (P25 session meta: readFiles, todos, lastRun).
   update(id, fn) {
     const s = this._read(id);

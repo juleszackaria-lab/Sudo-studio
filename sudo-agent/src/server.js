@@ -13,6 +13,8 @@ const { runTurn, abortRun } = require('./loop');
 const toolMod = require('./tools');
 const permMod = require('./permissions');
 const ckptMod = require('./checkpoints');
+const modesMod = require('./modes');
+const mcpMod = require('./mcp');
 
 const HOST = '127.0.0.1';
 const MAX_BODY = 1024 * 1024; // 1 MB
@@ -111,6 +113,7 @@ function createApp(opts) {
     const mTools = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})\/tools\/call$/);
     const mAppr = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})\/approvals$/);
     const mUndo = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})\/undo$/);
+    const mMode = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})\/mode$/);
 
     const toolRoot = (projectRoot) => {
       if (!projectRoot || typeof projectRoot !== 'string') return { ok: false, error: 'aucun dossier de projet sur cette session.' };
@@ -162,6 +165,17 @@ function createApp(opts) {
         if (log) { try { log.info('session delete', { session: mSession[1] }, corr); } catch (_) {} }
         sendJson(res, 200, { removed: true }); done(200); return;
       }
+      // -- mode (P26-a: build|plan) -------------------------------------------
+      if (mMode && req.method === 'POST') {
+        const s = store.get(mMode[1]);
+        if (!s) { sendJson(res, 404, { error: 'session introuvable.' }); done(404); return; }
+        if (runs.has(mMode[1])) { sendJson(res, 409, { error: 'un tour est deja en cours sur cette session.' }); done(409); return; }
+        const body = await readBody(req);
+        const m = modesMod.setMode(store, mMode[1], body.mode);
+        if (m === null) { sendJson(res, 400, { error: 'mode invalide (build|plan).' }); done(400); return; }
+        if (log) { try { log.info('session mode', { session: mMode[1], mode: m }, corr); } catch (_) {} }
+        sendJson(res, 200, { mode: m }); done(200); return;
+      }
       // -- abort ---------------------------------------------------------------
       if (mSession && mSession[2] === '/abort' && req.method === 'POST') {
         const s = store.get(mSession[1]);
@@ -197,7 +211,7 @@ function createApp(opts) {
         try {
           await runTurn({
             store, provider, sessionId: id, prompt, corr, log, runs, preProbe: pre,
-            tools: body.tools, toolsCtx: { home, pending, sessionRules },
+            tools: body.tools, verify: body.verify, toolsCtx: { home, pending, sessionRules },
             onEvent: (evt) => emit(evt.type, evt),
           });
         } catch (e) {
@@ -253,14 +267,22 @@ function createApp(opts) {
         const pend = pending.get(body.requestId);
         if (!pend || pend.sessionId !== mAppr[1]) { sendJson(res, 404, { code: 'unknown_request', error: 'demande inconnue.' }); done(404); return; }
         pending.delete(body.requestId);
-        if (log) { try { log.info('approval decision', { session: mAppr[1], request: body.requestId, decision, tool: pend.request.tool }, corr); } catch (_) {} }
+        // P26-f: a deploy approval is ALWAYS single-use, even if the operator
+        // picked session/project: no rule is ever stored for a deploy.
+        let effDecision = decision;
+        let deployNote = null;
+        if (pend.request && pend.request.deploy === true && (decision === 'session' || decision === 'project')) {
+          effDecision = 'once';
+          deployNote = 'deploiement : approbation unique imposee (aucune regle memorisee).';
+        }
+        if (log) { try { log.info('approval decision', { session: mAppr[1], request: body.requestId, decision, effDecision, tool: pend.request.tool }, corr); } catch (_) {} }
         if (decision === 'deny') { sendJson(res, 200, { status: 'denied', reason: 'refuse par l\'operateur.' }); done(200); return; }
         const r = toolRoot(s.projectRoot);
         if (!r.ok) { sendJson(res, 400, { code: 'bad_project', error: r.error }); done(400); return; }
         const rr = rulesFor(mAppr[1], r.root);
         const key = permMod.ruleKey(pend.request.tool, pend.request.pattern);
-        if (decision === 'session') rr.session.add(key);
-        if (decision === 'project') {
+        if (effDecision === 'session') rr.session.add(key);
+        if (effDecision === 'project') {
           try { permMod.saveProjectRule(home, r.root, pend.request.tool, pend.request.pattern); } catch (e) {
             sendJson(res, 500, { error: 'regle de projet non enregistree.' }); done(500); return;
           }
@@ -276,7 +298,7 @@ function createApp(opts) {
         if (out.status === 'need-approval') {
           sendJson(res, 200, { status: 'denied', reason: 'approbation insuffisante (etat modifie).' }); done(200); return;
         }
-        if (out.status === 'done') { sendJson(res, 200, { status: 'executed', call: out.call }); done(200); return; }
+        if (out.status === 'done') { sendJson(res, 200, { status: 'executed', call: out.call, note: deployNote }); done(200); return; }
         sendJson(res, 200, out); done(200); return;
       }
       // -- undo --------------------------------------------------------------------
@@ -380,6 +402,7 @@ function startFromEnv() {
 
   const shutdown = (sig) => {
     try { log.info('shutdown', { signal: sig }); } catch (_) {}
+    try { mcpMod.disconnectAll((m) => { try { log.info('mcp', { msg: m }); } catch (_) {} }); } catch (_) {}
     try { app.server.close(() => process.exit(0)); } catch (_) { process.exit(0); }
     setTimeout(() => process.exit(0), 3000).unref();
   };

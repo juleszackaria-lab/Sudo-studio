@@ -211,6 +211,9 @@ def register_openai_routes(app, ctx):
             "object": "model",
             "created": int(getattr(state, "startup_time", time.time())),
             "owned_by": "sudo-studio",
+            # P26-b: active context size (None = unknown). Lets the agent
+            # budget instructions + tools + results against real capacity.
+            "n_ctx": getattr(state, "n_ctx", None),
         }]})
 
     # -- POST /v1/chat/completions -------------------------------------------

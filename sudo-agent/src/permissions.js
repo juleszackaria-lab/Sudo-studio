@@ -14,7 +14,7 @@ const crypto = require('crypto');
 // Read-only tools run without asking (boundary still enforced by the tools).
 const READONLY_AUTO = ['read', 'list', 'glob', 'grep', 'todo'];
 // Mutating tools ask unless a session/project rule matches.
-const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo'];
+const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp'];
 const KNOWN_TOOLS = READONLY_AUTO.concat(MUTATING_ASK);
 
 // ---------------------------------------------------------------------------

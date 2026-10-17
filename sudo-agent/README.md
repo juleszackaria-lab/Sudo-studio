@@ -47,6 +47,31 @@ npm run build:win   # pkg, node18-win-x64 -> dist/sudo-agent.exe
   the project, keyed by project-root hash)
 - `POST /sessions/:id/undo { scope: last | session }` -> hash-verified restore
   (verified undo consumes history: last pops one series, session clears all)
+- `POST /sessions/:id/mode { mode: build | plan }` -> `{ mode }` (P26;
+  plan refuses mutating tools, 409 while a turn runs)
+- `POST .../messages` also accepts `"verify": false` (P26; default: run the
+  detected project check after modifications, under permissions)
+
+Agent loop (P26): Build/Plan modes (distinct system prompts); size profiles
+(small <=3B or unknown local: 6 terse tools, chunked tasks, 6 iters; full
+7B+: 9 tools + MCP, 10 iters; override `SUDO_AGENT_PROFILE` or provider
+`profile`); one action per step (extras skipped, transcript kept valid);
+repeat-loop detection (3 identical calls -> PARTIEL); context budget from
+`SUDO_AGENT_CTX_TOKENS`, else runtime `n_ctx` (GET /v1/models), else
+local 2048 / cloud 8000; compression past 75% (model-written summary keeps
+decisions, modified files, ongoing errors; failure -> honest PARTIEL, never
+silent loss); verify loop after modifications (detected `npm test`, `pytest`,
+`flutter test`, ... or explicit `.sudo-verify`; failures fed back, 2 rounds,
+then honest ECHEC); MCP stdio tools (`mcp__server__tool`, full profile only)
+from global `<home>/.sudo_studio/agent/mcp.json`, admin allowlist
+`mcp_policy.json` (fail-closed), hidden-window spawn, every call
+permission-checked and journaled (MCP side effects are OUTSIDE snapshots:
+no undo claimed); deploys need `net_policy.json { deployAllowed: true }`
+AND a fresh operator approval every time (single-use, never memorized).
+`turn.done` adds `stopReason` (declared | max_iters | loop | context |
+verify_approval | verify_denied | verify_failed | aborted).
+Measure tool-call rates: `node scripts/measure-toolcalls.js --mock valid|mixed`
+(self-test) or `--base-url <runtime> --model <id> --trials 20` (real model).
 
 Tool turns (P25): a session WITH `projectRoot` lets the model call tools
 (`POST .../messages`, optional `"tools": false` for a legacy plain turn).

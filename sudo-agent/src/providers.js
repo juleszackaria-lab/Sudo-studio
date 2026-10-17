@@ -31,7 +31,11 @@ function normalizeConfig(raw) {
   const model = typeof raw.model === 'string' ? raw.model.trim() : '';
   const apiKey = typeof raw.apiKey === 'string' && raw.apiKey ? raw.apiKey : null;
   if (type === 'cloud' && !apiKey) return { ok: false, error: 'Cle API manquante pour le fournisseur cloud (configurez-la dans les parametres).' };
-  return { ok: true, config: { type, baseUrl: u.toString().replace(/\/+$/, ''), model, apiKey } };
+  // P26-b: optional profile override (small|full|auto). Invalid values fall
+  // back to auto-detection from the model id.
+  const pv = typeof raw.profile === 'string' ? raw.profile.trim().toLowerCase() : '';
+  const profile = (pv === 'small' || pv === 'full' || pv === 'auto') ? pv : 'auto';
+  return { ok: true, config: { type, baseUrl: u.toString().replace(/\/+$/, ''), model, apiKey, profile } };
 }
 
 function headersFor(cfg) {
@@ -74,12 +78,15 @@ function probeProvider(cfg, opts) {
           }
           let data = null;
           try { data = JSON.parse(body); } catch (_) { data = null; }
-          const models = data && Array.isArray(data.data) ? data.data.map((m) => m && m.id).filter((x) => typeof x === 'string') : [];
+          const items = data && Array.isArray(data.data) ? data.data : [];
+          const models = items.map((m) => m && m.id).filter((x) => typeof x === 'string');
+          // P26-b: keep per-model details (runtime n_ctx) for context budget.
+          const details = items.filter((m) => m && typeof m.id === 'string').map((m) => ({ id: m.id, n_ctx: m.n_ctx }));
           if (!models.length) {
-            finish({ ok: false, code: 'no_model', models: [], error: 'Aucun modele charge sur le runtime local (liste des modeles vide).' });
+            finish({ ok: false, code: 'no_model', models: [], details: [], error: 'Aucun modele charge sur le runtime local (liste des modeles vide).' });
             return;
           }
-          finish({ ok: true, models });
+          finish({ ok: true, models, details });
         });
       });
     } catch (e) { finish({ ok: false, code: 'provider_error', error: 'Erreur du fournisseur: ' + shortError(e) }); return; }

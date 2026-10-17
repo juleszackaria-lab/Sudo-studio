@@ -118,7 +118,8 @@ class OldLlama(FakeLlama):
 
 def make_ctx(model=None, loaded=False):
     state = Namespace(model=model, model_name="Qwen-mock-GGUF" if loaded else None,
-                      loaded=loaded, requests=0, startup_time=1700000000)
+                      loaded=loaded, requests=0, startup_time=1700000000,
+                      n_ctx=2048 if loaded else None)
     logs = []
     return {"state": state, "default_model": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
             "dlog": logs.append, "logger": Namespace(
@@ -146,6 +147,7 @@ r = call("/v1/models", ["GET"], None)
 print("PROOF models: " + json.dumps(r))
 check("models loaded shape", r["object"] == "list" and r["data"][0]["id"] == "Qwen-mock-GGUF"
       and r["data"][0]["owned_by"] == "sudo-studio")
+check("models n_ctx exposed (P26-b)", r["data"][0].get("n_ctx") == 2048, r["data"][0])
 
 # 2. /v1/models unloaded -> empty list (200, honest)
 state.loaded, state.model, state.model_name = False, None, None

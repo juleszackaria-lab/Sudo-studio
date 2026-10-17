@@ -14,6 +14,10 @@ const { resolveInRoot } = require('./boundary');
 const perm = require('./permissions');
 const ckpt = require('./checkpoints');
 const { maskSecrets } = require('./journal');
+const { PLAN_REFUSED } = require('./modes');
+const profiles = require('./profiles');
+const verifyMod = require('./verify');
+const mcpMod = require('./mcp');
 
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_READ_LINES = 2000;
@@ -563,8 +567,10 @@ const TOOLS = {
 
 function toolNames() { return Object.keys(TOOLS); }
 
-function toOpenAISchema() {
+function toOpenAISchema(profile) {
   const str = (d) => ({ type: 'string', description: d });
+  const small = profile === 'small';
+  const names = small ? profiles.profileTools('small') : toolNames();
   const schemas = {
     read: { file: str('Project-relative file path.'), offset: { type: 'integer' }, limit: { type: 'integer' } },
     list: { dir: str('Project-relative directory (default root).'), recursive: { type: 'boolean' }, limit: { type: 'integer' } },
@@ -577,7 +583,7 @@ function toOpenAISchema() {
     todo: { op: str('add|list|done|clear.'), text: str('Task text (add).'), id: str('Task id (done).') },
   };
   const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], todo: ['op'] };
-  return toolNames().map((n) => ({ type: 'function', function: { name: n, description: TOOLS[n].description, parameters: { type: 'object', properties: schemas[n], required: required[n] || [] } } }));
+  return names.map((n) => ({ type: 'function', function: { name: n, description: (small && profiles.TERSE[n]) || TOOLS[n].description, parameters: { type: 'object', properties: schemas[n], required: required[n] || [] } } }));
 }
 
 function markReadFiles(ctx, rels) {
@@ -595,6 +601,64 @@ function markReadFiles(ctx, rels) {
 }
 
 // ---------------------------------------------------------------------------
+// MCP tool path (P26-e): mcp__server__tool. Admin allowlist first
+// (fail-closed, operator rules cannot override), then the standard
+// permission system, then the stdio call. MCP side effects live outside
+// project snapshots: no undo is claimed for them.
+// ---------------------------------------------------------------------------
+async function executeMcpTool(ctx, toolName, args, opts, t0) {
+  const rest = String(toolName).slice(5);
+  const cut = rest.indexOf('__');
+  const server = cut === -1 ? '' : rest.slice(0, cut);
+  const tool = cut === -1 ? '' : rest.slice(cut + 2);
+  if (!server || !tool) {
+    return { status: 'error', reason: 'nom d\'outil MCP invalide : ' + String(toolName).slice(0, 60), code: 'bad_args' };
+  }
+  if (!ctx.root) return { status: 'denied', reason: 'aucun dossier de projet sur cette session.', code: 'no_project' };
+  if (!mcpMod.isAllowed(ctx.home, server, tool)) {
+    const reason = 'outil MCP non autorise (liste administrateur) : ' + server + '/' + tool;
+    recordCall(ctx, toolName, args, false, 'mcp_not_allowed', Date.now() - t0, reason);
+    if (ctx.log) { try { ctx.log.info('tool mcp-refused', { session: ctx.sessionId, server, tool }, ctx.corr); } catch (_) {} }
+    return { status: 'denied', reason, code: 'mcp_not_allowed' };
+  }
+  const pattern = { kind: 'mcptool', text: (server + '/' + tool).slice(0, 300) };
+  const chk = perm.check({ tool: 'mcp', pattern, p8verdict: null, denyList: null,
+    sessionRules: ctx.sessionRules || new Set(), projectRules: ctx.projectRules || new Set() });
+  if (chk.decision === 'deny') {
+    recordCall(ctx, toolName, args, false, 'denied', Date.now() - t0);
+    return { status: 'denied', reason: chk.reason, code: 'denied' };
+  }
+  if (chk.decision === 'ask' && !opts.preApproved) {
+    const request = {
+      id: 'appr-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 0xffff).toString(16),
+      sessionId: ctx.sessionId, tool: toolName, pattern, at: new Date().toISOString(),
+      summary: 'MCP : ' + server + '/' + tool,
+      diff: null, args: cappedArgs(toolName, args), deploy: false,
+    };
+    return { status: 'need-approval', request };
+  }
+  const journal = (msg) => {
+    if (ctx.log) { try { ctx.log.info('mcp', { session: ctx.sessionId, msg: String(msg).slice(0, 300) }, ctx.corr); } catch (_) {} }
+  };
+  let res = null;
+  try {
+    res = await mcpMod.callTool(ctx.home, server, tool, args, {}, journal);
+  } catch (e) {
+    const code = (e && e.code) || 'mcp_error';
+    const reason = 'MCP ' + server + '/' + tool + ' : ' + String((e && e.message) || e).slice(0, 200);
+    const call = recordCall(ctx, toolName, args, false, code, Date.now() - t0, reason);
+    call.result = null;
+    call.error = reason;
+    return { status: 'error', reason, code, call };
+  }
+  const call = recordCall(ctx, toolName, args, !!res.ok, res.ok ? 'ok' : 'mcp_error', res.ms, 'MCP ' + server + '/' + tool + ' (' + res.ms + 'ms)');
+  call.result = res.ok ? String(res.text || '').slice(0, 8000) : null;
+  call.error = res.ok ? null : String(res.text || 'echec MCP.').slice(0, 500);
+  if (!res.ok) return { status: 'error', reason: call.error, code: 'mcp_error', call };
+  return { status: 'done', call };
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline: boundary -> P8 verdicts -> P25 deny -> permission -> checkpoint ->
 // execute -> record. Returns:
 // { status:'done', call } | { status:'need-approval', request } |
@@ -604,9 +668,22 @@ async function executeTool(ctx, toolName, args, opts) {
   opts = opts || {};
   args = args && typeof args === 'object' ? args : {};
   const t0 = Date.now();
+  // P26-e: MCP tools (mcp__server__tool) take a dedicated path: admin
+  // allowlist first, then the standard permission system, then the call.
+  if (typeof toolName === 'string' && toolName.indexOf('mcp__') === 0) {
+    return executeMcpTool(ctx, toolName, args, opts, t0);
+  }
   const def = TOOLS[toolName];
   if (!def) return { status: 'error', reason: 'outil inconnu : ' + String(toolName).slice(0, 40), code: 'unknown_tool' };
   if (!ctx.root) return { status: 'denied', reason: 'aucun dossier de projet sur cette session.', code: 'no_project' };
+
+  // P26-a: plan mode refuses mutating tools (clear refusal, no poisoning).
+  if (ctx.mode === 'plan' && PLAN_REFUSED.indexOf(toolName) !== -1) {
+    const reason = toolName + ' refuse : session en mode PLAN (proposition only, lecture seule). Basculez en mode BUILD pour modifier.';
+    recordCall(ctx, toolName, args, false, 'plan_mode', Date.now() - t0, reason);
+    if (ctx.log) { try { ctx.log.info('tool plan-refused', { session: ctx.sessionId, tool: toolName }, ctx.corr); } catch (_) {} }
+    return { status: 'denied', reason, code: 'plan_mode' };
+  }
 
   // 1. Boundary resolution for path-bearing tools.
   let resolved = { ok: true, abs: ctx.root, rel: '', flavor: 'posix' };
@@ -663,12 +740,26 @@ async function executeTool(ctx, toolName, args, opts) {
     recordCall(ctx, toolName, args, false, 'denied', Date.now() - t0);
     return { status: 'denied', reason: chk.reason, code: 'denied' };
   }
-  if (chk.decision === 'ask' && !opts.preApproved) {
+  // P26-f: deploys are gated twice. The network policy must allow them at
+  // all; when it does, the operator is STILL asked every time (a stored
+  // session/project rule never auto-allows a deploy).
+  let isDeploy = false;
+  if (toolName === 'bash') {
+    isDeploy = verifyMod.detectDeploy(args.command);
+    if (isDeploy && !verifyMod.deployAllowed(ctx.home)) {
+      const reason = 'deploiement refuse par la politique reseau : ' + String(args.command || '').slice(0, 160);
+      recordCall(ctx, toolName, args, false, 'deploy_policy', Date.now() - t0, reason);
+      if (ctx.log) { try { ctx.log.info('tool deploy-denied', { session: ctx.sessionId }, ctx.corr); } catch (_) {} }
+      return { status: 'denied', reason, code: 'deploy_policy' };
+    }
+  }
+  if ((chk.decision === 'ask' || isDeploy) && !opts.preApproved) {
     const request = {
       id: 'appr-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 0xffff).toString(16),
       sessionId: ctx.sessionId, tool: toolName, pattern, at: new Date().toISOString(),
-      summary: toolName + ' : ' + (pattern.text || '?').slice(0, 160),
+      summary: (isDeploy ? '[DEPLOIEMENT] ' : '') + toolName + ' : ' + (pattern.text || '?').slice(0, 160),
       diff: null, args: cappedArgs(toolName, args),
+      deploy: isDeploy === true,
     };
     // Overwrite diff preview: show it BEFORE the operator decides (P25-c).
     if ((toolName === 'write' || toolName === 'edit') && resolved.ok) {

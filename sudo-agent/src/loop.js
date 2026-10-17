@@ -1,23 +1,30 @@
-// Sudo Agent loop (P24 single-turn + P25 tool loop). Without a project root
-// the turn streams a plain answer (legacy). With a project root the model
-// may call tools (read/list/glob/grep/write/edit/patch/bash/todo) under
-// boundary + permissions + checkpoints, and the turn ends with an HONEST
-// status: TERMINE only if the agent declared done, no tool error stands
-// unresolved, and the really-modified file list is provided. Stdlib only,
-// ASCII only (status words use unaccented capitals on purpose).
+// Sudo Agent loop (P24 single-turn + P25 tool loop + P26 agent loop). Without
+// a project root the turn streams a plain answer (legacy). With a project
+// root the model may call tools under boundary + permissions + checkpoints.
+// P26: Build/Plan modes, size profiles, context budget + compression, one
+// action per step, repeat-loop detection, verify loop after modifications,
+// MCP tools (full profile). The turn ends with an HONEST status: TERMINE
+// only if the agent declared done, no tool error stands unresolved, and the
+// really-modified file list is provided. Stdlib only, ASCII only (status
+// words use unaccented capitals on purpose).
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const { probeProvider, streamChat, chatOnce } = require('./providers');
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
-const { loadProjectRules, matchDenyList } = require('./permissions');
+const { loadProjectRules } = require('./permissions');
 const { diffSnapshot } = require('./checkpoints');
 const { maskSecrets } = require('./journal');
+const modes = require('./modes');
+const profiles = require('./profiles');
+const compressMod = require('./compress');
+const verifyMod = require('./verify');
+const mcpMod = require('./mcp');
 
 const MAX_HISTORY = 50;
 const MAX_PROMPT = 200000;
-const MAX_TOOL_ITERS = 8;
+const MAX_TOOL_ITERS = 8; // legacy default; P26 uses per-profile limits
 const MAX_AGENTS_MD = 32 * 1024;
 
 function homeOf(toolsCtx) {
@@ -65,7 +72,7 @@ async function runTurn(opts) {
   const sessionNow = store.get(sessionId) || session;
   const useTools = !!opts.toolsCtx && sessionNow.projectRoot && opts.tools !== false;
 
-  const base = { store, provider, sessionId, prompt, corr, log, runs, onEvent, model, probeTimeoutMs };
+  const base = { store, provider, sessionId, prompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify };
   if (useTools) return toolsTurn(base, sessionNow, opts.toolsCtx);
   return legacyTurn(base, sessionNow);
 }
@@ -98,7 +105,7 @@ async function legacyTurn(base) {
     store.append(sessionId, { role: 'assistant', content: full });
     try { onEvent({ type: 'message.done', text: full, aborted: false }); } catch (_) {}
     const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
-    const doneEvt = { type: 'turn.done', turnId, messageCount, model, aborted: false, status: 'TERMINE', reason: '', filesModified: [] };
+    const doneEvt = { type: 'turn.done', turnId, messageCount, model, aborted: false, status: 'TERMINE', reason: '', filesModified: [], stopReason: 'declared' };
     try { onEvent(doneEvt); } catch (_) {}
     if (log) { try { log.info('turn done', { session: sessionId, replyChars: full.length, messageCount, status: 'TERMINE' }, corr); } catch (_) {} }
     return { status: 'done', model, messageCount, runStatus: 'TERMINE' };
@@ -108,7 +115,7 @@ async function legacyTurn(base) {
       store.append(sessionId, { role: 'assistant', content: partial, aborted: true });
       try { onEvent({ type: 'message.done', text: partial, aborted: true }); } catch (_) {}
       const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
-      try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: true, status: 'PARTIEL', reason: 'aborted', filesModified: [] }); } catch (_) {}
+      try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: true, status: 'PARTIEL', reason: 'aborted', filesModified: [], stopReason: 'aborted' }); } catch (_) {}
       if (log) { try { log.info('turn aborted', { session: sessionId, replyChars: partial.length }, corr); } catch (_) {} }
       return { status: 'aborted', model };
     }
@@ -123,7 +130,7 @@ async function legacyTurn(base) {
 }
 
 // ---------------------------------------------------------------------------
-// Tool turn (P25). Model iterates with tool calls; honest status at the end.
+// Tool turn (P25 + P26).
 // ---------------------------------------------------------------------------
 function readAgentsMd(root) {
   try {
@@ -153,16 +160,18 @@ function toProviderMessages(stored, cloud) {
   return out;
 }
 
-// Unresolved = error entries (except clean policy denials) with no later
-// success on the same tool+target.
+// Unresolved = error entries (except clean policy denials, plan refusals and
+// skipped extra calls) with no later success on the same tool+target.
 function unresolvedErrors(calls) {
   const bad = [];
   for (let i = 0; i < calls.length; i++) {
     const c = calls[i];
-    if (c.ok || c.code === 'denied' || c.code === 'asked') continue;
+    if (c.ok || c.code === 'denied' || c.code === 'asked' || c.code === 'plan_mode' || c.code === 'skipped') continue;
     let fixed = false;
     for (let j = i + 1; j < calls.length; j++) {
-      if (calls[j].ok && calls[j].tool === c.tool && calls[j].target === c.target) { fixed = true; break; }
+      // P26-b: a parse error is recovered by ANY later successful action
+      // (the retry worked); other errors need the same tool+target fixed.
+      if (calls[j].ok && (c.code === 'bad_args' || (calls[j].tool === c.tool && calls[j].target === c.target))) { fixed = true; break; }
     }
     if (!fixed) bad.push(c);
   }
@@ -179,12 +188,22 @@ function computeRunStatus(declared, calls) {
   return { status: 'TERMINE', reason: '', unresolved };
 }
 
+function probeNctx(preProbe, model) {
+  try {
+    const details = preProbe && Array.isArray(preProbe.details) ? preProbe.details : [];
+    let hit = details.filter((d) => d && d.id === model)[0] || details[0];
+    const n = hit ? parseInt(hit.n_ctx, 10) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch (_) { return 0; }
+}
+
 async function toolsTurn(base, session, toolsCtx) {
   const { store, provider, sessionId, corr, log, runs, onEvent, model } = base;
   const turnId = corr;
   const home = homeOf(toolsCtx);
   const cloud = provider.type === 'cloud';
   const filter = (s) => (cloud ? maskSecrets(String(s === undefined || s === null ? '' : s)) : String(s === undefined || s === null ? '' : s));
+  const journal = (level, event, fields) => { if (log) { try { log[level](event, Object.assign({ session: sessionId }, fields || {}), corr); } catch (_) {} } };
 
   // Project root must exist; realpath it (symlinked TMPDIR and friends).
   let root = null;
@@ -198,43 +217,172 @@ async function toolsTurn(base, session, toolsCtx) {
     return { status: 'error', code: 'bad_project', error };
   }
 
+  // P26-a/b: mode, size profile, context budget.
+  const mode = modes.getMode(session);
+  const profile = profiles.selectProfile({ modelId: model, providerType: provider.type, override: provider.profile || process.env.SUDO_AGENT_PROFILE });
+  const maxIt = profiles.maxIters(profile);
+  const ctxTokens = profiles.resolveCtxTokens({ override: process.env.SUDO_AGENT_CTX_TOKENS, probeNctx: probeNctx(base.preProbe, model), providerType: provider.type });
+
   const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
   runs.set(sessionId, runEntry);
   const run = { id: turnId, sessionId, checkpointed: false, checkpointName: null, snapshot: null, calls: [], created: [], killFns: runEntry.killFns };
   try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
 
   const agentsMd = readAgentsMd(root);
-  if (log) {
-    try { log.info('turn start', { session: sessionId, model, tools: true, agentsMd: agentsMd ? agentsMd.length : 0 }, corr); } catch (_) {}
-  }
 
   const sessionRulesMap = (toolsCtx && toolsCtx.sessionRules) || new Map();
   if (!sessionRulesMap.has(sessionId)) sessionRulesMap.set(sessionId, new Set());
   const projRules = loadProjectRules(home, root);
 
   const tctx = {
-    root, sessionId, session, store, log, corr, run, home,
+    root, sessionId, session, store, log, corr, run, home, mode,
     sessionRules: sessionRulesMap.get(sessionId),
     projectRules: projRules.rules,
     sessionKill: runEntry.killFns,
     checkpoint: null,
   };
   tctx.checkpoint = () => ensureSeriesCheckpoint(tctx);
-  const schemas = toOpenAISchema();
+
+  // P26-b/e: tool schemas for the profile + (full only) policy-allowed MCP tools.
+  const schemas = toOpenAISchema(profile);
+  if (profile === 'full') {
+    let servers = {};
+    try { servers = mcpMod.loadConfig(home); } catch (_) { servers = {}; }
+    for (const srv of Object.keys(servers)) {
+      try {
+        const listed = await mcpMod.listTools(home, srv, (m) => journal('info', 'mcp', { msg: m }));
+        for (const t of listed) {
+          if (!t || !t.name || !mcpMod.isAllowed(home, srv, t.name)) continue;
+          schemas.push({ type: 'function', function: {
+            name: 'mcp__' + srv + '__' + t.name,
+            description: ('MCP ' + srv + '/' + t.name + ': ' + String(t.description || '')).slice(0, 400),
+            parameters: (t.inputSchema && typeof t.inputSchema === 'object') ? t.inputSchema : { type: 'object' },
+          } });
+        }
+      } catch (e) {
+        journal('warn', 'mcp list failed', { server: srv, error: String((e && e.message) || e).slice(0, 160) });
+      }
+    }
+  }
+  const schemaChars = JSON.stringify(schemas).length;
 
   const modelMessages = () => {
     const stored = (store.get(sessionId) || { messages: [] }).messages.slice(-MAX_HISTORY);
     const out = toProviderMessages(stored, false);
     if (agentsMd) out.unshift({ role: 'system', content: 'Project instructions (AGENTS.md):\n' + filter(agentsMd) });
+    let sys = modes.modeSystem(mode);
+    const note = profiles.chunkNote(profile);
+    if (note) sys += '\n' + note;
+    out.unshift({ role: 'system', content: sys });
     return out;
+  };
+  // Field named `ctx` (not ctxTokens): the journal masks *token* substrings.
+  journal('info', 'turn start', { model, tools: true, mode, profile, ctx: ctxTokens, est0: profiles.estimateTokens(modelMessages(), schemaChars), agentsMd: agentsMd ? agentsMd.length : 0 });
+
+  const currentFilesModified = () => {
+    if (!run.checkpointName || !run.snapshot) return [];
+    try {
+      const d = diffSnapshot(root, run.snapshot, {});
+      return d.changed.map((f) => '~' + f).concat(d.created.map((f) => '+' + f), d.deleted.map((f) => '-' + f));
+    } catch (_) { return []; }
+  };
+
+  // P26-c: compress history past 75% of the context size. Returns
+  // { ok:true } or { ok:false, reason } (honest stop, never silent loss).
+  const maybeCompress = async () => {
+    const est = profiles.estimateTokens(modelMessages(), schemaChars);
+    if (est <= ctxTokens * 0.75) return { ok: true, compressed: false };
+    const stored = (store.get(sessionId) || { messages: [] }).messages;
+    if (stored.length <= 5) return { ok: false, reason: 'contexte sature (' + est + ' tokens estimes pour ' + ctxTokens + ', rien a resumer).' };
+    const old = stored.slice(0, -4).map((m) => {
+      let c = m.content || '';
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length) c += '\n[appels: ' + m.tool_calls.map((t) => t.name).join(', ') + ']';
+      return { role: m.role === 'tool' ? 'user' : m.role, content: ('[' + m.role + '] ' + c).slice(0, 2000) };
+    });
+    let summary = '';
+    try {
+      const r = await chatOnce(provider, { model, messages: [{ role: 'system', content: compressMod.summarizePrompt() }].concat(old) });
+      summary = String(r.text || '').trim();
+    } catch (e) {
+      journal('warn', 'compression failed', { error: String((e && e.message) || e).slice(0, 160) });
+      summary = '';
+    }
+    if (!summary) return { ok: false, reason: 'compression du contexte echouee (resume vide).' };
+    store.setMessages(sessionId, compressMod.spliceHistory(summary, stored, 4));
+    journal('info', 'contexte compresse', { before: stored.length, summaryChars: summary.length });
+    const est2 = profiles.estimateTokens(modelMessages(), schemaChars);
+    if (est2 > ctxTokens) return { ok: false, reason: 'contexte sature meme apres compression (' + est2 + ' / ' + ctxTokens + ').' };
+    return { ok: true, compressed: true };
+  };
+
+  // P26-d: verify loop. After modifications, run the detected project check
+  // command(s) under permissions; feed failures back (2 rounds max).
+  // Returns 'done' (finalize), 'continue' (failures fed, keep looping) or
+  // 'stop' (stopReason/stopDetail set).
+  let verifyRounds = 0;
+  let stopReason = '';
+  let stopDetail = '';
+  const maybeVerify = async () => {
+    if (mode !== 'build') return 'done';
+    if (base.verify === false) { journal('info', 'verify ignore (desactive)'); return 'done'; }
+    if (!currentFilesModified().length) { journal('info', 'verify ignore (aucun fichier modifie)'); return 'done'; }
+    const checks = verifyMod.detectChecks(root);
+    if (!checks.length) { journal('info', 'verify: aucune commande detectee'); return 'done'; }
+    const failures = [];
+    for (const c of checks) {
+      if (runEntry.aborted) return 'stop';
+      let r = null;
+      try { r = await executeTool(tctx, 'bash', { command: c.command }, {}); }
+      catch (e) { r = { status: 'error', reason: String((e && e.message) || e).slice(0, 300) }; }
+      if (r.status === 'need-approval') {
+        try { toolsCtx.pending.set(r.request.id, { request: r.request, sessionId, fullArgs: { command: c.command } }); } catch (_) {}
+        stopReason = 'verify_approval';
+        stopDetail = 'verification en attente d\'approbation (' + r.request.id + ' : ' + c.command.slice(0, 120) + ').';
+        return 'stop';
+      }
+      if (r.status === 'denied') {
+        stopReason = 'verify_denied';
+        stopDetail = 'verification refusee : ' + String(r.reason || '').slice(0, 200);
+        return 'stop';
+      }
+      if (r.status !== 'done') {
+        failures.push({ check: c, reason: String(r.reason || 'echec.').slice(0, 500) });
+        continue;
+      }
+      journal('info', 'verify pass', { check: c.name });
+    }
+    if (!failures.length) return 'done';
+    if (verifyRounds >= 2) {
+      for (const f of failures) {
+        run.calls.push({ tool: 'bash', target: f.check.command, ok: false, code: 'verify_failed', ms: 0, at: new Date().toISOString(), summary: f.reason.slice(0, 300) });
+      }
+      journal('warn', 'verify failed', { rounds: verifyRounds, checks: failures.map((f) => f.check.name).join(', ') });
+      stopReason = 'verify_failed';
+      return 'done'; // finalize: declared + unresolved => ECHEC (honest)
+    }
+    verifyRounds += 1;
+    const body = failures.map((f) => '- ' + f.check.name + ' (' + f.check.command + ') : ' + f.reason).join('\n');
+    store.append(sessionId, { role: 'user', content: 'VERIFICATION ECHOUEE (essai ' + verifyRounds + '/2) :\n' + body + '\nCorrige le probleme puis reponds.' });
+    journal('warn', 'verify fail, retry', { round: verifyRounds, checks: failures.map((f) => f.check.name).join(', ') });
+    return 'continue';
+  };
+
+  const callKey = (c) => {
+    const a = (c && c.args) || {};
+    const t = a.file || a.dir || a.path || a.cwd || a.pattern || a.command || a.op || a.scope || '';
+    return String(c.name || '?') + '|' + String(t).slice(0, 200);
   };
 
   let declared = false;
   let finalText = '';
   let iters = 0;
+  let lastKey = '';
+  let sameCount = 0;
   try {
-    for (iters = 0; iters < MAX_TOOL_ITERS; iters++) {
+    for (iters = 0; iters < maxIt; iters++) {
       if (runEntry.aborted) break;
+      const cmp = await maybeCompress();
+      if (!cmp.ok) { stopReason = 'context'; stopDetail = cmp.reason; break; }
       let reply = null;
       try {
         reply = await chatOnce(provider, {
@@ -244,8 +392,7 @@ async function toolsTurn(base, session, toolsCtx) {
       } catch (e) {
         // Provider without tool support: fall back to ONE legacy streamed turn.
         if (e && e.status === 400 && iters === 0) {
-          if (log) { try { log.warn('tools unsupported, legacy fallback', { session: sessionId }, corr); } catch (_) {} }
-          // Legacy re-reads history (user prompt already appended).
+          journal('warn', 'tools unsupported, legacy fallback');
           return legacyTurn({ store, provider, sessionId, prompt: base.prompt, corr, log, runs, onEvent, model });
         }
         throw e;
@@ -254,38 +401,61 @@ async function toolsTurn(base, session, toolsCtx) {
       }
       const calls = Array.isArray(reply.toolCalls) ? reply.toolCalls : [];
       if (!calls.length) {
+        const v = await maybeVerify();
+        if (v === 'continue') continue;
+        if (v === 'stop') break;
         declared = true;
         finalText = reply.text || '';
         store.append(sessionId, { role: 'assistant', content: finalText });
         break;
       }
+      // P26-a: ONE action per step. The first call runs; extras are skipped
+      // (with their own tool message so the transcript stays valid).
       store.append(sessionId, { role: 'assistant', content: reply.text || '', tool_calls: calls.map((c) => ({ id: c.id, name: c.name, argsText: c.argsText })) });
-      for (const c of calls) {
-        if (runEntry.aborted) break;
-        const callId = c.id || ('call-' + run.calls.length);
-        try { onEvent({ type: 'tool.start', callId, tool: c.name }); } catch (_) {}
-        let content = '';
-        if (c.parseError) {
-          const entry = { tool: c.name || '?', target: '', ok: false, code: 'bad_args', ms: 0, at: new Date().toISOString(), summary: c.parseError };
+      const first = calls[0];
+      const key = first.parseError ? '' : callKey(first);
+      if (key && key === lastKey) {
+        sameCount += 1;
+      } else {
+        lastKey = key;
+        sameCount = key ? 1 : 0;
+      }
+      if (key && sameCount >= 3) {
+        stopReason = 'loop';
+        stopDetail = 'boucle repetitive detectee : ' + key.slice(0, 160) + ' (3 appels identiques, arret).';
+        journal('warn', 'repeat loop', { key: key.slice(0, 160) });
+        break;
+      }
+      const callId = first.id || ('call-' + run.calls.length);
+      try { onEvent({ type: 'tool.start', callId, tool: first.name }); } catch (_) {}
+      let content = '';
+      if (first.parseError) {
+        const entry = { tool: first.name || '?', target: '', ok: false, code: 'bad_args', ms: 0, at: new Date().toISOString(), summary: first.parseError };
+        run.calls.push(entry);
+        // P26-b: constraining hint on top of the runtime grammar + retry.
+        content = JSON.stringify({ ok: false, error: 'arguments d\'outil illisibles : ' + first.parseError + ' Reponds avec UN appel JSON strict.' });
+      } else {
+        const r = await executeTool(tctx, first.name, first.args, {});
+        if (r.status === 'done') {
+          content = JSON.stringify({ ok: true, summary: r.call.summary, result: r.call.result, diff: r.call.diff ? r.call.diff.slice(0, 4000) : undefined });
+        } else if (r.status === 'need-approval') {
+          try { toolsCtx.pending.set(r.request.id, { request: r.request, sessionId, fullArgs: first.args }); } catch (_) {}
+          const entry = { tool: first.name, target: String((r.request.pattern && r.request.pattern.text) || ''), ok: false, code: 'need_approval', ms: 0, at: new Date().toISOString(), summary: 'approbation requise (' + r.request.id + ')' };
           run.calls.push(entry);
-          content = JSON.stringify({ ok: false, error: 'arguments d\'outil illisibles : ' + c.parseError });
+          content = JSON.stringify({ ok: false, code: 'need_approval', requestId: r.request.id, summary: r.request.summary, hint: 'appel NON execute : approbation operateur requise.' });
         } else {
-          const r = await executeTool(tctx, c.name, c.args, {});
-          if (r.status === 'done') {
-            content = JSON.stringify({ ok: true, summary: r.call.summary, result: r.call.result, diff: r.call.diff ? r.call.diff.slice(0, 4000) : undefined });
-          } else if (r.status === 'need-approval') {
-            try { toolsCtx.pending.set(r.request.id, { request: r.request, sessionId, fullArgs: c.args }); } catch (_) {}
-            const entry = { tool: c.name, target: String((r.request.pattern && r.request.pattern.text) || ''), ok: false, code: 'need_approval', ms: 0, at: new Date().toISOString(), summary: 'approbation requise (' + r.request.id + ')' };
-            run.calls.push(entry);
-            content = JSON.stringify({ ok: false, code: 'need_approval', requestId: r.request.id, summary: r.request.summary, hint: 'appel NON execute : approbation operateur requise.' });
-          } else {
-            content = JSON.stringify({ ok: false, code: r.code || 'error', error: r.reason || 'echec.' });
-          }
+          content = JSON.stringify({ ok: false, code: r.code || 'error', error: r.reason || 'echec.' });
         }
-        content = filter(content).slice(0, 8000);
-        store.append(sessionId, { role: 'tool', tool_call_id: callId, name: c.name, content });
-        const last = run.calls[run.calls.length - 1] || {};
-        try { onEvent({ type: 'tool.result', callId, tool: c.name, ok: !!last.ok, code: last.code || 'ok', ms: last.ms || 0, summary: (last.summary || '').slice(0, 300) }); } catch (_) {}
+      }
+      content = filter(content).slice(0, 8000);
+      store.append(sessionId, { role: 'tool', tool_call_id: callId, name: first.name, content });
+      const last = run.calls[run.calls.length - 1] || {};
+      try { onEvent({ type: 'tool.result', callId, tool: first.name, ok: !!last.ok, code: last.code || 'ok', ms: last.ms || 0, summary: (last.summary || '').slice(0, 300) }); } catch (_) {}
+      for (const extra of calls.slice(1)) {
+        const xid = extra.id || ('call-' + run.calls.length);
+        run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'ignore : une seule action par pas.' });
+        store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.' }) });
+        try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
       }
     }
   } catch (e) {
@@ -295,7 +465,7 @@ async function toolsTurn(base, session, toolsCtx) {
     }
     const code = (e && e.code) || 'provider_error';
     const error = (e && e.message) || 'Erreur du fournisseur.';
-    if (log) { try { log.warn('turn failed', { session: sessionId, code }, corr); } catch (_) {} }
+    journal('warn', 'turn failed', { code });
     try { onEvent({ type: 'turn.error', code, error }); } catch (_) {}
     if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
     return { status: 'error', code, error };
@@ -306,40 +476,36 @@ async function toolsTurn(base, session, toolsCtx) {
     return finishAborted();
   }
 
-  // Honest status (P25-g).
-  let filesModified = [];
-  if (run.checkpointName && run.snapshot) {
-    try {
-      const d = diffSnapshot(root, run.snapshot, {});
-      filesModified = d.changed.map((f) => '~' + f).concat(d.created.map((f) => '+' + f), d.deleted.map((f) => '-' + f));
-    } catch (_) { filesModified = []; }
+  // Honest status (P25-g + P26 stops).
+  const filesModified = currentFilesModified();
+  let verdict = computeRunStatus(declared, run.calls);
+  if (!declared && stopReason && stopReason !== 'verify_failed') {
+    verdict = { status: 'PARTIEL', reason: stopDetail || 'arret.', unresolved: verdict.unresolved };
   }
-  const verdict = computeRunStatus(declared, run.calls);
+  const stopOut = stopReason || (declared ? 'declared' : 'max_iters');
   saveRunSidecar(tctx);
   try {
     store.update(sessionId, (s) => {
       if (!s.meta) s.meta = {};
-      s.meta.lastRun = { at: new Date().toISOString(), status: verdict.status, reason: verdict.reason, filesModified,
+      s.meta.lastRun = { at: new Date().toISOString(), status: verdict.status, reason: verdict.reason, filesModified, stopReason: stopOut, mode, profile,
         calls: run.calls.map((c) => ({ tool: c.tool, target: c.target, ok: c.ok, code: c.code })) };
     });
   } catch (_) {}
   try { onEvent({ type: 'message.done', text: finalText, aborted: false }); } catch (_) {}
   const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
   try {
-    onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: false, status: verdict.status, reason: verdict.reason, filesModified,
+    onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: false, status: verdict.status, reason: verdict.reason, filesModified, stopReason: stopOut,
       declaredDone: declared, toolCalls: run.calls.length, unresolvedErrors: verdict.unresolved.map((c) => ({ tool: c.tool, target: c.target, code: c.code })) });
   } catch (_) {}
-  if (log) {
-    try { log.info('turn done', { session: sessionId, status: verdict.status, tools: run.calls.length, files: filesModified.length }, corr); } catch (_) {}
-  }
+  journal('info', 'turn done', { status: verdict.status, tools: run.calls.length, files: filesModified.length, stopReason: stopOut });
   if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
   return { status: 'done', model, messageCount, runStatus: verdict.status };
 
   function finishAborted() {
     try { onEvent({ type: 'message.done', text: finalText, aborted: true }); } catch (_) {}
     const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
-    try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: true, status: 'PARTIEL', reason: 'aborted', filesModified: [] }); } catch (_) {}
-    if (log) { try { log.info('turn aborted', { session: sessionId }, corr); } catch (_) {} }
+    try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: true, status: 'PARTIEL', reason: 'aborted', filesModified: [], stopReason: 'aborted' }); } catch (_) {}
+    journal('info', 'turn aborted');
     if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
     return { status: 'aborted', model };
   }
