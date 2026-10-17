@@ -49,7 +49,21 @@ const http = require('http');
 const crypto = require('crypto');
 const { promisify } = require('util');
 
-const execAsync = promisify(exec);
+const _execAsyncRaw = promisify(exec);
+
+// P21-g: journal EVERY SDK command (exact cmd, exit code, last-30 output, ms).
+// Behavior-preserving: resolves/rejects exactly like child_process exec.
+let _sdkTech = null;
+function sdkTech() {
+  if (!_sdkTech) { try { _sdkTech = require('../utils/techLog').sharedLog('sdk'); } catch (_) { _sdkTech = null; } }
+  return _sdkTech;
+}
+async function execAsync(cmd, opts) {
+  let techLog = null;
+  try { techLog = require('../utils/techLog'); } catch (_) { techLog = null; }
+  if (!techLog) return _execAsyncRaw(cmd, opts);
+  return techLog.execLogged(_execAsyncRaw, sdkTech(), String(cmd), opts);
+}
 
 // ====================================================================================================
 // CONFIGURATION
@@ -215,11 +229,17 @@ const CONFIG = {
 /**
  * Logger utility for consistent output
  */
+function _tlog(level, message, args) { // P21: mirror to the structured tech journal
+  try {
+    const t = sdkTech();
+    if (t && t[level]) t[level](String(message), { detail: (args || []).map((a) => { try { return typeof a === 'string' ? a : JSON.stringify(a); } catch (_) { return '?'; } }).join(' ').slice(0, 2000) });
+  } catch (_) { /* never break installs */ }
+}
 const logger = {
-  info: (message, ...args) => console.log(`[SDK-INSTALLER] ℹ️  ${message}`, ...args),
-  success: (message, ...args) => console.log(`[SDK-INSTALLER] ✅ ${message}`, ...args),
-  warn: (message, ...args) => console.warn(`[SDK-INSTALLER] ⚠️  ${message}`, ...args),
-  error: (message, ...args) => console.error(`[SDK-INSTALLER] ❌ ${message}`, ...args),
+  info: (message, ...args) => { console.log(`[SDK-INSTALLER] ℹ️  ${message}`, ...args); _tlog('info', message, args); },
+  success: (message, ...args) => { console.log(`[SDK-INSTALLER] ✅ ${message}`, ...args); _tlog('info', message, args); },
+  warn: (message, ...args) => { console.warn(`[SDK-INSTALLER] ⚠️  ${message}`, ...args); _tlog('warn', message, args); },
+  error: (message, ...args) => { console.error(`[SDK-INSTALLER] ❌ ${message}`, ...args); _tlog('error', message, args); },
   debug: (message, ...args) => {
     if (process.env.DEBUG) {
       console.log(`[SDK-INSTALLER] 🔍 ${message}`, ...args);

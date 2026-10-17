@@ -7,6 +7,7 @@
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const { appendAudit } = require('../utils/auditLog');
+const { sharedLog } = require('../utils/techLog'); // P21-g: NOOP until extension activation enables it
 const os = require('os');
 
 const IS_WIN = process.platform === 'win32';
@@ -438,6 +439,7 @@ class SDKPanel {
 
         // TASK 7g: terminal-delegated - audit start as NOT verified, verify after re-detect.
         appendAudit('SDK_ACTION', `${action} ${sdk.name} (${sdkId}) started in terminal`, { result: 'started', verified: false });
+        try { sharedLog('sdk').info('terminal delegated', { sdkId, action, cmd, code: null, note: 'exit code unavailable (terminal), verified by re-detect' }); } catch (_) {}
         const beforeSt = this.sdkStatus[sdkId] ? { ...this.sdkStatus[sdkId] } : { installed: null, version: null };
 
         // Auto re-detect after 15s, verify the end state (TASK 7g), then auto-configure PATH after install
@@ -447,6 +449,7 @@ class SDKPanel {
             const expectInstalled = action !== 'uninstall';
             const ok = expectInstalled ? after.installed === true : after.installed === false;
             appendAudit('SDK_ACTION_VERIFY', `${action} ${sdk.name}: installed before=${beforeSt.installed} after=${after.installed} version=${after.version || 'n/a'}`, { result: ok ? 'ok' : 'not-confirmed', verified: ok });
+            try { sharedLog('sdk')[ok ? 'info' : 'warn']('verify', { sdkId, action, cmd, before: beforeSt.installed, after: after.installed, version: after.version || null, ok }); } catch (_) {}
             if (action === 'install' && IS_WIN) {
                 this._autoConfigurePathAfterInstall(sdk);
             }

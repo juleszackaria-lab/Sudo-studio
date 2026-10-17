@@ -186,6 +186,20 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
+// P21-a: correlation id per request (echoed back, usable as the journal corr field).
+app.use((req, res, next) => {
+  try {
+    const h = req.headers && (req.headers['x-correlation-id'] || req.headers['x-request-id']);
+    req.corrId = (h && /^[A-Za-z0-9_-]{1,64}$/.test(String(h))) ? String(h) : null;
+    if (!req.corrId) {
+      try { req.corrId = 'req-' + require('crypto').randomBytes(4).toString('hex'); }
+      catch (_) { req.corrId = 'req-' + Date.now(); }
+    }
+    res.setHeader('x-correlation-id', req.corrId);
+  } catch (_) { /* never break requests */ }
+  next();
+});
+
 // ================================================================
 // STEP 4 — DB INIT (non-blocking — server starts even if DB fails)
 // ================================================================
@@ -316,4 +330,19 @@ function startServer(port) {
 }
 
 startServer(PORT);
-try { require('./supervisor/runtimeSupervisor').getSupervisor().start(); earlyLog('Runtime supervisor started (P1-d)'); } catch (e) { earlyLog('WARNING supervisor start failed: ' + e.message); }
+// P21: uniform technical journal (backend + supervisor) with session header.
+try {
+  const techLog = require('./utils/techLog');
+  techLog.setTechEnabled(true);
+  let build = 'unknown';
+  try { build = String(JSON.parse(fs.readFileSync(path.join(BASE_DIR, 'version.json'), 'utf8')).version || 'unknown'); } catch (_) {}
+  let policies = {};
+  try { policies = { edition: process.env.SUDO_EDITION || 'dev' }; } catch (_) {}
+  const backendTech = techLog.createLogger({ component: 'backend' });
+  backendTech.sessionHeader(techLog.gatherSessionInfo({ build, model: 'n/a (backend)', ports: { backend: PORT, runtime: 6000 }, policies }));
+  backendTech.info('backend starting', { port: PORT });
+  const supTech = techLog.createLogger({ component: 'supervisor' });
+  supTech.sessionHeader(techLog.gatherSessionInfo({ build, model: 'see runtime health', ports: { backend: PORT, runtime: 6000 }, policies }));
+  require('./supervisor/runtimeSupervisor').getSupervisor({ tech: supTech }).start();
+  earlyLog('Runtime supervisor started (P1-d)');
+} catch (e) { earlyLog('WARNING supervisor start failed: ' + e.message); }

@@ -385,9 +385,21 @@
       },
       {
         "command": "sudoStudio.openLogsFolder",
-        "title": "Sudo Studio: View Logs Folder",
+        "title": "Sudo : Ouvrir le dossier des journaux",
         "category": "Sudo Studio",
         "icon": "$(output)"
+      },
+      {
+        "command": "sudoStudio.openLogsViewer",
+        "title": "Sudo : Voir les journaux",
+        "category": "Sudo Studio",
+        "icon": "$(list-filter)"
+      },
+      {
+        "command": "sudoStudio.exportDiagnostics",
+        "title": "Sudo : Exporter le diagnostic",
+        "category": "Sudo Studio",
+        "icon": "$(package)"
       },
       {
         "command": "sudoStudio.openSecurityPanel",

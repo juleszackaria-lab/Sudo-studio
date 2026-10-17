@@ -43,6 +43,7 @@ const { SecurityPanel }        = require('./src/panels/SecurityPanel');
 const { DuplicationPanel }     = require('./src/panels/DuplicationPanel');
 const { CentralMgmtPanel }     = require('./src/panels/CentralMgmtPanel');
 const { LicensePanel }         = require('./src/panels/LicensePanel');
+const { LogsPanel }            = require('./src/panels/LogsPanel'); // P21: logs viewer
 
 // Agent Mode (Mission 2 — autonomous programming agent)
 const { AgentPanel }           = require('./src/agent/AgentPanel');
@@ -77,6 +78,19 @@ async function activate(ctx) {
 
         // Register all commands (synchronous)
         registerCommands();
+
+        // P21: uniform technical journal (extension side) + session header.
+        try {
+            const techLog = require('./src/utils/techLog');
+            techLog.setTechEnabled(true);
+            let extBuild = 'unknown';
+            try { extBuild = String(require('./package.json').version || 'unknown'); } catch (_) {}
+            const extTech = techLog.createLogger({ component: 'extension' });
+            extTech.sessionHeader(techLog.gatherSessionInfo({ build: 'extension-' + extBuild,
+                model: 'see runtime panel', ports: { backend: 5000, runtime: 6000 },
+                policies: { edition: 'see license panel' } }));
+            extTech.info('extension activated', {});
+        } catch (_) { /* journal never breaks activation */ }
 
         // Setup event listeners (synchronous)
         setupEventListeners();
@@ -276,6 +290,9 @@ function registerCommands() {
 
         // Logs (Mission 3 — MISSION FINALE)
         ['sudoStudio.openLogsFolder',        openLogsFolder],
+        // P21: diagnostics
+        ['sudoStudio.openLogsViewer',        openLogsViewer],
+        ['sudoStudio.exportDiagnostics',     exportDiagnostics],
 
         // Enterprise Panels (Phase 2)
         ['sudoStudio.openSecurityPanel',     openSecurityPanel],
@@ -1666,29 +1683,13 @@ function openLogsFolder() {
     const path = require('path');
     const fs   = require('fs');
 
-    // Resolve logs/ relative to extension install root (or project root one level up)
+    // P21: single unified logs folder (%LOCALAPPDATA%\SudoStudio\logs on Windows).
     let logsPath = null;
-
-    // 1. Try <extensionPath>/logs
-    if (context && context.extensionPath) {
-        const candidate = path.join(context.extensionPath, 'logs');
-        if (fs.existsSync(candidate)) {
-            logsPath = candidate;
-        }
-        // 2. Try <extensionPath>/../logs  (extension is inside the Sudo Studio root)
-        if (!logsPath) {
-            const candidate2 = path.join(context.extensionPath, '..', 'logs');
-            if (fs.existsSync(candidate2)) {
-                logsPath = candidate2;
-            }
-        }
-    }
-
-    // 3. Last resort: create <extensionPath>/logs so the user has something to open
-    if (!logsPath && context && context.extensionPath) {
-        logsPath = path.join(context.extensionPath, 'logs');
+    try {
+        const techLog = require('./src/utils/techLog');
+        logsPath = techLog.resolveLogsDir({});
         try { fs.mkdirSync(logsPath, { recursive: true }); } catch (e) {}
-    }
+    } catch (_) { logsPath = null; }
 
     if (logsPath) {
         // Open the folder in the OS file manager (Windows Explorer, Finder, Nautilus)
@@ -1708,6 +1709,56 @@ function openLogsFolder() {
         vscode.window.showWarningMessage(
             'Logs folder not found. Sudo Studio may not have been started yet.'
         );
+    }
+}
+
+// ── P21: logs viewer ─────────────────────────────────────────────────────────
+function openLogsViewer() {
+    LogsPanel.createOrShow(context ? context.extensionUri : undefined);
+}
+
+// ── P21: diagnostic export (.zip without secrets or project content) ─────────
+async function exportDiagnostics() {
+    try {
+        const diag = require('./src/utils/diagExport');
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, '0');
+        const stamp = d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(require('os').homedir() + '/sudo-diagnostic-' + stamp + '.zip'),
+            filters: { 'Diagnostic ZIP': ['zip'] },
+        });
+        if (!uri || !uri.fsPath) return;
+        // Best-effort live state first (service calls are async, the bundle build is sync).
+        let backendInfo = null;
+        let runtimeState = null;
+        try { if (backend && backend.checkHealth) backendInfo = await backend.checkHealth().catch(() => null); } catch (_) {}
+        try { if (backend && backend.getRuntimeStatus) runtimeState = await backend.getRuntimeStatus().catch(() => null); } catch (_) {}
+        const out = diag.exportDiagnosticsZip({
+            getExtensionVersion: () => { try { return require('./package.json').version; } catch (_) { return 'unknown'; } },
+            getBackendInfo: () => backendInfo,
+            getRuntimeState: () => runtimeState,
+            getConfig: () => {
+                const cfg = {};
+                try {
+                    const props = ((require('./package.json').contributes || {}).configuration || {}).properties || {};
+                    const conf = vscode.workspace.getConfiguration('sudoStudio');
+                    for (const full of Object.keys(props)) {
+                        const key = full.startsWith('sudoStudio.') ? full.slice('sudoStudio.'.length) : full;
+                        try { cfg[key] = conf.get(key); } catch (_) {}
+                    }
+                } catch (_) {}
+                return cfg;
+            },
+        }, uri.fsPath);
+        try {
+            const techLog = require('./src/utils/techLog');
+            techLog.sharedLog('extension').info('diagnostic export', { outPath: uri.fsPath, bytes: out.bytes, files: out.files.length });
+        } catch (_) {}
+        vscode.window.showInformationMessage('Diagnostic exported (' + out.files.length + ' files, ' + Math.round(out.bytes / 1024) + ' KB)', 'Open Folder')
+            .then((sel) => { if (sel === 'Open Folder') vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(uri.fsPath)); });
+    } catch (e) {
+        vscode.window.showErrorMessage('Diagnostic export failed: ' + (e && e.message ? e.message : e));
     }
 }
 

@@ -20,7 +20,32 @@ const path = require('path');
 const os   = require('os');
 const { promisify } = require('util');
 const { appendAudit } = require('../utils/auditLog');
+const { sharedLog, tailLines } = require('../utils/techLog'); // P21-g: NOOP until extension activation enables it
 const execAsync = promisify(exec);
+
+// P21-g: journal every duplication command (exact cmd, exit code, last-30 output, ms).
+function dupJournal(cmd, code, ms, out) {
+  try { sharedLog('duplication').info('exec', { cmd: String(cmd), code, durationMs: ms, out: tailLines(out || '') }); }
+  catch (_) { /* journal never breaks duplication */ }
+}
+function dupExec(cmd, opts, cb) {
+  const t0 = Date.now();
+  exec(cmd, opts, (err, stdout, stderr) => {
+    dupJournal(cmd, err ? (typeof err.code === 'number' ? err.code : 1) : 0, Date.now() - t0, (stdout || '') + '\n' + (stderr || ''));
+    cb(err, stdout, stderr);
+  });
+}
+async function dupExecAsync(cmd, opts) {
+  const t0 = Date.now();
+  try {
+    const r = await execAsync(cmd, opts);
+    dupJournal(cmd, 0, Date.now() - t0, (r.stdout || '') + '\n' + (r.stderr || ''));
+    return r;
+  } catch (e) {
+    dupJournal(cmd, typeof e.code === 'number' ? e.code : 1, Date.now() - t0, ((e && e.stdout) || '') + '\n' + ((e && e.stderr) || '') + '\n' + ((e && e.message) || String(e)));
+    throw e;
+  }
+}
 
 const IS_WIN = process.platform === 'win32';
 
@@ -40,7 +65,7 @@ const TOOL_CHECKS = [
 
 function detectTool(t) {
     return new Promise(r => {
-        exec(t.cmd, { timeout: 5000 }, (err, stdout) => {
+        dupExec(t.cmd, { timeout: 5000 }, (err, stdout) => {
             r({ name: t.name, installed: !err && !!stdout.trim(), version: stdout.trim().split('\n')[0] || null });
         });
     });
@@ -103,13 +128,13 @@ function countZipEntries(zipPath) {
     return new Promise(resolve => {
         if (IS_WIN) {
             const cmd = `powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::OpenRead('${zipPath}').Entries.Count"`;
-            exec(cmd, { timeout: 15000 }, (err, stdout) => {
+            dupExec(cmd, { timeout: 15000 }, (err, stdout) => {
                 if (err || !stdout) { resolve(-1); return; }
                 const n = parseInt(stdout.trim(), 10);
                 resolve(Number.isFinite(n) ? n : -1);
             });
         } else {
-            exec(`unzip -l "${zipPath}"`, { timeout: 15000 }, (err, stdout) => {
+            dupExec(`unzip -l "${zipPath}"`, { timeout: 15000 }, (err, stdout) => {
                 if (err || !stdout) { resolve(-1); return; }
                 const m = stdout.match(/(\d+)\s+files?/);
                 resolve(m ? parseInt(m[1], 10) : -1);
@@ -356,7 +381,7 @@ class DuplicationPanel {
             }
 
             this.panel.webview.postMessage({ type: 'templateProgress', msg: 'Création du ZIP en cours...' });
-            await execAsync(zipCmd, { timeout: 60000 });
+            await dupExecAsync(zipCmd, { timeout: 60000 });
 
             const stat    = fs.statSync(outFile);
             // TASK 7: post-condition - the ZIP must list at least one entry.
@@ -396,7 +421,7 @@ class DuplicationPanel {
             }
 
             this.panel.webview.postMessage({ type: 'templateProgress', msg: 'Extraction du template...' });
-            await execAsync(extractCmd, { timeout: 60000 });
+            await dupExecAsync(extractCmd, { timeout: 60000 });
             // TASK 7: post-condition - destination must contain extracted files.
             const extracted = countFilesRecursive(destUri.fsPath);
             if (extracted < 1) throw new Error('empty-dest');

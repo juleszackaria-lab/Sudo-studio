@@ -131,6 +131,7 @@ class RuntimeSupervisor {
     this.sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.now = opts.now || (() => Date.now());
     this.log = opts.log || ((m) => { try { console.log(m); } catch (_) { /* ignore */ } });
+    this.tech = opts.tech || null; // P21-f: TechLogger (structured journal), optional
 
     this.running = false;
     this.timer = null;
@@ -152,6 +153,14 @@ class RuntimeSupervisor {
     this.log('[SUPERVISOR] ' + msg);
   }
 
+  tlog(level, msg, fields) { // P21-f: structured tech-journal mirror (best effort)
+    if (!this.tech) return;
+    try {
+      const fn = this.tech[level] ? this.tech[level].bind(this.tech) : this.tech.info.bind(this.tech);
+      fn(msg, fields || {});
+    } catch (_) { /* never break supervision */ }
+  }
+
   exeExists() {
     try { return !!(this.runtimeExePath && fs.existsSync(this.runtimeExePath)); }
     catch (_) { return false; }
@@ -164,6 +173,8 @@ class RuntimeSupervisor {
     this.audit('START watching=' + this.runtimeUrl +
       ' exe=' + (this.runtimeExePath || '(none: watch-only)') +
       ' grace_s=' + Math.round(this.graceMs / 1000));
+    this.tlog('info', 'supervisor start', { watching: this.runtimeUrl,
+      exe: this.runtimeExePath || null, graceS: Math.round(this.graceMs / 1000) });
     this.timer = setInterval(() => { this.pollTick(); }, this.pollMs);
     if (this.timer && this.timer.unref) this.timer.unref();
     this.pollTick(); // immediate first check (async, guarded)
@@ -174,6 +185,7 @@ class RuntimeSupervisor {
     if (this.timer) { try { clearInterval(this.timer); } catch (_) { /* ignore */ } }
     this.timer = null;
     this.audit('STOP');
+    this.tlog('info', 'supervisor stop', {});
   }
 
   pruneAttempts(nowTs) {
@@ -204,6 +216,7 @@ class RuntimeSupervisor {
         const reason = (e && e.code === 'ECONNREFUSED')
           ? 'health refused x' + n + ' (process likely exited)'
           : 'health failing x' + n + ' (' + this.lastError + ')';
+        this.tlog('warn', 'runtime unhealthy (stop detected)', { reason, consecutiveFailures: n, lastError: this.lastError });
         await this.maybeRestart(reason);
       }
     }
@@ -217,6 +230,7 @@ class RuntimeSupervisor {
         reason: 'grace period (' + reason + ')',
       };
       this.audit('SUPPRESSED (grace): ' + reason);
+      this.tlog('warn', 'restart suppressed', { why: 'grace', reason });
       return { action: 'suppressed_grace' };
     }
     this.pruneAttempts(nowTs);
@@ -226,6 +240,7 @@ class RuntimeSupervisor {
         reason: 'cap reached: ' + this.maxRestarts + ' restarts per 10 min (' + reason + ')',
       };
       this.audit('SUPPRESSED (cap): ' + reason);
+      this.tlog('warn', 'restart suppressed', { why: 'cap', reason, maxRestarts: this.maxRestarts });
       return { action: 'suppressed_cap' };
     }
     this.restarting = true;
@@ -234,15 +249,20 @@ class RuntimeSupervisor {
     const attemptNo = this.restartAttempts.length;
     this.audit('RESTART attempt#' + attemptNo + ' in window, backoff=' + backoff +
       'ms, reason=' + reason);
+    this.tlog('warn', 'restart attempt', { attempt: attemptNo, backoffMs: backoff, reason });
     let ok = false;
     let detail = '';
+    let killResult = null;
+    let spawnOk = false;
+    let exitCode = null; // detached spawn/taskkill report no exit code; 'error' on exception
     try {
-      await this.killFn('runtime.exe');
+      killResult = await this.killFn('runtime.exe');
       await this.sleep(backoff);
       if (!this.exeExists()) {
         detail = 'exe not found: ' + this.runtimeExePath;
       } else {
         this.spawnFn(this.runtimeExePath);
+        spawnOk = true;
         const healthy = await this.waitHealthy(this.waitHealthyMs);
         if (!healthy) {
           detail = 'still unhealthy after ' + Math.round(this.waitHealthyMs / 1000) + 's';
@@ -253,6 +273,7 @@ class RuntimeSupervisor {
       }
     } catch (e) {
       detail = 'exception: ' + ((e && e.message) || String(e));
+      exitCode = 'error';
     }
     if (ok) {
       this.consecutiveFailures = 0;
@@ -271,6 +292,9 @@ class RuntimeSupervisor {
     if (this.restarts.length > 20) this.restarts = this.restarts.slice(-20);
     this.audit('RESTART done ok=' + ok + ' at=' + rec.atHHMM +
       ' reason=' + reason + ' detail=' + detail);
+    this.tlog(ok ? 'info' : 'error', 'restart done', { ok, reason, detail,
+      killResult: killResult === null || killResult === undefined ? null : String(killResult).slice(0, 200),
+      spawnOk, exitCode });
     this.restarting = false;
     return { action: 'restarted', ok, detail };
   }
@@ -345,8 +369,8 @@ class RuntimeSupervisor {
 // ---------------------------------------------------------------- singleton
 let _instance = null;
 
-function getSupervisor() {
-  if (!_instance) _instance = new RuntimeSupervisor();
+function getSupervisor(opts) {
+  if (!_instance) _instance = new RuntimeSupervisor(opts || {});
   return _instance;
 }
 
