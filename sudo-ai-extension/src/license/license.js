@@ -16,7 +16,7 @@ const path = require('path');
 // Product public key (SPKI DER, base64). Fingerprint (sha256 of this string):
 // 8dfdd22ff8f8b930b139b3000c2864377f274c5ecd20e9601488450944d6607f
 // Issued by license-keygen (packaging repo); the private key is NOT here.
-const PRODUCT_PUBLIC_KEY_SPKI_B64 = 'MCowBQYDK2VwAyEAXbGrEFi6Whz37yivKduewtifwT3m0hzYIjqvT5uyzFA=';
+const PRODUCT_PUBLIC_KEY_SPKI_B64 = 'MCowBQYDK2VwAyEAqR6ezt6JBUscnvGKSfqEiD752u//qm8bB7eKLYtQQLw=';
 
 const EDITIONS = {
     community: { label: 'Community', features: ['chat', 'doctor', 'sdk'] },
