@@ -193,7 +193,7 @@ function registerProviders() {
     providers.license = new LicenseProvider();
     vscode.window.registerTreeDataProvider('sudoStudioLicense', providers.license);
     
-    // P4: Sudo Agent launcher under the dedicated activity-bar icon
+    // P20: Sudo Agent launcher lives in the single Sudo Studio activity-bar container (same view id)
     providers.agentView = new AgentActivityView(context.extensionUri);
     vscode.window.registerWebviewViewProvider(
         AgentActivityView.VIEW_ID, providers.agentView);

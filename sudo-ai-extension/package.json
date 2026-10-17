@@ -35,28 +35,21 @@
         {
           "id": "sudo-studio",
           "title": "Sudo Studio",
-          "icon": "$(robot)"
-        },
-        {
-          "id": "sudo-agent",
-          "title": "Sudo Agent",
           "icon": {
-            "light": "resources/agent-light.svg",
-            "dark": "resources/agent-dark.svg"
+            "light": "resources/sudo-robot.svg",
+            "dark": "resources/sudo-robot.svg"
           }
         }
       ]
     },
     "views": {
-      "sudo-agent": [
+      "sudo-studio": [
         {
           "id": "sudoAgentLauncher",
           "name": "Sudo Agent",
           "icon": "$(comment-discussion)",
           "contextualTitle": "Sudo Agent"
-        }
-      ],
-      "sudo-studio": [
+        },
         {
           "id": "sudoStudioDashboard",
           "name": "Dashboard",
