@@ -7,7 +7,7 @@ const vscode = require('vscode');
 const axios  = require('axios');
 const path   = require('path');
 const fs     = require('fs');
-const { exec } = require('child_process');
+const { exec, spawnSync } = require('child_process');
 // P9: deterministic analysis engine + shared audit (ASCII additions only).
 const analyzer = require('../analysis/projectAnalyzer');
 const { appendAudit } = require('../utils/auditLog');
@@ -137,11 +137,24 @@ class ProjectAnalysisPanel {
             result.metrics.lineCount = analysis.stats.lines;
 
             // ── Stack detection ────────────────────────────────────────────
+            // P22: dep counts from the deterministic engine (all ecosystems, exact).
+            let depCount = 0;
+            let devDepCount = 0;
+            const depNames = [];
+            const devDepNames = [];
+            for (const eco of analysis.deps || []) {
+                for (const m of eco.manifestDeps || []) {
+                    if (m.dev) { devDepCount++; devDepNames.push(m.name); }
+                    else { depCount++; depNames.push(m.name); }
+                }
+            }
+            result.metrics.depCount = depCount;
+            result.metrics.devDepCount = devDepCount;
+            result.deps = depNames.slice(0, 20);
+            result.devDeps = devDepNames.slice(0, 15);
             if (has('package.json')) {
                 const pkg = JSON.parse(read('package.json') || '{}');
                 const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-                result.metrics.depCount = Object.keys(pkg.dependencies || {}).length;
-                result.metrics.devDepCount = Object.keys(pkg.devDependencies || {}).length;
 
                 const detected = [];
                 if (deps['next'])        detected.push({ name: 'Next.js', icon: '▲', category: 'framework' });
@@ -162,8 +175,6 @@ class ProjectAnalysisPanel {
                 detected.push({ name: 'Node.js', icon: '🟢', category: 'runtime' });
 
                 result.stack = detected;
-                result.deps = Object.keys(pkg.dependencies || {}).slice(0, 20);
-                result.devDeps = Object.keys(pkg.devDependencies || {}).slice(0, 15);
                 result.packageName = pkg.name;
                 result.packageVersion = pkg.version;
 
@@ -184,22 +195,100 @@ class ProjectAnalysisPanel {
             if (has('pubspec.yaml'))  result.stack.push({ name: 'Flutter/Dart', icon: '🎨', category: 'language' });
 
             // ── Architecture checks ────────────────────────────────────────
+            // P22: verifiable detections - each badge carries its evidence
+            // (file or command). 'missing' only when the check really ran.
+            const isOk = (v) => !!v && (v === true || v.state === 'ok');
+            const detOk = (evidence) => ({ state: 'ok', evidence: evidence });
+            const detMiss = (evidence) => ({ state: 'missing', evidence: evidence });
+            const detUnver = (evidence) => ({ state: 'unverified', evidence: evidence });
+            const NL = String.fromCharCode(10);
+            const shortErr = (e) => String((e && e.message) || e).split(NL)[0].slice(0, 100);
+            const gitInfo = (() => {
+                try {
+                    const r = spawnSync('git', ['-C', root, 'rev-parse', '--is-inside-work-tree'],
+                        { encoding: 'utf8', timeout: 8000 });
+                    if (r.error) {
+                        if (has('.git')) return detOk('.git present (git inutilisable: ' + shortErr(r.error) + ')');
+                        return detUnver('git inutilisable (' + shortErr(r.error) + '), aucun .git');
+                    }
+                    if (String(r.stdout || '').trim() !== 'true') {
+                        return detMiss('ni .git ni depot (git rev-parse: pas un depot)');
+                    }
+                    let extra = 'details illisibles';
+                    try {
+                        const b = spawnSync('git', ['-C', root, 'rev-parse', '--abbrev-ref', 'HEAD'],
+                            { encoding: 'utf8', timeout: 8000 });
+                        const br = String(b.stdout || '').trim() || '?';
+                        const s = spawnSync('git', ['-C', root, 'status', '--porcelain=v1', '--untracked-files=no'],
+                            { encoding: 'utf8', timeout: 8000 });
+                        const n = String(s.stdout || '').split(NL).filter((x) => x.trim()).length;
+                        extra = 'branche ' + br + ', ' + n + ' modifie(s) non commite(s)';
+                    } catch (_) { /* keep default */ }
+                    const via = has('.git') ? '.git present' : 'depot sans .git visible';
+                    return detOk(via + ' [git rev-parse] (' + extra + ')');
+                } catch (e) {
+                    return detUnver('verification git impossible (' + shortErr(e) + ')');
+                }
+            })();
+            const dockerNames = ['Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml'];
+            const dockerFound = dockerNames.filter(has);
+            const archDocker = dockerFound.length ? detOk('fichier(s): ' + dockerFound.join(', '))
+                : detMiss('aucun de ' + dockerNames.join(', ') + ' a la racine');
+            const ciList = analysis.ci || [];
+            const archCI = ciList.length ? detOk(ciList.map((c) => c.system + ' ' + c.path).join(', '))
+                : detMiss('aucun CI detecte (.github/workflows, .gitlab-ci.yml, Jenkinsfile, ...)');
+            const tInfo = analysis.tests || {};
+            const archTests = (tInfo.count || 0) > 0
+                ? detOk(tInfo.count + ' fichier(s)' +
+                    ((tInfo.frameworks || []).length ? ' [' + tInfo.frameworks.join(', ') + ']' : '') +
+                    ((tInfo.sample || []).length ? ' ex: ' + tInfo.sample.slice(0, 3).join(', ') : ''))
+                : detMiss('aucun fichier de test (test/, *.test.*, *_test.go, ... )');
+            const lintNames = ['.eslintrc', '.eslintrc.js', '.eslintrc.cjs', '.eslintrc.json',
+                'eslint.config.js', 'eslint.config.mjs', 'eslint.config.cjs',
+                'analysis_options.yaml', 'ruff.toml', '.ruff.toml', 'biome.json'];
+            const lintFound = lintNames.filter(has);
+            const archLint = lintFound.length ? detOk('fichier: ' + lintFound.join(', '))
+                : detMiss('aucune config lint (eslint.*, analysis_options.yaml, ruff, biome)');
+            const fmtNames = ['.prettierrc', '.prettierrc.json', '.prettierrc.js', '.prettierrc.yml',
+                'prettier.config.js', '.editorconfig'];
+            const fmtFound = fmtNames.filter(has);
+            let pkgHasPrettier = false;
+            try {
+                const pj = JSON.parse(read('package.json') || '{}');
+                pkgHasPrettier = !!(pj.prettier || (pj.devDependencies && pj.devDependencies.prettier) ||
+                    (pj.dependencies && pj.dependencies.prettier));
+            } catch (_) { /* no package.json: ignore */ }
+            const archFormat = (fmtFound.length || pkgHasPrettier)
+                ? detOk(fmtFound.length ? 'fichier: ' + fmtFound.join(', ') : 'cle prettier dans package.json')
+                : detMiss('aucun formateur (prettier.*, .editorconfig, cle prettier)');
+            let envFiles = [];
+            try {
+                envFiles = fs.readdirSync(root).filter((f) => f === '.env' || f.indexOf('.env.') === 0);
+            } catch (_) { envFiles = []; }
+            const archEnv = envFiles.length ? detOk('fichier(s): ' + envFiles.join(', '))
+                : detMiss('aucun fichier .env* a la racine');
+            const rdInfo = analysis.readme || {};
+            const archReadme = rdInfo.present ? detOk('fichier: ' + rdInfo.path)
+                : detMiss('aucun README (README.md, README, ... )');
+            const archDocs = (has('docs') || has('documentation'))
+                ? detOk('dossier: ' + (has('docs') ? 'docs' : 'documentation'))
+                : detMiss('aucun dossier docs/ ni documentation/');
             result.architecture = {
-                hasDocker: has('Dockerfile') || has('docker-compose.yml'),
-                hasCI:     has('.github/workflows') || has('.gitlab-ci.yml') || has('Jenkinsfile'),
-                hasTests:  has('__tests__') || has('test') || has('tests') || has('spec'),
-                hasGit:    has('.git'),
-                hasLint:   has('.eslintrc') || has('.eslintrc.js') || has('.eslintrc.json') || has('eslint.config.js'),
-                hasFormat: has('.prettierrc') || has('.prettierrc.json') || has('.prettierrc.js'),
-                hasEnv:    has('.env') || has('.env.local'),
-                hasReadme: has('README.md') || has('README'),
-                hasDocs:   has('docs') || has('documentation'),
+                hasDocker: archDocker,
+                hasCI: archCI,
+                hasTests: archTests,
+                hasGit: gitInfo,
+                hasLint: archLint,
+                hasFormat: archFormat,
+                hasEnv: archEnv,
+                hasReadme: archReadme,
+                hasDocs: archDocs,
             };
 
-            if (!result.architecture.hasDocker) result.issues.push({ level: 'info', area: 'Docker', msg: 'Pas de Dockerfile — difficile à déployer en conteneur', fix: 'genDockerfile' });
-            if (!result.architecture.hasCI)     result.issues.push({ level: 'info', area: 'CI/CD', msg: 'Pas de pipeline CI/CD configuré', fix: 'genCICD' });
-            if (!result.architecture.hasLint)   result.issues.push({ level: 'warn', area: 'Qualité', msg: 'Pas de linter configuré (ESLint recommandé)', fix: null });
-            if (!result.architecture.hasReadme) result.issues.push({ level: 'warn', area: 'Docs', msg: 'README manquant', fix: null });
+            if (!isOk(result.architecture.hasDocker)) result.issues.push({ level: 'info', area: 'Docker', msg: 'Pas de Dockerfile — difficile à déployer en conteneur', fix: 'genDockerfile' });
+            if (!isOk(result.architecture.hasCI))     result.issues.push({ level: 'info', area: 'CI/CD', msg: 'Pas de pipeline CI/CD configuré', fix: 'genCICD' });
+            if (!isOk(result.architecture.hasLint))   result.issues.push({ level: 'warn', area: 'Qualité', msg: 'Pas de linter configuré (ESLint recommandé)', fix: null });
+            if (!isOk(result.architecture.hasReadme)) result.issues.push({ level: 'warn', area: 'Docs', msg: 'README manquant', fix: null });
 
             // ── Security scan ──────────────────────────────────────────────
             if (has('.env')) {
@@ -214,13 +303,13 @@ class ProjectAnalysisPanel {
 
             // ── Score calculation ──────────────────────────────────────────
             const checks = [
-                result.architecture.hasDocker,
-                result.architecture.hasCI,
-                result.architecture.hasTests,
-                result.architecture.hasGit,
-                result.architecture.hasLint,
-                result.architecture.hasReadme,
-                result.architecture.hasFormat,
+                isOk(result.architecture.hasDocker),
+                isOk(result.architecture.hasCI),
+                isOk(result.architecture.hasTests),
+                isOk(result.architecture.hasGit),
+                isOk(result.architecture.hasLint),
+                isOk(result.architecture.hasReadme),
+                isOk(result.architecture.hasFormat),
                 result.stack.length > 0,
                 result.issues.filter(i => i.level === 'error').length === 0,
                 result.issues.filter(i => i.level === 'warn').length < 3,
@@ -463,6 +552,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .arch-item{background:var(--vscode-editorWidget-background);border-radius:6px;padding:8px 10px;display:flex;align-items:center;gap:6px;font-size:12px}
 .arch-ok  {color:#4caf50}
 .arch-miss{color:#9e9e9e;opacity:.6}
+.arch-unver{color:#ff9800}
 .issue{padding:9px 12px;border-radius:6px;margin-bottom:6px;font-size:12px;display:flex;align-items:flex-start;gap:8px}
 .issue.error{background:rgba(244,67,54,.1);border-left:3px solid #f44336}
 .issue.warn {background:rgba(255,152,0,.1);border-left:3px solid #ff9800}
@@ -746,9 +836,16 @@ function renderResult(r) {
         ['Docs', arch.hasDocs, '📚'],
         ['.env', arch.hasEnv, '🔑'],
     ];
-    document.getElementById('archGrid').innerHTML = archItems.map(([n, ok, icon]) =>
-        '<div class="arch-item"><span class="'+(ok?'arch-ok':'arch-miss')+'">'+icon+' '+(ok?'✓':'✗')+' '+n+'</span></div>'
-    ).join('');
+        document.getElementById('archGrid').innerHTML = archItems.map(function(it) {
+        const n = it[0]; const v = it[1]; const icon = it[2];
+        const st = (v && typeof v === 'object') ? v.state : (v ? 'ok' : 'missing');
+        const ev = (v && typeof v === 'object' && v.evidence) ? v.evidence : '';
+        const cls = st === 'ok' ? 'arch-ok' : (st === 'unverified' ? 'arch-unver' : 'arch-miss');
+        const mark = st === 'ok' ? '&#10003;' : (st === 'unverified' ? '?' : '&#10007;');
+        const sub = st === 'unverified' ? 'non verifie' + (ev ? ' (' + esc(ev) + ')' : '') : (ev ? esc(ev) : '');
+        return '<div class="arch-item" style="flex-direction:column;align-items:flex-start"><span class="' + cls + '">' + icon + ' ' + mark + ' ' + n + '</span>' +
+            (sub ? '<span style="font-size:10px;color:var(--vscode-descriptionForeground)">' + sub + '</span>' : '') + '</div>';
+    }).join('');
 
     // Issues
     const issues = r.issues || [];
@@ -834,9 +931,21 @@ function renderAnalysis(a) {
             x += '<div>Non verrouillees : ' + d.unlocked.slice(0, 12).map(esc).join(', ') +
                 (d.unlocked.length > 12 ? '…' : '') + '</div>';
         }
+        if ((d.manifestDeps || []).length) {
+            x += '<div style="margin:4px 0 8px;overflow-x:auto"><table style="border-collapse:collapse;font-size:11px">' +
+                '<tr style="color:var(--vscode-descriptionForeground)"><td style="padding:2px 8px 2px 0"><u>nom</u></td><td style="padding:2px 8px"><u>declaree</u></td><td style="padding:2px 8px"><u>verrouillee</u></td><td style="padding:2px 8px"><u>type</u></td><td style="padding:2px 8px"><u>source</u></td></tr>' +
+                d.manifestDeps.slice(0, 40).map(function(m) {
+                    return '<tr><td style="padding:2px 8px 2px 0">' + esc(m.name) + '</td>' +
+                        '<td style="padding:2px 8px">' + esc(m.range || m.detail || '-') + '</td>' +
+                        '<td style="padding:2px 8px">' + esc(m.locked || '-') + '</td>' +
+                        '<td style="padding:2px 8px">' + (m.dev ? 'dev' : 'prod') + '</td>' +
+                        '<td style="padding:2px 8px">' + esc(m.source || d.manifest) + '</td></tr>';
+                }).join('') + '</table>' +
+                (d.manifestDeps.length > 40 ? '<div>+' + (d.manifestDeps.length - 40) + ' autres (voir export JSON).</div>' : '') + '</div>';
+        }
         if (d.note) x += '<div>' + esc(d.note) + '</div>';
         return x;
-    }).join('') || '<div>Aucune dependance detectee</div>');
+    }).join('') || '<div>Aucun manifeste trouve (package.json, pubspec.yaml, requirements.txt, pyproject.toml, pom.xml, build.gradle, go.mod, *.csproj) : aucune dependance declaree.</div>');
 }
 
 function renderAiSummary(m) {
