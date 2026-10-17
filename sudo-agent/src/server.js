@@ -10,6 +10,9 @@ const { createStore } = require('./store');
 const { createRegistry } = require('./registry');
 const { normalizeConfig, probeProvider } = require('./providers');
 const { runTurn, abortRun } = require('./loop');
+const toolMod = require('./tools');
+const permMod = require('./permissions');
+const ckptMod = require('./checkpoints');
 
 const HOST = '127.0.0.1';
 const MAX_BODY = 1024 * 1024; // 1 MB
@@ -74,6 +77,16 @@ function createApp(opts) {
   const ver = opts.version || '1.0.0';
   const bootAt = Date.now();
   const runs = new Map();
+  const pending = new Map(); // approvalId -> { request, sessionId }
+  const sessionRules = new Map(); // sessionId -> Set(ruleKey)
+  const home = process.env.SUDO_STUDIO_HOME || (function () { try { return require('os').homedir(); } catch (_) { return process.cwd(); } })();
+  // P25: populate the tool registry (handlers wired to the real pipeline).
+  try {
+    for (const name of toolMod.toolNames()) {
+      const def = toolMod.TOOLS[name];
+      registry.registerTool({ name, description: def.description, danger: def.danger, handler: (ctx, args) => toolMod.executeTool(ctx, name, args, {}) });
+    }
+  } catch (_) {}
   let provider = opts.provider || null; // normalized config or null
   let providerIssue = opts.providerIssue || null;
 
@@ -95,6 +108,24 @@ function createApp(opts) {
     if (!authed(req)) { sendJson(res, 401, { error: 'authentification requise.' }); done(401); return; }
 
     const mSession = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})(\/messages|\/abort)?$/);
+    const mTools = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})\/tools\/call$/);
+    const mAppr = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})\/approvals$/);
+    const mUndo = p.match(/^\/sessions\/([A-Za-z0-9_-]{1,64})\/undo$/);
+
+    const toolRoot = (projectRoot) => {
+      if (!projectRoot || typeof projectRoot !== 'string') return { ok: false, error: 'aucun dossier de projet sur cette session.' };
+      try {
+        const st = require('fs').statSync(projectRoot);
+        if (!st.isDirectory()) return { ok: false, error: 'dossier de projet invalide.' };
+        let real = projectRoot;
+        try { real = require('fs').realpathSync(projectRoot); } catch (_) {}
+        return { ok: true, root: real };
+      } catch (_) { return { ok: false, error: 'dossier de projet invalide.' }; }
+    };
+    const rulesFor = (sessionId, root) => {
+      if (!sessionRules.has(sessionId)) sessionRules.set(sessionId, new Set());
+      return { session: sessionRules.get(sessionId), project: permMod.loadProjectRules(home, root).rules };
+    };
 
     const route = async () => {
       // -- health (auth required, like everything else) ---------------------
@@ -103,8 +134,14 @@ function createApp(opts) {
         done(200); return;
       }
       // -- tools / permissions / providers ----------------------------------
-      if (req.method === 'GET' && p === '/tools') { sendJson(res, 200, { tools: registry.listTools() }); done(200); return; }
-      if (req.method === 'GET' && p === '/permissions') { sendJson(res, 200, registry.getPermissions()); done(200); return; }
+      if (req.method === 'GET' && p === '/tools') {
+        const list = registry.listTools().map((t) => ({ name: t.name, description: t.description, danger: t.danger, mutating: !!(toolMod.TOOLS[t.name] && toolMod.TOOLS[t.name].mutating) }));
+        sendJson(res, 200, { tools: list }); done(200); return;
+      }
+      if (req.method === 'GET' && p === '/permissions') {
+        sendJson(res, 200, { mode: 'ask-mutating', readonly: permMod.READONLY_AUTO, mutating: permMod.MUTATING_ASK, denyList: permMod.denyIds(), p8: toolMod.p8Available(), l2: toolMod.l2status() });
+        done(200); return;
+      }
       if (req.method === 'GET' && p === '/providers') { sendJson(res, 200, { providers: [publicProvider(provider)], issue: providerIssue }); done(200); return; }
       // -- sessions ----------------------------------------------------------
       if (req.method === 'POST' && p === '/sessions') {
@@ -160,6 +197,7 @@ function createApp(opts) {
         try {
           await runTurn({
             store, provider, sessionId: id, prompt, corr, log, runs, preProbe: pre,
+            tools: body.tools, toolsCtx: { home, pending, sessionRules },
             onEvent: (evt) => emit(evt.type, evt),
           });
         } catch (e) {
@@ -168,6 +206,117 @@ function createApp(opts) {
         }
         finish();
         return;
+      }
+      // -- direct tool call (own series; permission-checked) ---------------------
+      if (mTools && req.method === 'POST') {
+        const s = store.get(mTools[1]);
+        if (!s) { sendJson(res, 404, { error: 'session introuvable.' }); done(404); return; }
+        if (runs.has(mTools[1])) { sendJson(res, 409, { error: 'un tour est deja en cours sur cette session.' }); done(409); return; }
+        const body = await readBody(req);
+        const r = toolRoot(s.projectRoot);
+        if (!r.ok) { sendJson(res, 400, { code: 'bad_project', error: r.error }); done(400); return; }
+        const run = { id: corr, sessionId: mTools[1], checkpointed: false, checkpointName: null, snapshot: null, calls: [], created: [], killFns: [], direct: true };
+        const entry = { aborted: false, destroy: null, killFns: run.killFns, corr };
+        runs.set(mTools[1], entry);
+        try {
+          const rr = rulesFor(mTools[1], r.root);
+          const tctx = { root: r.root, sessionId: mTools[1], session: s, store, log, corr, run, home,
+            sessionRules: rr.session, projectRules: rr.project, sessionKill: run.killFns, checkpoint: null };
+          tctx.checkpoint = () => toolMod.ensureSeriesCheckpoint(tctx);
+          const out = await toolMod.executeTool(tctx, body.tool, body.args, {});
+          toolMod.saveRunSidecar(tctx);
+          if (out.status === 'need-approval') {
+            pending.set(out.request.id, { request: out.request, sessionId: mTools[1], fullArgs: body.args });
+            sendJson(res, 200, { status: 'need-approval', request: out.request }); done(200); return;
+          }
+          sendJson(res, 200, out); done(200); return;
+        } finally {
+          if (runs.get(mTools[1]) === entry) runs.delete(mTools[1]);
+        }
+      }
+      // -- approvals -------------------------------------------------------------
+      if (mAppr && req.method === 'GET') {
+        const s = store.get(mAppr[1]);
+        if (!s) { sendJson(res, 404, { error: 'session introuvable.' }); done(404); return; }
+        const list = [];
+        for (const v of pending.values()) { if (v.sessionId === mAppr[1]) list.push(v.request); }
+        sendJson(res, 200, { pending: list }); done(200); return;
+      }
+      if (mAppr && req.method === 'POST') {
+        const s = store.get(mAppr[1]);
+        if (!s) { sendJson(res, 404, { error: 'session introuvable.' }); done(404); return; }
+        const body = await readBody(req);
+        const decision = body.decision;
+        if (['once', 'session', 'project', 'deny'].indexOf(decision) === -1) {
+          sendJson(res, 400, { error: 'decision invalide (once|session|project|deny).' }); done(400); return;
+        }
+        const pend = pending.get(body.requestId);
+        if (!pend || pend.sessionId !== mAppr[1]) { sendJson(res, 404, { code: 'unknown_request', error: 'demande inconnue.' }); done(404); return; }
+        pending.delete(body.requestId);
+        if (log) { try { log.info('approval decision', { session: mAppr[1], request: body.requestId, decision, tool: pend.request.tool }, corr); } catch (_) {} }
+        if (decision === 'deny') { sendJson(res, 200, { status: 'denied', reason: 'refuse par l\'operateur.' }); done(200); return; }
+        const r = toolRoot(s.projectRoot);
+        if (!r.ok) { sendJson(res, 400, { code: 'bad_project', error: r.error }); done(400); return; }
+        const rr = rulesFor(mAppr[1], r.root);
+        const key = permMod.ruleKey(pend.request.tool, pend.request.pattern);
+        if (decision === 'session') rr.session.add(key);
+        if (decision === 'project') {
+          try { permMod.saveProjectRule(home, r.root, pend.request.tool, pend.request.pattern); } catch (e) {
+            sendJson(res, 500, { error: 'regle de projet non enregistree.' }); done(500); return;
+          }
+          rr.project.add(key);
+        }
+        const run = { id: corr, sessionId: mAppr[1], checkpointed: false, checkpointName: null, snapshot: null, calls: [], created: [], killFns: [], direct: true };
+        const tctx = { root: r.root, sessionId: mAppr[1], session: s, store, log, corr, run, home,
+          sessionRules: rr.session, projectRules: rr.project, sessionKill: [], checkpoint: null };
+        tctx.checkpoint = () => toolMod.ensureSeriesCheckpoint(tctx);
+        const args = (pend.fullArgs && typeof pend.fullArgs === 'object' ? pend.fullArgs : null) || pend.request.args || {};
+        const out = await toolMod.executeTool(tctx, pend.request.tool, args, { preApproved: true });
+        toolMod.saveRunSidecar(tctx);
+        if (out.status === 'need-approval') {
+          sendJson(res, 200, { status: 'denied', reason: 'approbation insuffisante (etat modifie).' }); done(200); return;
+        }
+        if (out.status === 'done') { sendJson(res, 200, { status: 'executed', call: out.call }); done(200); return; }
+        sendJson(res, 200, out); done(200); return;
+      }
+      // -- undo --------------------------------------------------------------------
+      if (mUndo && req.method === 'POST') {
+        const s = store.get(mUndo[1]);
+        if (!s) { sendJson(res, 404, { error: 'session introuvable.' }); done(404); return; }
+        if (runs.has(mUndo[1])) { sendJson(res, 409, { error: 'un tour est deja en cours sur cette session.' }); done(409); return; }
+        const body = await readBody(req);
+        const scope = body.scope || 'last';
+        if (scope !== 'last' && scope !== 'session') { sendJson(res, 400, { error: 'scope invalide (last|session).' }); done(400); return; }
+        const r = toolRoot(s.projectRoot);
+        if (!r.ok) { sendJson(res, 400, { code: 'bad_project', error: r.error }); done(400); return; }
+        const snaps = ckptMod.listSnapshots(home, mUndo[1]).filter((n) => n.slice(-4) !== '.run').sort();
+        if (!snaps.length) { sendJson(res, 200, { scope, restored: [], deleted: [], unverified: [], errors: [], verified: true, note: 'aucun instantane.' }); done(200); return; }
+        const target = scope === 'session' ? snaps[0] : snaps[snaps.length - 1];
+        let snap = null;
+        try { snap = ckptMod.loadSnapshot(home, mUndo[1], target); }
+        catch (_) { sendJson(res, 500, { error: 'instantane illisible.' }); done(500); return; }
+        let created = [];
+        try { const side = ckptMod.loadSnapshot(home, mUndo[1], target + '.run'); if (side && Array.isArray(side.created)) created = side.created; } catch (_) {}
+        const result = ckptMod.restoreSnapshot(r.root, snap, { created });
+        const verified = result.errors.length === 0 && result.unverified.length === 0 && result.restored.every((x) => x.ok);
+        // Undo-stack semantics: a VERIFIED undo consumes history (pop last, or
+        // clear all after a session revert). Unverified restores keep history.
+        let popped = 0;
+        if (verified) {
+          try {
+            const fs = require('fs');
+            const path = require('path');
+            const dir = ckptMod.sessionDir(home, mUndo[1]);
+            const victims = scope === 'session' ? snaps : [target];
+            for (const v of victims) {
+              for (const f of [v + '.json', v + '.run.json']) {
+                try { fs.unlinkSync(path.join(dir, f)); popped += 1; } catch (_) {}
+              }
+            }
+          } catch (_) {}
+        }
+        if (log) { try { log.info('undo', { session: mUndo[1], scope, snapshot: target, restored: result.restored.length, deleted: result.deleted.length, verified, popped }, corr); } catch (_) {} }
+        sendJson(res, 200, Object.assign({ scope, snapshot: target, verified, popped }, result)); done(200); return;
       }
       sendJson(res, 404, { error: 'route inconnue.' }); done(404);
     };
@@ -247,6 +396,7 @@ function startFromEnv() {
     const addr = app.server.address();
     const port = addr && addr.port ? addr.port : parsed.port;
     try { log.sessionHeader(gatherSessionInfo({ build: 'sudo-agent/' + ver, provider: publicProvider(parsed.provider), port })); } catch (_) {}
+    try { log.info('tools ready', { count: toolMod.toolNames().length, p8: toolMod.p8Available() }); } catch (_) {}
     try { log.info('listen', { host: HOST, port, sessions: store.count(), provider: !!parsed.provider }); } catch (_) {}
     // Handshake for the supervising extension (stdout, single JSON line).
     try { process.stdout.write(JSON.stringify({ ready: true, host: HOST, port, pid: process.pid, version: ver }) + '\n'); } catch (_) {}

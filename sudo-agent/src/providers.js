@@ -168,4 +168,58 @@ function streamChat(cfg, messages, opts) {
   });
 }
 
-module.exports = { normalizeConfig, probeProvider, streamChat, joinUrl };
+module.exports = { normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl };
+
+// Non-streaming chat, optional tools (P25). opts: { model, messages, tools?,
+// timeoutMs, onRequest }. Resolves { text, toolCalls, usage } where toolCalls
+// is [{ id, name, argsText, args, parseError }]. Rejects { code, message }.
+function chatOnce(cfg, opts) {
+  opts = opts || {};
+  const model = opts.model;
+  const timeoutMs = opts.timeoutMs || 120000;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const fail = (code, message, status) => { if (!done) { done = true; const e = new Error(message); e.code = code; if (status) e.status = status; reject(e); } };
+    let url = null;
+    try { url = new URL(joinUrl(cfg.baseUrl, '/v1/chat/completions')); } catch (_) { fail('bad_config', 'provider invalide (baseUrl).'); return; }
+    const payload = JSON.stringify({ model, messages: opts.messages || [], stream: false, tools: opts.tools || undefined });
+    const lib = pickLib(url);
+    let req = null;
+    try {
+      req = lib.request(url, { method: 'POST', headers: Object.assign({ 'Content-Length': Buffer.byteLength(payload) }, headersFor(cfg)), timeout: timeoutMs }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; if (body.length > 4 * 1024 * 1024) { try { res.destroy(); } catch (_) {} } });
+        res.on('end', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            fail('provider_error', 'Erreur du fournisseur (HTTP ' + res.statusCode + '): ' + maskSecrets(body).slice(0, 200), res.statusCode);
+            return;
+          }
+          let data = null;
+          try { data = JSON.parse(body); } catch (_) { fail('provider_error', 'Reponse fournisseur illisible.'); return; }
+          const msg = data && data.choices && data.choices[0] && data.choices[0].message;
+          if (!msg) { fail('provider_error', 'Reponse fournisseur vide.'); return; }
+          const rawCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+          const toolCalls = rawCalls.map((c, i) => {
+            const fn = (c && c.function) || {};
+            const argsText = typeof fn.arguments === 'string' ? fn.arguments : JSON.stringify(fn.arguments === undefined ? {} : fn.arguments);
+            let parsed = {};
+            let parseError = null;
+            try { parsed = JSON.parse(argsText); if (!parsed || typeof parsed !== 'object') parsed = {}; }
+            catch (_) { parseError = 'arguments JSON invalides'; }
+            return { id: (c && c.id) || ('call-' + i), name: fn.name || '', argsText, args: parsed, parseError };
+          });
+          resolve({ text: typeof msg.content === 'string' ? msg.content : '', toolCalls, usage: data.usage || null });
+        });
+      });
+    } catch (e) { fail('provider_error', 'Erreur du fournisseur: ' + shortError(e)); return; }
+    req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (_) {} });
+    req.on('error', (e) => {
+      if (e && e.abortedByAgent) { const a = new Error('aborted'); a.code = 'aborted'; if (!done) { done = true; reject(a); } }
+      else if (cfg.type === 'local') fail('runtime_offline', 'Runtime local hors ligne: ' + cfg.baseUrl + ' injoignable (' + shortError(e) + ').');
+      else fail('provider_unreachable', 'Fournisseur cloud injoignable (' + shortError(e) + ').');
+    });
+    if (opts.onRequest) { try { opts.onRequest(req); } catch (_) {} }
+    req.write(payload);
+    req.end();
+  });
+}

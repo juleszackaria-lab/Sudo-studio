@@ -75,7 +75,7 @@ class SessionStore {
       ? String(opts.projectRoot).slice(0, 1024)
       : null;
     const t = nowIso();
-    const s = { id: newId(), title, projectRoot, createdAt: t, updatedAt: t, messages: [] };
+    const s = { id: newId(), title, projectRoot, createdAt: t, updatedAt: t, messages: [], meta: { readFiles: [], todos: [], lastRun: null } };
     this._writeAtomic(this._file(s.id), s);
     return s;
   }
@@ -101,10 +101,30 @@ class SessionStore {
     const s = this._read(id);
     if (!s) return null;
     const role = msg && msg.role;
-    if (role !== 'user' && role !== 'assistant' && role !== 'system') return null;
+    if (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'tool') return null;
     if (!msg || typeof msg.content !== 'string') return null;
-    s.messages.push({ role, content: msg.content.slice(0, 200000), at: nowIso(), aborted: msg.aborted === true });
+    const entry = { role, content: msg.content.slice(0, 200000), at: nowIso(), aborted: msg.aborted === true };
+    // Tool transcript linkage (P25), capped.
+    if (typeof msg.tool_call_id === 'string' && msg.tool_call_id) entry.tool_call_id = msg.tool_call_id.slice(0, 128);
+    if (typeof msg.name === 'string' && msg.name) entry.name = msg.name.slice(0, 64);
+    if (Array.isArray(msg.tool_calls)) entry.tool_calls = msg.tool_calls.slice(0, 20).map((c) => ({
+      id: String((c && c.id) || '').slice(0, 128),
+      name: String((c && c.name) || '').slice(0, 64),
+      argsText: String((c && c.argsText) || '').slice(0, 20000),
+    }));
+    s.messages.push(entry);
     while (s.messages.length > MAX_MESSAGES) s.messages.shift();
+    s.updatedAt = nowIso();
+    this._writeAtomic(this._file(id), s);
+    return s;
+  }
+
+  // Generic atomic mutation (P25 session meta: readFiles, todos, lastRun).
+  update(id, fn) {
+    const s = this._read(id);
+    if (!s) return null;
+    try { fn(s); } catch (_) { return null; }
+    if (!s.meta || typeof s.meta !== 'object') s.meta = {};
     s.updatedAt = nowIso();
     this._writeAtomic(this._file(id), s);
     return s;

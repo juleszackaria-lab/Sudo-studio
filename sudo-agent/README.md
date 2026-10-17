@@ -35,10 +35,28 @@ npm run build:win   # pkg, node18-win-x64 -> dist/sudo-agent.exe
 - `POST /sessions/:id/messages { prompt }` -> `text/event-stream`:
   `turn.start`, `message.delta`, `message.done`, `turn.done`, `turn.error`.
   Offline runtime / empty model list => immediate JSON error (502), <5s.
-- `POST /sessions/:id/abort` -> `{ aborted }`
-- `GET /tools` -> `{ tools: [] }` (registry empty, step 1)
-- `GET /permissions` -> `{ mode: "deny-all", ... }`
+- `POST /sessions/:id/abort` -> `{ aborted }` (also kills running tool processes)
+- `GET /tools` -> `{ tools: [...] }` (read/list/glob/grep/write/edit/patch/bash/todo)
+- `GET /permissions` -> `{ mode: "ask-mutating", readonly, mutating, denyList, p8, l2 }`
 - `GET /providers` -> configured provider WITHOUT any secret
+- `POST /sessions/:id/tools/call { tool, args }` -> `{ status: done | need-approval | denied | error, ... }`
+  (409 while a turn runs; each direct mutating call is its own undo series)
+- `GET /sessions/:id/approvals` -> `{ pending: [...] }` (diffs included, capped)
+- `POST /sessions/:id/approvals { requestId, decision }` -> executed | denied
+  (decision: once | session | project | deny; project rules are stored OUTSIDE
+  the project, keyed by project-root hash)
+- `POST /sessions/:id/undo { scope: last | session }` -> hash-verified restore
+  (verified undo consumes history: last pops one series, session clears all)
+
+Tool turns (P25): a session WITH `projectRoot` lets the model call tools
+(`POST .../messages`, optional `"tools": false` for a legacy plain turn).
+SSE adds `tool.start` / `tool.result`; `turn.done` carries an honest status:
+`TERMINE` (declared + no unresolved tool error + modified-files list),
+`ECHEC`, or `PARTIEL` with a reason. Mid-turn calls that need approval do NOT
+execute in v1: the model sees `need_approval`, the operator approves via the
+API (result returned to the operator, not injected back into the finished
+turn). `AGENTS.md` at the project root is injected as system instructions.
+Tool results are secret-filtered before reaching a cloud provider.
 
 Sessions are stored OUTSIDE any project:
 `<SUDO_STUDIO_HOME|~>/.sudo_studio/agent/sessions/<id>.json`.
