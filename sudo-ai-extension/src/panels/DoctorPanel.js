@@ -8,6 +8,7 @@ const { exec } = require('child_process');
 const os = require('os');
 const { fixAll, fixOne, isKnownTool } = require('../doctor/autoFix');
 const { appendAudit } = require('../utils/auditLog');
+const { sharedLog } = require('../utils/techLog'); // P21-g: NOOP until extension activation enables it
 
 class DoctorPanel {
     static currentPanel = undefined;
@@ -115,6 +116,7 @@ class DoctorPanel {
             platform: process.platform,
             offlineDir: offlineDir || undefined, // engine default (~/.sudo_studio/installers) otherwise
             onProgress: onProgress || (() => {}),
+            techLog: sharedLog('autofix'), // P21-g: structured tech journal (NOOP in tests)
             audit: (action, detail, result) => {
                 try { appendAudit(action, detail, { actor: 'admin', result, verified: true }); }
                 catch (_) { /* audit never breaks the fix */ }

@@ -1,6 +1,20 @@
 const { exec } = require('child_process');
 const path = require('path');
 
+// P21-g: journal every command (exact cmd, exit code, last-30 output, ms).
+function loggedExec(cmd, cb) {
+  const t0 = Date.now();
+  exec(cmd, (error, stdout, stderr) => {
+    try {
+      const techLog = require('../utils/techLog');
+      techLog.sharedLog('sdk').info('exec', { cmd: String(cmd),
+        code: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
+        durationMs: Date.now() - t0, out: techLog.tailLines((stdout || '') + '\n' + (stderr || '')) });
+    } catch (_) { /* never break installs */ }
+    cb(error, stdout, stderr);
+  });
+}
+
 /**
  * Downloads and installs a given SDK.
  * @param {string} sdkName - The name of the SDK to install.
@@ -13,7 +27,7 @@ const installSDK = (sdkName, downloadUrl, installPath) => {
   const downloadCommand = `curl -o ${sdkName}.zip ${downloadUrl}`;
   const extractCommand = `unzip ${sdkName}.zip -d ${installPath}`;
 
-  exec(downloadCommand, (downloadError) => {
+  loggedExec(downloadCommand, (downloadError) => {
     if (downloadError) {
       console.error(`Failed to download ${sdkName}:`, downloadError.message);
       return;
@@ -21,7 +35,7 @@ const installSDK = (sdkName, downloadUrl, installPath) => {
 
     console.log(`${sdkName} downloaded successfully.`);
 
-    exec(extractCommand, (extractError) => {
+    loggedExec(extractCommand, (extractError) => {
       if (extractError) {
         console.error(`Failed to extract ${sdkName}:`, extractError.message);
         return;
@@ -43,7 +57,7 @@ const configurePath = (newPath) => {
     ? `setx PATH "%PATH%;${newPath}"`
     : `export PATH=$PATH:${newPath}`;
 
-  exec(command, (error) => {
+  loggedExec(command, (error) => {
     if (error) {
       console.error(`Failed to update PATH:`, error.message);
       return;

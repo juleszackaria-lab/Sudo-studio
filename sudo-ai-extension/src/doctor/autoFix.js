@@ -294,7 +294,8 @@ function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind) {
 /**
  * Fix a list of tool issues sequentially (7d). deps:
  * { platform, execFn, hasInternet, askElevation(text)->bool, audit(action,detail,result),
- *   offlineDir, onProgress({index,total,issue,phase,row}), installTimeoutMs }
+ *   offlineDir, onProgress({index,total,issue,phase,row}), installTimeoutMs,
+ *   techLog } - techLog is an optional TechLogger (P21-g structured journal).
  * Returns { rows:[{issue,status,reason,method}], terminalCmd } - terminalCmd is set
  * only for the non-Windows no-sudo fallback (the panel shows it in a terminal).
  */
@@ -303,6 +304,14 @@ async function fixAll(issues, deps) {
     const platform = deps.platform || process.platform;
     const execFn = deps.execFn || defaultExec;
     const audit = deps.audit || defaultAudit;
+    const tech = deps.techLog || null;
+    const tlog = (level, msg, fields) => { // P21-g: structured tech journal (never breaks fixes)
+        if (!tech) return;
+        try {
+            const fn = tech[level] ? tech[level].bind(tech) : tech.info.bind(tech);
+            fn(msg, fields || {});
+        } catch (_) { /* ignore */ }
+    };
     const onProgress = deps.onProgress || (() => {});
     const offlineDir = deps.offlineDir || defaultOfflineDir();
     const installTimeout = deps.installTimeoutMs || DEFAULT_INSTALL_TIMEOUT_MS;
@@ -360,6 +369,7 @@ async function fixAll(issues, deps) {
     audit('AUTOFIX_PRECHECK', 'winget=[' + wingetText + '] reseau=' + (online ? 'oui' : 'non') +
         ' installateurs=[' + offlineDir + '] ' + offlineList,
         (wingetPresent || !isWin || !online) ? 'ok' : 'missing');
+    tlog('info', 'precheck', { winget: wingetText, online, offlineDir, offlineList, wingetPresent });
     for (const issue of ordered) {
         const f = resolveFix(issue);
         const checkCmd = isWin ? f.check.win : f.check.posix;
@@ -467,6 +477,7 @@ async function fixAll(issues, deps) {
                         : false;
                 } catch (_) { granted = false; }
                 audit('AUTOFIX_ELEVATION', granted ? 'elevation accordee' : 'elevation refusee', granted ? 'ok' : 'refused');
+                tlog(granted ? 'info' : 'warn', 'elevation', { granted, issues: runnable.map((p) => p.issue) });
                 if (!granted) {
                     for (const p of runnable) {
                         progress(ordered.indexOf(p.issue), p.issue, 'done');
@@ -512,6 +523,8 @@ async function fixAll(issues, deps) {
                 // UAC prompt itself refused/cancelled: nothing ran.
                 audit('AUTOFIX_ELEVATION', 'UAC refusee (code ' + launch.code + ')' +
                     (launch.stderr ? ' : ' + tail(launch.stderr, 3) : ''), 'refused');
+                tlog('warn', 'elevation', { granted: false, uacRefused: true, code: launch.code,
+                    issues: runnable.map((p) => p.issue), out: tail(launch.stderr || '', 3) });
                 for (const p of runnable) {
                     progress(ordered.indexOf(p.issue), p.issue, 'done');
                     push({ issue: p.issue, status: 'manual', method: p.kind, reason: "elevation UAC refusee" });
@@ -531,6 +544,9 @@ async function fixAll(issues, deps) {
                     ' lot_ms=' + launchMs + ' cmd=' + p.cmd +
                     (full ? '\n' + tail30(full, '') : (launch.stderr ? '\n(lancement) ' + tail(launch.stderr, 3) : '')),
                     has ? (parsed[id] === 0 ? 'ok' : 'fail') : 'fail');
+                tlog(has && parsed[id] === 0 ? 'info' : 'warn', 'step', { issue: p.issue, kind: p.kind, cmd: p.cmd,
+                    code: has ? parsed[id] : null, batchMs: launchMs, elevated,
+                    cause: has ? null : entry.cause.short, out: full ? tail30(full, '') : tail(launch.stderr || '', 3) });
             }
         } else {
             // Non-Windows: headless when no password needed, else ONE terminal command.
@@ -559,6 +575,8 @@ async function fixAll(issues, deps) {
                 audit('AUTOFIX_STEP', p.issue + ' [' + p.kind + '] elevation=' + (p.sudo ? 'sudo' : 'non requise') +
                     ' code=' + r.code + ' duree_ms=' + ms + ' cmd=' + cmd + '\n' + tail30(r.stdout, r.stderr),
                     r.code === 0 ? 'ok' : 'fail');
+                tlog(r.code === 0 ? 'info' : 'warn', 'step', { issue: p.issue, kind: p.kind, cmd,
+                    code: r.code, durationMs: ms, sudo: !!p.sudo, out: tail30(r.stdout, r.stderr) });
                 progress(ordered.indexOf(p.issue), p.issue, 'done');
             }
         }
@@ -600,6 +618,8 @@ async function fixAll(issues, deps) {
             ' code=' + (v.ok ? 0 : 1) + ' duree_ms=' + (Date.now() - tV0) + ' cmd=' + p.checkCmd +
             (p.fbCmd ? ' (secours : ' + p.fbCmd + ')' : '') + '\n' + String(v.output || '').slice(0, 2000),
             v.ok ? 'ok' : 'fail');
+        tlog(v.ok ? 'info' : 'warn', 'verify', { issue: p.issue, kind: p.kind, checkCmd: p.checkCmd,
+            fbCmd: p.fbCmd || null, ok: v.ok, durationMs: Date.now() - tV0, output: String(v.output || '').slice(0, 2000) });
         const vtxt = v.ok ? v.output : v.output;
         if (RESTART_CODES[res.code]) {
             const row = { issue: p.issue, status: 'restart', method: p.kind,

@@ -130,12 +130,23 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger('sudo-runtime')
+# P21: uniform structured journal (human + JSON, masked, rotated file journals).
+try:
+    import p21_journal
+    p21_journal.install()
+except Exception:
+    p21_journal = None
 dlog("Python logging configured OK")
 
 dlog("Creating Flask app...")
 # ─── App ────────────────────────────────────────────────────────────────────────
 app = Flask(__name__)
 CORS(app)
+try:
+    if p21_journal is not None:
+        app.before_request(p21_journal.before_request_corr)
+except Exception:
+    pass
 dlog("Flask app + CORS created OK")
 
 # ─── State ──────────────────────────────────────────────────────────────────────
@@ -2804,6 +2815,15 @@ if __name__ == '__main__':
     # WSGI error, port briefly stolen) it auto-restarts instead of exiting.
     # The process only exits on explicit KeyboardInterrupt (Ctrl+C).
     _flask_restart_count = 0
+    # P21-b: session header in the journal (never truncates existing logs).
+    try:
+        if p21_journal is not None:
+            _facts = p21_journal.collect_facts({'build': 'runtime-server.enterprise.py',
+                'model': getattr(args, 'model', '?'),
+                'ports': {'runtime': getattr(args, 'port', '?')}, 'policies': 'n/a (runtime)'})
+            p21_journal.session_header(logger, _facts)
+    except Exception:
+        pass
     while True:
         try:
             dlog(f"Flask starting on {args.host}:{args.port} (restart #{_flask_restart_count})...")
