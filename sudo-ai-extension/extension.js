@@ -48,6 +48,7 @@ const { LogsPanel }            = require('./src/panels/LogsPanel'); // P21: logs
 // Agent Mode (Mission 2 — autonomous programming agent)
 const { AgentPanel }           = require('./src/agent/AgentPanel');
 const { AgentActivityView }    = require('./src/agent/AgentActivityView');
+const { setAgentHost }         = require('./src/agent/agentHost'); // P27: panel wiring
 
 // Global instances
 let backend, state, context;
@@ -58,6 +59,7 @@ let runtimePollTimer = null;    // Polls port 6000 every 5s
 let runtimeProcess = null;      // Child process for auto-started runtime
 let startupProcess = null;      // Child process for start.bat/start.sh
 let agentServer = null;         // P24: supervised sudo-agent core server
+let agentBarTimer = null;         // P27: agent server state refresh
 
 /**
  * Extension activation - POINT D'ENTREE PRINCIPAL
@@ -93,7 +95,8 @@ async function activate(ctx) {
             extTech.info('extension activated', {});
         } catch (_) { /* journal never breaks activation */ }
 
-        // P24: start the Sudo Agent core server (fire-and-forget, never breaks activation).
+        // P24/P27: start the Sudo Agent core server (fire-and-forget, never
+        // breaks activation) and wire the Agent/Chat panels to it.
         try {
             const { AgentServer } = require('./src/agent/AgentServer');
             let agentLog = console;
@@ -102,6 +105,17 @@ async function activate(ctx) {
                 agentLog = techLog.createLogger({ component: 'agent' });
             } catch (_) {}
             const svc = getAIProviderService();
+            setAgentHost({
+                getServer: () => agentServer,
+                gateAgent: async () => {
+                    const g = licCore.guardFeature('agent');
+                    if (!g.allowed) throw new Error(g.message);
+                    return svc.getServerProviderConfig();
+                },
+                gateChat: async () => svc.getServerProviderConfig(),
+                relaunch: (reason) => relaunchAgentServer(reason),
+                serverState: () => agentServerState(),
+            });
             Promise.resolve()
                 .then(() => svc.getServerProviderConfig())
                 .catch((e) => {
@@ -705,6 +719,52 @@ async function pollForRuntime(maxSeconds) {
  * the AI runtime state in real-time.
  */
 // P4 (g): always-visible Agent button in the status bar.
+// P27: observable agent-server state for the status bar + panels.
+function agentServerState() {
+    if (!agentServer) return { status: 'starting', detail: 'not started yet' };
+    try { return agentServer.state(); }
+    catch (e) { return { status: 'error', detail: String((e && e.message) || e) }; }
+}
+
+// P27: stop + relaunch the agent server (provider/model switch, manual
+// Relancer). Config errors propagate (clear panel message, no silent
+// fallback: the user explicitly asked for this provider).
+async function relaunchAgentServer(reason) {
+    if (agentServer) { try { agentServer.stop(); } catch (_) {} }
+    agentServer = null;
+    const { AgentServer } = require('./src/agent/AgentServer');
+    let agentLog = console;
+    try {
+        const techLog = require('./src/utils/techLog');
+        agentLog = techLog.createLogger({ component: 'agent' });
+    } catch (_) {}
+    const provider = await getAIProviderService().getServerProviderConfig();
+    try { agentLog.info('relaunch agent server (' + (reason || 'manual') + ')', {}); } catch (_) {}
+    agentServer = AgentServer.launch({ provider, logger: agentLog });
+    refreshAgentBar();
+    return agentServerState();
+}
+
+function refreshAgentBar() {
+    if (!agentBarItem) return;
+    const st = agentServerState();
+    if (st.status === 'ready') {
+        agentBarItem.text = '$(comment-discussion) Agent';
+        agentBarItem.tooltip = 'Sudo Agent - serveur pret (' + st.detail +
+            ') - ouvrir la conversation (Ctrl+Alt+A)';
+    } else if (st.status === 'starting') {
+        agentBarItem.text = '$(loading~spin) Agent: demarrage...';
+        agentBarItem.tooltip = 'Sudo Agent - demarrage du serveur (' + st.detail + ')';
+    } else if (st.status === 'stopped') {
+        agentBarItem.text = '$(circle-slash) Agent: arrete';
+        agentBarItem.tooltip = 'Sudo Agent - serveur arrete. Ouvrez le panneau Agent pour le relancer.';
+    } else {
+        agentBarItem.text = '$(error) Agent: erreur';
+        agentBarItem.tooltip = 'Sudo Agent - ' + (st.detail || 'erreur') +
+            '. Ouvrez le panneau Agent pour relancer.';
+    }
+}
+
 function setupAgentBar(ctx) {
     agentBarItem = vscode.window.createStatusBarItem(
         vscode.StatusBarAlignment.Right, 101
@@ -714,6 +774,9 @@ function setupAgentBar(ctx) {
     agentBarItem.tooltip = 'Sudo Agent — ouvrir la conversation (Ctrl+Alt+A)';
     agentBarItem.show();
     ctx.subscriptions.push(agentBarItem);
+    if (agentBarTimer) { try { clearInterval(agentBarTimer); } catch (_) {} }
+    agentBarTimer = setInterval(() => { try { refreshAgentBar(); } catch (_) {} }, 5000);
+    refreshAgentBar();
 }
 
 function setupStatusBar(ctx) {
@@ -1793,6 +1856,7 @@ async function exportDiagnostics() {
 
 function deactivate() {
     if (runtimePollTimer) { clearInterval(runtimePollTimer); runtimePollTimer = null; }
+    if (agentBarTimer) { clearInterval(agentBarTimer); agentBarTimer = null; }
     if (statusBarItem)    { statusBarItem.dispose(); statusBarItem = null; }
     // Kill auto-started processes on extension deactivation
     if (agentServer)      { try { agentServer.stop(); } catch(e) {} agentServer = null; }

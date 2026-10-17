@@ -20,6 +20,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { AgentEngine } = require('./AgentEngine');
+const { getAgentHost } = require('./agentHost');
 const { getAIProviderService } = require('../services/AIProviderService');
 
 const RUNTIME_URL = 'http://127.0.0.1:6000';
@@ -124,6 +125,11 @@ function getWebviewHtml(opts) {
     const toAgentBlock = isChat
         ? '<button class="btn" id="toAgentBtn"><span class="codicon codicon-robot"></span>Passer en mode Agent</button>\n'
         : '';
+    const modelBlock = isChat ? '' :
+        '<label for="modelSel">Modele</label>\n  <select id="modelSel"></select>\n';
+    const agentCtrls = isChat ? '' :
+        '<button class="btn sm" id="btnSessions"><span class="codicon codicon-history"></span>Sessions</button>\n' +
+        '  <button id="srvBtn" class="rtbtn" title="Serveur agent"><span class="dot bad" id="srvDot"></span><span id="srvTxt">Agent : ?</span></button>\n';
     return `<!DOCTYPE html>
 <html>
 <head>
@@ -237,8 +243,6 @@ button.linklike:hover { text-decoration:underline; }
 .txt.live::after { content:""; display:inline-block; width:8px; height:1em; margin-left:2px; vertical-align:-2px; background:var(--sudo-accent); animation:blink 1s steps(2,start) infinite; }
 @keyframes blink { to { visibility:hidden; } }
 .sandbox { font-size:12px; color:var(--vscode-descriptionForeground,var(--sudo-dim)); border:1px solid var(--vscode-editorWidget-border,var(--sudo-border)); border-radius:6px; padding:2px 8px; display:inline-flex; gap:4px; align-items:center; white-space:nowrap; }
-.sandbox.l2 { color:var(--vscode-testing-iconPassed,var(--sudo-ok)); }
-.sandboxnote { font-size:11px; color:var(--vscode-editorWarning-foreground,var(--sudo-warn)); display:none; white-space:nowrap; }
 .planbadge { font-size:12px; color:var(--vscode-descriptionForeground,var(--sudo-dim)); display:inline-flex; gap:8px; align-items:center; white-space:nowrap; }
 #ctxbar { width:100%; display:flex; gap:4px; flex-wrap:wrap; }
 #ctxbar:empty { display:none; }
@@ -269,11 +273,8 @@ details.toolrow[open] pre { animation:none; }
   <span class="title"><span class="codicon codicon-comment-discussion"></span>${titleText}</span>
 ${modeBlock}  <label for="providerSel">Fournisseur</label>
   <select id="providerSel"></select>
-  <span id="sandboxBadge" class="sandbox" title="Niveau par d&eacute;faut du prochain run">Mode restreint</span>
-  <label for="sandboxSel">Sandbox</label>
-  <select id="sandboxSel"><option value="auto">Auto</option><option value="l1">Restreint</option><option value="l2">Isol&eacute;e</option></select>
-  <span id="sandboxNote" class="sandboxnote"></span>
-${toAgentBlock}  <button id="rt" class="rtbtn" title="Cliquer pour actualiser"><span class="dot bad" id="rtDot"></span><span id="rtTxt">Runtime : ?</span></button>
+  ${modelBlock}<span id="sandboxBadge" class="sandbox" title="Isolation : Mode restreint (L1). Pas de sandbox isol&eacute;e sur ce poste.">Mode restreint</span>
+  ${agentCtrls}${toAgentBlock}  <button id="rt" class="rtbtn" title="Cliquer pour actualiser"><span class="dot bad" id="rtDot"></span><span id="rtTxt">Runtime : ?</span></button>
 </div>
 <div id="thread" role="log" aria-label="Conversation"><div id="empty"><div class="t">${titleText}</div><div class="s">D&eacute;crivez une t&acirc;che ci-dessous. Entr&eacute;e envoie, Maj+Entr&eacute;e = nouvelle ligne.</div><div class="sugg"><button class="btn" data-sugg="Explique ce projet : structure, langage et point d&rsquo;entr&eacute;e">Expliquer ce projet</button><button class="btn" data-sugg="Ajoute des tests au projet et lance-les">Ajouter des tests</button><button class="btn" data-sugg="Corrige l&rsquo;erreur affich&eacute;e dans le panneau Probl&egrave;mes">Corriger l&rsquo;erreur du panneau Probl&egrave;mes</button><button class="btn" data-sugg="Analyse ce projet et r&eacute;sume son &eacute;tat">Analyser le projet</button></div></div></div>
 <div id="composer"><div id="ctxbar"></div><textarea id="agentInput" rows="1" placeholder="D&eacute;crivez la t&acirc;che de l&rsquo;agent..." aria-label="Message pour l&rsquo;agent"></textarea><div class="crow"><span id="hint">Entr&eacute;e pour envoyer, Maj+Entr&eacute;e pour une nouvelle ligne</span><span id="queueBadge"></span><span class="cbtns"><button class="btn" id="btnStop" disabled><span class="codicon codicon-debug-stop"></span>Arr&ecirc;ter</button><button class="btn primary" id="btnSend"><span class="codicon codicon-send"></span>Envoyer</button></span></div></div>
@@ -287,6 +288,12 @@ var btnStop = document.getElementById("btnStop");
 var queueBadge = document.getElementById("queueBadge");
 var modeSel = document.getElementById("modeSel");
 var providerSel = document.getElementById("providerSel");
+var modelSel = document.getElementById("modelSel");
+var srvDot = document.getElementById("srvDot");
+var srvTxt = document.getElementById("srvTxt");
+var rtModels = [];
+var provList = [];
+var decided = false;
 var rtDot = document.getElementById("rtDot");
 var rtTxt = document.getElementById("rtTxt");
 var running = false;
@@ -342,8 +349,11 @@ if (modeSel) {
   }
 }
 providerSel.addEventListener("change", function() { post({ type: "setProvider", id: providerSel.value }); });
-var sandboxSel = document.getElementById("sandboxSel");
-if (sandboxSel) sandboxSel.addEventListener("change", function() { post({ type: "setSandboxLevel", level: sandboxSel.value }); });
+if (modelSel) modelSel.addEventListener("change", function() { post({ type: "setModel", model: modelSel.value }); });
+var btnSessions = document.getElementById("btnSessions");
+if (btnSessions) btnSessions.addEventListener("click", function() { post({ type: "listSessions" }); });
+var srvBtn = document.getElementById("srvBtn");
+if (srvBtn) srvBtn.addEventListener("click", function() { post({ type: "relaunchServer" }); });
 var toAgentBtn = document.getElementById("toAgentBtn");
 if (toAgentBtn) toAgentBtn.addEventListener("click", function() { post({ type: "toAgent" }); });
 document.getElementById("rt").addEventListener("click", function() { post({ type: "refreshRuntime" }); });
@@ -718,6 +728,21 @@ function renderDone(d) {
     m.addEventListener("click", function() { post({ type: "openRuntime" }); });
     acts.appendChild(m);
   }
+  if (d.kind === "server") {
+    var rl = document.createElement("button");
+    rl.className = "btn primary";
+    rl.textContent = "Relancer le serveur";
+    rl.addEventListener("click", function() { post({ type: "relaunchServer" }); });
+    acts.appendChild(rl);
+  }
+  if (decided) {
+    var ct = document.createElement("button");
+    ct.className = "btn";
+    ct.textContent = "Poursuivre";
+    ct.addEventListener("click", function() { post({ type: "continue" }); });
+    acts.appendChild(ct);
+  }
+  decided = false;
   box.appendChild(acts);
   a.bubble.appendChild(box);
   currentAgent = null;
@@ -774,38 +799,67 @@ function setRuntime(rt) {
     rtDot.className = "dot ok";
     rtTxt.textContent = rt.models && rt.models.length ?
       "Runtime : " + rt.models.length + " mod\\u00e8le(s)" : "Runtime : aucun mod\\u00e8le";
+    rtModels = (rt.models || []).slice();
+    fillModelSel();
   } else {
     rtDot.className = "dot bad";
     rtTxt.textContent = "Runtime : hors ligne";
+    rtModels = [];
+    fillModelSel();
   }
 }
 function setProviders(list, activeId) {
+  provList = list || [];
   providerSel.innerHTML = "";
-  (list || []).forEach(function(p) {
+  provList.forEach(function(p) {
     var o = document.createElement("option");
     o.value = p.id;
     o.textContent = p.name + " / " + p.model + (p.type === "cloud" ? "" : " (local)");
     providerSel.appendChild(o);
   });
   providerSel.value = activeId;
+  fillModelSel();
 }
-function setSandbox(m) {
-  var badge = document.getElementById("sandboxBadge");
-  var note = document.getElementById("sandboxNote");
-  if (!badge) return;
-  var label = "Mode restreint";
-  if (m.level === "l2") label = "Sandbox isolee (" + (m.via === "wsb" ? "WSB" : "docker") + ")";
-  badge.textContent = label;
-  badge.className = "sandbox" + (m.level === "l2" ? " l2" : "");
-  var det = [];
-  if (m.via) det.push("via " + m.via);
-  det.push("jeton " + (m.token ? "restreint" : "standard"));
-  if (m.job) det.push("job actif");
-  det.push("r\\u00e9seau " + (m.network === "blocked" ? "bloqu\\u00e9" : "ouvert"));
-  badge.title = det.join(", ");
-  if (note) { note.textContent = m.note || ""; note.style.display = m.note ? "inline" : "none"; }
-  var sel = document.getElementById("sandboxSel");
-  if (sel && m.requested) sel.value = m.requested;
+function fillModelSel() {
+  if (!modelSel) return;
+  var active = null;
+  provList.forEach(function(p) { if (p.id === providerSel.value) active = p; });
+  var opts = [];
+  if (active && active.type === "cloud") {
+    if (active.model) opts.push(active.model);
+  } else {
+    opts = rtModels.slice();
+    if (active && active.model && opts.indexOf(active.model) === -1) opts.unshift(active.model);
+  }
+  var prev = modelSel.value;
+  modelSel.innerHTML = "";
+  opts.forEach(function(m) {
+    var o = document.createElement("option");
+    o.value = m;
+    o.textContent = m;
+    modelSel.appendChild(o);
+  });
+  if (opts.indexOf(prev) !== -1) modelSel.value = prev;
+  else if (active && active.model && opts.indexOf(active.model) !== -1) modelSel.value = active.model;
+}
+function setServer(s) {
+  if (!srvDot || !srvTxt) return;
+  var st = (s && s.status) || "?";
+  if (st === "ready") {
+    srvDot.className = "dot ok";
+    srvTxt.textContent = "Agent : pret";
+  } else if (st === "starting") {
+    srvDot.className = "dot cloud";
+    srvTxt.textContent = "Agent : demarrage...";
+  } else if (st === "stopped") {
+    srvDot.className = "dot bad";
+    srvTxt.textContent = "Agent : arrete";
+  } else {
+    srvDot.className = "dot bad";
+    srvTxt.textContent = "Agent : erreur";
+  }
+  var b = document.getElementById("srvBtn");
+  if (b) b.title = "Serveur agent : " + st + (s && s.detail ? " (" + s.detail + ")" : "") + ". Cliquer pour relancer.";
 }
 function setContext(c) {
   var bar = document.getElementById("ctxbar");
@@ -850,15 +904,87 @@ function renderHistory(turns) {
   });
   thread.scrollTop = thread.scrollHeight;
 }
+function onDelta(text) {
+  if (!text) return;
+  var a = ensureAgent();
+  hideSkel();
+  a.txt.textContent += text;
+  stick();
+}
+function onToolMsg(t) {
+  var label = (t.phase === "start" ? "Outil : " : "Termine : ") + (t.tool || "?");
+  if (t.phase === "end" && t.summary) label += " - " + t.summary;
+  if (t.phase === "end" && t.status === "error") label += " (echec)";
+  addStep(t.phase, label);
+}
+function renderSessions(list, current) {
+  clearEmpty();
+  var wrap = document.createElement("div");
+  wrap.className = "msg agent";
+  var det = document.createElement("details");
+  det.className = "changes";
+  det.open = true;
+  var sum = document.createElement("summary");
+  var sic = document.createElement("span");
+  sic.className = "codicon codicon-history";
+  var st = document.createElement("span");
+  st.textContent = "Sessions (" + (list || []).length + ")";
+  sum.appendChild(sic);
+  sum.appendChild(st);
+  det.appendChild(sum);
+  (list || []).forEach(function(s) {
+    var row = document.createElement("div");
+    row.className = "frow";
+    var nm = document.createElement("span");
+    nm.className = "nm";
+    nm.textContent = (s.id === current ? "> " : "") + (s.title || s.id) +
+      " (" + (s.messageCount || 0) + " msg)";
+    row.appendChild(nm);
+    var rb = document.createElement("button");
+    rb.className = "linklike";
+    rb.textContent = "Reprendre";
+    (function(id) {
+      rb.addEventListener("click", function() { post({ type: "resumeSession", id: id }); });
+    })(s.id);
+    row.appendChild(rb);
+    var db = document.createElement("button");
+    db.className = "linklike";
+    db.textContent = "Supprimer";
+    (function(id) {
+      db.addEventListener("click", function() { post({ type: "deleteSession", id: id }); });
+    })(s.id);
+    row.appendChild(db);
+    det.appendChild(row);
+  });
+  var acts = document.createElement("div");
+  acts.className = "acts";
+  var nb = document.createElement("button");
+  nb.className = "btn sm";
+  nb.textContent = "Nouvelle session";
+  nb.addEventListener("click", function() { post({ type: "newSession" }); });
+  acts.appendChild(nb);
+  det.appendChild(acts);
+  wrap.appendChild(det);
+  thread.appendChild(wrap);
+  stick();
+}
 window.addEventListener("message", function(ev) {
   var m = ev.data || {};
   if (m.type === "runState") setRunning(!!m.running, m.queued || 0);
   else if (m.type === "started") { parts = {}; ensureAgent(); addStep("run", "Mode " + (m.mode || "")); showSkel(); }
   else if (m.type === "step") addStep(m.phase, m.message);
+  else if (m.type === "delta") onDelta(m.text || "");
+  else if (m.type === "tool") onToolMsg(m);
   else if (m.type === "part") onPart(m.properties || {});
   else if (m.type === "approval") renderApproval(m);
   else if (m.type === "actionable") setActionable(m.id);
   else if (m.type === "approvalResolved") resolveApproval(m.id, m.choice);
+  else if (m.type === "approvalDone") { decided = true; addStep("approval",
+    "Approbation : " + (m.status || "?") + (m.detail ? " - " + m.detail : "")); }
+  else if (m.type === "sessions") renderSessions(m.sessions || [], m.current || null);
+  else if (m.type === "sessionResumed") addStep("session",
+    m.id ? ("Session reprise : " + m.id) : "Nouvelle session au prochain envoi.");
+  else if (m.type === "server") setServer(m);
   else if (m.type === "done") renderDone(m);
   else if (m.type === "error") renderError(m.message);
   else if (m.type === "undoResult") addStep("undo",
@@ -866,7 +992,6 @@ window.addEventListener("message", function(ev) {
   else if (m.type === "runtime") setRuntime(m);
   else if (m.type === "providers") setProviders(m.providers, m.activeId);
   else if (m.type === "mode") setModeUI(m.mode);
-  else if (m.type === "sandbox") setSandbox(m);
   else if (m.type === "cleared") { thread.innerHTML = ""; currentAgent = null; parts = {}; approvals = {}; }
   else if (m.type === "context") setContext(m);
   else if (m.type === "history") renderHistory(m.turns || []);
@@ -890,7 +1015,7 @@ class AgentPanel {
         this.engine = null;
         this.projectRoot = null;
         this.mode = 'build';
-        this._sandboxLevel = 'auto'; // P8: auto | l1 | l2 (memory only)
+        this._resumeSessionId = null; // P27: sticky resume (cleared on folder change)
         this._running = false;
         this._queue = [];
         this._approvals = [];
@@ -944,8 +1069,14 @@ class AgentPanel {
                 case 'stop': this.stopAgent(); break;
                 case 'approve': await this._handleApprove(msg.id, msg.choice); break;
                 case 'setMode': this._handleMode(msg.mode); break;
-                case 'setSandboxLevel': this._handleSandboxLevel(msg.level); break;
                 case 'setProvider': this._handleProvider(msg.id); break;
+                case 'setModel': await this._handleModel(msg.model); break;
+                case 'relaunchServer': await this._relaunchServer('manual'); break;
+                case 'listSessions': await this._handleListSessions(); break;
+                case 'resumeSession': await this._handleResumeSession(msg.id); break;
+                case 'deleteSession': await this._handleDeleteSession(msg.id); break;
+                case 'newSession': await this._handleNewSession(); break;
+                case 'continue': await this._handleContinue(); break;
                 case 'openDiff': await this._handleDiff(msg.file); break;
                 case 'undo': await this._handleUndo(); break;
                 case 'openRuntime':
@@ -979,6 +1110,7 @@ class AgentPanel {
             try { await this.engine.stop(); } catch (_) {}
             this.engine = null;
         }
+        if (this.projectRoot !== root) this._resumeSessionId = null;
         this.projectRoot = root;
         if (this._running) {
             this._queue.push(text);
@@ -1005,7 +1137,7 @@ class AgentPanel {
         this._resolved = new Set();
         this._post({ type: 'started', mode: this.mode });
         try {
-            await this.engine.run({ prompt: text, mode: this.mode, sandboxMode: this._sandboxLevel });
+            await this.engine.run({ prompt: text, mode: this.mode, resumeSessionId: this._resumeSessionId || undefined });
         } catch (e) {
             this._running = false;
             this._post({ type: 'error', message: e.message });
@@ -1017,29 +1149,22 @@ class AgentPanel {
 
     _ensureEngine() {
         if (this.engine) return;
+        const host = getAgentHost();
         this.engine = this._engineFactory({
+            server: host.getServer ? host.getServer() : null,
+            provider: host.gateAgent || null,
             projectRoot: this.projectRoot,
-            extensionDir: this.extensionUri ? this.extensionUri.fsPath : null,
             mode: this.mode,
         });
+        this.engine.on('delta', (d) => this._post({ type: 'delta', text: d.text || '' }));
         this.engine.on('step', (d) => this._post({ type: 'step', phase: d.phase, message: d.message }));
-        this.engine.on('error', (d) => this._post({ type: 'error', message: d.message }));
+        this.engine.on('tool', (d) => this._post({ type: 'tool', phase: d.phase, tool: d.tool,
+            status: d.status || null, code: d.code || '', summary: d.summary || '' }));
+        this.engine.on('error', (d) => this._post({ type: 'error', message: d.message, kind: d.kind || null }));
         this.engine.on('approval_needed', (d) => this._onApproval(d));
+        this.engine.on('approval_resolved', (d) => this._post({ type: 'approvalDone',
+            id: d.reqId, decision: d.decision, status: d.status, detail: d.detail || '' }));
         this.engine.on('done', (d) => this._onDone(d));
-        this.engine.on('sandbox', (d) => this._post({ type: 'sandbox', level: d.level, via: d.via,
-            token: d.token, job: d.job, network: d.network, note: d.note, requested: d.requested }));
-        const drv = this.engine.driver;
-        if (drv && typeof drv.on === 'function') drv.on('bus', (ev) => this._onBus(ev));
-    }
-
-    _onBus(ev) {
-        if (!ev || typeof ev.type !== 'string') return;
-        // Streamable part updates only (message.updated is already covered
-        // by the engine 'step' events; permissions by 'approval_needed').
-        if (ev.type.indexOf('message') !== 0 || ev.type.indexOf('part') === -1) return;
-        const props = ev.properties || {};
-        try { if (JSON.stringify(props).length > 200000) return; } catch (_) { return; }
-        this._post({ type: 'part', properties: props });
     }
 
     _onDone(d) {
@@ -1062,7 +1187,8 @@ class AgentPanel {
         } catch (_) { /* display-only, never fail the run */ }
         this._post({ type: 'done', status: d.status, reason, reply: d.reply || '',
             filesModified: d.filesModified || [], fileStats, sessionId: d.sessionId || null,
-            mode: d.mode || this.mode, noModel });
+            mode: d.mode || this.mode, noModel, kind: d.kind || null,
+            filesRead: d.filesRead || [] });
         this._postRunState();
         this._drain();
     }
@@ -1086,7 +1212,10 @@ class AgentPanel {
     }
 
     _onApproval(d) {
-        const a = { id: d.id, action: d.action, title: d.title, description: d.description };
+        const a = { id: (d && (d.id || d.reqId)) || '', action: (d && d.action) || (d && d.tool) || '?',
+            title: (d && d.title) || ('Approbation requise : ' + ((d && d.tool) || '?')),
+            description: (d && d.description) ||
+                [d && d.summary, d && d.detail].filter(Boolean).join(' | ') };
         this._approvals.push(a);
         const first = this._approvals.find((x) => !this._resolved.has(x.id));
         this._post({ type: 'approval', id: a.id, action: a.action, title: a.title,
@@ -1106,13 +1235,14 @@ class AgentPanel {
             return;
         }
         if (!this.engine) { this._post({ type: 'error', message: 'Aucun moteur actif.' }); return; }
-        const r = await this.engine.resolveApproval(choice);
+        const r = await this.engine.resolveApproval(choice === 'reject' ? 'deny' : choice);
         if (!r || !r.ok) {
             this._post({ type: 'error', message: 'Approbation impossible: ' + ((r && r.error) || '?') });
             return;
         }
         this._resolved.add(id);
-        this._post({ type: 'approvalResolved', id, choice });
+        this._post({ type: 'approvalResolved', id, choice, status: r.status || null,
+            detail: r.detail || '' });
         const next = this._approvals.find((x) => !this._resolved.has(x.id));
         this._post({ type: 'actionable', id: next ? next.id : null });
     }
@@ -1124,11 +1254,6 @@ class AgentPanel {
         this._post({ type: 'mode', mode });
     }
 
-    _handleSandboxLevel(level) {
-        if (level !== 'auto' && level !== 'l1' && level !== 'l2') return;
-        this._sandboxLevel = level;
-    }
-
     _handleProvider(id) {
         try {
             getAIProviderService().setActive(id);
@@ -1137,6 +1262,43 @@ class AgentPanel {
             return;
         }
         this._postProviders();
+        this._relaunchServer('provider');
+    }
+
+    async _relaunchServer(reason) {
+        const host = getAgentHost();
+        if (!host.relaunch) return; // tests / unactivated host: nothing to relaunch
+        if (this._running) {
+            this._post({ type: 'error',
+                message: 'Arretez la tache en cours avant de relancer le serveur agent.' });
+            return;
+        }
+        try {
+            await host.relaunch(reason || 'manual');
+            if (host.serverState) this._post(Object.assign({ type: 'server' }, host.serverState()));
+        } catch (e) {
+            this._post({ type: 'error', message: 'Relance serveur agent: ' + e.message });
+        }
+    }
+
+    async _handleModel(model) {
+        model = (model || '').trim();
+        if (!model) return;
+        let active = null;
+        try { active = getAIProviderService().getActive(); } catch (_) { active = null; }
+        if (!active) { this._post({ type: 'error', message: 'Aucun fournisseur actif.' }); return; }
+        try {
+            const r = await getAIProviderService().updateProvider(active.id, { model });
+            if (!r || !r.ok) {
+                this._post({ type: 'error', message: 'Modele: ' + ((r && r.error) || '?') });
+                return;
+            }
+        } catch (e) {
+            this._post({ type: 'error', message: 'Modele: ' + e.message });
+            return;
+        }
+        this._postProviders();
+        this._relaunchServer('model');
     }
 
     _postProviders() {
@@ -1203,8 +1365,97 @@ class AgentPanel {
         }
     }
 
+    _rootOrNull() {
+        const folders = vscode.workspace.workspaceFolders;
+        const ws = folders && folders[0];
+        return ws ? ws.uri.fsPath : null;
+    }
+
+    _sessionsEngine() {
+        // list/resume/delete work before any run: ensure an engine + root.
+        const root = this._rootOrNull();
+        if (!root) { this._post({ type: 'error', message: 'Ouvrez un dossier projet d\'abord.' }); return null; }
+        if (!this.projectRoot) this.projectRoot = root;
+        try { this._ensureEngine(); } catch (e) {
+            this._post({ type: 'error', message: 'Moteur agent: ' + e.message });
+            return null;
+        }
+        return this.engine;
+    }
+
+    async _handleListSessions() {
+        const eng = this._sessionsEngine();
+        if (!eng) return;
+        try {
+            const sessions = await eng.listSessions();
+            this._post({ type: 'sessions', sessions,
+                current: this._resumeSessionId || (eng.lastSessionId ? eng.lastSessionId() : null) });
+        } catch (e) {
+            this._post({ type: 'error', message: 'Sessions: ' + e.message });
+        }
+    }
+
+    async _handleResumeSession(id) {
+        if (!id) return;
+        if (this._running) {
+            this._post({ type: 'error', message: 'Arretez la tache en cours avant de changer de session.' });
+            return;
+        }
+        this._resumeSessionId = id;
+        this._post({ type: 'sessionResumed', id });
+    }
+
+    async _handleDeleteSession(id) {
+        if (!id) return;
+        const eng = this._sessionsEngine();
+        if (!eng) return;
+        try {
+            await eng.deleteSession(id);
+            if (this._resumeSessionId === id) this._resumeSessionId = null;
+            const sessions = await eng.listSessions();
+            this._post({ type: 'sessions', sessions, current: null });
+        } catch (e) {
+            this._post({ type: 'error', message: 'Suppression session: ' + e.message });
+        }
+    }
+
+    async _handleNewSession() {
+        if (this._running) {
+            this._post({ type: 'error', message: 'Arretez la tache en cours avant d\'ouvrir une session.' });
+            return;
+        }
+        if (this.engine) { try { await this.engine.stop(); } catch (_) {} }
+        this.engine = null; // fresh engine = empty session cache
+        this._resumeSessionId = null;
+        this._approvals = [];
+        this._resolved = new Set();
+        this._post({ type: 'sessionResumed', id: null });
+    }
+
+    async _handleContinue() {
+        if (!this.engine) { this._post({ type: 'error', message: 'Aucun moteur actif.' }); return; }
+        if (this._running) {
+            this._post({ type: 'error', message: 'Une tache est deja en cours.' });
+            return;
+        }
+        this._running = true;
+        this._postRunState();
+        try {
+            await this.engine.continueAfterApproval();
+        } catch (e) {
+            this._running = false;
+            this._post({ type: 'error', message: e.message });
+            this._postRunState();
+        }
+        // normal path: the engine 'done' event finishes the run.
+    }
+
     _postRunState() {
         this._post({ type: 'runState', running: this._running, queued: this._queue.length });
+        try {
+            const host = getAgentHost();
+            if (host.serverState) this._post(Object.assign({ type: 'server' }, host.serverState()));
+        } catch (_) {}
     }
 
     _post(msg) {

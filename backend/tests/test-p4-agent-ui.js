@@ -83,7 +83,7 @@ const ofType = (panel, t) => posted(panel).filter((m) => m.type === t);
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 class FakeEngine extends EventEmitter {
-  constructor() { super(); this.calls = []; this.driver = new EventEmitter(); this._pending = []; }
+  constructor() { super(); this.calls = []; this._pending = []; }
   async run(task) {
     this.calls.push(['run', task]);
     await new Promise((res) => this._pending.push(res));
@@ -233,14 +233,18 @@ async function main() {
   await tick();
 
   // ------------------------------------------------- F. streaming filter
-  const partsBefore = ofType(ap, 'part').length;
-  eng().driver.emit('bus', { type: 'message.part.updated',
-    properties: { messageID: 'm', part: { id: 'p1', type: 'text', text: 'Hello' } } });
-  eng().driver.emit('bus', { type: 'message.updated', properties: { info: { id: 'm' } } });
-  eng().driver.emit('bus', { type: 'session.updated', properties: {} });
+  // P27: the driver bus is gone with the former server; the engine streams
+  // 'delta' (text) + 'tool' (start/end) legacy events instead.
+  const deltasBefore = ofType(ap, 'delta').length;
+  const toolsBefore = ofType(ap, 'tool').length;
+  eng().emit('delta', { text: 'Hello' });
+  eng().emit('tool', { phase: 'start', tool: 'read' });
+  eng().emit('tool', { phase: 'end', tool: 'read', status: 'ok', summary: '1 file' });
   await tick();
-  check('F1: only part updates forwarded', ofType(ap, 'part').length === partsBefore + 1
-    && ofType(ap, 'part').pop().properties.part.text === 'Hello');
+  check('F1: delta + tool streamed', ofType(ap, 'delta').length === deltasBefore + 1
+    && ofType(ap, 'delta').pop().text === 'Hello'
+    && ofType(ap, 'tool').length === toolsBefore + 2
+    && ofType(ap, 'tool').pop().status === 'ok');
 
   // ------------------------------------------------- G. no-model state
   await ap.handleMessage({ type: 'send', text: 'needs model' });

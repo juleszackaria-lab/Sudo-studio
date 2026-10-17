@@ -18,6 +18,7 @@ const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
 const { AgentEngine } = require('../agent/AgentEngine');
+const { getAgentHost } = require('../agent/agentHost');
 const { getWebviewHtml } = require('../agent/AgentPanel');
 const { getAIProviderService } = require('../services/AIProviderService');
 
@@ -129,7 +130,6 @@ class ChatPanel {
         this._engineFactory = opts.engineFactory || ((o) => new AgentEngine(o));
         this.engine = null;
         this.projectRoot = null;
-        this._sandboxLevel = 'auto'; // P8: auto | l1 | l2 (memory only)
         this.history = [];
         this.lastUserMsg = '';
         this._running = false;
@@ -198,11 +198,6 @@ class ChatPanel {
                 case 'stop': this.stopChat(); break;
                 case 'approve': await this._handleApprove(msg.id, msg.choice); break;
                 case 'setProvider': this._handleProvider(msg.id); break;
-                case 'setSandboxLevel':
-                    if (msg.level === 'auto' || msg.level === 'l1' || msg.level === 'l2') {
-                        this._sandboxLevel = msg.level;
-                    }
-                    break;
                 case 'openRuntime':
                     vscode.commands.executeCommand('sudoStudio.openRuntimePanel');
                     break;
@@ -270,7 +265,7 @@ class ChatPanel {
         this._resolved = new Set();
         this._post({ type: 'started', mode: 'plan' });
         try {
-            await this.engine.run({ prompt: buildChatPrompt(cx, text), mode: 'plan', sandboxMode: this._sandboxLevel });
+            await this.engine.run({ prompt: buildChatPrompt(cx, text), mode: 'plan' });
         } catch (e) {
             this._running = false;
             this._post({ type: 'error', message: e.message });
@@ -281,27 +276,20 @@ class ChatPanel {
 
     _ensureEngine() {
         if (this.engine) return;
+        const host = getAgentHost();
         this.engine = this._engineFactory({
+            server: host.getServer ? host.getServer() : null,
+            provider: host.gateChat || null,
             projectRoot: this.projectRoot,
-            extensionDir: this.extensionUri ? this.extensionUri.fsPath : null,
             mode: 'plan',
         });
+        this.engine.on('delta', (d) => this._post({ type: 'delta', text: d.text || '' }));
         this.engine.on('step', (d) => this._post({ type: 'step', phase: d.phase, message: d.message }));
+        this.engine.on('tool', (d) => this._post({ type: 'tool', phase: d.phase, tool: d.tool,
+            status: d.status || null, code: d.code || '', summary: d.summary || '' }));
         this.engine.on('error', (d) => this._post({ type: 'error', message: d.message }));
         this.engine.on('approval_needed', (d) => this._onApproval(d));
         this.engine.on('done', (d) => this._onDone(d));
-        this.engine.on('sandbox', (d) => this._post({ type: 'sandbox', level: d.level, via: d.via,
-            token: d.token, job: d.job, network: d.network, note: d.note, requested: d.requested }));
-        const drv = this.engine.driver;
-        if (drv && typeof drv.on === 'function') drv.on('bus', (ev) => this._onBus(ev));
-    }
-
-    _onBus(ev) {
-        if (!ev || typeof ev.type !== 'string') return;
-        if (ev.type.indexOf('message') !== 0 || ev.type.indexOf('part') === -1) return;
-        const props = ev.properties || {};
-        try { if (JSON.stringify(props).length > 200000) return; } catch (_) { return; }
-        this._post({ type: 'part', properties: props });
     }
 
     _onDone(d) {
@@ -310,7 +298,8 @@ class ChatPanel {
         const noModel = d.status === 'ECHEC' && /NO_MODEL_LOADED|Runtime offline/.test(reason);
         // sessionId nulled: no undo button in chat (plan mode modifies nothing).
         this._post({ type: 'done', status: d.status, reason, reply: d.reply || '',
-            filesModified: d.filesModified || [], sessionId: null, mode: 'plan', noModel });
+            filesModified: d.filesModified || [], sessionId: null, mode: 'plan', noModel,
+            filesRead: d.filesRead || [] });
         this._addHistory('assistant', d.reply || reason, 'Sudo Chat');
         this._postRunState();
         this._drain();
@@ -330,7 +319,10 @@ class ChatPanel {
 
     // -- approvals (not expected in plan/read-only; supported defensively) --
     _onApproval(d) {
-        const a = { id: d.id, action: d.action, title: d.title, description: d.description };
+        const a = { id: (d && (d.id || d.reqId)) || '', action: (d && d.action) || (d && d.tool) || '?',
+            title: (d && d.title) || ('Approbation requise : ' + ((d && d.tool) || '?')),
+            description: (d && d.description) ||
+                [d && d.summary, d && d.detail].filter(Boolean).join(' | ') };
         this._approvals.push(a);
         const first = this._approvals.find((x) => !this._resolved.has(x.id));
         this._post({ type: 'approval', id: a.id, action: a.action, title: a.title,
@@ -349,7 +341,7 @@ class ChatPanel {
             return;
         }
         if (!this.engine) { this._post({ type: 'error', message: 'Aucun moteur actif.' }); return; }
-        const r = await this.engine.resolveApproval(choice);
+        const r = await this.engine.resolveApproval(choice === 'reject' ? 'deny' : choice);
         if (!r || !r.ok) {
             this._post({ type: 'error', message: 'Approbation impossible: ' + ((r && r.error) || '?') });
             return;
@@ -397,9 +389,11 @@ class ChatPanel {
 
     _ensureEngineForQuery() {
         if (this.engine) return;
+        const host = getAgentHost();
         this.engine = this._engineFactory({
+            server: host.getServer ? host.getServer() : null,
+            provider: host.gateChat || null,
             projectRoot: null,
-            extensionDir: this.extensionUri ? this.extensionUri.fsPath : null,
             mode: 'plan',
         });
     }

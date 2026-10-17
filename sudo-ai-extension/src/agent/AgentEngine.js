@@ -1,608 +1,484 @@
-/**
- * SUDO STUDIO - Agent engine (MISSION P3: OpenCode-based, replaces v3 logic).
- *
- * The old in-house logic (hardcoded fallback plan, scaffolding generator,
- * embedded templates, ai_generate, self-declared verification, sessions in
- * .sudo/agent) is DELETED. This engine drives a pinned local OpenCode server
- * (see OpenCodeDriver + opencode.manifest.json) inside the open project:
- * - Build (default, asks before edits/bash) / Plan (read-only) modes
- * - per-tool permissions: once / session / always-in-project / deny
- * - writes outside the project are always auto-denied
- * - undo of the last run via opencode message revert (native snapshots)
- * - HONEST status: TERMINE only if the run finished AND no unresolved tool
- *   error AND the real before/after file list is reported; else ECHEC/PARTIEL.
- * - project AGENTS.md is injected as system instructions.
- *
- * Kept API (existing UI keeps loading until PROMPT 4): constructor({projectRoot}),
- * run(task), stop(), resolveApproval(x), events step/tool_call/error/
- * approval_needed/done, plus query()/chatQuery() (P2 model-call paths).
- * ASCII-only.
- */
 'use strict';
+// AgentEngine (P27): drives the sudo-agent HTTP server (local child process).
+//
+// This replaces the P3 third-party engine (deleted with its driver): there
+// is no subprocess here, no driver, no TUI scraping. Transport is an
+// AgentServer instance (owns port/token/auth + supervision); the engine only
+// speaks HTTP (JSON + SSE) and translates server events into panel events.
+//
+// Server vocabulary (sudo-agent): sessions, modes (build|plan), SSE events
+// turn.start / message.delta / message.done / tool.start / tool.result /
+// turn.done / turn.error, approvals polling (GET/POST .../approvals),
+// undo (POST .../undo), abort (POST .../abort).
+//
+// Panel vocabulary (kept from P4/P5 contracts):
+//   methods: run() / query() / chatQuery() / stop() / setMode() /
+//            resolveApproval() / undoLastRun() / listSessions() / deleteSession()
+//   legacy events (.on): delta / step / tool / approval_needed /
+//            approval_resolved / done / error
+//   raw events (opts.onEvent): { type: delta|tool|perm|turn|done|error, ... }
+//
+// One in-flight run per engine (chat and agent share a single loaded model:
+// a second run is refused with a clear message, never queued silently).
+// Source is ASCII-only (P4 M-check).
 
 const { EventEmitter } = require('events');
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const { getAIProviderService } = require('../services/AIProviderService');
-const { getSecretsStore } = require('../services/extensionContext');
-const { getCentralDir } = require('../utils/auditLog');
-const { OpenCodeDriver, RUNTIME_BASE_URL } = require('./OpenCodeDriver');
-const sandbox = require('./sandbox'); // P8: command policy + audit + watchdog
 
-const AI_TIMEOUT_MS = 120000;
-const STATUS = { DONE: 'TERMINE', FAIL: 'ECHEC', PARTIAL: 'PARTIEL' };
-const MAX_SNAPSHOT_FILES = 50000;
+const SERVER_OFFLINE =
+    'Serveur agent hors ligne. Relancez-le (bouton Relancer) puis reessayez.';
+const NO_SESSION =
+    'Session agent introuvable (supprimee ou expiree). Relancez une tache.';
+const DECISIONS = ['once', 'session', 'project', 'deny'];
 
-// ---------------------------------------------------------------- helpers
-
-function readAgentsMd(projectRoot) {
-    try {
-        const p = path.join(projectRoot, 'AGENTS.md');
-        if (fs.existsSync(p)) return fs.readFileSync(p, 'utf8').slice(0, 20000);
-    } catch (_) { /* none */ }
-    return '';
+function shortText(v, n) {
+    const t = String(v == null ? '' : v);
+    return t.length > n ? t.slice(0, n) + '...' : t;
 }
 
-function snapshotFiles(root) {
-    const out = new Map();
-    let truncated = false;
-    const walk = (dir) => {
-        let entries;
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
-        for (const e of entries) {
-            if (out.size >= MAX_SNAPSHOT_FILES) { truncated = true; return; }
-            const full = path.join(dir, e.name);
-            const rel = path.relative(root, full);
-            if (e.name === '.git' && rel.split(path.sep).indexOf('.git') === 0) continue;
-            try {
-                if (e.isDirectory()) { walk(full); continue; }
-                if (!e.isFile()) continue;
-                const st = fs.statSync(full);
-                out.set(rel, { size: st.size, mtime: st.mtimeMs });
-            } catch (_) { /* transient */ }
-        }
-    };
-    walk(root);
-    return { files: out, truncated };
-}
-
-function diffSnapshots(before, after) {
-    const added = [], modified = [], deleted = [];
-    for (const [rel, a] of after.files) {
-        const b = before.files.get(rel);
-        if (!b) added.push(rel);
-        else if (b.size !== a.size || b.mtime !== a.mtime) modified.push(rel);
+// Map a provider-gate failure (extension side: policy / key / license /
+// local probe) to a panel reason. NO_MODEL / offline markers are preserved
+// so panels keep their noModel mapping (P4 G1).
+function mapGateError(e) {
+    const msg = shortText((e && e.message) || e, 400) || 'Provider inutilisable.';
+    if (/NO_MODEL_LOADED|aucun modele|no[ _-]?model/i.test(msg)) {
+        return { kind: 'provider', noModel: true,
+            reason: 'NO_MODEL_LOADED (' + msg + ')' };
     }
-    for (const rel of before.files.keys()) {
-        if (!after.files.has(rel)) deleted.push(rel);
+    if (/offline|hors ligne|injoignable|ECONNREFUSED|ENOTFOUND/i.test(msg)) {
+        return { kind: 'provider', reason: 'Runtime offline (' + msg + ')' };
     }
-    added.sort(); modified.sort(); deleted.sort();
-    return { added, modified, deleted };
+    return { kind: 'provider', reason: msg };
 }
 
-function isPathInside(root, p) {
-    try {
-        const r = path.resolve(root);
-        const q = path.resolve(r, p);
-        return q === r || q.startsWith(r + path.sep);
-    } catch (_) { return false; }
-}
-
-/** Collect candidate paths from an opencode permission request. */
-function extractPaths(perm) {
-    const found = [];
-    const push = (v) => {
-        if (typeof v === 'string' && v && v.length < 1024) found.push(v);
-        else if (Array.isArray(v)) v.forEach(push);
-    };
-    if (perm) {
-        push(perm.pattern);
-        const md = perm.metadata || {};
-        for (const k of Object.keys(md)) {
-            if (/path|file|dir|cwd|root/i.test(k)) push(md[k]);
-        }
+// Map a server-call failure (stream() rejection or request() transport
+// error) to { kind, reason, noModel }.
+function mapServerError(e, stopRequested) {
+    const code = (e && e.code) || '';
+    const status = (e && e.status) || 0;
+    const msg = shortText((e && e.message) || e, 400);
+    if (stopRequested && (code === 'aborted' || /abort/i.test(msg))) {
+        return { kind: 'stopped', reason: 'Interrompu par l\'utilisateur.' };
     }
-    return found;
+    if (status === 409) {
+        return { kind: 'busy', reason: 'Un tour est deja en cours sur cette session.' };
+    }
+    if (code === 'no_model') {
+        return { kind: 'provider', noModel: true,
+            reason: 'NO_MODEL_LOADED (Aucun modele charge sur le runtime local.)' };
+    }
+    if (code === 'runtime_offline') {
+        return { kind: 'provider',
+            reason: 'Runtime offline (runtime local hors ligne : demarrez le runtime.)' };
+    }
+    if (code === 'bad_config' || status === 503) {
+        return { kind: 'provider', reason: 'Provider mal configure : ' + (msg || 'verifiez le provider actif.') };
+    }
+    if (code === 'provider_error' || code === 'provider_unreachable' || status === 502) {
+        return { kind: 'provider', reason: msg || 'Erreur du fournisseur.' };
+    }
+    if (/ECONNREFUSED|ENOTFOUND|socket hang up|fetch failed|ECONNRESET|EPIPE/i.test(msg) ||
+            code === 'ECONNREFUSED' || code === 'ENOTFOUND') {
+        return { kind: 'server', reason: SERVER_OFFLINE };
+    }
+    if (status === 404) {
+        return { kind: 'server', reason: NO_SESSION };
+    }
+    return { kind: 'error', reason: msg || 'Echec du tour.' };
 }
-
-function allowsPath() {
-    return path.join(getCentralDir(), 'opencode-project-allows.json');
-}
-
-function loadAllows() {
-    try {
-        const d = JSON.parse(fs.readFileSync(allowsPath(), 'utf8'));
-        if (d && typeof d === 'object') return d;
-    } catch (_) { /* none */ }
-    return {};
-}
-
-function projectKey(root) {
-    return crypto.createHash('sha1').update(path.resolve(root)).digest('hex');
-}
-
-// ---------------------------------------------------------------- engine
 
 class AgentEngine extends EventEmitter {
-    constructor(options = {}) {
+    constructor(opts = {}) {
         super();
-        this.projectRoot = options.projectRoot || null;
-        this.runtimeUrl = options.runtimeUrl || 'http://127.0.0.1:6000';
-        this.mode = options.mode === 'plan' ? 'plan' : 'build';
-        this.driver = options.driver || new OpenCodeDriver({
-            projectRoot: this.projectRoot, extensionDir: options.extensionDir || null,
-        });
-        this._stopped = false;
-        this._pending = [];   // [{perm, sessionId, resolve}]
-        this._lastRun = null; // {sessionId, messageIDs, before, after}
-        this._permListener = null;
-        // P8 sandbox: active level (UI badge), policy lists, run watchdog.
-        this.sandboxState = null;
-        this._sandboxExtra = { allow: [], block: [] };
-        this._runTimer = null;
-        this._finished = false;
-        this._sandboxDenyReason = null;
-        this._sandboxDenyCommand = null;
-        this._sandboxAllowReason = null;
-        this._sandboxAllowCommand = null;
+        this._server = opts.server || null;
+        // Gate: async () => cfg, throws localized errors (policy/key/license).
+        // A plain object means "no gate" (tests / direct use).
+        this._provider = opts.provider || null;
+        this._projectRoot = opts.projectRoot || null;
+        this._mode = opts.mode === 'plan' ? 'plan' : 'build';
+        this._onEvent = typeof opts.onEvent === 'function' ? opts.onEvent : null;
+        this._pollMs = Number(opts.pollMs) > 0 ? Number(opts.pollMs) : 900;
+        this._streamTimeoutMs = Number(opts.streamTimeoutMs) > 0
+            ? Number(opts.streamTimeoutMs) : 600000;
+        this._running = false;
+        this._stopRequested = false;
+        this._sessionIds = { build: null, plan: null }; // mode -> session id
+        this._sessionRoots = {}; // session id -> projectRoot at creation
+        this._lastSessionId = null;
+        this._lastMode = this._mode;
+        this._pending = new Map(); // reqId -> { sessionId, request }
+        this._decided = []; // outcomes of this/last run (for continueAfterApproval)
+        this._pollTimer = null;
+        this._pollFails = 0;
     }
 
+    // -- configuration ------------------------------------------------------
+    setServer(srv) { this._server = srv || null; }
+    setProjectRoot(p) { this._projectRoot = p || null; }
     setMode(m) {
-        if (m === 'plan' || m === 'build') this.mode = m;
+        if (m === 'plan') this._mode = 'plan';
+        else if (m === 'build' || m === 'agent') this._mode = 'build';
+    }
+    get mode() { return this._mode; }
+    isRunning() { return this._running; }
+    lastSessionId() { return this._lastSessionId; }
+
+    _serverReady() {
+        return !!(this._server && this._server.started && this._server.port);
     }
 
-    // -- P2 model-call paths (kept) -------------------------------------------
-    _http() { return require('axios'); }
-
-    async query(prompt, systemContext = '', options = {}) {
-        const max_tokens  = options.max_tokens  || 1024;
-        const temperature = options.temperature || 0.1;
-        // P2-a: cloud provider routing (shared selector). Local path below unchanged.
-        try {
-            const _svc = getAIProviderService();
-            if (_svc.getActive().type !== 'local') {
-                const _msgs = [];
-                if (systemContext) _msgs.push({ role: 'system', content: 'CONTEXT:\n' + systemContext });
-                _msgs.push({ role: 'user', content: prompt.trim() });
-                const _r = await _svc.complete({ messages: _msgs, max_tokens, temperature, purpose: 'agent' });
-                return { ok: true, reply: _r.reply, model: _r.model, mock: false, provider: _r.provider, masked: _r.masked };
-            }
-        } catch (_e) { return { ok: false, error: _e.message, reply: null }; }
-        const fullPrompt = (systemContext ? 'CONTEXT:\n' + systemContext + '\n\n' : '') +
-            'User: ' + prompt.trim() + '\nAssistant:';
-        const payload = { message: fullPrompt, prompt: fullPrompt, input: fullPrompt, max_tokens, temperature };
-        try {
-            const r = await this._http().post(`${this.runtimeUrl}/infer`, payload, { timeout: AI_TIMEOUT_MS });
-            const reply = r.data.reply || r.data.response || '';
-            const mock  = r.data.mock === true;
-            return { ok: true, reply, model: r.data.model, mock };
-        } catch (e) {
-            if (e.code === 'ECONNREFUSED') return { ok: false, error: 'Runtime offline', reply: null };
-            if (e.code === 'ECONNABORTED' || (e.message || '').includes('timeout')) {
-                return { ok: false, error: `Timeout after ${AI_TIMEOUT_MS}ms`, reply: null };
-            }
-            if (e.response && e.response.status === 503) {
-                return { ok: false, noModel: true, error: 'NO_MODEL_LOADED', reply: null };
-            }
-            return { ok: false, error: e.message, reply: null };
-        }
+    // -- events ---------------------------------------------------------------
+    _raw(type, obj) {
+        if (!this._onEvent) return;
+        try { this._onEvent(Object.assign({ type }, obj)); } catch (_) {}
+    }
+    _leg(name, data) {
+        // 'error' without listeners throws on EventEmitter: guard it.
+        if (name === 'error' && this.listenerCount('error') === 0) return;
+        try { this.emit(name, data); } catch (_) {}
     }
 
-    async chatQuery(question) {
-        const logs = [];
-        logs.push(`[CHAT] Querying AI: ${question.slice(0, 100)}...`);
-        // P2-a: cloud provider routing (shared selector). Local path below unchanged.
-        try {
-            const _svc = getAIProviderService();
-            if (_svc.getActive().type !== 'local') {
-                const _r = await _svc.complete({ prompt: question, max_tokens: 512, temperature: 0.2, purpose: 'agent' });
-                logs.push(`[CHAT] Cloud response (${(_r.reply || '').length} chars) via ${_r.provider}`);
-                return { ok: true, logs, reply: _r.reply, mock: false, provider: _r.provider };
-            }
-        } catch (_e) { logs.push('[CHAT] ERROR: ' + _e.message); return { ok: false, error: _e.message, logs }; }
-        try {
-            const r = await this._http().post('http://127.0.0.1:6000/infer', {
-                message: question, max_tokens: 512, temperature: 0.2
-            }, { timeout: AI_TIMEOUT_MS });
-            const reply = r.data.reply || r.data.response || '';
-            logs.push(`[CHAT] Response (${reply.length} chars): ${reply.slice(0, 300)}`);
-            return { ok: true, logs, reply, mock: r.data.mock === true };
-        } catch (e) {
-            logs.push(`[CHAT] ERROR: ${e.message}`);
-            return { ok: false, error: e.message, logs };
-        }
+    // Terminal failure: emits error + done (both vocabularies) and returns
+    // the { ok:false } result. Panels show the message; kind 'server' also
+    // offers the Relancer button.
+    _fail(kind, reason, extra = {}) {
+        this._running = false;
+        this._stopPoll();
+        const d = Object.assign({
+            status: 'ECHEC', reason, reply: '', sessionId: this._lastSessionId,
+            filesModified: [], filesRead: [], turns: 0, mode: this._lastMode,
+            noModel: false, kind,
+        }, extra);
+        this._raw('error', { message: reason, kind, sessionId: d.sessionId });
+        this._leg('error', { message: reason, kind, sessionId: d.sessionId });
+        this._raw('done', Object.assign({ ok: false }, d));
+        this._leg('done', d);
+        return Object.assign({ ok: false, error: reason }, d);
     }
 
-    // -- main run ---------------------------------------------------------------
-    async _providerSpec() {
-        const svc = getAIProviderService();
-        const active = svc.getActive();
-        if (!active || active.type === 'local') {
-            // Fast pre-check: runtime + loaded model, else fail in seconds.
-            let model = null;
-            try {
-                const r = await this._http().get(`${this.runtimeUrl}/v1/models`, { timeout: 5000 });
-                const ids = ((r.data && r.data.data) || []).map(m => m.id).filter(Boolean);
-                if (!ids.length) throw new Error('NO_MODEL_LOADED');
-                model = ids[0];
-            } catch (e) {
-                throw new Error(e.message === 'NO_MODEL_LOADED'
-                    ? 'NO_MODEL_LOADED (load a model in Runtime)'
-                    : 'Runtime offline (http://127.0.0.1:6000 unreachable)');
-            }
-            return { providerType: 'local', baseUrl: RUNTIME_BASE_URL, model, providerID: 'openai', modelID: model };
+    // -- runs -----------------------------------------------------------------
+    // options: { prompt, mode ('build'|'plan'), resumeSessionId, title }.
+    // Returns { ok, status, reason, reply, sessionId, filesModified,
+    //           filesRead, turns, mode, noModel, kind? }.
+    async run(opts = {}) {
+        const prompt = opts.prompt;
+        if (typeof prompt !== 'string' || !prompt.trim()) {
+            return this._fail('error', 'Prompt vide.');
         }
-        const chk = svc.checkCloudAllowed(active);
-        if (!chk.ok) throw new Error(chk.error);
-        let key = null;
-        try { key = await getSecretsStore().get('sudoAi.provider.' + active.id); } catch (_) { key = null; }
-        if (!key) throw new Error('no API key in SecretStorage for provider ' + active.name);
-        return { providerType: 'cloud', baseUrl: active.baseUrl.replace(/\/+$/, ''),
-            model: active.model, apiKey: key, providerID: 'sudo-cloud', modelID: active.model };
-    }
-
-    async run(task, opts = {}) {
-        const prompt = typeof task === 'string' ? task : (task.prompt || '');
-        const mode = opts.mode || (typeof task === 'object' && task.mode) || this.mode || 'build';
-        this._stopped = false;
-        this._pending = [];
-        this._lastRun = null;
-        this._finished = false;
-        this._emit('step', { phase: 'start', message: `Sudo Agent (OpenCode) started - mode=${mode}` });
-        if (!prompt.trim()) return this._finish(STATUS.FAIL, 'empty task', [], null);
-        if (!this.projectRoot || !fs.existsSync(this.projectRoot)) {
-            return this._finish(STATUS.FAIL, 'no project folder open (open a folder first)', [], null);
+        if (this._running) {
+            return this._fail('busy', 'Une tache agent est deja en cours. ' +
+                'Attendez sa fin ou arretez-la avant d\'en lancer une autre.');
         }
-        let spec;
-        try {
-            spec = await this._providerSpec();
-        } catch (e) {
-            return this._finish(STATUS.FAIL, e.message, [], null);
+        const mode = opts.mode === 'plan' ? 'plan'
+            : (opts.mode === 'build' ? 'build' : this._mode);
+        const serverMode = mode; // server modes are build|plan (P26-a)
+        if (!this._serverReady()) {
+            return this._fail('server', SERVER_OFFLINE);
         }
-        try {
-            // P8: sandbox level requested by the UI (auto/l1/l2) + policy lists.
-            spec.sandbox = {
-                mode: opts.sandboxMode === 'l1' || opts.sandboxMode === 'l2'
-                    ? opts.sandboxMode : 'auto',
-            };
-            if (opts.localOnly !== undefined) spec.sandbox.localOnly = !!opts.localOnly;
-            this._sandboxExtra = this._loadSandboxLists();
-            await this.driver.start(spec);
-        } catch (e) {
-            return this._finish(STATUS.FAIL, 'agent server: ' + e.message, [], null);
-        }
-        // P8: report the REAL active level to the UI badge (never faked).
-        try {
-            this.sandboxState = this.driver.getSandboxState();
-            this._emit('sandbox', Object.assign({ requested: spec.sandbox.mode }, this.sandboxState));
-        } catch (_) { /* stub drivers in tests may lack getSandboxState */ }
-        // P8: run-level watchdog (delai maximal). The timer promise rejects
-        // the postMessage race below, so a hung model call cannot wedge run().
-        // Unref'd so tests and idle hosts never hang; noop-caught so a timer
-        // firing before the race attaches is still a handled rejection.
-        const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs)
-            : sandbox.RUN_TIMEOUT_DEFAULT_MS;
-        const runT0 = Date.now();
-        let timedOut = false;
-        this._clearRunTimer();
-        const runTimer = new Promise((_, reject) => {
-            this._runTimer = setTimeout(() => {
-                timedOut = true;
-                reject(this._timeoutRun(timeoutMs));
-            }, timeoutMs);
-            if (this._runTimer && typeof this._runTimer.unref === 'function') {
-                this._runTimer.unref();
-            }
-        });
-        runTimer.catch(() => {});
-        const before = snapshotFiles(this.projectRoot);
-        let session;
-        try {
-            session = await this.driver.createSession(prompt.slice(0, 80));
-        } catch (e) {
-            return this._finish(STATUS.FAIL, 'session: ' + e.message, [], null);
-        }
-        const sid = session.id;
-        const agentsMd = readAgentsMd(this.projectRoot);
-        const system = (agentsMd ? agentsMd + '\n\n' : '') +
-            (mode === 'plan' ? 'READ-ONLY MODE: analyze and propose, do not modify anything.' : '');
-        const userMid = 'usr_' + crypto.randomBytes(8).toString('hex');
-        const body = {
-            messageID: userMid,
-            model: { providerID: spec.providerID, modelID: spec.modelID },
-            agent: mode === 'plan' ? 'plan' : 'build',
-            system,
-            parts: [{ type: 'text', text: prompt }],
-        };
-        if (mode === 'plan') {
-            body.tools = { write: false, edit: false, apply_patch: false, bash: false, task: false };
-        }
-        this._permListener = (perm) => this._onPermission(sid, perm).catch((e) => {
-            this._emit('error', { message: 'permission flow: ' + e.message });
-        });
-        this.driver.on('permission', this._permListener);
-        this.driver.on('bus', this._onBus.bind(this));
-        this.driver.startEvents();
-        let resp;
-        try {
-            resp = await Promise.race([this.driver.postMessage(sid, body), runTimer]);
-        } catch (e) {
-            this._cleanupEvents();
-            if (timedOut) return this._finish(STATUS.FAIL, e.message, [], sid);
-            if (this._stopped) return this._finish(STATUS.FAIL, 'stopped by user', [], sid);
-            return this._finish(STATUS.FAIL, 'model connection: ' + e.message, [], sid);
-        }
-        this._auditToolParts(resp, Date.now() - runT0);
-        this._cleanupEvents();
-        const after = snapshotFiles(this.projectRoot);
-        const files = diffSnapshots(before, after);
-        const flat = [...files.added, ...files.modified, ...files.deleted];
-        this._lastRun = { sessionId: sid, messageIDs: [userMid, resp && resp.info && resp.info.id].filter(Boolean),
-            before, after };
-        // -- honest verdict --
-        const info = (resp && resp.info) || {};
-        const parts = (resp && resp.parts) || [];
-        const toolErrors = parts.filter(p => p && p.type === 'tool' && p.state && p.state.status === 'error');
-        // P4-d/c: assistant text for the conversation UI (additive; verdict logic unchanged).
-        const reply = parts
-            .filter(p => p && p.type === 'text' && typeof p.text === 'string')
-            .map(p => p.text).join('\n').slice(0, 20000);
-        if (info.error) {
-            const em = (info.error && (info.error.data || info.error.message)) || info.error;
-            return this._finish(STATUS.FAIL, 'model error: ' + JSON.stringify(em).slice(0, 300), flat, sid, reply);
-        }
-        const finishReason = parts.filter(p => p && p.type === 'step-finish').map(p => p.reason).join(',');
-        if (toolErrors.length) {
-            const first = toolErrors[0].state && toolErrors[0].state.error;
-            const reason = `${toolErrors.length} tool error(s); first: ${String(first).slice(0, 200)}`;
-            if (!flat.length) return this._finish(STATUS.FAIL, reason, flat, sid, reply);
-            return this._finish(STATUS.PARTIAL, reason + ` | step-finish: ${finishReason || '?'}`, flat, sid, reply);
-        }
-        if (mode === 'plan' && flat.length) {
-            return this._finish(STATUS.PARTIAL, 'plan mode modified files (should be read-only)', flat, sid, reply);
-        }
-        return this._finish(STATUS.DONE,
-            `finished (${parts.length} parts${finishReason ? ', ' + finishReason : ''})`, flat, sid, reply);
-    }
-
-    _finish(status, reason, filesModified, sessionId, reply = '') {
-        if (this._finished) return { status, reason, filesModified, sessionId };
-        this._finished = true;
-        this._clearRunTimer();
-        const summary = { status, reason, reply, filesModified, sessionId, mode: this.mode,
-            at: new Date().toISOString() };
-        this._emit('done', summary);
-        return summary;
-    }
-
-    _onBus(ev) {
-        if (!ev) return;
-        if (ev.type === 'message.updated' && ev.properties && ev.properties.info) {
-            const info = ev.properties.info;
-            this._emit('step', { phase: 'message', message: `${info.role} message ${info.id}` });
-        }
-    }
-
-    // -- P8 sandbox helpers -------------------------------------------------------
-    _loadSandboxLists() {
-        try {
-            const file = path.join(getCentralDir(), 'central_policies.json');
-            const raw = fs.readFileSync(file, 'utf8');
-            return sandbox.coerceLists(JSON.parse(raw));
-        } catch (_) {
-            return { allow: [], block: [] };
-        }
-    }
-
-    _clearRunTimer() {
-        if (this._runTimer) {
-            try { clearTimeout(this._runTimer); } catch (_) {}
-            this._runTimer = null;
-        }
-    }
-
-    _timeoutRun(timeoutMs) {
-        this._runTimer = null;
-        this._stopped = true;
-        this._emit('step', { phase: 'timeout', message: 'delai maximal depasse, arret du run' });
-        sandbox.auditTimeout({ afterMs: timeoutMs });
-        for (const p of this._pending.splice(0)) {
-            try { p.resolve(); } catch (_) {}
-            try { this.driver.replyPermission(p.sessionId, p.perm.id, 'reject').catch(() => {}); }
-            catch (_) {}
-        }
-        try { this._cleanupEvents(); } catch (_) {}
-        try {
-            const r = this.driver.stop();
-            if (r && typeof r.catch === 'function') r.catch(() => {});
-        } catch (_) {}
-        return new Error('delai maximal depasse (' + Math.round(timeoutMs / 1000) + 's)');
-    }
-
-    _auditToolParts(resp, runElapsedMs) {
-        try {
-            const parts = (resp && resp.parts) || [];
-            for (const p of parts) {
-                if (!p || p.type !== 'tool') continue;
-                const ex = sandbox.extractToolExec(p);
-                sandbox.auditExec({ tool: ex.tool, command: ex.command, status: ex.status,
-                    exitCode: ex.exitCode, timeMs: ex.timeMs, observedAtMs: runElapsedMs });
-            }
-        } catch (_) { /* audit never breaks the run */ }
-    }
-
-    _isCommandPerm(perm) {
-        const t = String((perm && perm.type) || '');
-        if (t === 'bash' || t === 'shell' || t === 'execute' || t === 'exec' ||
-            t === 'command' || t === 'run') return true;
-        const fileish = ['edit', 'write', 'read', 'glob', 'grep', 'apply_patch', 'task',
-            'webfetch', 'websearch', 'external_directory', 'todowrite', 'todoread', 'create'];
-        if (fileish.indexOf(t) !== -1) return false;
-        // Unknown tool carrying a command-looking pattern: inspect, ask by default.
-        return sandbox.extractCommand(perm) !== '';
-    }
-
-    // -- permissions --------------------------------------------------------------
-    _projectAllows() {
-        const all = loadAllows();
-        return all[projectKey(this.projectRoot)] || [];
-    }
-
-    _evaluatePermission(perm) {
-        if (!perm) return null;
-        // "Always in this project": driver-side allowlist (global storage, never the project).
-        const allows = this._projectAllows();
-        const pat = Array.isArray(perm.pattern) ? perm.pattern.join(',') : (perm.pattern || '');
-        if (allows.some(a => a.tool === perm.type && (a.pattern || '') === pat)) return 'once';
-        // Writes outside the project: always refused.
-        if (perm.type === 'external_directory') return 'deny';
-        // P8: symlink-aware containment for file tools (legacy check kept below).
-        if (perm.type === 'edit' || perm.type === 'write' || perm.type === 'apply_patch' ||
-            perm.type === 'create') {
-            const v = sandbox.evaluateEdit(extractPaths(perm), { projectRoot: this.projectRoot });
-            if (v.verdict === 'deny') {
-                this._sandboxDenyReason = v.reason;
-                return 'deny';
+        this._running = true;
+        this._stopRequested = false;
+        this._lastMode = mode;
+        this._decided = [];
+        if (typeof this._provider === 'function') {
+            try { await this._provider(); }
+            catch (e) {
+                const m = mapGateError(e);
+                return this._fail(m.kind, m.reason, { noModel: !!m.noModel, mode });
             }
         }
-        if (perm.type === 'edit') {
-            for (const p of extractPaths(perm)) {
-                if (!isPathInside(this.projectRoot, p)) return 'deny';
-            }
+        // Session: resume when asked and compatible, else reuse the cached
+        // per-mode session when the project matches, else create.
+        let sid = opts.resumeSessionId || null;
+        const cached = this._sessionIds[mode] || null;
+        if (!sid && cached && this._sessionRoots[cached] === (this._projectRoot || null)) {
+            sid = cached;
         }
-        // P8: command allow/block lists + danger patterns for shell tools.
-        if (this._isCommandPerm(perm)) {
-            const cmd = sandbox.extractCommand(perm);
-            const v = sandbox.evaluateBash(cmd, { projectRoot: this.projectRoot,
-                extraAllow: this._sandboxExtra.allow, extraBlock: this._sandboxExtra.block });
-            if (v.verdict === 'deny') {
-                this._sandboxDenyReason = v.reason;
-                this._sandboxDenyCommand = cmd;
-                return 'deny';
-            }
-            if (v.verdict === 'allow') {
-                this._sandboxAllowReason = v.reason;
-                this._sandboxAllowCommand = cmd;
-                return 'once';
-            }
-        }
-        return null; // ask the user
-    }
-
-    async _onPermission(sessionId, perm) {
-        const auto = this._evaluatePermission(perm);
-        if (auto === 'deny') {
-            await this.driver.replyPermission(sessionId, perm.id, 'reject');
-            const reason = this._sandboxDenyReason || 'outside project';
-            this._sandboxDenyReason = null;
-            this._emit('step', { phase: 'permission', message: `auto-denied ${perm.type} (${reason})` });
-            sandbox.auditPerm({ tool: perm.type, verdict: 'deny', reason,
-                command: this._sandboxDenyCommand || '' });
-            this._sandboxDenyCommand = null;
-            return;
-        }
-        if (auto === 'once') {
-            await this.driver.replyPermission(sessionId, perm.id, 'once');
-            const why = this._sandboxAllowReason;
-            this._sandboxAllowReason = null;
-            this._emit('step', { phase: 'permission',
-                message: why ? `auto-allowed ${perm.type} (${why})`
-                    : `auto-allowed ${perm.type} (project rule)` });
-            if (why) {
-                sandbox.auditPerm({ tool: perm.type, verdict: 'allow', reason: why,
-                    command: this._sandboxAllowCommand || '' });
-            }
-            this._sandboxAllowCommand = null;
-            return;
-        }
-        await new Promise((resolve) => {
-            this._pending.push({ perm, sessionId, resolve });
-            this._emit('approval_needed', {
-                id: perm.id, action: perm.type, title: perm.title || perm.type,
-                description: JSON.stringify({ pattern: perm.pattern || null,
-                    metadata: perm.metadata || null }).slice(0, 500),
-            });
-        });
-    }
-
-    async resolveApproval(resp) {
-        const next = this._pending.shift();
-        if (!next) return { ok: false, error: 'no pending approval' };
-        let opencode = 'reject';
-        if (resp === true || resp === 'once') opencode = 'once';
-        else if (resp === 'session' || resp === 'always') opencode = 'always';
-        else if (resp === 'project') {
-            opencode = 'once';
-            try {
-                const all = loadAllows();
-                const k = projectKey(this.projectRoot);
-                all[k] = all[k] || [];
-                const pat = Array.isArray(next.perm.pattern) ? next.perm.pattern.join(',') : (next.perm.pattern || '');
-                if (!all[k].some(a => a.tool === next.perm.type && (a.pattern || '') === pat)) {
-                    all[k].push({ tool: next.perm.type, pattern: pat });
-                    fs.writeFileSync(allowsPath(), JSON.stringify(all, null, 2));
+        try {
+            if (!sid) {
+                const r = await this._server.request('/sessions', {
+                    method: 'POST', timeoutMs: 15000,
+                    body: { title: opts.title || (mode === 'plan' ? 'Chat' : 'Agent'),
+                        projectRoot: this._projectRoot },
+                });
+                if (r.status !== 201 || !r.body || !r.body.id) {
+                    const e = new Error((r.body && r.body.error) || ('HTTP ' + r.status));
+                    e.status = r.status;
+                    throw e;
                 }
-            } catch (_) { /* allowlist is best-effort */ }
-        }
-        try {
-            await this.driver.replyPermission(next.sessionId, next.perm.id, opencode);
-        } finally {
-            next.resolve();
-        }
-        // P8: user decisions are audited like automatic ones (actor=user).
-        sandbox.auditPerm({ tool: next.perm.type,
-            verdict: opencode === 'reject' ? 'deny' : 'allow',
-            reason: 'decision utilisateur (' + opencode + ')',
-            command: this._isCommandPerm(next.perm) ? sandbox.extractCommand(next.perm) : '',
-            actor: 'user' });
-        return { ok: true, response: opencode };
-    }
-
-    // -- undo -----------------------------------------------------------------------
-    async undoLastRun() {
-        const run = this._lastRun;
-        if (!run) return { ok: false, error: 'no run to undo' };
-        try {
-            for (const mid of [...run.messageIDs].reverse()) {
-                await this.driver.revertMessage(run.sessionId, mid);
+                sid = r.body.id;
+                this._sessionIds[mode] = sid;
+                this._sessionRoots[sid] = this._projectRoot || null;
+            }
+            this._lastSessionId = sid;
+            this._sessionIds[mode] = sid; // explicit resume becomes current
+            this._sessionRoots[sid] = this._projectRoot || null;
+            const m = await this._server.request('/sessions/' + sid + '/mode', {
+                method: 'POST', timeoutMs: 15000, body: { mode: serverMode },
+            });
+            if (m.status !== 200) {
+                const e = new Error((m.body && m.body.error) || ('HTTP ' + m.status));
+                e.status = m.status;
+                throw e;
             }
         } catch (e) {
-            return { ok: false, error: 'revert failed: ' + e.message };
+            const mapped = mapServerError(e, false);
+            return this._fail(mapped.kind, mapped.reason,
+                { noModel: !!mapped.noModel, mode });
         }
-        const now = snapshotFiles(this.projectRoot);
-        const restored = diffSnapshots(now, run.after);
-        const files = [...restored.added, ...restored.modified, ...restored.deleted];
-        this._lastRun = null;
-        return { ok: true, restored: files };
-    }
-
-    stop() {
-        this._stopped = true;
-        this._clearRunTimer();
-        for (const p of this._pending.splice(0)) {
-            try { p.resolve(); } catch (_) {}
-            this.driver.replyPermission(p.sessionId, p.perm.id, 'reject').catch(() => {});
-        }
-        this._cleanupEvents();
-        return this.driver.stop();
-    }
-
-    _cleanupEvents() {
+        // Stream the turn.
+        this._raw('turn', { phase: 'start', sessionId: sid, mode });
+        this._leg('step', { phase: 'start', message: 'Tour en cours...' });
+        let fullText = '';
+        let doneText = null;
+        this._startPoll(sid);
+        let turnDone = null;
         try {
-            if (this._permListener) this.driver.removeListener('permission', this._permListener);
-            this.driver.removeAllListeners('bus');
+            turnDone = await this._server.stream('/sessions/' + sid + '/messages',
+                { prompt }, (type, obj) => this._onSse(sid, type, obj, (t) => { fullText += t; }),
+                { timeoutMs: this._streamTimeoutMs });
+            if (turnDone && typeof turnDone.text === 'string') doneText = turnDone.text;
+        } catch (e) {
+            const mapped = mapServerError(e, this._stopRequested);
+            try { await this._pollOnce(sid); } catch (_) {}
+            return this._fail(mapped.kind, mapped.reason,
+                { noModel: !!mapped.noModel, sessionId: sid, mode });
+        }
+        try { await this._pollOnce(sid); } catch (_) {}
+        this._stopPoll();
+        this._running = false;
+        const filesModified = (turnDone && Array.isArray(turnDone.filesModified))
+            ? turnDone.filesModified : [];
+        let filesRead = [];
+        try {
+            const g = await this._server.request('/sessions/' + sid, { timeoutMs: 15000 });
+            const rf = g && g.body && g.body.meta && g.body.meta.readFiles;
+            if (Array.isArray(rf)) filesRead = rf.slice();
         } catch (_) {}
-        try { this.driver.stopEvents(); } catch (_) {}
-        this._permListener = null;
+        const ok = !!(turnDone && turnDone.status === 'TERMINE');
+        const d = { status: (turnDone && turnDone.status) || 'PARTIEL',
+            reason: (turnDone && turnDone.reason) || '', reply: doneText != null ? doneText : fullText,
+            sessionId: sid, filesModified, filesRead, turns: 1, mode,
+            unresolved: (turnDone && turnDone.unresolvedErrors) || [] };
+        this._raw('turn', { phase: 'end', sessionId: sid, mode, status: d.status });
+        this._leg('step', { phase: 'end',
+            message: ok ? 'Termine.' : ('Termine : ' + (d.reason || 'partiel') + '.') });
+        this._raw('done', Object.assign({ ok }, d));
+        this._leg('done', d);
+        return Object.assign({ ok }, d);
     }
 
-    _emit(event, data) {
-        this.emit(event, data);
+    // Legacy alias: single agent run. systemContext (project brief, files)
+    // is prepended to the prompt.
+    async query(prompt, systemContext = '', options = {}) {
+        const head = (typeof systemContext === 'string' && systemContext)
+            ? systemContext + '\n' : '';
+        return this.run({ prompt: head + prompt, mode: options.mode || 'build',
+            resumeSessionId: options.resumeSessionId, title: options.title });
+    }
+
+    // Read-only question: plan mode on the shared chat session. Returns
+    // { ok, reply, sessionId, filesRead, ... } (panel contract P5).
+    async chatQuery(prompt, opts = {}) {
+        const r = await this.run({ prompt, mode: 'plan',
+            resumeSessionId: this._sessionIds.plan || undefined,
+            title: opts.title || 'Chat' });
+        // Keep the { ok, reply, error } shape panels expect.
+        if (!r.ok && !r.error) r.error = r.reason;
+        return r;
+    }
+
+    _onSse(sid, type, obj, addText) {
+        const o = obj || {};
+        if (type === 'message.delta' && typeof o.text === 'string') {
+            addText(o.text);
+            this._raw('delta', { text: o.text, sessionId: sid });
+            this._leg('delta', { text: o.text });
+        } else if (type === 'message.done' && typeof o.text === 'string') {
+            this._raw('delta', { text: '', done: true, sessionId: sid });
+        } else if (type === 'tool.start') {
+            const d = { phase: 'start', tool: o.tool || '?', callId: o.callId || '',
+                atime: Date.now() };
+            this._raw('tool', Object.assign({ sessionId: sid }, d));
+            this._leg('tool', d);
+            this._leg('step', { phase: 'tool', message: 'Outil : ' + d.tool });
+        } else if (type === 'tool.result') {
+            const d = { phase: 'end', tool: o.tool || '?', callId: o.callId || '',
+                status: o.ok ? 'ok' : 'error', code: o.code || '',
+                summary: shortText(o.summary || '', 300), atime: Date.now() };
+            this._raw('tool', Object.assign({ sessionId: sid }, d));
+            this._leg('tool', d);
+        } else if (type === 'turn.start') {
+            this._raw('turn', { phase: 'turn-start', sessionId: sid, turnId: o.turnId || '' });
+        }
+        // turn.done resolves stream(); turn.error rejects it (both handled
+        // by the caller). Nothing else to do here.
+    }
+
+    // -- approvals (poll-based: the loop never blocks, requests land in --
+    // -- the server pending map; allow-decisions execute server-side) -------
+    _startPoll(sid) {
+        this._stopPoll();
+        this._pollFails = 0;
+        const tick = async () => {
+            this._pollTimer = null;
+            if (!this._running) return;
+            try { await this._pollOnce(sid); this._pollFails = 0; }
+            catch (_) {
+                this._pollFails += 1;
+                if (this._pollFails >= 5) return; // stream will fail anyway
+            }
+            if (this._running) {
+                this._pollTimer = setTimeout(tick, this._pollMs);
+                if (this._pollTimer && typeof this._pollTimer.unref === 'function') {
+                    try { this._pollTimer.unref(); } catch (_) {}
+                }
+            }
+        };
+        this._pollTimer = setTimeout(tick, this._pollMs);
+        if (this._pollTimer && typeof this._pollTimer.unref === 'function') {
+            try { this._pollTimer.unref(); } catch (_) {}
+        }
+    }
+    _stopPoll() {
+        if (this._pollTimer) { try { clearTimeout(this._pollTimer); } catch (_) {} }
+        this._pollTimer = null;
+    }
+    async _pollOnce(sid) {
+        if (!this._serverReady()) return;
+        const r = await this._server.request('/sessions/' + sid + '/approvals',
+            { timeoutMs: 10000 });
+        if (r.status !== 200 || !r.body || !Array.isArray(r.body.pending)) return;
+        for (const req of r.body.pending) {
+            if (!req || !req.id || this._pending.has(req.id)) continue;
+            this._pending.set(req.id, { sessionId: sid, request: req });
+            const d = { reqId: req.id, sessionId: sid, tool: req.tool || '?',
+                summary: shortText(req.summary || '', 400),
+                detail: shortText(req.pattern && req.pattern.text ? req.pattern.text : '', 400),
+                diff: typeof req.diff === 'string' ? req.diff.slice(0, 20000) : null,
+                deploy: req.deploy === true,
+                choices: DECISIONS.slice(), atime: Date.now() };
+            this._raw('perm', Object.assign({ phase: 'request' }, d));
+            this._leg('approval_needed', d);
+        }
+    }
+
+    // choice: once|session|project|deny (4 inline choices, P4 contract).
+    // reqId defaults to the oldest pending request.
+    async resolveApproval(choice, reqId = null) {
+        if (DECISIONS.indexOf(choice) === -1) {
+            return { ok: false, error: 'Decision invalide (' + String(choice) + ').' };
+        }
+        let id = reqId;
+        if (!id) {
+            const first = this._pending.keys().next();
+            if (first.done) return { ok: false, error: 'Aucune approbation en attente.' };
+            id = first.value;
+        }
+        const pend = this._pending.get(id);
+        if (!pend) return { ok: false, error: 'Demande inconnue ou expiree.' };
+        if (!this._serverReady()) return { ok: false, error: SERVER_OFFLINE };
+        let r;
+        try {
+            r = await this._server.request('/sessions/' + pend.sessionId + '/approvals',
+                { method: 'POST', timeoutMs: 60000,
+                    body: { requestId: id, decision: choice } });
+        } catch (e) {
+            const mapped = mapServerError(e, false);
+            return { ok: false, error: mapped.reason };
+        }
+        if (!r || (r.status !== 200) || !r.body || r.body.status === undefined && r.body.error) {
+            return { ok: false, error: (r && r.body && r.body.error) || ('HTTP ' + (r && r.status)) };
+        }
+        this._pending.delete(id);
+        const status = (r.body && r.body.status) || 'ok';
+        const outcome = { reqId: id, tool: pend.request.tool || '?',
+            summary: shortText(pend.request.summary || '', 200), decision: choice,
+            status, detail: shortText(
+                (r.body && (r.body.reason || (r.body.call && r.body.call.summary))) || '', 300) };
+        this._decided.push(outcome);
+        this._raw('perm', Object.assign({ phase: 'resolved' }, outcome));
+        this._leg('approval_resolved', outcome);
+        return Object.assign({ ok: true }, outcome);
+    }
+
+    pendingApprovals() {
+        return Array.from(this._pending.keys());
+    }
+
+    // Follow-up turn informing the model of approval outcomes (avoids blind
+    // retries: the model gets each executed/denied result in context).
+    async continueAfterApproval() {
+        if (!this._decided.length) {
+            return { ok: false, error: 'Aucune approbation traitee a poursuivre.' };
+        }
+        const lines = this._decided.map((o) =>
+            '- ' + o.tool + ' (' + o.reqId + ') : decision=' + o.decision +
+            ' statut=' + o.status + (o.detail ? ' : ' + o.detail : ''));
+        this._decided = [];
+        return this.run({ prompt: 'Approbations traitees :\n' + lines.join('\n') +
+            '\nPoursuis la tache en tenant compte de ces resultats.',
+        mode: this._lastMode, resumeSessionId: this._lastSessionId || undefined });
+    }
+
+    // -- stop / undo / sessions -------------------------------------------------
+    async stop() {
+        if (!this._running) return { ok: true, stopped: false };
+        this._stopRequested = true;
+        if (this._serverReady() && this._lastSessionId) {
+            try {
+                await this._server.request('/sessions/' + this._lastSessionId + '/abort',
+                    { method: 'POST', timeoutMs: 10000, body: {} });
+            } catch (_) {}
+        }
+        return { ok: true, stopped: true };
+    }
+
+    async undoLastRun(scope = 'last') {
+        const sid = this._lastSessionId;
+        if (!sid) return { ok: false, error: 'Aucun run agent a annuler.' };
+        if (!this._serverReady()) return { ok: false, error: SERVER_OFFLINE };
+        const sc = scope === 'session' ? 'session' : 'last';
+        let r;
+        try {
+            r = await this._server.request('/sessions/' + sid + '/undo',
+                { method: 'POST', timeoutMs: 60000, body: { scope: sc } });
+        } catch (e) {
+            const mapped = mapServerError(e, false);
+            return { ok: false, error: mapped.reason };
+        }
+        if (!r || r.status !== 200 || !r.body) {
+            return { ok: false, error: (r && r.body && r.body.error) || ('HTTP ' + (r && r.status)) };
+        }
+        return { ok: true, scope: sc, snapshot: r.body.snapshot || null,
+            restored: r.body.restored || [], deleted: r.body.deleted || [],
+            verified: r.body.verified !== false };
+    }
+
+    async listSessions() {
+        if (!this._serverReady()) throw new Error(SERVER_OFFLINE);
+        const r = await this._server.request('/sessions', { timeoutMs: 15000 });
+        if (r.status !== 200 || !r.body || !Array.isArray(r.body.sessions)) {
+            throw new Error((r.body && r.body.error) || ('HTTP ' + r.status));
+        }
+        return r.body.sessions.map((s) => ({ id: s.id, title: s.title || '',
+            projectRoot: s.projectRoot || null, createdAt: s.createdAt || '',
+            updatedAt: s.updatedAt || '', messageCount: s.messageCount || 0 }));
+    }
+
+    async deleteSession(id) {
+        if (!id) throw new Error('Session sans identifiant.');
+        if (!this._serverReady()) throw new Error(SERVER_OFFLINE);
+        const r = await this._server.request('/sessions/' + id,
+            { method: 'DELETE', timeoutMs: 15000 });
+        if (r.status !== 200) {
+            throw new Error((r.body && r.body.error) || ('HTTP ' + r.status));
+        }
+        for (const m of ['build', 'plan']) {
+            if (this._sessionIds[m] === id) this._sessionIds[m] = null;
+        }
+        delete this._sessionRoots[id];
+        if (this._lastSessionId === id) this._lastSessionId = null;
+        return { ok: true, removed: true };
     }
 }
 
-module.exports = {
-    AgentEngine, STATUS,
-    _p3helpers: { snapshotFiles, diffSnapshots, isPathInside, extractPaths, readAgentsMd, projectKey },
-};
+module.exports = { AgentEngine };

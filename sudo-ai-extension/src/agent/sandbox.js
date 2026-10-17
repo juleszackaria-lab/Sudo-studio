@@ -1,17 +1,16 @@
 /**
  * SUDO STUDIO - PROMPT 8: agent sandbox.
  *
- * Two levels (never confuse permission prompts with real sandboxing):
- *  - L1 "Mode restreint" (always on): the opencode server is spawned with a
- *    filtered environment (no secrets), a restricted token attempt + Job
+ * Levels (never confuse permission prompts with real sandboxing):
+ *  - L1 "Mode restreint" (always on): the sudo-agent server is spawned with
+ *    a filtered environment (no secrets), a restricted token attempt + Job
  *    Object on Windows (children die with the job), a process group on POSIX
- *    (tree kill on stop), an outbound-firewall attempt when local-only, and
- *    a run-level watchdog. Command allow/block lists + path containment are
- *    enforced at the permission layer (defence in depth, NOT called sandbox).
- *  - L2 "Sandbox isolee" (only when really available): docker container or
- *    Windows Sandbox (WSB) with the project folder as the only RW mount.
- *    When unavailable the UI reports "Sandbox isolee indisponible sur ce
- *    poste (<raison>)".
+ *    (tree kill on stop), and a run-level watchdog. Command allow/block
+ *    lists + path containment are enforced at the permission layer (defence
+ *    in depth, NOT called sandbox).
+ *  - L2 "Sandbox isolee": REMOVED with the former third-party server (P27).
+ *    Only L2 *detection* (detectL2/pickL2) remains, so the UI can report an
+ *    honest unavailability reason. The active level is always L1.
  *
  * Every audit entry goes through the shared audit log (SANDBOX_* actions).
  * This module is pure Node (no vscode dependency) so the P8 suite can load
@@ -57,18 +56,6 @@ function filterSpawnEnv(input) {
     }
     stripped.sort();
     return { env, stripped };
-}
-
-// Protocol subset forwarded into L2 guests (docker -e / WSB env.json).
-// Everything else (parent PATH, user vars, ...) stays on the host.
-function pickContainerEnv(spawnEnv) {
-    const out = {};
-    const src = spawnEnv || {};
-    for (const k of Object.keys(src)) {
-        if (k === 'HOME' || k === 'USERPROFILE') continue; // set explicitly per guest
-        if (k.indexOf('OPENCODE_') === 0 || k.indexOf('npm_config_') === 0) out[k] = src[k];
-    }
-    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -482,89 +469,10 @@ function pickL2(det) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Level-2 guest builders (pure: return commands / file contents)
+// 4. Level-2 guest builders: REMOVED with the former server (P27).
+// The docker/WSB/firewall/wrapper builders launched the deleted server and are gone.
+// L2 *detection* (detectL2/pickL2) stays: it feeds the honest unavailability reason.
 // ---------------------------------------------------------------------------
-function buildDockerSpawn(o = {}) {
-    const image = o.image || DEFAULT_IMAGE;
-    const root = o.projectRoot || '';
-    const port = Number(o.port) || 0;
-    const name = o.name || ('sudo-studio-' + Date.now());
-    const args = ['run', '--rm', '--name', name,
-        '-v', root + ':/work:rw', '-w', '/work',
-        '-p', '127.0.0.1:' + port + ':' + port];
-    if (o.localOnly !== false) args.push('--network', 'none');
-    const pairs = o.envPairs || [];
-    for (const [k, v] of pairs) args.push('-e', k + '=' + v);
-    args.push('-e', 'HOME=/work');
-    args.push(image, 'opencode', 'serve', '--pure',
-        '--port', String(port), '--hostname', '0.0.0.0');
-    return { bin: 'docker', args, name, port };
-}
-
-function xmlEsc(s) {
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// WSB bundle: the project is the ONLY read-write mapping (Y:\proj).
-// Tools (opencode binary) and generated files are read-only (X:\oc, X:\gen).
-// Networking stays Default (the host must reach the guest HTTP server);
-// egress is restricted by an in-guest firewall rule when localOnly.
-function buildWsbBundle(o = {}) {
-    const projectRoot = o.projectRoot || '';
-    const ocDir = o.ocDir || '';
-    const genDir = o.genDir || '';
-    const port = Number(o.port) || 0;
-    const wsbXml = '<Configuration>\r\n' +
-        '<vGPU>Disable</vGPU>\r\n' +
-        '<Networking>Default</Networking>\r\n' +
-        '<MappedFolders>\r\n' +
-        '  <MappedFolder>\r\n' +
-        '    <HostFolder>' + xmlEsc(projectRoot) + '</HostFolder>\r\n' +
-        '    <SandboxFolder>Y:\\proj</SandboxFolder>\r\n' +
-        '    <ReadOnly>false</ReadOnly>\r\n' +
-        '  </MappedFolder>\r\n' +
-        '  <MappedFolder>\r\n' +
-        '    <HostFolder>' + xmlEsc(ocDir) + '</HostFolder>\r\n' +
-        '    <SandboxFolder>X:\\oc</SandboxFolder>\r\n' +
-        '    <ReadOnly>true</ReadOnly>\r\n' +
-        '  </MappedFolder>\r\n' +
-        '  <MappedFolder>\r\n' +
-        '    <HostFolder>' + xmlEsc(genDir) + '</HostFolder>\r\n' +
-        '    <SandboxFolder>X:\\gen</SandboxFolder>\r\n' +
-        '    <ReadOnly>true</ReadOnly>\r\n' +
-        '  </MappedFolder>\r\n' +
-        '</MappedFolders>\r\n' +
-        '<LogonCommand>\r\n' +
-        '  <Command>powershell -NoProfile -ExecutionPolicy Bypass -File X:\\gen\\bootstrap.ps1</Command>\r\n' +
-        '</LogonCommand>\r\n' +
-        '</Configuration>\r\n';
-    const lines = [
-        "$ErrorActionPreference = 'Continue'",
-        "$gen = 'X:\\gen'; $oc = 'X:\\oc\\opencode.exe'; $proj = 'Y:\\proj'",
-        "$oh = Join-Path $env:TEMP 'oc-home'",
-        "try { New-Item -ItemType Directory -Force -Path $oh | Out-Null } catch {}",
-        "$env:HOME = $oh; $env:USERPROFILE = $oh",
-        "$cfg = Get-Content ($gen + '\\env.json') -Raw | ConvertFrom-Json",
-        "foreach ($p in $cfg.env.PSObject.Properties) { [Environment]::SetEnvironmentVariable($p.Name, [string]$p.Value, 'Process') }",
-        "$fw = 'not-applicable'",
-        "if ($cfg.localOnly -eq $true) {",
-        "  $fw = 'open'",
-        "  try {",
-        "    $gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | Select-Object -First 1).NextHop",
-        "    New-NetFirewallRule -DisplayName 'SudoStudio oc' -Program $oc -Direction Outbound -Action Block -ErrorAction Stop | Out-Null",
-        "    if ($gw) { New-NetFirewallRule -DisplayName 'SudoStudio oc host' -Program $oc -Direction Outbound -Action Allow -RemoteAddress ([string]$gw) -ErrorAction Stop | Out-Null }",
-        "    $fw = 'blocked'",
-        "  } catch { $fw = 'open' }",
-        "}",
-        "$ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress)",
-        "Start-Process -FilePath $oc -ArgumentList @('serve','--pure','--port',[string]$cfg.port,'--hostname','0.0.0.0') -WorkingDirectory $proj -WindowStyle Hidden",
-        "($ips -join \"`n\") | Out-File -FilePath ($proj + '\\.sudo-sandbox-ip') -Encoding ascii -Force",
-        "$fw | Out-File -FilePath ($proj + '\\.sudo-sandbox-net') -Encoding ascii -Force",
-    ];
-    void port;
-    return { wsbXml, bootstrapPs1: lines.join('\r\n') + '\r\n' };
-}
 
 // ---------------------------------------------------------------------------
 // 5. Windows L1 launcher (Job Object + restricted-token attempt)
@@ -689,23 +597,6 @@ function buildJobLauncherPs1() {
     return L.join('\r\n') + '\r\n';
 }
 
-// Wrapper executed through runas: sets the project cwd (runas does not honour
-// WorkingDirectory) then starts the server. Args are fixed serve flags.
-function cmdQuote(s) {
-    const t = String(s == null ? '' : s);
-    if (/[\s"]/.test(t)) return '"' + t.replace(/"/g, '""') + '"';
-    return t;
-}
-
-function buildOcWrapperCmd(o = {}) {
-    const exe = o.exe || '';
-    const port = Number(o.port) || 0;
-    const workDir = o.workDir || '';
-    return '@echo off\r\n' +
-        'cd /d ' + cmdQuote(workDir) + '\r\n' +
-        cmdQuote(exe) + ' serve --pure --port ' + port + ' --hostname 127.0.0.1\r\n';
-}
-
 // runas /trustlevel probe (cached): supported = exit 0. For admin users the
 // whoami output also verifies the admin SID is gone (verified=true); for
 // standard users the mechanism is applied but not distinguishable.
@@ -732,19 +623,6 @@ function runasProbe(opts = {}) {
     } catch (_) { /* unsupported */ }
     if (!opts.noCache) _detCache[key] = out;
     return out;
-}
-
-// Host outbound-firewall rule for L1 local-only runs (Windows, admin-gated).
-// Loopback bypasses WFP so the local model runtime stays reachable.
-function buildFwAddArgs(bin) {
-    const prog = String(bin || '').replace(/'/g, "''");
-    return ['-NoProfile', '-Command',
-        "New-NetFirewallRule -DisplayName 'SudoStudio oc' -Program '" + prog +
-        "' -Direction Outbound -Action Block"];
-}
-
-function buildFwRemoveArgs() {
-    return ['-NoProfile', '-Command', "Remove-NetFirewallRule -DisplayName 'SudoStudio oc'"];
 }
 
 // ---------------------------------------------------------------------------
@@ -777,7 +655,7 @@ function auditPerm(o = {}) {
     } catch (_) { return false; }
 }
 
-// Defensive extraction of one executed tool call (opencode part shapes vary;
+// Defensive extraction of one executed tool call (part shapes vary;
 // unknown fields stay '?' and are never fabricated).
 function extractToolExec(part) {
     const out = { tool: '?', command: '', status: '?', exitCode: null, timeMs: null };
@@ -839,7 +717,6 @@ module.exports = {
     SECRET_KEY_RE,
     isSecretKey,
     filterSpawnEnv,
-    pickContainerEnv,
     extractCommand,
     extractPathTokens,
     expandKnownVars,
@@ -860,14 +737,8 @@ module.exports = {
     detectDocker,
     detectWsb,
     pickL2,
-    buildDockerSpawn,
-    buildWsbBundle,
     buildJobLauncherPs1,
-    cmdQuote,
-    buildOcWrapperCmd,
     runasProbe,
-    buildFwAddArgs,
-    buildFwRemoveArgs,
     auditPerm,
     auditExec,
     auditTimeout,

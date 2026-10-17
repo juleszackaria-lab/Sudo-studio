@@ -47,7 +47,7 @@ class AgentActivityView {
         'border-radius:3px; padding:0 4px; font-family:inherit; }\n' +
         '</style>\n</head>\n<body>\n' +
         '<h2>Sudo Agent</h2>\n' +
-        '<p>Agent de programmation autonome (moteur OpenCode local). La conversation s&rsquo;ouvre dans un onglet d&rsquo;&eacute;diteur.</p>\n' +
+        '<p>Agent de programmation autonome (serveur agent local). La conversation s&rsquo;ouvre dans un onglet d&rsquo;&eacute;diteur.</p>\n' +
         '<button class="btn" id="openBtn">Ouvrir Sudo Agent</button>\n' +
         '<div class="hint">Raccourci : <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd></div>\n' +
         '<script nonce="' + nonce + '">\n' +

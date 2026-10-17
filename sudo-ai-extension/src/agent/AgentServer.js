@@ -34,7 +34,11 @@ class AgentServer {
     this.provider = opts.provider;
     this.serverPath = opts.serverPath || null;
     this.useNode = opts.useNode;
-    this.nodePath = opts.nodePath || process.execPath;
+    // P27 dev-only runtime: an explicit node, else SUDO_AGENT_NODE, else
+    // 'node' from PATH. (process.execPath is the Electron binary under a
+    // real extension host, NOT node, so it is never a valid default.)
+    this.nodePath = opts.nodePath || process.env.SUDO_AGENT_NODE || 'node';
+    this.lastError = null; // last start failure (for the status bar), cleared on success
     this.extraArgs = Array.isArray(opts.args) ? opts.args.slice() : [];
     this.home = opts.home || null;
     this.logsDir = opts.logsDir || null;
@@ -75,15 +79,25 @@ class AgentServer {
     if (this.startup) return this.startup;
     this.stopped = false;
     this.startup = this._spawnOnce().then(
-      (r) => { this.startup = null; this.attempts = 0; return r; },
+      (r) => { this.startup = null; this.attempts = 0; this.lastError = null; return r; },
       (e) => {
         this.startup = null;
-        try { this.log.error('agent server start failed: ' + String((e && e.message) || e)); } catch (_) {}
+        this.lastError = String((e && e.message) || e);
+        try { this.log.error('agent server start failed: ' + this.lastError); } catch (_) {}
         this._scheduleRestart('start-failed');
         throw e;
       }
     );
     return this.startup;
+  }
+
+  // Observable state for the status bar (P27): ready / starting / error+reason.
+  state() {
+    if (this.started) return { status: 'ready', detail: 'port ' + this.port };
+    if (this.startup) return { status: 'starting', detail: 'attempt #' + (this.attempts + 1) };
+    if (this.stopped) return { status: 'stopped', detail: '' };
+    if (this.lastError) return { status: 'error', detail: this.lastError };
+    return { status: 'starting', detail: 'not started yet' };
   }
 
   _spawnOnce() {
