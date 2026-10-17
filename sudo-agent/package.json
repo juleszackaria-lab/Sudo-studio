@@ -1,0 +1,26 @@
+{
+  "name": "sudo-agent",
+  "version": "1.0.0",
+  "description": "Sudo Agent core server: sessions, streaming agent loop, tool registry, providers. Stdlib only.",
+  "main": "src/server.js",
+  "bin": {
+    "sudo-agent": "src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "build:win": "pkg . --targets node18-win-x64 --output dist/sudo-agent.exe"
+  },
+  "pkg": {
+    "targets": [
+      "node18-win-x64"
+    ],
+    "outputPath": "dist",
+    "scripts": [
+      "src/**/*.js"
+    ]
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "private": true,
+  "license": "UNLICENSED"
+}

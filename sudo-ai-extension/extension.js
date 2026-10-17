@@ -57,6 +57,7 @@ let agentBarItem = null;        // P4: dedicated Sudo Agent button
 let runtimePollTimer = null;    // Polls port 6000 every 5s
 let runtimeProcess = null;      // Child process for auto-started runtime
 let startupProcess = null;      // Child process for start.bat/start.sh
+let agentServer = null;         // P24: supervised sudo-agent core server
 
 /**
  * Extension activation - POINT D'ENTREE PRINCIPAL
@@ -91,6 +92,30 @@ async function activate(ctx) {
                 policies: { edition: 'see license panel' } }));
             extTech.info('extension activated', {});
         } catch (_) { /* journal never breaks activation */ }
+
+        // P24: start the Sudo Agent core server (fire-and-forget, never breaks activation).
+        try {
+            const { AgentServer } = require('./src/agent/AgentServer');
+            let agentLog = console;
+            try {
+                const techLog = require('./src/utils/techLog');
+                agentLog = techLog.createLogger({ component: 'agent' });
+            } catch (_) {}
+            const svc = getAIProviderService();
+            Promise.resolve()
+                .then(() => svc.getServerProviderConfig())
+                .catch((e) => {
+                    try { agentLog.warn('provider fallback to local: ' + String((e && e.message) || e)); } catch (_) {}
+                    return { type: 'local', baseUrl: 'http://127.0.0.1:6000', model: '' };
+                })
+                .then((provider) => {
+                    try {
+                        if (agentServer) { try { agentServer.stop(); } catch (_) {} }
+                        agentServer = AgentServer.launch({ provider, logger: agentLog });
+                    } catch (e) { try { agentLog.error('launch failed: ' + String((e && e.message) || e)); } catch (_) {} }
+                })
+                .catch(() => {});
+        } catch (_) { /* agent server never breaks activation */ }
 
         // Setup event listeners (synchronous)
         setupEventListeners();
@@ -1770,6 +1795,7 @@ function deactivate() {
     if (runtimePollTimer) { clearInterval(runtimePollTimer); runtimePollTimer = null; }
     if (statusBarItem)    { statusBarItem.dispose(); statusBarItem = null; }
     // Kill auto-started processes on extension deactivation
+    if (agentServer)      { try { agentServer.stop(); } catch(e) {} agentServer = null; }
     if (runtimeProcess)   { try { runtimeProcess.kill(); } catch(e) {} runtimeProcess = null; }
     if (startupProcess)   { try { startupProcess.kill(); } catch(e) {} startupProcess = null; }
     console.log('Sudo Studio deactivated');

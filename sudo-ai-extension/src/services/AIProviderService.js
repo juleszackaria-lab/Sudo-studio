@@ -234,6 +234,29 @@ class AIProviderService {
         return { ok: true };
     }
 
+    // P24: provider config for the sudo-agent core server. Resolved once at
+    // server spawn; cloud requires the admin policy + a stored API key.
+    async getServerProviderConfig() {
+        const active = this.getActive();
+        if (!active || active.type === 'local' || active.id === 'local') {
+            return { type: 'local', baseUrl: this.runtimeUrl || 'http://127.0.0.1:6000', model: '' };
+        }
+        const chk = this.checkCloudAllowed(active);
+        if (!chk.ok) {
+            const e = new Error(chk.error);
+            e.code = 'policy';
+            throw e;
+        }
+        let key = null;
+        try { key = await this._secrets().get('sudoAi.provider.' + active.id); } catch (e) { key = null; }
+        if (!key) {
+            const e = new Error('Cle API manquante pour ' + active.name + ' (configurez-la dans les parametres).');
+            e.code = 'missing_key';
+            throw e;
+        }
+        return { type: 'cloud', baseUrl: active.baseUrl, model: active.model || '', apiKey: key };
+    }
+
     setFilterEnabled(on) {
         const s = this._readStore();
         s.filterEnabled = on !== false;
