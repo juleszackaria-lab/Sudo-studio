@@ -403,16 +403,41 @@ function parsePubspecLock(text) {
 function parsePubspecDeps(text) {
     const out = [];
     const lines = String(text || '').split('\n');
-    let inDeps = false;
+    let section = null; // 'deps' | 'dev' | null
+    let current = null;
+    const nameOk = (s) => /^[A-Za-z0-9_.-]+$/.test(s);
+    const unq = (s) => String(s).replace(/^["']|["']$/g, '');
     for (const ln of lines) {
-        if (/^dependencies:\s*$/.test(ln)) { inDeps = true; continue; }
-        if (/^\S/.test(ln)) inDeps = false;
-        if (!inDeps) continue;
-        const m = /^  ([A-Za-z0-9_.-]+):\s*(.*)$/.exec(ln);
-        if (m && m[2].trim() && m[2].trim() !== 'null') {
-            out.push({ name: m[1], range: m[2].trim().replace(/^["']|["']$/g, '') });
-        } else if (m) {
-            out.push({ name: m[1], range: '' });
+        const trimmed = ln.trim();
+        const indent = ln.length - ln.trimStart().length;
+        if (indent === 0 && (trimmed === 'dependencies:' || trimmed === 'dev_dependencies:')) {
+            section = trimmed === 'dependencies:' ? 'deps' : 'dev';
+            current = null;
+            continue;
+        }
+        if (indent === 0) { section = null; current = null; continue; }
+        if (!section) continue;
+        if (indent === 2) {
+            const ci = trimmed.indexOf(':');
+            if (ci > 0 && nameOk(trimmed.slice(0, ci).trim())) {
+                const val = unq(trimmed.slice(ci + 1).trim());
+                current = { name: trimmed.slice(0, ci).trim(),
+                    range: val === 'null' ? '' : val,
+                    dev: section === 'dev', detail: '' };
+                out.push(current);
+            } else {
+                current = null;
+            }
+            continue;
+        }
+        if (current && indent > 2 && trimmed) {
+            const ci = trimmed.indexOf(':');
+            if (ci > 0) {
+                const k = trimmed.slice(0, ci).trim();
+                const v = unq(trimmed.slice(ci + 1).trim());
+                if (k === 'version' && v && !current.range) current.range = v;
+                else if (k) current.detail = (current.detail ? current.detail + ' ' : '') + (v ? k + ': ' + v : k);
+            }
         }
     }
     return out;
@@ -473,10 +498,11 @@ function parsePomDeps(text) {
 
 function parseGradleDeps(text) {
     const out = [];
-    const re = /(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|debugImplementation)\s*[({\s]['"]([^'":\s]+):([^'":\s]+):([^'"]+)['"]/g;
+    const re = /(implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|debugImplementation)\s*[({\s]['"]([^'":\s]+):([^'":\s]+):([^'"]+)['"]/g;
     let m;
     while ((m = re.exec(String(text || ''))) !== null && out.length < 200) {
-        out.push({ name: m[1] + ':' + m[2], range: m[3] });
+        out.push({ name: m[2] + ':' + m[3], range: m[4], configuration: m[1],
+            dev: /^test/i.test(m[1]), detail: '' });
     }
     return out;
 }
@@ -565,6 +591,114 @@ function parseCargoLock(text) {
     return out;
 }
 
+function quotedParts(s) {
+    const r = [];
+    let cur = '';
+    let q = null;
+    for (const ch of String(s || '')) {
+        if (q) {
+            if (ch === q) { r.push(cur); cur = ''; q = null; }
+            else cur += ch;
+        } else if (ch === '"' || ch === "'") {
+            q = ch;
+        }
+    }
+    return r;
+}
+
+function pep508Name(req) {
+    const s = String(req || '').trim();
+    let i = 0;
+    while (i < s.length && /[A-Za-z0-9_.-]/.test(s.charAt(i))) i++;
+    const nm = s.slice(0, i).toLowerCase();
+    if (!nm) return null;
+    let extra = s.slice(i).trim();
+    if (extra.charAt(0) === '[') {
+        const ce = extra.indexOf(']');
+        if (ce !== -1) extra = extra.slice(ce + 1).trim();
+    }
+    if (extra.charAt(0) === ';') extra = '';
+    return { name: nm, range: extra };
+}
+
+function parsePyprojectDeps(text) {
+    const out = [];
+    const lines = String(text || '').split('\n');
+    let section = '';
+    let collecting = false;
+    let collectDev = false;
+    const poetryDev = (sec) => {
+        if (sec === 'tool.poetry.dependencies') return false;
+        if (sec === 'tool.poetry.dev-dependencies') return true;
+        if (sec.indexOf('tool.poetry.group.') === 0 && sec.slice(-13) === '.dependencies') {
+            return sec.slice(18, -13) !== 'main';
+        }
+        return null;
+    };
+    for (const raw of lines) {
+        const ln = raw.split('#')[0];
+        const tr = ln.trim();
+        if (!tr) continue;
+        if (tr.charAt(0) === '[' && tr.charAt(tr.length - 1) === ']') {
+            section = tr.slice(1, -1).trim();
+            collecting = false;
+            continue;
+        }
+        if (section === 'project' && tr.indexOf('dependencies') === 0 && tr.indexOf('=') !== -1 &&
+                tr.slice(tr.indexOf('=') + 1).indexOf('[') !== -1) {
+            collecting = true;
+            collectDev = false;
+        } else if (section === 'project.optional-dependencies' && tr.indexOf('=') !== -1 &&
+                tr.slice(tr.indexOf('=') + 1).indexOf('[') !== -1) {
+            collecting = true;
+            collectDev = true;
+        }
+        if (collecting) {
+            for (const q of quotedParts(tr)) {
+                const p = pep508Name(q);
+                if (p) out.push({ name: p.name, range: p.range, dev: collectDev, detail: '' });
+            }
+            if (tr.indexOf(']') !== -1) collecting = false;
+            continue;
+        }
+        const pd = poetryDev(section);
+        if (pd !== null && tr.indexOf('=') !== -1) {
+            const k = tr.slice(0, tr.indexOf('=')).trim().toLowerCase();
+            if (k && k !== 'python' && /^[a-z0-9_.-]+$/.test(k)) {
+                const v = tr.slice(tr.indexOf('=') + 1).trim();
+                let range = '';
+                let detail = '';
+                if (v.charAt(0) === '{') {
+                    const vi = v.indexOf('version');
+                    const qs = quotedParts(vi !== -1 ? v.slice(vi) : v);
+                    if (vi !== -1 && qs.length) range = qs[0];
+                    else detail = v.slice(0, 80);
+                } else {
+                    const qs = quotedParts(v);
+                    range = qs.length ? qs[0] : v;
+                }
+                out.push({ name: k, range, dev: pd, detail });
+            }
+            continue;
+        }
+    }
+    return out;
+}
+
+function stampDeps(manifest, source, locked) {
+    const map = {};
+    for (const l of locked || []) map[String(l.name).toLowerCase()] = l.version;
+    for (const d of manifest) {
+        if (d.source == null) d.source = source;
+        if (d.dev == null) d.dev = false;
+        if (d.locked == null) {
+            const k = String(d.name).toLowerCase();
+            d.locked = Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null;
+        }
+        if (d.detail == null) d.detail = '';
+    }
+}
+
 function splitLocked(manifest, lockedMap) {
     const locked = [];
     const unlocked = [];
@@ -588,7 +722,8 @@ function collectDeps(abs, acc, types) {
             for (const sec of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
                 const d = pkg[sec] || {};
                 for (const k of Object.keys(d)) {
-                    manifest.push({ name: k, range: String(d[k]), section: sec });
+                    manifest.push({ name: k, range: String(d[k]), section: sec,
+                    dev: sec === 'devDependencies', source: 'package.json', locked: null, detail: '' });
                 }
             }
             scripts = Object.keys(pkg.scripts || {}).slice(0, 40);
@@ -603,6 +738,7 @@ function collectDeps(abs, acc, types) {
             if (parsed) { lockfile = lf; lockedMap = parsed; break; }
         }
         const { locked, unlocked } = splitLocked(manifest, lockedMap);
+        stampDeps(manifest, 'package.json', locked);
         out.push({ ecosystem: 'node', manifest: 'package.json', scripts,
             manifestDeps: capList(manifest), lockfile, locked: capList(locked), unlocked: capList(unlocked),
             unpinned: capList(manifest.filter((d) => !isExactPin(d.range)).map((d) => d.name)),
@@ -613,6 +749,7 @@ function collectDeps(abs, acc, types) {
         const lockText = readText(abs, 'pubspec.lock');
         const lockedMap = lockText != null ? parsePubspecLock(lockText) : null;
         const { locked, unlocked } = splitLocked(manifest, lockedMap);
+        stampDeps(manifest, 'pubspec.yaml', locked);
         out.push({ ecosystem: 'flutter', manifest: 'pubspec.yaml', scripts: [],
             manifestDeps: capList(manifest), lockfile: lockText != null ? 'pubspec.lock' : null,
             locked: capList(locked), unlocked: capList(unlocked),
@@ -622,7 +759,13 @@ function collectDeps(abs, acc, types) {
     if (want.has('python')) {
         let manifest = [];
         for (const rf of acc.manifests.requirements) {
-            manifest = manifest.concat(parseRequirements(readText(abs, rf) || ''));
+            for (const d of parseRequirements(readText(abs, rf) || '')) {
+                d.dev = false; d.source = rf; d.detail = ''; manifest.push(d);
+            }
+        }
+        const pyt = readText(abs, 'pyproject.toml');
+        if (pyt) {
+            for (const d of parsePyprojectDeps(pyt)) { d.source = 'pyproject.toml'; manifest.push(d); }
         }
         if (!manifest.length) {
             const pip = readText(abs, 'Pipfile');
@@ -636,6 +779,7 @@ function collectDeps(abs, acc, types) {
         }
         let lockfile = null;
         let lockedMap = null;
+        for (const d of manifest) { if (d.source == null) { d.dev = false; d.source = 'Pipfile'; d.detail = ''; } }
         for (const lf of ['poetry.lock', 'Pipfile.lock', 'uv.lock', 'pdm.lock']) {
             const t = readText(abs, lf);
             if (t == null) continue;
@@ -647,12 +791,15 @@ function collectDeps(abs, acc, types) {
         const unlocked = [];
         for (const d of manifest) {
             if (lockedMap && lockedMap[lower(d.name)] != null) {
-                locked.push({ name: d.name, version: lockedMap[lower(d.name)] });
-            } else unlocked.push(d.name);
+                d.locked = lockedMap[lower(d.name)];
+                locked.push({ name: d.name, version: d.locked });
+            } else { d.locked = null; unlocked.push(d.name); }
         }
         const pinnedByEq = manifest.filter((d) => /^==/.test(d.range.trim())).length;
+        stampDeps(manifest, 'requirements.txt', locked);
         out.push({ ecosystem: 'python',
-            manifest: acc.manifests.requirements[0] || (readText(abs, 'Pipfile') ? 'Pipfile' : 'requirements.txt'),
+            manifest: [acc.manifests.requirements[0], pyt ? 'pyproject.toml' : null].filter(Boolean).join(' + ') ||
+                (readText(abs, 'Pipfile') ? 'Pipfile' : 'requirements.txt'),
             scripts: [], manifestDeps: capList(manifest), lockfile,
             locked: capList(locked), unlocked: capList(unlocked),
             unpinned: capList(manifest.filter((d) => !/^==/.test(d.range.trim())).map((d) => d.name)),
@@ -662,17 +809,21 @@ function collectDeps(abs, acc, types) {
     }
     if (want.has('java-maven')) {
         const manifest = parsePomDeps(readText(abs, 'pom.xml') || '');
+        stampDeps(manifest, 'pom.xml', []);
         out.push({ ecosystem: 'java-maven', manifest: 'pom.xml', scripts: [],
             manifestDeps: capList(manifest), lockfile: null, locked: [], unlocked: capList(manifest.map((d) => d.name)),
             unpinned: capList(manifest.filter((d) => !isExactPin(d.range)).map((d) => d.name)),
             note: 'Maven ne versionne pas de verrouillage (pas de lockfile standard)' });
     }
     if (want.has('java-gradle')) {
-        let manifest = parseGradleDeps(readText(abs, 'build.gradle') || '');
-        manifest = manifest.concat(parseGradleDeps(readText(abs, 'build.gradle.kts') || ''));
+        let manifest = [];
+        for (const gf of ['build.gradle', 'build.gradle.kts']) {
+            for (const d of parseGradleDeps(readText(abs, gf) || '')) { d.source = gf; manifest.push(d); }
+        }
         const lockText = acc.manifests.gradleLock ? readText(abs, 'gradle.lockfile') : null;
         const lockedMap = lockText != null ? parseGradleLockfile(lockText) : null;
         const { locked, unlocked } = splitLocked(manifest, lockedMap);
+        stampDeps(manifest, 'build.gradle', locked);
         out.push({ ecosystem: 'java-gradle', manifest: 'build.gradle', scripts: [],
             manifestDeps: capList(manifest), lockfile: lockText != null ? 'gradle.lockfile' : null,
             locked: capList(locked), unlocked: capList(unlocked),
@@ -682,11 +833,12 @@ function collectDeps(abs, acc, types) {
     if (want.has('csharp')) {
         let manifest = [];
         for (const cs of acc.manifests.csproj) {
-            manifest = manifest.concat(parseCsprojDeps(readText(abs, cs) || ''));
+            for (const d of parseCsprojDeps(readText(abs, cs) || '')) { d.source = cs; manifest.push(d); }
         }
         const lockText = readText(abs, 'packages.lock.json');
         const lockedMap = lockText != null ? parseNugetLock(lockText) : null;
         const { locked, unlocked } = splitLocked(manifest, lockedMap);
+        stampDeps(manifest, acc.manifests.csproj[0] || '*.csproj', locked);
         out.push({ ecosystem: 'csharp', manifest: acc.manifests.csproj[0] || '*.csproj', scripts: [],
             manifestDeps: capList(manifest), lockfile: lockText != null ? 'packages.lock.json' : null,
             locked: capList(locked), unlocked: capList(unlocked),
@@ -696,6 +848,7 @@ function collectDeps(abs, acc, types) {
     if (want.has('go')) {
         const manifest = parseGoMod(readText(abs, 'go.mod') || '');
         const hasSum = exists(abs, 'go.sum');
+        stampDeps(manifest, 'go.mod', hasSum ? manifest.map((d) => ({ name: d.name, version: d.range })) : []);
         out.push({ ecosystem: 'go', manifest: 'go.mod', scripts: [],
             manifestDeps: capList(manifest), lockfile: hasSum ? 'go.sum' : null,
             locked: hasSum ? capList(manifest.map((d) => ({ name: d.name, version: d.range }))) : [],
@@ -708,6 +861,7 @@ function collectDeps(abs, acc, types) {
         const lockText = readText(abs, 'Cargo.lock');
         const lockedMap = lockText != null ? parseCargoLock(lockText) : null;
         const { locked, unlocked } = splitLocked(manifest, lockedMap);
+        stampDeps(manifest, 'Cargo.toml', locked);
         out.push({ ecosystem: 'rust', manifest: 'Cargo.toml', scripts: [],
             manifestDeps: capList(manifest), lockfile: lockText != null ? 'Cargo.lock' : null,
             locked: capList(locked), unlocked: capList(unlocked),
