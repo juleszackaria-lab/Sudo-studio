@@ -438,6 +438,18 @@ jobs:
             Write-Host "[OK] sudo-ai-extension copied"
           }
 
+          # MINI node: copy the agent server code (stdlib-only .js, ~165 KB).
+          # The extension spawns it with the product .exe itself
+          # (ELECTRON_RUN_AS_NODE=1): no PC Node.js, no second Node bundled.
+          if (Test-Path "sudo-agent\src") {
+            Copy-Item "sudo-agent\src" "build\SudoStudio\sudo-agent\src" -Recurse -Force
+            $agentBytes = (Get-ChildItem "build\SudoStudio\sudo-agent\src" -Recurse -File |
+              Measure-Object Length -Sum).Sum
+            Write-Host ("[OK] sudo-agent copied ({0:N0} bytes)" -f $agentBytes)
+          } else {
+            Write-Warning "[WARN] sudo-agent\src not found - agent will not start"
+          }
+
           # Create empty extensions and data directories
           New-Item -ItemType Directory -Force -Path "build\SudoStudio\extensions" | Out-Null
           New-Item -ItemType Directory -Force -Path "build\SudoStudio\logs"       | Out-Null
@@ -447,8 +459,8 @@ jobs:
 
       # Step 8b removed (P27): the former third-party agent binary step is deleted
       # (binary, manifest, driver). The agent panels now drive the sudo-agent server
-      # (see sudo-agent/). Node.js packaging for the installed product is a later
-      # step (dev: Node from PATH).
+      # (see sudo-agent/, copied in step 8). Runtime is the product .exe itself
+      # in Electron-as-Node mode (MINI node): no PC Node.js required.
 
       # ── Step 9: Update start.bat to reference SudoStudio.exe ─────────────
       # start.bat still references VSCodium.exe — update it to SudoStudio.exe

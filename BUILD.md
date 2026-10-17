@@ -53,7 +53,7 @@ Le workflow 03 exécute notamment :
   avis hors ligne depuis les dumps OSV vers
   `sudo-ai-extension/src/data/advisories.json` ;
 - marbrage VSCodium (`scripts/customize-vscodium.ps1` sur `vscodium/`) ;
-- assemblage + script Inno Setup (`.github/installer.iss`).
+- assemblage + script Inno Setup (`installer.iss`, a la racine).
 
 État honnête : la chaîne 01→02→03 est lue et cohérente avec le dépôt,
 mais **non ré-exécutée dans cette sandbox Linux** (binaires Windows).

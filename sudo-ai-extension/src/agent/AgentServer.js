@@ -1,4 +1,6 @@
 // AgentServer (P24): spawns and supervises the sudo-agent core server.
+// Runtime (MINI node): the product executable itself in Electron-as-Node mode
+// (ELECTRON_RUN_AS_NODE=1) - never the PC's Node.js, no second Node bundled.
 // Hidden window (windowsHide), token + provider config via ENVIRONMENT only
 // (never the command line), handshake on stdout, auto-restart with backoff.
 // No vscode dependency: pure Node, unit-testable. ASCII only.
@@ -34,10 +36,12 @@ class AgentServer {
     this.provider = opts.provider;
     this.serverPath = opts.serverPath || null;
     this.useNode = opts.useNode;
-    // P27 dev-only runtime: an explicit node, else SUDO_AGENT_NODE, else
-    // 'node' from PATH. (process.execPath is the Electron binary under a
-    // real extension host, NOT node, so it is never a valid default.)
-    this.nodePath = opts.nodePath || process.env.SUDO_AGENT_NODE || 'node';
+    // MINI node: an explicit runtime, else SUDO_AGENT_NODE, else the host
+    // binary itself (process.execPath). Under a real extension host that is
+    // the product .exe, run with ELECTRON_RUN_AS_NODE=1 (see _spawnOnce);
+    // under plain node (dev scripts, tests) it is node and the flag is a
+    // harmless no-op. The PC's PATH 'node' is never used by default.
+    this.nodePath = opts.nodePath || process.env.SUDO_AGENT_NODE || process.execPath;
     this.lastError = null; // last start failure (for the status bar), cleared on success
     this.extraArgs = Array.isArray(opts.args) ? opts.args.slice() : [];
     this.home = opts.home || null;
@@ -68,7 +72,7 @@ class AgentServer {
       catch (_) { sp = defaultServerJs(); }
     }
     const wantNode = this.useNode === true || (this.useNode !== false && /\.js$/i.test(sp));
-    if (wantNode) return { cmd: this.nodePath, args: [sp].concat(this.extraArgs), mode: 'node' };
+    if (wantNode) return { cmd: this.nodePath, args: [sp].concat(this.extraArgs), mode: 'node', runAsNode: true };
     return { cmd: sp, args: this.extraArgs.slice(), mode: 'exe' };
   }
 
@@ -110,6 +114,17 @@ class AgentServer {
         SUDO_AGENT_PORT: '0',
         SUDO_AGENT_PROVIDER: JSON.stringify(this.provider),
       });
+      if (target.runAsNode) {
+        // Electron-as-Node mode: drop editor-inherited ELECTRON_* (except the
+        // flag we set) and NODE_OPTIONS, which could inject flags into the
+        // agent. PATH/SystemRoot/TEMP and the rest are kept: agent tools and
+        // the verify loop need them, and Windows children need SystemRoot.
+        for (const k of Object.keys(env)) {
+          if (k === 'ELECTRON_RUN_AS_NODE') continue;
+          if (/^ELECTRON_/i.test(k) || k === 'NODE_OPTIONS') delete env[k];
+        }
+        env.ELECTRON_RUN_AS_NODE = '1';
+      }
       if (this.home) env.SUDO_STUDIO_HOME = this.home;
       if (this.logsDir) env.SUDO_STUDIO_LOGS = this.logsDir;
       if (this.storeDir) env.SUDO_AGENT_STORE = this.storeDir;

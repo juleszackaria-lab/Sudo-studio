@@ -12,6 +12,11 @@ SUDO_AGENT_PROVIDER='{"type":"local","baseUrl":"http://127.0.0.1:6000","model":"
 node src/server.js
 ```
 
+Produit installe : l'extension lance ce meme fichier avec l'executable
+Sudo Studio lui-meme en mode Electron-as-Node (`ELECTRON_RUN_AS_NODE=1`,
+fenetre masquee, supervision + relance par l'extension). Aucun Node.js
+requis sur le PC, aucun second Node embarque (MINI node).
+
 Le serveur affiche UNE ligne de poignée de main sur stdout :
 
 ```json

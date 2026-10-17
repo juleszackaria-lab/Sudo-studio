@@ -374,12 +374,19 @@ async function main() {
     check('B25: explicit resume reuses the session', c.sessionId === 's2');
   }
 
-  // ================= C: server node default + state =================
+  // ================= C: server runtime default + state =================
+  // MINI node: the P27 'node from PATH' default is REPLACED - the runtime is
+  // the host binary itself (product .exe under Electron-as-Node, plain node
+  // under node). Explicit overrides (C2/C3) are unchanged.
   {
     delete process.env.SUDO_AGENT_NODE;
     const s1 = new AgentServer({ provider: { type: 'local' }, serverPath: '/tmp/x.js' });
-    check('C1: default node is PATH node, never the host binary',
-      s1.nodePath === 'node' && s1.nodePath !== process.execPath);
+    check('C1: default runtime is the host binary, never PATH node',
+      s1.nodePath === process.execPath && s1.nodePath !== 'node');
+    const t1 = s1.resolveTarget();
+    check('C1b: node-mode target carries the runAsNode flag',
+      t1.mode === 'node' && t1.runAsNode === true && t1.cmd === process.execPath &&
+      t1.args[0] === '/tmp/x.js');
     process.env.SUDO_AGENT_NODE = '/opt/node/bin/node';
     const s2 = new AgentServer({ provider: { type: 'local' }, serverPath: '/tmp/x.js' });
     check('C2: SUDO_AGENT_NODE override wins', s2.nodePath === '/opt/node/bin/node');
