@@ -39,12 +39,15 @@ garde-fou. Le score est **recalculé à chaque exécution** (ouverture + Refresh
 
 ## Règles de détection (déterministes)
 
-- **Secrets** : 13 motifs partagés + 1 motif local « assignation non quotée »
-  (`API_KEY=sk-…`, `auth_token=…`, …). Anti-faux-positifs : valeur ≥ 8
-  caractères, valeurs quotées réservées au motif quoté (pas de doublon),
-  liste de placeholders exacts (`your_key_here`, `changeme`, `example`, …).
-  Fichiers scannés : `.env*`, `.js/.ts/.py/.dart/.go/.java/.cs/.rb/.php`,
-  `.json/.yaml/.toml`, scripts, `.pem/.key`, plafond 1 Mo, profondeur 6.
+- **Secrets** (P18) : 13 motifs partagés + 5 motifs locaux (« assignation non
+  quotée », « Secret Assignment » par nom de variable, `sk-`, JWT brut, URL à
+  identifiants) + heuristique d'entropie (hex ≥ 32 caractères, base64 ≥ 20).
+  Anti-faux-positifs : valeur ≥ 8 caractères, placeholders exacts, références
+  `${…}`/`<…>` exclues, un seul résultat par ligne (motif le plus spécifique),
+  entropie désactivée dans les lockfiles et `.min.js`. Fichiers scannés : TOUS
+  les fichiers texte (dotfiles et sans extension compris), sauf dossiers de
+  dépendances, binaires (octet NUL) et fichiers > 1 Mo — chaque exclusion est
+  comptée et affichée. Fichier non ignoré par git → gravité maximale.
 - **Dépendances** : versions verrouillées (`package-lock.json`,
   `requirements.txt` épinglé, `poetry.lock`, `pubspec.lock`) croisées avec la
   base d'avis locale — **jamais** `npm audit` (réseau, non déterministe).

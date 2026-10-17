@@ -31,6 +31,11 @@ const SECRET_SEVERITY = {
     'NPM Token': 'high',
     'Database Password': 'medium',
     'Slack Webhook': 'medium',
+    'Secret Assignment': 'high',
+    'Generic Secret Key (sk-)': 'high',
+    'JWT Token': 'high',
+    'URL with Credentials': 'high',
+    'High-Entropy String': 'medium',
 };
 // Points per advisory severity (unknown counts as medium, documented).
 const ADVISORY_POINTS = { critical: 10, high: 5, medium: 2, low: 1 };
@@ -53,6 +58,7 @@ const EXTRA_SECRET_PATTERNS = [
         // Unquoted assignments only: the lookahead rejects quoted values so
         // the shared quoted pattern stays the single hit there (no dupes).
         re: /\b(api[_-]?key|api[_-]?secret|auth[_-]?token|secret[_-]?key|access[_-]?key)\s*[:=]+\s*(?!['"])([A-Za-z0-9_\-]{8,})/i,
+        valueGroup: 2,
         check(m) {
             const v = String((m && m[2]) || '');
             if (v.length < 8) return false;
@@ -60,7 +66,170 @@ const EXTRA_SECRET_PATTERNS = [
             return true;
         },
     },
+    {
+        label: 'Secret Assignment',
+        // P18: NAME=value where NAME carries a secret word (JWT_SECRET,
+        // PASSWORD, CLIENT_SECRET, DB_TOKEN, apiKey, ...). The name is split
+        // into segments so MONKEY/keyboard never match. Optional quotes.
+        re: /([A-Za-z_][A-Za-z0-9_]*)\s*[:=]+\s*['"]?([^\s'";#]{8,})['"]?/,
+        valueGroup: 2,
+        check(m) {
+            const name = String((m && m[1]) || '');
+            const v = String((m && m[2]) || '').replace(/['",;]+$/, '');
+            if (v.length < 8) return false;
+            if (!looksLikeSecretName(name)) return false;
+            if (PLACEHOLDERS.has(v.toLowerCase())) return false;
+            if (/^(\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|<[^>]*>|\[[^\]]*\]|%[^%]+%|true|false|null|none|undefined)$/i.test(v)) return false;
+            if (/^[A-Za-z]:\\/.test(v) || v.indexOf('\\\\') !== -1) return false;
+            return true;
+        },
+    },
+    {
+        label: 'Generic Secret Key (sk-)',
+        // P18: sk- prefixed keys outside assignments (sk_live_..., sk-test...).
+        re: /\bsk-[A-Za-z0-9_\-]{6,}/,
+        check(m) {
+            const v = String((m && m[0]) || '');
+            if (v.length < 10) return false;
+            if (PLACEHOLDERS.has(v.toLowerCase())) return false;
+            return true;
+        },
+    },
+    {
+        label: 'JWT Token',
+        // P18: raw JSON Web Token (header always starts with eyJ).
+        re: /\beyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}/,
+    },
+    {
+        label: 'URL with Credentials',
+        // P18: scheme://user:pass@host (postgres, mysql, ftp, ...). Only the
+        // user:pass part is the secret (valueGroup), host stays visible.
+        re: /([A-Za-z][A-Za-z0-9+.\-]{1,20}:\/\/)([^/\s:@?#'\"]+:[^/\s@?#'\"]+)(@[^\s'\"]+)/,
+        valueGroup: 2,
+    },
 ];
+
+// P18: secret-ish words matched against whole name segments (split on _ -
+// and camelCase humps). 'JWT_SECRET' hits via 'secret'; 'MONKEY' is one
+// segment and never hits.
+const SECRET_NAME_WORDS = new Set(['secret', 'secrets', 'token', 'tokens',
+    'password', 'passwd', 'pwd', 'pass', 'key', 'keys', 'apikey', 'authkey',
+    'accesstoken', 'refreshtoken', 'clientsecret', 'apisecret', 'secretkey',
+    'authtoken', 'sessionsecret', 'privatekey']);
+
+function looksLikeSecretName(name) {
+    const parts = String(name || '').replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+        .toLowerCase().split(/[^a-z0-9]+/);
+    for (const p of parts) if (SECRET_NAME_WORDS.has(p)) return true;
+    return false;
+}
+
+// P18: Shannon entropy per character (bits). Random base64-ish text scores
+// near 6; English prose and identifiers stay well below the bar.
+function shannonEntropy(s) {
+    const str = String(s || '');
+    if (!str) return 0;
+    const freq = Object.create(null);
+    for (const ch of str) freq[ch] = (freq[ch] || 0) + 1;
+    let h = 0;
+    for (const k in freq) {
+        const p = freq[k] / str.length;
+        h -= p * (Math.log(p) / Math.log(2));
+    }
+    return h;
+}
+
+// A token earns the entropy test only with digit/symbol/mixed-case variety,
+// which rules out plain long words and most identifiers.
+function looksRandomToken(tok) {
+    return /[0-9]/.test(tok) || /[+=\-_]/.test(tok) ||
+        (/[A-Z]/.test(tok) && /[a-z]/.test(tok));
+}
+
+const ENTROPY_B64_MIN = 20;
+const ENTROPY_B64_BAR = 4.5;
+const ENTROPY_HEX_MIN = 32;
+const ENTROPY_HEX_BAR = 3.0;
+
+// First high-entropy token on the line, or null. Hex first: a hex token
+// also matches the base64 class, and hex tops out near 4 bits per char.
+function findHighEntropyToken(line) {
+    const text = String(line || '');
+    let m;
+    const hexRe = /[0-9a-fA-F]{32,}/g;
+    while ((m = hexRe.exec(text)) !== null) {
+        if (shannonEntropy(m[0]) >= ENTROPY_HEX_BAR) return m[0];
+    }
+    const b64Re = /[A-Za-z0-9+=\-_]{20,}/g;
+    while ((m = b64Re.exec(text)) !== null) {
+        if (looksRandomToken(m[0]) && shannonEntropy(m[0]) >= ENTROPY_B64_BAR) return m[0];
+    }
+    return null;
+}
+
+function gitignoreGlobToRegExp(glob) {
+    let re = '';
+    for (let i = 0; i < glob.length; i++) {
+        const c = glob[i];
+        if (c === '*') {
+            if (glob[i + 1] === '*') { re += '.*'; i++; }
+            else re += '[^/]*';
+        } else if (c === '?') {
+            re += '[^/]';
+        } else if ('.+^${}()|[]\\'.indexOf(c) !== -1) {
+            re += '\\' + c;
+        } else {
+            re += c;
+        }
+    }
+    return new RegExp('^' + re + '$');
+}
+
+// P18: minimal .gitignore matcher (exact names, *, ?, **, trailing-slash
+// dirs, leading slash, # comments, ! negation, last match wins). Patterns
+// without a slash match the basename at any depth, like git.
+function isIgnoredByGitignore(relPath, gitignoreText) {
+    const rel = String(relPath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    const text = String(gitignoreText || '');
+    if (!rel || !text) return false;
+    const parts = rel.split('/');
+    const cands = [rel];
+    for (let i = 1; i < parts.length; i++) cands.push(parts.slice(0, i).join('/'));
+    const base = parts[parts.length - 1];
+    let ignored = false;
+    for (const raw of text.split('\n')) {
+        let line = raw.trim();
+        if (!line || line.charAt(0) === '#') continue;
+        let neg = false;
+        if (line.charAt(0) === '!') {
+            neg = true;
+            line = line.slice(1).trim();
+            if (!line) continue;
+        }
+        const dirOnly = line.charAt(line.length - 1) === '/';
+        if (dirOnly) line = line.slice(0, -1);
+        if (line.charAt(0) === '/') line = line.slice(1);
+        if (!line) continue;
+        const rx = gitignoreGlobToRegExp(line);
+        let hit = false;
+        if (line.indexOf('/') === -1) {
+            if (!dirOnly && rx.test(base)) hit = true;
+            if (!hit) {
+                for (const c of cands) {
+                    if (c === rel) continue;
+                    if (rx.test(c.split('/').pop())) { hit = true; break; }
+                }
+            }
+        } else {
+            for (const c of cands) {
+                if (c === rel && dirOnly) continue;
+                if (rx.test(c)) { hit = true; break; }
+            }
+        }
+        if (hit) ignored = !neg;
+    }
+    return ignored;
+}
 
 function severityOfSecret(label) {
     return SECRET_SEVERITY[label] || 'medium';
@@ -298,6 +467,7 @@ function buildReportHtml(report) {
 module.exports = {
     SCORE_VERSION, BASE_SCORE, CAPS, SECRET_POINTS, SECRET_SEVERITY, ADVISORY_POINTS,
     EXTRA_SECRET_PATTERNS, PLACEHOLDERS,
+    looksLikeSecretName, shannonEntropy, findHighEntropyToken, isIgnoredByGitignore,
     severityOfSecret, secretPoints, advisoryPoints,
     checkSecurityFiles, hasTests, locateDepLine,
     applyCap, unavailable, computeSecurityScore,

@@ -182,7 +182,8 @@ async function main() {
     const envHit = byFile('.env')[0];
     check('B1: proof secret flagged with file+line+severity',
         byFile('.env').length === 1 && envHit.line === 1 &&
-        envHit.label === 'Generic API Key (unquoted)' && envHit.severity === 'high' &&
+        envHit.label === 'Generic API Key (unquoted)' &&
+        envHit.severity === 'critical' && envHit.ignored === false && // P18: S/ has no .gitignore -> max severity
         envHit.snippet.indexOf('sk-test123') === -1);
     check('B2: placeholder value skipped', byFile('place.env').length === 0);
     const qHits = byFile('quoted.js').filter((h) => h.line === 2);
