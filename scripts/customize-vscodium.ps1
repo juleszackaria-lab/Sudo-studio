@@ -135,6 +135,77 @@ else {
 }
 
 # ============================================================
+# STEP 2c - TITLE-BAR / APP SVG SWEEP (code-icon.svg + copies) [P20]
+# The old VSCodium mark also ships as SVG inside resources\app\out
+# (out\vs\workbench\browser\media\code-icon.svg and copies). The window
+# corner / About artwork resolves this file at runtime, so the ICO/rcedit
+# steps alone cannot remove it. We overwrite CONTENT ONLY (same filename),
+# so CSS url()/bundle references keep working with zero syntax risk.
+# Identity = filename + old-logo content markers (gradient id "Gradient_1"
+# + path id "path6008", stable across VSCodium stable/insider builds).
+# VERIFY: 0 files still carry the old marker afterwards (hash-equivalent
+# proof: the marker bytes are unique to the old artwork).
+# ============================================================
+Write-Host "[STEP 2c] Title-bar SVG sweep (code-icon.svg)..."
+$sudoSvg = Join-Path $repoRoot "resources\sudo-icon.svg"
+$oldSvgMarkers = @('path6008', 'Gradient_1')
+$step2cReplaced = 0
+$step2cScanned = 0
+if (-not (Test-Path $sudoSvg)) {
+    Write-Warning "[WARN] [2c] Replacement SVG missing at $sudoSvg - old title-bar logo kept (rebuild with Sudo-studio resources present)"
+}
+else {
+    $sudoSvgBytes = [System.IO.File]::ReadAllBytes($sudoSvg)
+    $svgCandidates = Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -eq 'code-icon.svg' }
+    foreach ($svgFile in $svgCandidates) {
+        $step2cScanned++
+        try {
+            $svgRaw = [System.IO.File]::ReadAllText($svgFile.FullName, [System.Text.Encoding]::UTF8)
+            $isOld = $true
+            foreach ($mk in $oldSvgMarkers) {
+                if ($svgRaw -notmatch [regex]::Escape($mk)) { $isOld = $false }
+            }
+            if (-not $isOld) {
+                Write-Host ("[INFO] [2c] Not the old logo (kept): {0}" -f $svgFile.FullName.Substring($resolvedDir.Length))
+                continue
+            }
+            [System.IO.File]::WriteAllBytes($svgFile.FullName, $sudoSvgBytes)
+            Write-Host ("[OK] [2c] Title-bar logo replaced: {0}" -f $svgFile.FullName.Substring($resolvedDir.Length))
+            $step2cReplaced++
+        }
+        catch {
+            Write-Warning ("[WARN] [2c] Could not process {0}: {1}" -f $svgFile.Name, $_.Exception.Message)
+        }
+    }
+    Write-Host ("[STEP 2c] DONE: {0} code-icon.svg file(s) scanned, {1} replaced" -f $step2cScanned, $step2cReplaced)
+    if ($step2cScanned -eq 0) {
+        Write-Warning "[WARN] [2c] No code-icon.svg found under resources\app - build layout may have moved it; title-bar logo NOT verified. Grep the install dir for 'path6008' to confirm."
+    }
+}
+# VERIFY (hash-equivalent): old marker bytes must be gone from text-based files.
+$step2cExts = @('.js','.json','.css','.html','.svg','.xml','.ts','.nls','.txt','.md')
+$step2cLeftovers = @(Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $step2cExts -contains $_.Extension.ToLower() } |
+    Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch '\\.git\\' } |
+    Where-Object { $_.Length -lt 64MB } |
+    Where-Object {
+        try {
+            $t2c = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+            ($t2c -match 'path6008')
+        }
+        catch { $false }
+    })
+if ($step2cLeftovers.Count -gt 0) {
+    Write-Warning ("[WARN] [2c] VERIFY: old-logo marker still present in {0} file(s):" -f $step2cLeftovers.Count)
+    $step2cLeftovers | ForEach-Object { Write-Host ("  [2c-LEFTOVER] {0}" -f $_.FullName.Substring($resolvedDir.Length)) }
+}
+else {
+    Write-Host "[OK] [2c] VERIFY: 0 old-logo occurrences remain (marker path6008 absent everywhere)"
+}
+
+# ============================================================
 # STEP 2b - EXHAUSTIVE app-icon sweep (proven by real build inventory)
 # Proven by inventory of VSCodium 1.135.06055 win32-x64 (198 image files):
 #  - Replaced (unambiguous app identity ONLY): code.ico + Start-menu tile
@@ -143,6 +214,7 @@ else {
 #  - NEVER touched: per-language/file-type icons (python.ico, java.ico, ...,
 #    default.ico, shell.ico), extension icons (*\extensions\*), workbench UI
 #    graphics (*\out\* media/spritesheets), third-party favicons.
+#    P20 EXCEPTION (STEP 2c): code-icon.svg CONTENT ONLY (old-marker match), filename kept.
 #  - resources\win32\ (legacy path) is probed but absent in current builds;
 #    resources\linux / resources\darwin are logged if present (coherence).
 # ============================================================
@@ -493,7 +565,27 @@ if ($feedLeftovers.Count -gt 0) {
 # Helper (STEP 4e): recursively replace display-context VSCodium in JSON string
 # VALUES only (keys/structure untouched). Returns occurrences replaced.
 # PS 5.1 compatible: no ternary, no ?. / ?? operators.
-function Invoke-JsonStringBranding($node, $pattern) {
+function Invoke-BrandReplace([string]$text) {
+    $total = 0
+    $out = $text
+    foreach ($bp in $brandPatterns) {
+        $m = ([regex]::Matches($out, $bp[0])).Count
+        if ($m -gt 0) {
+            $out = [regex]::Replace($out, $bp[0], $bp[1])
+            $total += $m
+        }
+    }
+    return @{ text = $out; count = $total }
+}
+
+function Test-BrandMatch([string]$text) {
+    foreach ($bp in $brandPatterns) {
+        if ($text -match $bp[0]) { return $true }
+    }
+    return $false
+}
+
+function Invoke-JsonStringBranding($node) {
     $count = 0
     if ($node -is [string]) {
         return 0
@@ -502,14 +594,15 @@ function Invoke-JsonStringBranding($node, $pattern) {
         for ($i = 0; $i -lt $node.Count; $i++) {
             $v = $node[$i]
             if ($v -is [string]) {
-                $m = ([regex]::Matches($v, $pattern)).Count
+                $br = Invoke-BrandReplace $v
+                $m = $br.count
                 if ($m -gt 0) {
-                    $node[$i] = [regex]::Replace($v, $pattern, 'Sudo Studio')
+                    $node[$i] = $br.text
                     $count += $m
                 }
             }
             else {
-                $count += Invoke-JsonStringBranding $v $pattern
+                $count += Invoke-JsonStringBranding $v
             }
         }
     }
@@ -517,14 +610,15 @@ function Invoke-JsonStringBranding($node, $pattern) {
         foreach ($prop in $node.PSObject.Properties) {
             $v = $prop.Value
             if ($v -is [string]) {
-                $m = ([regex]::Matches($v, $pattern)).Count
+                $br = Invoke-BrandReplace $v
+                $m = $br.count
                 if ($m -gt 0) {
-                    $prop.Value = [regex]::Replace($v, $pattern, 'Sudo Studio')
+                    $prop.Value = $br.text
                     $count += $m
                 }
             }
             else {
-                $count += Invoke-JsonStringBranding $v $pattern
+                $count += Invoke-JsonStringBranding $v
             }
         }
     }
@@ -551,15 +645,26 @@ function Invoke-JsonStringBranding($node, $pattern) {
 #  - URL/path contexts (sourceMappingURL, github.com/VSCodium/..., update &
 #    download endpoints) are KEPT by the display-context regex - changing them
 #    would break source maps and the update mechanism.
+#  - P20: ordered multi-pattern table (Securing VSCodium, Microsoft (Visual
+#    Studio|VS) Code, Visual Studio Code, VS Code, VSCodium, Codium); legal
+#    skip extended to ThirdPartyNotices/CREDITS/ATTRIBUTION (mandatory).
 # ============================================================
 Write-Host "[STEP 4e] Exhaustive text sweep over whole build dir (10 extensions, <64MB)..."
 $step4eExts = @('.js','.json','.html','.css','.txt','.md','.xml','.ini','.plist')
-$displayPattern = '(?<![/\\.])VSCodium(?![/\\.])'
+$brandPatterns = @(
+    @('Securing VSCodium', 'Sudo Studio'),
+    @('Microsoft Visual Studio Code', 'Sudo Studio'),
+    @('Microsoft VS Code', 'Sudo Studio'),
+    @('(?<![/\\.\w-])Visual Studio Code(?![/\\.\w-])', 'Sudo Studio'),
+    @('(?<![/\\.\w-])VS Code(?![/\\.\w-])', 'Sudo Studio'),
+    @('(?<![/\\.])VSCodium(?![/\\.])', 'Sudo Studio'),
+    @('(?<![/\\.\w-])Codium(?![/\\.\w-])', 'Sudo Studio')
+)
 $step4eFiles = Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
     Where-Object { $_.FullName -notmatch 'node_modules' } |
     Where-Object { $_.FullName -notmatch '\\.git\\' } |
-    Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-PARTY|COPYING)' } |
+    Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-?PARTY|COPYING|CREDITS|ATTRIBUTION)' } |
     Where-Object { $_.Length -lt 64MB }
 $step4eScanned = 0
 $step4ePatched = 0
@@ -569,7 +674,7 @@ foreach ($file in $step4eFiles) {
     $step4eScanned++
     try {
         $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
-        if ($raw -notmatch 'VSCodium') { continue }
+        if (-not (Test-BrandMatch $raw)) { continue }
         $rel4e = $file.FullName.Substring($resolvedDir.Length)
         $rawBytes4e = [System.IO.File]::ReadAllBytes($file.FullName)
         $hasBom4e = ($rawBytes4e.Length -ge 3 -and $rawBytes4e[0] -eq 0xEF -and $rawBytes4e[1] -eq 0xBB -and $rawBytes4e[2] -eq 0xBF)
@@ -586,9 +691,10 @@ foreach ($file in $step4eFiles) {
             }
             if ($null -eq $jsonObj) { continue }
             if ($jsonObj -is [string]) {
-                $mRoot = ([regex]::Matches($jsonObj, $displayPattern)).Count
+                $brRoot = Invoke-BrandReplace $jsonObj
+                $mRoot = $brRoot.count
                 if ($mRoot -eq 0) { continue }
-                $patchedJson = ([regex]::Replace($jsonObj, $displayPattern, 'Sudo Studio')) | ConvertTo-Json -Depth 1000
+                $patchedJson = ($brRoot.text) | ConvertTo-Json -Depth 1000
                 try { $checkRoot = $patchedJson | ConvertFrom-Json }
                 catch {
                     Write-Warning ("[WARN] [4e] JSON re-parse failed, skipped: {0}" -f $rel4e)
@@ -604,7 +710,7 @@ foreach ($file in $step4eFiles) {
             else {
                 if ($jsonObj -is [System.Collections.IList]) { $beforeCount = $jsonObj.Count }
                 else { $beforeCount = @($jsonObj.PSObject.Properties).Count }
-                $nRepl = Invoke-JsonStringBranding $jsonObj $displayPattern
+                $nRepl = Invoke-JsonStringBranding $jsonObj
                 if ($nRepl -eq 0) { continue }
                 $patchedJson = $jsonObj | ConvertTo-Json -Depth 1000
                 try { $checkObj = $patchedJson | ConvertFrom-Json }
@@ -620,7 +726,8 @@ foreach ($file in $step4eFiles) {
                     $step4eSkipped++
                     continue
                 }
-                $leftover = ([regex]::Matches($patchedJson, $displayPattern)).Count
+                $leftover = 0
+                foreach ($bpLeft in $brandPatterns) { $leftover += ([regex]::Matches($patchedJson, $bpLeft[0])).Count }
                 if ($leftover -gt 0) {
                     Write-Warning ("[WARN] [4e] Display-context leftovers ({0}), skipped: {1}" -f $leftover, $rel4e)
                     $step4eSkipped++
@@ -640,16 +747,18 @@ foreach ($file in $step4eFiles) {
                 $xmlDoc.LoadXml($raw)
                 $plistCount = 0
                 foreach ($textNode in $xmlDoc.SelectNodes('//text()')) {
-                    $m = ([regex]::Matches($textNode.Value, $displayPattern)).Count
+                    $brPlist = Invoke-BrandReplace $textNode.Value
+                    $m = $brPlist.count
                     if ($m -gt 0) {
-                        $textNode.Value = [regex]::Replace($textNode.Value, $displayPattern, 'Sudo Studio')
+                        $textNode.Value = $brPlist.text
                         $plistCount += $m
                     }
                 }
                 foreach ($attr in $xmlDoc.SelectNodes('//@*')) {
-                    $m = ([regex]::Matches($attr.Value, $displayPattern)).Count
+                    $brAttr = Invoke-BrandReplace $attr.Value
+                    $m = $brAttr.count
                     if ($m -gt 0) {
-                        $attr.Value = [regex]::Replace($attr.Value, $displayPattern, 'Sudo Studio')
+                        $attr.Value = $brAttr.text
                         $plistCount += $m
                     }
                 }
@@ -673,9 +782,10 @@ foreach ($file in $step4eFiles) {
         }
         else {
             # ---- Direct text path (.js/.html/.css/.txt/.md/.xml/.ini) ----
-            $mDirect = ([regex]::Matches($raw, $displayPattern)).Count
+            $brDirect = Invoke-BrandReplace $raw
+            $mDirect = $brDirect.count
             if ($mDirect -eq 0) { continue }
-            $patched = [regex]::Replace($raw, $displayPattern, 'Sudo Studio')
+            $patched = $brDirect.text
             [System.IO.File]::WriteAllText($file.FullName, $patched, $enc4e)
             Write-Host ("[OK] [4e] Text patched ({0} occ): {1}" -f $mDirect, $rel4e)
             $step4ePatched++
@@ -693,18 +803,18 @@ $verifyLeftovers = @(Get-ChildItem $resolvedDir -Recurse -File -ErrorAction Sile
     Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
     Where-Object { $_.FullName -notmatch 'node_modules' } |
     Where-Object { $_.FullName -notmatch '\\.git\\' } |
-    Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-PARTY|COPYING)' } |
+    Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-?PARTY|COPYING|CREDITS|ATTRIBUTION)' } |
     Where-Object { $_.Length -lt 64MB } |
     Where-Object {
-        try { [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8) -match $displayPattern }
+        try { Test-BrandMatch ([System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)) }
         catch { $false }
     })
 if ($verifyLeftovers.Count -gt 0) {
-    Write-Warning ("[WARN] [4e] VERIFY: {0} file(s) still hold display-context VSCodium (see below). URL/path + legal contexts are kept by design." -f $verifyLeftovers.Count)
+    Write-Warning ("[WARN] [4e] VERIFY: {0} file(s) still hold display-context brand names (see below). URL/path + legal contexts are kept by design." -f $verifyLeftovers.Count)
     $verifyLeftovers | ForEach-Object { Write-Host ("  [4e-LEFTOVER] {0}" -f $_.FullName.Substring($resolvedDir.Length)) }
 }
 else {
-    Write-Host "[OK] [4e] VERIFY: 0 display-context VSCodium occurrences remain (URL/path + legal contexts kept by design)"
+    Write-Host "[OK] [4e] VERIFY: 0 display-context brand-name occurrences remain (URL/path + legal kept by design)"
 }
 # Rename Start-menu tile manifest to match the renamed executable.
 # Windows binds <exename>.VisualElementsManifest.xml; after VSCodium.exe ->

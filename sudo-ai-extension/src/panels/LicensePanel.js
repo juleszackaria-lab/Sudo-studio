@@ -447,16 +447,16 @@ function addSeat(){
 
 function renderEditions(){
   const defs=[
-    {name:'Community',seats:1,price:'Free',   features:['chat','doctor','sdk']},
-    {name:'Team',     seats:10,price:'$49/mo', features:['chat','doctor','sdk','devops','environment','agent']},
-    {name:'Enterprise',seats:'∞',price:'$199/mo',features:ALL_FEATURES},
+    {name:'Community',seats:'1 poste',features:['chat','doctor','sdk']},
+    {name:'Team',seats:'10 postes',features:['chat','doctor','sdk','devops','environment','agent']},
+    {name:'Enterprise',seats:'Illimit&eacute;',features:ALL_FEATURES},
   ];
   return '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">'+defs.map(d=>\`
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px">
       <div style="font-weight:600;margin-bottom:4px">\${d.name}</div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">\${d.seats} seats · \${d.price}</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:8px">\${d.seats}</div>
       \${d.features.map(f=>\`<div style="font-size:11px;color:#3fb950">✓ \${FEAT_LABELS[f]||f}</div>\`).join('')}
-    </div>\`).join('')+'</div>';
+    </div>\`).join('')+'</div><p style="font-size:12px;color:var(--muted);margin-top:10px">Licenses are sold as one-time purchases. Your vendor sets the price - contact them for a quote.</p>';
 }
 
 function escH(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }

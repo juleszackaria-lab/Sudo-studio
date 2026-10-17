@@ -317,10 +317,11 @@ async function main() {
   check('L1: sudoAgent commands declared', cmds.includes('sudoAgent.open') && cmds.includes('sudoAgent.stop'));
   const kb = (pkg.contributes.keybindings || []).find((k) => k.command === 'sudoAgent.open');
   check('L2: keybinding ctrl+alt+a', !!kb && kb.key === 'ctrl+alt+a', kb);
-  const cont = pkg.contributes.viewsContainers.activitybar.find((v) => v.id === 'sudo-agent');
-  check('L3: activity container + icons on disk', !!cont && cont.title === 'Sudo Agent'
-    && fs.existsSync(path.join(EXT, cont.icon.light)) && fs.existsSync(path.join(EXT, cont.icon.dark)));
-  check('L4: launcher view declared', (pkg.contributes.views['sudo-agent'] || []).some((v) => v.id === 'sudoAgentLauncher'));
+  const cont = pkg.contributes.viewsContainers.activitybar.find((v) => v.id === 'sudo-studio');
+  check('L3: activity container + icons on disk', !!cont && cont.title === 'Sudo Studio'
+    && fs.existsSync(path.join(EXT, cont.icon.light)) && fs.existsSync(path.join(EXT, cont.icon.dark))
+    && !pkg.contributes.viewsContainers.activitybar.some((v) => v.id === 'sudo-agent'));
+  check('L4: launcher view declared', (pkg.contributes.views['sudo-studio'] || []).some((v) => v.id === 'sudoAgentLauncher'));
   check('L5: old agent title cleaned', pkg.contributes.commands.find((c) => c.command === 'sudoStudio.openAgentPanel').title === 'Sudo Agent');
   const extSrc = fs.readFileSync(path.join(EXT, 'extension.js'), 'utf8');
   check('L6: extension wires agent commands + view + status bar',
@@ -336,7 +337,7 @@ async function main() {
 
   // ------------------------------------------------- M. ASCII sources
   for (const f of ['src/agent/AgentPanel.js', 'src/agent/AgentActivityView.js', 'src/agent/AgentEngine.js',
-      'resources/agent-light.svg', 'resources/agent-dark.svg', 'THIRD_PARTY_NOTICES.md']) {
+      'resources/sudo-robot.svg', 'THIRD_PARTY_NOTICES.md']) {
     const s = fs.readFileSync(path.join(EXT, f), 'utf8');
     const bad = [...new Set([...s].filter((c) => c.codePointAt(0) > 127))];
     check('M: ASCII ' + f, bad.length === 0, bad.slice(0, 3));
