@@ -35,7 +35,13 @@ function run(cmd, opts = {}) {
 const SECRET_PATTERNS = require('../utils/secretPatterns');
 
 const GITIGNORE_SENSITIVE = ['.env', '.env.local', '.env.production', '*.pem', '*.key', '*.p12', 'secrets.json', 'credentials.json'];
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.dart_tool', '.pub-cache']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.dart_tool', '.pub-cache',
+    'vendor', 'Pods', '.venv', 'venv', 'target', 'bower_components', '.gradle', 'Pods']);
+const ENTROPY_SKIP_FILES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb',
+    'cargo.lock', 'poetry.lock', 'pipfile.lock', 'composer.lock', 'gemfile.lock', 'go.sum',
+    'pubspec.lock', 'packages.lock.json']);
+const MAX_SCAN_BYTES = 1024 * 1024;
+const MAX_ENTROPY_LINE = 2000;
 
 class SecurityPanel {
     static currentPanel = undefined;
@@ -141,6 +147,7 @@ class SecurityPanel {
         if (wsRoot) {
             audit.secrets = await this._scanSecrets(wsRoot);
             audit.secretsSkipped = this._lastSecretsSkipped || 0;
+            audit.secretsMeta = this._lastSecretsMeta || null;
             audit.issues += audit.secrets.length;
         }
 
@@ -205,7 +212,7 @@ class SecurityPanel {
             try {
                 const { db, from, error } = loadAdvisories();
                 if (!db) {
-                    audit.localAudit = { error: 'Advisory database missing or corrupt - local audit unreliable: ' + (error || 'unknown'), unreliable: true };
+                    audit.localAudit = { error: 'Advisory database missing or corrupt - local audit unreliable: ' + (error || 'unknown'), unreliable: true, missingDb: true, missingText: 'Vulnérabilités : non évaluées (base d\'avis absente)' };
                 } else {
                     const pkgs = collectPackages(wsRoot);
                     const matches = matchAdvisories(pkgs, db);
@@ -258,48 +265,90 @@ class SecurityPanel {
     // ── Secret scanner (walks workspace files) ───────────────────────────────
     async _scanSecrets(root) {
         const hits = [];
-        this._lastSecretsSkipped = 0;
-        // P10: shared patterns + local unquoted-assignment pattern; each hit
-        // carries its severity for the score. match() without /g behaves
-        // exactly like the previous test() for the shared patterns.
+        // P18: every text file is scanned (dotfiles and extensionless files
+        // included); only dependency dirs, huge files and binaries are left
+        // out, and every skip is counted. meta drives the honest UI.
+        const meta = { scanned: 0,
+            skipped: { large: 0, binary: 0, unreadable: 0, dirs: 0, symlink: 0 },
+            error: null };
         const patterns = SECRET_PATTERNS.concat(securityScore.EXTRA_SECRET_PATTERNS);
-        const scannable = (name) => name.startsWith('.env')
-            || /\.(js|ts|py|env|json|yaml|yml|sh|bat|ps1|config|conf|ini|txt|npmrc|pem|key|dart|go|java|cs|rb|php|toml)$/.test(name);
+        let giText = '';
+        try { giText = fs.readFileSync(path.join(root, '.gitignore'), 'utf8'); } catch { giText = ''; }
         const walk = (dir, depth) => {
             if (depth > 6) return;
             let entries;
-            try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true });
+            } catch {
+                meta.skipped.dirs++;
+                if (depth === 0) meta.error = 'workspace root is not readable';
+                return;
+            }
             for (const e of entries) {
-                if (SKIP_DIRS.has(e.name)) continue;
                 const full = path.join(dir, e.name);
-                if (e.isDirectory()) { walk(full, depth + 1); continue; }
-                if (!scannable(e.name)) continue;
+                let isLink = false;
+                try { isLink = e.isSymbolicLink(); } catch { /* ignore */ }
+                if (isLink) { meta.skipped.symlink++; continue; }
+                if (e.isDirectory()) {
+                    if (!SKIP_DIRS.has(e.name)) walk(full, depth + 1);
+                    continue;
+                }
+                if (!e.isFile()) continue;
                 // TASK 7c: skip huge files (never freeze the audit on a 500 MB log).
-                try { if (fs.statSync(full).size > 1024 * 1024) { this._lastSecretsSkipped++; continue; } } catch { continue; }
-                let content;
-                try { content = fs.readFileSync(full, 'utf8'); } catch { continue; }
-                const lines = content.split('\n');
-                lines.forEach((line, idx) => {
+                let size = -1;
+                try { size = fs.statSync(full).size; } catch { meta.skipped.unreadable++; continue; }
+                if (size > MAX_SCAN_BYTES) { meta.skipped.large++; continue; }
+                let buf;
+                try { buf = fs.readFileSync(full); } catch { meta.skipped.unreadable++; continue; }
+                if (buf.indexOf(0) !== -1) { meta.skipped.binary++; continue; }
+                meta.scanned++;
+                const rel = path.relative(root, full);
+                const ignored = securityScore.isIgnoredByGitignore(rel, giText);
+                const lowName = e.name.toLowerCase();
+                const skipEntropy = ENTROPY_SKIP_FILES.has(lowName) || lowName.endsWith('.min.js');
+                const lines = buf.toString('utf8').split('\n');
+                for (let idx = 0; idx < lines.length; idx++) {
+                    const line = lines[idx];
+                    let hit = null;
                     for (const pat of patterns) {
                         const m = line.match(pat.re);
                         if (!m) continue;
                         if (typeof pat.check === 'function' && !pat.check(m)) continue;
-                        // Redact the match itself — show only surrounding context
-                        const redacted = line.trim()
-                            .replace(pat.re, '[REDACTED]')
-                            .slice(0, 100);
-                        hits.push({
-                            label: pat.label,
-                            severity: securityScore.severityOfSecret(pat.label),
-                            file: path.relative(root, full),
-                            line: idx + 1,
-                            snippet: redacted,
-                        });
+                        hit = { pat, m };
+                        break; // P18: first (strongest) pattern wins per line
                     }
-                });
+                    let token = null;
+                    if (!hit && !skipEntropy && line.length <= MAX_ENTROPY_LINE) {
+                        token = securityScore.findHighEntropyToken(line);
+                    }
+                    if (!hit && !token) continue;
+                    const label = hit ? hit.pat.label : 'High-Entropy String';
+                    const secretPart = hit
+                        ? String(typeof hit.pat.valueGroup === 'number'
+                            ? (hit.m[hit.pat.valueGroup] || hit.m[0]) : hit.m[0])
+                        : String(token);
+                    // The secret itself never survives in the snippet: every
+                    // occurrence is replaced, then the view centers on context.
+                    let snippet = secretPart
+                        ? line.trim().split(secretPart).join('[REDACTED]')
+                        : line.trim().slice(0, 100);
+                    const at = snippet.indexOf('[REDACTED]');
+                    snippet = at > 60 ? ('...' + snippet.slice(at - 40, at + 60)) : snippet.slice(0, 100);
+                    hits.push({
+                        label,
+                        severity: ignored ? securityScore.severityOfSecret(label) : 'critical',
+                        ignored,
+                        file: rel,
+                        line: idx + 1,
+                        snippet,
+                    });
+                }
             }
         };
         walk(root, 0);
+        const sk = meta.skipped;
+        this._lastSecretsSkipped = sk.large + sk.binary + sk.unreadable + sk.dirs + sk.symlink;
+        this._lastSecretsMeta = meta;
         return hits;
     }
 
@@ -353,7 +402,7 @@ class SecurityPanel {
             });
             if (!saveUri) return;
             // Snippets are already redacted by the scanner; never export raw lines.
-            const payload = { exportedAt: new Date().toISOString(), wsRoot: this.results.wsRoot, skippedLarge: this.results.secretsSkipped || 0, secrets };
+            const payload = { exportedAt: new Date().toISOString(), wsRoot: this.results.wsRoot, skippedLarge: this.results.secretsSkipped || 0, scanMeta: this.results.secretsMeta || null, secrets };
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(payload, null, 2), 'utf8');
             const back = JSON.parse(fs.readFileSync(saveUri.fsPath, 'utf8'));
             if (!back || (back.secrets || []).length !== secrets.length) throw new Error('verify-mismatch');
@@ -384,7 +433,7 @@ class SecurityPanel {
                 ? securityScore.buildReportHtml(audit)
                 : JSON.stringify({ exportedAt: new Date().toISOString(), wsRoot: audit.wsRoot,
                     scoreResult: audit.scoreResult, secrets: audit.secrets,
-                    secretsSkipped: audit.secretsSkipped || 0,
+                    secretsSkipped: audit.secretsSkipped || 0, secretsMeta: audit.secretsMeta || null,
                     localAudit: audit.localAudit, npmAudit: audit.npmAudit }, null, 2);
             fs.writeFileSync(saveUri.fsPath, payload, 'utf8');
             const back = fs.readFileSync(saveUri.fsPath, 'utf8');
@@ -642,11 +691,18 @@ function renderAudit(a){
   }
   // Secrets
   html+=\`<div class="section"><h2>🔑 Secrets / Credential Leaks (\${a.secrets.length})</h2>\`;
-  if(a.secrets.length===0){html+='<p class="empty">✅ No secrets detected in workspace files.</p>';}
+  var sm = a.secretsMeta || { scanned: 0, skipped: {}, error: null };
+  var ssk = sm.skipped || {};
+  var skN = (ssk.large||0)+(ssk.binary||0)+(ssk.unreadable||0)+(ssk.dirs||0)+(ssk.symlink||0);
+  html+='<p style="font-size:12px;color:var(--muted)">'+sm.scanned+' file(s) analyzed.</p>';
+  if(sm.error){html+='<p style="font-size:13px;font-weight:700;color:#f85149">Scan FAILED ('+escHtml(sm.error)+') - results incomplete, absence of secrets NOT established.</p>';}
+  else if(skN>0){html+='<p style="font-size:12px;color:#e3b341">Partial scan: '+skN+' file(s) skipped (large: '+(ssk.large||0)+', binary: '+(ssk.binary||0)+', unreadable: '+(ssk.unreadable||0)+', dirs: '+(ssk.dirs||0)+', links: '+(ssk.symlink||0)+').</p>';}
+  if(a.secrets.length===0 && !sm.error){html+='<p class="empty">No secrets detected in '+sm.scanned+' file(s).</p>';}
   else{
     a.secrets.forEach(s=>{
       html+=\`<div class="issue-row">
-        <span class="badge badge-red">LEAK</span>
+        <span class="badge \${(s.severity==='critical'||s.severity==='high')?'badge-red':(s.severity==='medium'?'badge-yellow':'badge-green')}">\${escHtml((s.severity||'medium').toUpperCase())}</span>
+        <span class="badge \${s.ignored?'badge-green':'badge-red'}">\${s.ignored?'IGNORED':'NOT IGNORED'}</span>
         <div style="flex:1">
           <div><strong>\${s.label}</strong> — <span class="file-link" onclick="openFile('\${s.file}',\${s.line})">\${s.file}:\${s.line}</span></div>
           <div style="font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px">\${escHtml(s.snippet)}</div>
@@ -654,7 +710,7 @@ function renderAudit(a){
       </div>\`;
     });
   }
-  if(a.secretsSkipped>0){html+='<p class="empty">Skipped '+a.secretsSkipped+' file(s) over 1 MB (too large to scan).</p>';}
+  // P18: skip details moved to the partial-scan line above (all skip reasons).
   html+='</div>';
 
   // .gitignore
@@ -696,7 +752,8 @@ function renderAudit(a){
     html+=\`<div class="section"><h2>Local Advisory DB (offline)</h2>\`;
     const la=a.localAudit;
     if(la.error){
-      html+=\`<p class="empty">WARNING \${escHtml(la.error)}</p>\`;
+      if(la.missingDb){html+='<p style="font-size:13px;font-weight:700;color:#e3b341">'+escHtml(la.missingText || 'Vulnerabilites : non evaluees')+'</p>';}
+      else{html+=\`<p class="empty">WARNING \${escHtml(la.error)}</p>\`;}
     } else {
       html+=\`<p style="font-size:12px;color:var(--muted)">Base: \${la.dbEntries} advisories, dated \${escHtml(la.dbDate)} (\${escHtml(la.dbSource)}), \${la.scanned} package(s) scanned.</p>\`;
       if(la.stale){html+='<p class="empty">WARNING Advisory base is older than 180 days - result NOT RELIABLE. Import a fresher base.</p>';}
