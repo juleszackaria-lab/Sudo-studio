@@ -12,7 +12,8 @@
 const vscode = require('vscode');
 const { exec } = require('child_process');
 const { appendAudit } = require('../utils/auditLog');
-const { loadAdvisories, collectPackages, matchAdvisories, dbIsStale, userDbPath } = require('../utils/localAudit');
+const { loadAdvisories, collectPackages, matchAdvisories, dbIsStale, userDbPath, uncoveredEcosystems } = require('../utils/localAudit');
+const advisorySig = require('../utils/advisorySig'); // P23: signed offline updates
 const securityScore = require('../utils/securityScore');
 const coverageUtil = require('../utils/coverage');
 const fs   = require('fs');
@@ -220,6 +221,7 @@ class SecurityPanel {
                         dbDate: db.generatedAt || 'unknown', dbSource: from,
                         dbEntries: db.advisories.length, scanned: pkgs.length,
                         stale: dbIsStale(db.generatedAt), matches,
+                        uncovered: uncoveredEcosystems(pkgs, db),
                     };
                     for (const m of matches) {
                         audit.issues += m.severity === 'critical' ? 3 : 1;
@@ -380,7 +382,7 @@ class SecurityPanel {
                 filters: { 'JSON': ['json'] }
             });
             if (!saveUri) return;
-            const payload = { exportedAt: new Date().toISOString(), dbDate: la.dbDate, dbSource: la.dbSource, dbEntries: la.dbEntries, stale: la.stale, scanned: la.scanned, matches: la.matches };
+            const payload = { exportedAt: new Date().toISOString(), dbDate: la.dbDate, dbSource: la.dbSource, dbEntries: la.dbEntries, stale: la.stale, scanned: la.scanned, uncovered: la.uncovered || [], matches: la.matches };
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(payload, null, 2), 'utf8');
             const back = JSON.parse(fs.readFileSync(saveUri.fsPath, 'utf8'));
             if (!back || (back.matches || []).length !== la.matches.length) throw new Error('verify-mismatch');
@@ -453,20 +455,27 @@ class SecurityPanel {
             const uris = await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectMany: false, filters: { 'JSON': ['json'] } });
             if (!uris || !uris.length) return;
             const stat = fs.statSync(uris[0].fsPath);
-            if (stat.size > 10 * 1024 * 1024) { vscode.window.showErrorMessage('Advisory file too large (max 10 MB).'); return; }
+            // The real OSV-built base is ~20 MB compact JSON; 32 MB leaves
+            // headroom while still bounding parse/write abuse.
+            if (stat.size > 32 * 1024 * 1024) { vscode.window.showErrorMessage('Paquet trop volumineux (max 32 Mo).'); return; }
             const raw = JSON.parse(fs.readFileSync(uris[0].fsPath, 'utf8'));
-            if (!raw || !Array.isArray(raw.advisories) || !raw.generatedAt) {
-                vscode.window.showErrorMessage('Invalid advisory file - needs { generatedAt, advisories[] }.');
-                appendAudit('SECURITY_IMPORT_ADVISORIES', 'rejected: bad format', { result: 'error', verified: false });
+            // P23: SIGNED packages only (dedicated advisory key). Unsigned /
+            // tampered / older-than-current packages are refused and never
+            // touch the imported DB.
+            const current = loadAdvisories().db;
+            const verdict = advisorySig.assertImportable(raw, current);
+            if (!verdict.ok) {
+                vscode.window.showErrorMessage('Import refuse : ' + verdict.reason);
+                appendAudit('SECURITY_IMPORT_ADVISORIES', 'rejected: ' + verdict.reason, { result: 'error', verified: false });
                 return;
             }
             const dest = userDbPath();
             if (!fs.existsSync(path.dirname(dest))) fs.mkdirSync(path.dirname(dest), { recursive: true });
-            fs.writeFileSync(dest, JSON.stringify(raw, null, 2), 'utf8');
+            fs.writeFileSync(dest, JSON.stringify(raw), 'utf8'); // compact: the real base is ~20 MB
             const back = JSON.parse(fs.readFileSync(dest, 'utf8'));
             if (!back || (back.advisories || []).length !== raw.advisories.length) throw new Error('verify-mismatch');
             appendAudit('SECURITY_IMPORT_ADVISORIES', `${raw.advisories.length} advisories imported (dated ${raw.generatedAt})`, { result: 'ok', verified: true });
-            vscode.window.showInformationMessage(`Advisory base imported (${raw.advisories.length} entries). Re-running audit...`);
+            vscode.window.showInformationMessage(`Base d'avis importee (${raw.advisories.length} entrees, datee ${raw.generatedAt}). Re-audit...`);
             this._runAudit();
         } catch {
             vscode.window.showErrorMessage('Import failed - check the file and permissions.');
@@ -602,7 +611,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <button class="btn" onclick="exportSecrets()">Export secrets (JSON)</button>
   <button class="btn" onclick="exportReport()">Export report (JSON)</button>
   <button class="btn" onclick="exportReportHtml()">Export report (HTML)</button>
-  <button class="btn" onclick="importDb()">Import advisory DB</button>
+  <button class="btn" onclick="importDb()">Importer une base d\'avis</button>
   <button class="btn" onclick="measureCoverage()" id="coverageBtn">Measure coverage</button>
 </div>
 <div id="coverage"></div>
@@ -649,7 +658,9 @@ window.addEventListener('message', e => {
 function renderAudit(a){
   document.getElementById('refreshBtn').disabled=false;
   const ws = a.wsRoot ? a.wsRoot.split(/[\\/]/).pop() : '(no workspace)';
-  document.getElementById('subtitle').textContent = 'Workspace: ' + ws + ' — ' + new Date(a.timestamp).toLocaleTimeString();
+  var dbNote = 'base d\\'avis: absente ou inutilisable';
+  if (a.localAudit && !a.localAudit.error) { dbNote = 'base d\\'avis du ' + a.localAudit.dbDate + ' (' + a.localAudit.dbSource + ')'; }
+  document.getElementById('subtitle').textContent = 'Workspace: ' + ws + ' — ' + new Date(a.timestamp).toLocaleTimeString() + ' — ' + dbNote;
 
   let html='';
 
@@ -756,7 +767,8 @@ function renderAudit(a){
       else{html+=\`<p class="empty">WARNING \${escHtml(la.error)}</p>\`;}
     } else {
       html+=\`<p style="font-size:12px;color:var(--muted)">Base: \${la.dbEntries} advisories, dated \${escHtml(la.dbDate)} (\${escHtml(la.dbSource)}), \${la.scanned} package(s) scanned.</p>\`;
-      if(la.stale){html+='<p class="empty">WARNING Advisory base is older than 180 days - result NOT RELIABLE. Import a fresher base.</p>';}
+      if(la.stale){html+='<p class="empty">WARNING Advisory base is older than 90 days - result NOT RELIABLE. Import a fresher base.</p>';}
+      if(la.uncovered && la.uncovered.length){ la.uncovered.forEach(function(u){ html+='<p style="font-size:13px;font-weight:700;color:#e3b341">'+escHtml(u.ecosystem)+' : \u00e9cosyst\u00e8me non couvert ('+u.count+' paquet(s) non \u00e9valu\u00e9(s)) - absence de vuln\u00e9rabilit\u00e9s NON \u00e9tablie.</p>'; }); }
       if(la.matches.length===0){html+=\`<p class="empty">No match in the local base (\${la.dbEntries} advisories, \${escHtml(la.dbDate)}) - this does not rule out other vulnerabilities.</p>\`;}
       else{
         la.matches.forEach(m=>{

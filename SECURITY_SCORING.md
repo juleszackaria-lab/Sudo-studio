@@ -65,7 +65,7 @@ garde-fou. Le score est **recalculé à chaque exécution** (ouverture + Refresh
 
 - Base d'avis **absente ou inutilisable** → statut `unavailable`,
   `score: null`, affichage « Score non calculable : \<raison\> ».
-- Base d'avis **trop ancienne** (> 180 jours, `STALE_DAYS`) → statut
+- Base d'avis **trop ancienne** (> 90 jours, `STALE_DAYS`, P23) → statut
   `partial` : le chiffre est affiché **avec** le bandeau
   « Score partiel : \<raison + date\> ».
 - Sans dossier ouvert → `unavailable` (« aucun dossier de projet ouvert »).

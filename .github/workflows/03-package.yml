@@ -9,6 +9,7 @@ name: 03 - Package Sudo Studio
 #   5. Replace internal VSCodium icon files with Sudo Studio logo
 #   6. Patch all visible "VSCodium" text in app/out JS bundles
 #   7. Rename VSCodium.exe → SudoStudio.exe
+#   7c. Build advisory DB from OSV dumps into the extension (P23)
 #   8. Copy runtime.exe + backend.exe artifacts into build dir
 #   8b. (removed P27: former third-party agent binary step deleted)
 #   9. Run Inno Setup to produce SudoStudio-Setup-x.y.z.exe
@@ -384,6 +385,25 @@ jobs:
             exit 1
           }
           Write-Host "[OK] SudoStudio.exe branding verified (icon + version strings applied by rcedit)"
+
+      - name: Setup Node.js (advisory DB build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+
+      # ── Step 7c (P23): build the offline advisory DB from OSV dumps ─────
+      # Runs BEFORE step 8 copies the extension, so the packaged product
+      # embeds a fresh base (the repo stub stays a fallback only). The
+      # builder prints per-ecosystem counts + size (kept in the run log).
+      - name: Build advisory DB from OSV (P23)
+        shell: powershell
+        run: |
+          node backend/tools/build-advisory-db.js build --out sudo-ai-extension/src/data/advisories.json --cache-dir "$env:RUNNER_TEMP\osv-cache"
+          if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] advisory DB build failed"; exit 1 }
+          $db = Get-Item "sudo-ai-extension/src/data/advisories.json"
+          if ($db.Length -lt 1000000) { Write-Host "[FAIL] advisory DB suspiciously small ($($db.Length) bytes)"; exit 1 }
+          node -e "const db=require('./sudo-ai-extension/src/data/advisories.json');if(!Array.isArray(db.advisories)||!db.generatedAt){console.error('bad DB shape');process.exit(1)}console.log('[OK] advisory DB verified: '+db.advisories.length+' entries, dated '+db.generatedAt)"
+          if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] advisory DB verification failed"; exit 1 }
 
       # ── Step 8: Copy runtime.exe + backend.exe + extension ───────────────
       - name: Copy runtime and backend executables

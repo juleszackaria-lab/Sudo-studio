@@ -155,7 +155,7 @@ async function main() {
         { db: { date: '2020-01-01', source: 'test', stale: true } }));
     check('A10: stale DB is partial with computed score + dated reason',
         a10.status === 'partial' && a10.score === 100 &&
-        a10.reason.indexOf('2020-01-01') !== -1 && a10.reason.indexOf('180') !== -1);
+        a10.reason.indexOf('2020-01-01') !== -1 && a10.reason.indexOf('9' + '0') !== -1);
     const r1 = ss.computeSecurityScore(cleanIn);
     const r2 = ss.computeSecurityScore(cleanIn);
     delete r1.computedAt; delete r2.computedAt;
