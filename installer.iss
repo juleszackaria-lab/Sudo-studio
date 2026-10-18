@@ -118,6 +118,28 @@ Name: "{group}\Uninstall {#MyAppName}"; \
     IconFilename: "{app}\resources\icon.ico"
 
 ; ============================================================
+[InstallDelete]
+; -- P32(c): update cleanup - stale Sudo extension copies + old brand files --
+; Runs BEFORE the fresh [Files] copy. Stale pre-P20 extension copies (synced
+; once by old launchers, never refreshed) and old-base brand files would
+; otherwise linger forever next to the new files. NEVER touched: user data
+; (data\User and data\* except the stale sudo extensions below), models
+; (outside {app}), and the live agent at {app}\sudo-agent (P31 root layout).
+; Stale Sudo extension copies (the single live one is extensions\sudo-ai):
+Type: filesandordirs; Name: "{app}\extensions\sudo-ai"
+Type: filesandordirs; Name: "{app}\sudo-ai-extension"
+Type: filesandordirs; Name: "{app}\data\extensions\*sudo*"
+Type: filesandordirs; Name: "{app}\resources\app\extensions\*sudo*"
+; Old brand files (renamed/superseded; SudoStudio.exe is always shipped, so
+; the legacy exe name is safe to drop - smoke section 3 requires the new one):
+Type: files; Name: "{app}\VSCodium.exe"
+Type: files; Name: "{app}\VSCodium.VisualElementsManifest.xml"
+Type: files; Name: "{app}\code.ico"
+Type: files; Name: "{app}\resources\win32\code.ico"
+Type: files; Name: "{app}\resources\win32\code_150x150.png"
+Type: files; Name: "{app}\resources\win32\code_70x70.png"
+
+; ============================================================
 [Run]
 ; ── Step 1: Create Scheduled Task for auto-admin launch ──────────────────────
 ;

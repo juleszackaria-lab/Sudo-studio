@@ -9,7 +9,10 @@ param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'Sudo Studio'),
     [string]$OutDir = (Join-Path (Get-Location) 'smoke-out'),
-    [switch]$SkipEditorTest
+    [switch]$SkipEditorTest,
+    [string]$OldLogoSvgSha256 = '88bb8eb6c643403be96d1d218a564c28a05f3b31368aad10c0db0bc1efbed75f',
+    [string]$OldIconPngSha256 = 'b9971d910cb2502df37d7c65b2e36c9061d030fd41699bf9dafee46551c5505c',
+    [string]$NewIconPngSha256 = 'f9a9ccc40f3a630132f9485084e33a0504493b3d7adda663950e50600b219d42'
 )
 $ErrorActionPreference = 'Stop'
 $script:checks = New-Object System.Collections.ArrayList
@@ -127,6 +130,82 @@ try {
         if (-not $same) { throw 'code-icon.svg differs from sudo-icon.svg (STEP 2c missed)' }
         Add-Check 'brand-titlebar-svg' 'PASS' 'code-icon.svg == sudo-icon.svg'
     } catch { Add-Check 'brand-titlebar-svg' 'FAIL' $_.Exception.Message }
+
+    # -- 5b. branding P32: old logo zero + single extension + exe icon --
+    try {
+        $oldTextExts = @('.js', '.json', '.css', '.html', '.svg', '.xml', '.ts', '.nls', '.txt', '.md')
+        $oldHits = @(Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $oldTextExts -contains $_.Extension.ToLower() } |
+            Where-Object { $_.FullName -notmatch 'node_modules' } |
+            Where-Object { $_.FullName -notmatch '\\.git\\' } |
+            Where-Object { $_.Length -lt 64MB } |
+            Where-Object {
+                try {
+                    $t = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+                    $gA = ($t -match 'path6008') -and ($t -match 'Gradient_1')
+                    $gB = ($t -match '#78AEED') -and ($t -match '#1D6BCA') -and ($t -match 'linearGradient')
+                    if ($gA -or $gB) { $true }
+                    else {
+                        $hb = $false
+                        if ($_.Extension.ToLower() -eq '.js' -or $_.Extension.ToLower() -eq '.css') {
+                            foreach ($m in [regex]::Matches($t, 'data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)')) {
+                                try {
+                                    $d = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($m.Groups[1].Value))
+                                    $dA = ($d -match 'path6008') -and ($d -match 'Gradient_1')
+                                    $dB = ($d -match '#78AEED') -and ($d -match '#1D6BCA') -and ($d -match 'linearGradient')
+                                    if ($dA -or $dB) { $hb = $true; break }
+                                } catch {}
+                            }
+                        }
+                        $hb
+                    }
+                }
+                catch { $false }
+            })
+        if ($oldHits.Count -gt 0) { throw ('old-logo markers in: ' + (($oldHits | Select-Object -First 5 | ForEach-Object { $_.FullName.Substring($InstallDir.Length) }) -join ', ')) }
+        $oldSvg = @(Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension.ToLower() -eq '.svg' } |
+            Where-Object {
+                try { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() -eq $OldLogoSvgSha256.ToLower() }
+                catch { $false }
+            })
+        if ($oldSvg.Count -gt 0) { throw ('old-logo fingerprint svg: ' + $oldSvg[0].FullName.Substring($InstallDir.Length)) }
+        Add-Check 'brand-oldlogo-zero' 'PASS' 'markers+b64+fingerprint absent'
+    } catch { Add-Check 'brand-oldlogo-zero' 'FAIL' $_.Exception.Message }
+    try {
+        $copies = @()
+        if (Test-Path (Join-Path $InstallDir 'extensions\sudo-ai\package.json')) { $copies += 'extensions\sudo-ai' }
+        if (Test-Path (Join-Path $InstallDir 'sudo-ai-extension\package.json')) { $copies += 'sudo-ai-extension' }
+        foreach ($dd in @('data\extensions', 'resources\app\extensions')) {
+            $eroot = Join-Path $InstallDir $dd
+            if (Test-Path $eroot) {
+                foreach ($sub in @(Get-ChildItem $eroot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*sudo*' })) {
+                    $copies += ($dd + '\' + $sub.Name)
+                }
+            }
+        }
+        if ($copies.Count -ne 1 -or $copies[0] -ne 'extensions\sudo-ai') { throw ('copies: ' + ($copies -join ', ')) }
+        $ep = Get-Content (Join-Path $InstallDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json
+        $bar = @($ep.contributes.viewsContainers.activitybar)
+        if ($bar.Count -ne 1 -or $bar[0].id -ne 'sudo-studio') { throw 'activitybar container != [sudo-studio]' }
+        foreach ($ip in @($bar[0].icon.light, $bar[0].icon.dark)) {
+            if (-not $ip -or -not (Test-Path (Join-Path $InstallDir ('extensions\sudo-ai\' + ($ip -replace '/', '\'))))) { throw ('container icon missing: ' + $ip) }
+        }
+        $vs = $ep.contributes.views
+        if (-not $vs.'sudo-studio' -or @($vs.'sudo-studio').Count -lt 1) { throw 'no views in sudo-studio' }
+        if ($vs.explorer) { throw 'views still under explorer' }
+        Add-Check 'brand-extension-single' 'PASS' ($copies[0] + ' views=' + @($vs.'sudo-studio').Count)
+    } catch { Add-Check 'brand-extension-single' 'FAIL' $_.Exception.Message }
+    $exeCheck = Join-Path (Split-Path $PSScriptRoot -Parent) 'ci\check-exe-icon.ps1'
+    if (-not (Test-Path $exeCheck)) {
+        Add-Check 'brand-exe-icon' 'SKIP' 'checker not in checkout'
+    } else {
+        try {
+            & $exeCheck -ExePath (Join-Path $InstallDir 'SudoStudio.exe') -OldPngSha256 $OldIconPngSha256 -NewPngSha256 $NewIconPngSha256
+            if ($LASTEXITCODE -ne 0) { throw 'checker exit 1 (see [EXE-ICON] lines)' }
+            Add-Check 'brand-exe-icon' 'PASS' 'old gone + new present'
+        } catch { Add-Check 'brand-exe-icon' 'FAIL' $_.Exception.Message }
+    }
 
     # -- 6. backend + runtime health --
     $be = Start-Process -FilePath (Join-Path $InstallDir 'backend.exe') -WorkingDirectory $InstallDir -WindowStyle Hidden -PassThru

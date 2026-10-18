@@ -1,6 +1,10 @@
 param(
     [Parameter(Mandatory=$true)]
-    [string]$VSCodiumDir
+    [string]$VSCodiumDir,
+    [string]$RceditPath = '',
+    [string]$OldLogoSvgSha256 = '88bb8eb6c643403be96d1d218a564c28a05f3b31368aad10c0db0bc1efbed75f',
+    [string]$OldIconPngSha256 = 'b9971d910cb2502df37d7c65b2e36c9061d030fd41699bf9dafee46551c5505c',
+    [string]$NewIconPngSha256 = 'f9a9ccc40f3a630132f9485084e33a0504493b3d7adda663950e50600b219d42'
 )
 Write-Host "=== Sudo Studio Branding Customization ==="
 Write-Host "VSCodium directory: $VSCodiumDir"
@@ -219,7 +223,27 @@ $step2cLeftovers = @(Get-ChildItem $resolvedDir -Recurse -File -ErrorAction Sile
     Where-Object {
         try {
             $t2c = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
-            ($t2c -match 'path6008')
+            # P32-a: either full generation triggers (gen-A ids, gen-B 1.97.2
+            # blue stops + gradient). The pair of exact blues plus the gradient
+            # keyword is unique to the old art; single markers never match alone.
+            $gA = ($t2c -match 'path6008') -and ($t2c -match 'Gradient_1')
+            $gB = ($t2c -match '#78AEED') -and ($t2c -match '#1D6BCA') -and ($t2c -match 'linearGradient')
+            if ($gA -or $gB) { $true }
+            else {
+                # P32-a: base64 data-URI check - decode embedded SVGs, the old
+                # art must not hide inside workbench bundles (1.97.2 carries only
+                # generic glyphs: chevron + 14px circle - this stays 0).
+                $hitB64 = $false
+                foreach ($m64 in [regex]::Matches($t2c, 'data:image/svg\+xml;base64,([A-Za-z0-9+/=]+)')) {
+                    try {
+                        $dec64 = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($m64.Groups[1].Value))
+                        $dA = ($dec64 -match 'path6008') -and ($dec64 -match 'Gradient_1')
+                        $dB = ($dec64 -match '#78AEED') -and ($dec64 -match '#1D6BCA') -and ($dec64 -match 'linearGradient')
+                        if ($dA -or $dB) { $hitB64 = $true; break }
+                    } catch {}
+                }
+                $hitB64
+            }
         }
         catch { $false }
     })
@@ -229,6 +253,23 @@ if ($step2cLeftovers.Count -gt 0) {
 }
 else {
     Write-Host "[OK] [2c] VERIFY: 0 old-logo occurrences remain (marker path6008 absent everywhere)"
+
+# P32-a VERIFY (fingerprint): no SVG anywhere may still BE the old logo
+# (catches renamed-but-identical copies). Refresh OldLogoSvgSha256 with the base.
+$step2cSvgOld = @(
+    Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension.ToLower() -eq '.svg' } |
+    Where-Object {
+        try { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() -eq $OldLogoSvgSha256.ToLower() }
+        catch { $false }
+    })
+if ($step2cSvgOld.Count -gt 0) {
+    Write-Warning ("[WARN] [2c] VERIFY: {0} SVG file(s) still match the old-logo fingerprint:" -f $step2cSvgOld.Count)
+    $step2cSvgOld | ForEach-Object { Write-Host ("  [2c-OLD-SVG] {0}" -f $_.FullName.Substring($resolvedDir.Length)) }
+}
+else {
+    Write-Host "[OK] [2c] VERIFY: 0 SVG files match the old-logo fingerprint"
+}
 }
 
 # ============================================================
@@ -424,6 +465,84 @@ else {
 }
 
 # ============================================================
+# ============================================================
+# STEP 2r - EXE ICON (rcedit) + byte-exact verify [P32-a]
+# The window corner + taskbar icon on Windows come from the icon embedded
+# in the exe, NOT from any .ico/.svg file: every file-based step above
+# leaves it untouched. This step stamps the exe with resources\icon.ico via
+# rcedit (pinned v2.0.0, sha256-verified, downloaded once to TEMP when not
+# supplied via -RceditPath) and verifies BOTH directions at the byte level:
+# the old 256x256 icon PNG (base-exe fingerprint) must be GONE, the new
+# 256x256 icon PNG (from icon.ico) must be PRESENT. Anything else fails
+# LOUD (exit 2): a silently unbranded exe is exactly the PC symptom.
+# Refresh OldIconPngSha256 / NewIconPngSha256 when the base or icon changes.
+# ============================================================
+Write-Host "[STEP 2r] EXE icon stamp (rcedit)..."
+$step2rExe = $null
+foreach ($exeName in @('SudoStudio.exe', 'VSCodium.exe')) {
+    $cand2r = Join-Path $resolvedDir $exeName
+    if (Test-Path $cand2r) { $step2rExe = $cand2r; break }
+}
+if (-not $step2rExe) {
+    Write-Error "[2r] FAIL: no SudoStudio.exe / VSCodium.exe found - nothing to stamp"
+    exit 2
+}
+$step2rIco = Join-Path $repoRoot "resources\icon.ico"
+if (-not (Test-Path $step2rIco)) {
+    Write-Error "[2r] FAIL: brand icon missing - old exe icon kept is a branding bug"
+    exit 2
+}
+$step2rRcedit = $RceditPath
+if (-not $step2rRcedit) {
+    $cmd2r = Get-Command 'rcedit-x64.exe' -ErrorAction SilentlyContinue
+    if ($cmd2r) { $step2rRcedit = $cmd2r.Source }
+}
+if (-not $step2rRcedit) {
+    $step2rRcedit = Join-Path ([System.IO.Path]::GetTempPath()) 'rcedit-x64.exe'
+    $step2rWant = '3e7801db1a5edbec91b49a24a094aad776cb4515488ea5a4ca2289c400eade2a'
+    $needDl2r = $true
+    if (Test-Path $step2rRcedit) {
+        try {
+            $have2r = (Get-FileHash $step2rRcedit -Algorithm SHA256).Hash.ToLower()
+            if ($have2r -eq $step2rWant) { $needDl2r = $false }
+        } catch {}
+    }
+    if ($needDl2r) {
+        Write-Host "[2r] Downloading rcedit v2.0.0 (pinned) ..."
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            (New-Object Net.WebClient).DownloadFile('https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe', $step2rRcedit)
+        } catch {
+            Write-Error ("[2r] FAIL: rcedit download failed: {0}" -f $_.Exception.Message)
+            exit 2
+        }
+        $have2r = (Get-FileHash $step2rRcedit -Algorithm SHA256).Hash.ToLower()
+        if ($have2r -ne $step2rWant) {
+            Write-Error "[2r] FAIL: rcedit sha256 mismatch - refusing to run an unknown binary"
+            exit 2
+        }
+    }
+    Write-Host "[2r] rcedit ready - pinned + hash-verified"
+}
+Write-Host ("[2r] Stamping {0} ..." -f (Split-Path $step2rExe -Leaf))
+& $step2rRcedit $step2rExe --set-icon $step2rIco
+if ($LASTEXITCODE -ne 0) {
+    Write-Error ("[2r] FAIL: rcedit exited {0}" -f $LASTEXITCODE)
+    exit 2
+}
+# Byte-exact verify via the shared checker (old PNG gone, new PNG present).
+$step2rCheck = Join-Path $scriptDir 'ci\check-exe-icon.ps1'
+if (-not (Test-Path $step2rCheck)) {
+    Write-Error "[2r] FAIL: exe icon checker missing - cannot prove the stamp"
+    exit 2
+}
+& $step2rCheck -ExePath $step2rExe -OldPngSha256 $OldIconPngSha256 -NewPngSha256 $NewIconPngSha256
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "[2r] FAIL: exe icon verify failed (see [EXE-ICON] lines above)"
+    exit 2
+}
+Write-Host "[OK] [2r] EXE icon stamped + verified"
+
 # STEP 4b - Scan Walkthrough JSON/JS files for residual VSCodium text
 # ============================================================
 $walkthroughDirs = @(

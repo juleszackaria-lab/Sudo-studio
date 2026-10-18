@@ -179,7 +179,8 @@ check('G1: all mission checks present', () => {
     for (const c of ['silent-install', 'backend-health', 'runtime-health', 'agent-handshake',
         'expected-files', 'clean-uninstall', 'editor-close-cleanup', 'build-manifest',
         'runtime-p21-journal', 'brand-product.json', 'brand-titlebar-svg',
-        'logs-single-dir']) {
+        'logs-single-dir', 'brand-oldlogo-zero', 'brand-extension-single',
+        'brand-exe-icon']) {
         assert.ok(smoke.includes("'" + c + "'"), c);
     }
 });
