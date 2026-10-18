@@ -144,7 +144,7 @@ try {
 
     # -- 7. backend boot line (build commit) + P21 runtime journal --
     try {
-        $bl = Get-Content (Join-Path $InstallDir 'logs\backend.log') -Raw -ErrorAction Stop
+        $bl = Get-Content (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\backend.log') -Raw -ErrorAction Stop
         if ($bl -notmatch 'build: commit=') { throw 'no build line in backend.log' }
         Add-Check 'backend-build-line' 'PASS' ''
     } catch { Add-Check 'backend-build-line' 'FAIL' $_.Exception.Message }
@@ -231,6 +231,24 @@ try {
         }
     }
 
+    # -- 9b. single logs folder: listing after all components ran (P33-c) --
+    if ($SkipEditorTest) {
+        Add-Check 'logs-single-dir' 'SKIP' 'flag (no launcher run, no startup.log)'
+    } else {
+        try {
+            $single = Join-Path $env:LOCALAPPDATA 'SudoStudio\logs'
+            $files = @(Get-ChildItem $single -File -ErrorAction Stop | ForEach-Object { $_.Name })
+            foreach ($need in @('startup.log', 'backend.log', 'runtime.log')) {
+                if ($files -notcontains $need) { throw ('missing: ' + $need) }
+            }
+            $legacy = Join-Path $InstallDir 'logs'
+            if ((Test-Path $legacy) -and (@(Get-ChildItem $legacy -File -ErrorAction SilentlyContinue).Count -gt 0)) {
+                throw 'journals still written under the install folder'
+            }
+            Add-Check 'logs-single-dir' 'PASS' ($files -join ', ')
+        } catch { Add-Check 'logs-single-dir' 'FAIL' $_.Exception.Message }
+    }
+
     # -- 10. clean uninstall --
     try {
         $unins = Join-Path $InstallDir 'unins000.exe'
@@ -257,10 +275,12 @@ catch {
 }
 finally {
     try {
-        Copy-IfExists (Join-Path $InstallDir 'logs\startup.log') $OutDir
-        Copy-IfExists (Join-Path $InstallDir 'logs\backend.log') $OutDir
+        Copy-IfExists (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\startup.log') $OutDir
+        Copy-IfExists (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\backend.log') $OutDir
         Copy-IfExists (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\runtime.log') $OutDir
         Copy-IfExists (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\runtime.jsonl') $OutDir
+        Copy-IfExists (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\extension.log') $OutDir
+        Copy-IfExists (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\agent.log') $OutDir
         Save-Summary
     } catch { Write-Host ("[SMOKE] log copy failed: {0}" -f $_.Exception.Message) }
     try { Stop-Transcript | Out-Null } catch {}

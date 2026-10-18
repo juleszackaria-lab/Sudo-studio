@@ -102,7 +102,7 @@ check('C1: extension installed-first + loud error', () => {
 check('C2: backend timeout is an error with log path', () => {
     assert.ok(!bat.includes('continuing to launch'));
     assert.ok(bat.includes('[ERROR] Backend timeout - editor opening WITHOUT backend'));
-    assert.ok(bat.includes('logs\\backend.log'));
+    assert.ok(bat.includes('%LOGS%\\backend.log'));
 });
 check('C3: editor monitor + precise cleanup', () => {
     assert.ok(bat.includes(':mon_loop'));
@@ -111,7 +111,7 @@ check('C3: editor monitor + precise cleanup', () => {
     assert.ok(bat.includes('exit /b 0'));
 });
 check('C4: P21 journal path + manifest commit in header', () => {
-    assert.ok(bat.includes('SudoStudio\\logs\\runtime.log'));
+    assert.ok(bat.includes('%LOGS%\\runtime.log'));
     assert.ok(bat.includes('BUILD_COMMIT'));
     assert.ok(bat.includes('Build commit: %BUILD_COMMIT%'));
 });
@@ -178,7 +178,8 @@ const smoke = read('scripts/smoke/smoke-install.ps1');
 check('G1: all mission checks present', () => {
     for (const c of ['silent-install', 'backend-health', 'runtime-health', 'agent-handshake',
         'expected-files', 'clean-uninstall', 'editor-close-cleanup', 'build-manifest',
-        'runtime-p21-journal', 'brand-product.json', 'brand-titlebar-svg']) {
+        'runtime-p21-journal', 'brand-product.json', 'brand-titlebar-svg',
+        'logs-single-dir']) {
         assert.ok(smoke.includes("'" + c + "'"), c);
     }
 });

@@ -1,26 +1,33 @@
 /**
  * server.js - Sudo Studio Backend
  *
- * PKG-SAFE: All writable paths use process.execPath-relative resolution.
+ * P33(c): SINGLE logs folder - SUDO_STUDIO_LOGS env (launcher/tests), else
+ * %LOCALAPPDATA%\SudoStudio\logs when packaged on win32, else repo logs/
+ * in dev. Nothing is written under the install folder (wiped on every
+ * update) or its parent (the old P29 Programs\logs EPERM trap).
  * ZERO native C++ modules — lowdb (pure-JS JSON DB) + bcryptjs (pure-JS bcrypt).
  * backend.log is written as the VERY FIRST operation, before any npm require().
  */
 
 // ================================================================
 // ABSOLUTE FIRST LINES — write backend.log BEFORE any other require()
-// Uses ONLY Node.js built-ins (fs, path). Zero npm dependencies here.
+// Uses ONLY Node.js built-ins (fs, path, os). Zero npm dependencies here.
 // ================================================================
 const fs = require('fs')
 const path = require('path')
+const os = require('os') // P33(c): homedir fallback for the single logs dir
 // P30(b): --selftest audits every require() WITHOUT booting (exit 0/1).
 // Placed before EVERYTHING (even log creation): a missing module must fail
 // the audit, never crash the boot. selftest.js is builtins-only.
 if (process.argv.indexOf('--selftest') !== -1) {
   require('./selftest').runAndExit(__filename);
 }
-const logDir = process.pkg
-  ? path.join(path.dirname(process.execPath), '..', 'logs')
-  : path.join(__dirname, '..', 'logs')
+// P33(c): single logs folder (SUDO_STUDIO_LOGS > %LOCALAPPDATA% win32 pkg > dev).
+const logDir = process.env.SUDO_STUDIO_LOGS
+  ? process.env.SUDO_STUDIO_LOGS
+  : (process.pkg && process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio', 'logs')
+    : path.join(__dirname, '..', 'logs'))
 if (!fs.existsSync(logDir)) {
   fs.mkdirSync(logDir, { recursive: true })
 }
@@ -38,7 +45,7 @@ const LOGS_DIR    = logDir;
 const BACKEND_LOG = path.join(LOGS_DIR, 'backend.log');
 
 // BASE_DIR: root directory for static assets (dist/) and version.json
-// Same pkg-safe logic as logDir but without the /logs suffix
+// Install-root resolution for read-only assets (dist/, version.json).
 const BASE_DIR = process.pkg
   ? path.join(path.dirname(process.execPath), '..')
   : path.join(__dirname, '..');
@@ -56,7 +63,7 @@ try {
   const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
   earlyLog('build: commit=' + (m.sudo_studio_commit || m.commit || '?') + ' date=' + (m.date || '?'));
 } catch (_) { earlyLog('build: dev (no build-manifest.json)'); }
-earlyLog('logDir (pkg-safe): ' + logDir);
+earlyLog('logDir (P33 single): ' + logDir);
 earlyLog('pkg context: ' + (typeof process.pkg !== 'undefined'));
 earlyLog('process.execPath: ' + process.execPath);
 earlyLog('Node version: ' + process.version);
@@ -64,8 +71,8 @@ earlyLog('Platform: ' + process.platform + ' ' + process.arch);
 
 // ================================================================
 // STEP 0.5 - GLOBAL CRASH HANDLERS (P30-c)
-// Cause -> unified journal (%LOCALAPPDATA%\SudoStudio\logs\backend.log)
-// + local backend.log + STDOUT, then exit(1). Never a silent exit 0.
+// Cause -> unified journal (%LOCALAPPDATA%\SudoStudio\logs\backend.log,
+// same file as backend.log since P33-c) + STDOUT, then exit(1).
 // crashHandler.js is builtins-only: safe to require this early.
 require('./crashHandler').setup({ localLog: BACKEND_LOG });
 

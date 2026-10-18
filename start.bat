@@ -16,8 +16,12 @@ cd /d "%~dp0"
 :: -- Global Variables ----------------------------------------
 set "ROOT=%~dp0"
 set "APP=%ROOT%"
-set "LOGS=%ROOT%logs"
-set "LOG_FILE=%ROOT%logs\startup.log"
+:: P33(c): SINGLE logs folder (never the install dir: wiped on every update).
+if not defined LOCALAPPDATA set "LOCALAPPDATA=%USERPROFILE%\AppData\Local"
+set "LOGS=%LOCALAPPDATA%\SudoStudio\logs"
+set "LOG_FILE=%LOGS%\startup.log"
+:: Inherited by backend.exe / runtime.exe / node children (single-dir override).
+set "SUDO_STUDIO_LOGS=%LOGS%"
 set "BACKEND_PORT=5000"
 set "RUNTIME_PORT=6000"
 set "EXT=%ROOT%extensions\sudo-ai"
@@ -50,6 +54,17 @@ if not exist "%LOGS%" (
     exit /b 1
 )
 
+:: -- Migrate legacy journals to the single folder (P33-c) ------
+:: Copy newer-only (/D), never delete: the sources live under the
+:: install folder (wiped on update) or the old agent folder, so the
+:: migrated copies are the only survivors. *.log* covers rotations.
+if exist "%ROOT%logs" xcopy /Y /D /I "%ROOT%logs\*.log*" "%LOGS%\" >nul 2>&1
+if exist "%ROOT%..\logs" xcopy /Y /D /I "%ROOT%..\logs\*.log*" "%LOGS%\" >nul 2>&1
+if exist "%USERPROFILE%\.sudo_studio\logs" xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.log*" "%LOGS%\" >nul 2>&1
+if exist "%ROOT%logs" xcopy /Y /D /I "%ROOT%logs\*.jsonl" "%LOGS%\" >nul 2>&1
+if exist "%ROOT%..\logs" xcopy /Y /D /I "%ROOT%..\logs\*.jsonl" "%LOGS%\" >nul 2>&1
+if exist "%USERPROFILE%\.sudo_studio\logs" xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.jsonl" "%LOGS%\" >nul 2>&1
+
 :: -- Build manifest (P29-e): commit first in log ----------------
 set "BUILD_COMMIT=dev (no build-manifest.json)"
 if exist "%ROOT%build-manifest.json" (
@@ -65,7 +80,7 @@ if exist "%ROOT%build-manifest.json" (
     echo   Build commit: %BUILD_COMMIT%
     echo   Root: %ROOT%
     echo ============================================================
-) > "%LOG_FILE%"
+) >> "%LOG_FILE%"
 echo [LOG] Logging to: %LOG_FILE%
 echo.
 
@@ -254,7 +269,7 @@ set "BACKEND_WAIT=0"
     echo.
     echo   [ERROR] Backend did not respond after 60 seconds - opening the editor WITHOUT backend.
     echo   [ERROR] Backend timeout - editor opening WITHOUT backend >> "%LOG_FILE%"
-    echo   [ERROR] Diagnose: %ROOT%logs\backend.log and http://localhost:%BACKEND_PORT%/api/system/health
+    echo   [ERROR] Diagnose: %LOGS%\backend.log and http://localhost:%BACKEND_PORT%/api/system/health
     echo.
     goto :backend_done
 
@@ -407,7 +422,7 @@ echo   Backend   : http://localhost:%BACKEND_PORT%
 echo   AI Runtime: http://localhost:%RUNTIME_PORT%
 echo.
 echo   Logs      : %LOGS%\startup.log
-if defined LOCALAPPDATA echo   AI journal : %LOCALAPPDATA%\SudoStudio\logs\runtime.log
+echo   AI journal : %LOGS%\runtime.log
 echo.
 echo   Sudo Studio should now be opening with Sudo AI loaded.
     echo   If Sudo Studio is not open yet, wait 5-10 seconds.

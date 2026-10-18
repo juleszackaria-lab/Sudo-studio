@@ -736,6 +736,8 @@ function agentServerOpts(provider, agentLog) {
     const opts = { provider, logger: agentLog };
     try { if (context && context.extensionPath) opts.extensionDir = context.extensionPath; } catch (_) {}
     try { if (agentLog && typeof agentLog.base === 'string') opts.journalPath = agentLog.base + '.log'; } catch (_) {}
+    // P33(c): single logs folder for the agent child (AgentServer maps it to SUDO_STUDIO_LOGS).
+    try { opts.logsDir = require('./src/utils/techLog').resolveLogsDir({}); } catch (_) {}
     return opts;
 }
 

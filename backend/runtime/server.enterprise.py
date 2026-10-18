@@ -8,11 +8,11 @@ import os
 import traceback as _tb
 
 # ── Log file: Windows path used by runtime.exe ─────────────────────────────
-#   Primary  : %USERPROFILE%\AppData\Local\Programs\SudoStudio\logs\runtime_debug.log
+#   Primary  : %LOCALAPPDATA%\SudoStudio\logs\runtime_debug.log  (P33-c single folder)
 #   Fallback : ~/.sudo_studio/logs/runtime_debug.log  (Linux / macOS / PyInstaller)
 _WIN_LOG = os.path.join(
-    os.path.expanduser("~"),
-    "AppData", "Local", "Programs", "SudoStudio", "logs", "runtime_debug.log"
+    os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local"),
+    "SudoStudio", "logs", "runtime_debug.log"
 )
 _UNIX_LOG = os.path.join(
     os.path.expanduser("~"),
@@ -2741,6 +2741,35 @@ def index():
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────────
+def _p33_build_commit():
+    # P33(b): build identity for the P21 header. Precedence: SUDO_BUILD_COMMIT
+    # env (stamped by CI) -> build-manifest.json next to the frozen exe
+    # -> 'dev'. Never raises, never empty.
+    try:
+        v = os.environ.get("SUDO_BUILD_COMMIT")
+        if v and str(v).strip():
+            return "commit=" + str(v).strip()[:40]
+    except Exception:
+        pass
+    try:
+        import json as _json
+        cands = []
+        if getattr(sys, "frozen", False):
+            cands.append(os.path.join(os.path.dirname(sys.executable), "build-manifest.json"))
+        for mf in cands:
+            try:
+                with open(mf, "r", encoding="utf-8") as f:
+                    m = _json.load(f)
+                c = (m.get("sudo_studio_commit") or m.get("commit")) if isinstance(m, dict) else None
+                if c:
+                    return "commit=" + str(c)[:40]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return "dev"
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser(description='Sudo Studio AI Runtime v2.2 — Smart Model Detection')
@@ -2753,6 +2782,18 @@ if __name__ == '__main__':
     parser.add_argument('--force-download',    action='store_true',
                         help='Force re-download even if model is already cached')
     args = parser.parse_args()
+
+    # P33(b): P21 session header FIRST (nothing reaches the journal before
+    # this point: all earlier output is dlog/print, and every logger.* call
+    # above lives inside a def). The build fact carries the CI commit.
+    try:
+        if p21_journal is not None:
+            _facts = p21_journal.collect_facts({'build': 'runtime-server.enterprise.py ' + _p33_build_commit(),
+                'model': getattr(args, 'model', '?'),
+                'ports': {'runtime': getattr(args, 'port', '?')}, 'policies': 'n/a (runtime)'})
+            p21_journal.session_header(logger, _facts)
+    except Exception:
+        pass
 
     avail_ram = get_available_ram_gb()
     total_ram = get_total_ram_gb()
@@ -2815,15 +2856,7 @@ if __name__ == '__main__':
     # WSGI error, port briefly stolen) it auto-restarts instead of exiting.
     # The process only exits on explicit KeyboardInterrupt (Ctrl+C).
     _flask_restart_count = 0
-    # P21-b: session header in the journal (never truncates existing logs).
-    try:
-        if p21_journal is not None:
-            _facts = p21_journal.collect_facts({'build': 'runtime-server.enterprise.py',
-                'model': getattr(args, 'model', '?'),
-                'ports': {'runtime': getattr(args, 'port', '?')}, 'policies': 'n/a (runtime)'})
-            p21_journal.session_header(logger, _facts)
-    except Exception:
-        pass
+    # P33(b): session header moved to post-parse (first journal lines).
     while True:
         try:
             dlog(f"Flask starting on {args.host}:{args.port} (restart #{_flask_restart_count})...")

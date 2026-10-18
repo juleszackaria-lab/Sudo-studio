@@ -140,6 +140,43 @@ jobs:
           }
 
       # ── Upload artifact ──────────────────────────────────────────────────
+# P33(b): P21 journal gate - boot the exe, the first journal line
+# must be the session header (build commit + system facts)
+      - name: Verify P21 journal header in built runtime
+        shell: powershell
+        run: |
+          $exe = "backend\runtime\dist\server.exe"
+          $logs = Join-Path $env:TEMP 'rt-journal-gate'
+          if (Test-Path $logs) { Remove-Item $logs -Recurse -Force }
+          New-Item -ItemType Directory -Force -Path $logs | Out-Null
+          $env:SUDO_STUDIO_LOGS = $logs
+          $env:SUDO_BUILD_COMMIT = $env:GITHUB_SHA
+          # --no-auto-download: mock model, no network, fast boot
+          $p = Start-Process -FilePath $exe -ArgumentList '--no-auto-download','--port','6001' -PassThru -WindowStyle Hidden
+          try {
+            $log = Join-Path $logs 'runtime.log'
+            $deadline = (Get-Date).AddSeconds(240)
+            while ((Get-Date) -lt $deadline -and -not (Test-Path $log)) { Start-Sleep -Seconds 3 }
+            if (-not (Test-Path $log)) { throw 'FAIL: runtime.log never appeared in the gate logs dir' }
+            $txt = ''
+            $deadline2 = (Get-Date).AddSeconds(120)
+            while ((Get-Date) -lt $deadline2) {
+              $txt = Get-Content $log -Raw -ErrorAction SilentlyContinue
+              if ($txt -match '# === session start ===') { break }
+              Start-Sleep -Seconds 3
+            }
+            if ($txt -notmatch '# === session start ===') { throw 'FAIL: no P21 session header in runtime.log' }
+            $first = ($txt -split "`r?`n" | Where-Object { $_ -ne '' } | Select-Object -First 1)
+            if ($first -notmatch '# === session start ===') { throw ('FAIL: header is not the first line: ' + $first) }
+            foreach ($f in @('# build:', '# cpu:', '# ramMB:', '# model:', '# ports:')) {
+              if ($txt -notmatch [regex]::Escape($f)) { throw ('FAIL: header field missing: ' + $f) }
+            }
+            if ($txt -notmatch [regex]::Escape($env:GITHUB_SHA)) { throw 'FAIL: build commit (GITHUB_SHA) missing from header' }
+            Write-Host '[GATE] P21 journal header OK: first line + build commit + cpu/ram/model/ports'
+          } finally {
+            try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+          }
+
       - name: Upload runtime artifact
         uses: actions/upload-artifact@v4
         with:
