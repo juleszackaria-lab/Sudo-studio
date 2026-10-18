@@ -168,7 +168,7 @@ jobs:
             if ($txt -notmatch '# === session start ===') { throw 'FAIL: no P21 session header in runtime.log' }
             $first = ($txt -split "`r?`n" | Where-Object { $_ -ne '' } | Select-Object -First 1)
             if ($first -notmatch '# === session start ===') { throw ('FAIL: header is not the first line: ' + $first) }
-            foreach ($f in @('# build:', '# cpu:', '# ramMB:', '# model:', '# ports:')) {
+            foreach ($f in @('# build:', '# cpu:', '# ramMB:', '| model:', '# ports:')) {
               if ($txt -notmatch [regex]::Escape($f)) { throw ('FAIL: header field missing: ' + $f) }
             }
             if ($txt -notmatch [regex]::Escape($env:GITHUB_SHA)) { throw 'FAIL: build commit (GITHUB_SHA) missing from header' }
