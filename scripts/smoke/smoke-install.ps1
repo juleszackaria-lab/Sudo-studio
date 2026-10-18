@@ -80,7 +80,7 @@ try {
 
     # -- 2. silent install --
     $innoLog = Join-Path $OutDir 'innosetup.log'
-    $ip = Start-Process -FilePath $InstallerPath -ArgumentList '/SILENT', '/NORESTART', ("/DIR={0}" -f $InstallDir), ("/LOG={0}" -f $innoLog) -Wait -PassThru
+    $ip = Start-Process -FilePath $InstallerPath -ArgumentList '/SILENT', '/NORESTART', ("/DIR=`"{0}`"" -f $InstallDir), ("/LOG=`"{0}`"" -f $innoLog) -Wait -PassThru
     if ($ip.ExitCode -ne 0 -or -not (Test-Path (Join-Path $InstallDir 'SudoStudio.exe'))) {
         Add-Check 'silent-install' 'FAIL' ("exit={0}" -f $ip.ExitCode); throw 'install failed'
     }
