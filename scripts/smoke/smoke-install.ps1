@@ -238,7 +238,7 @@ try {
         $jr = Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\runtime.log'
         $jt = Get-Content $jr -Raw -ErrorAction Stop
         if ($jt -notmatch '# === session start ===') { throw 'no P21 session header' }
-        if ($jt -notmatch '\[\d{4}-\d{2}-\d{2}T[^\]]+\] \[(INFO|DEBUG|WARNING|ERROR)\] \[runtime\]') { throw 'no P21-shaped line' }
+        if ($jt -notmatch '\d{4}-\d{2}-\d{2}T\S+ \[(INFO|DEBUG|WARNING|ERROR)\] \[runtime\]') { throw 'no P21-shaped line' }
         Add-Check 'runtime-p21-journal' 'PASS' $jr
     } catch { Add-Check 'runtime-p21-journal' 'FAIL' $_.Exception.Message }
 
@@ -283,9 +283,12 @@ try {
     if ($SkipEditorTest) {
         Add-Check 'editor-close-cleanup' 'SKIP' 'flag'
     } else {
-        try { Stop-Process -Id $be.Id -Force -ErrorAction SilentlyContinue } catch {}
-        try { Stop-Process -Id $rt.Id -Force -ErrorAction SilentlyContinue } catch {}
-        Start-Sleep -Seconds 2
+        foreach ($p in (Get-SudoProcesses $InstallDir)) {
+            try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        $deadline0 = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline0 -and @(Get-SudoProcesses $InstallDir).Count -gt 0) { Start-Sleep -Seconds 2 }
+        if (@(Get-SudoProcesses $InstallDir).Count -gt 0) { throw 'pre-cleanup left sudo processes alive' }
         $launcher = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'start.bat' -WorkingDirectory $InstallDir -WindowStyle Minimized -PassThru
         try {
             $extDir = Join-Path $InstallDir 'extensions'
@@ -348,8 +351,9 @@ try {
         if ($exeLeft.Count -gt 0) { throw ('exes remain: ' + ($exeLeft -join ', ')) }
         $stillRunning = @(Get-Process -Name 'backend', 'runtime', 'SudoStudio', 'VSCodium' -ErrorAction SilentlyContinue)
         if ($stillRunning.Count -gt 0) { throw ("{0} process(es) still running" -f $stillRunning.Count) }
-        schtasks /query /tn SudoStudioLauncher /fo list 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { throw 'scheduled task SudoStudioLauncher still exists' }
+        $stask = 1
+        try { $null = & schtasks /query /tn SudoStudioLauncher /fo list 2>&1; $stask = $LASTEXITCODE } catch { $stask = 1 }
+        if ($stask -eq 0) { throw 'scheduled task SudoStudioLauncher still exists' }
         if (Test-Path 'HKLM:\SOFTWARE\Sudo Studio') { throw 'HKLM registry key still exists' }
         $leftovers = @(Get-ChildItem $InstallDir -ErrorAction SilentlyContinue)
         Add-Check 'clean-uninstall' 'PASS' ("exit={0} leftover-items={1} (logs/data accepted)" -f $up.ExitCode, $leftovers.Count)

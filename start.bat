@@ -442,7 +442,7 @@ set "MON_SEEN=0"
 set "MON_WAIT=0"
 echo [MONITOR] Waiting for the editor main process...
 :mon_appear
-powershell -NoProfile -WindowStyle Hidden -Command "try { $hit = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--extensions-dir*' -and $_.CommandLine -like '*%V_EXT%*' }; if ($hit) { exit 0 } else { exit 1 } } catch { exit 0 }" >nul 2>&1
+powershell -NoProfile -WindowStyle Hidden -Command "try { $p1 = '--extensions' + '-dir'; $hit = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like ('*' + $p1 + '*') -and $_.CommandLine -like ('*' + $env:V_EXT + '*') }; if ($hit) { exit 0 } else { exit 1 } } catch { exit 0 }" >nul 2>&1
 if !errorlevel! equ 0 (
     set "MON_SEEN=1"
     echo [MONITOR] Editor detected - watching. Close the editor to stop everything.
@@ -460,7 +460,7 @@ echo [WARN] Editor never appeared >> "%LOG_FILE%"
 goto :keep_alive
 :mon_loop
 timeout /t 10 /nobreak >nul
-powershell -NoProfile -WindowStyle Hidden -Command "try { $hit = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--extensions-dir*' -and $_.CommandLine -like '*%V_EXT%*' }; if ($hit) { exit 0 } else { exit 1 } } catch { exit 0 }" >nul 2>&1
+powershell -NoProfile -WindowStyle Hidden -Command "try { $p1 = '--extensions' + '-dir'; $hit = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like ('*' + $p1 + '*') -and $_.CommandLine -like ('*' + $env:V_EXT + '*') }; if ($hit) { exit 0 } else { exit 1 } } catch { exit 0 }" >nul 2>&1
 if !errorlevel! equ 0 goto :mon_loop
 echo.
 echo [STOP] Editor closed - stopping Sudo Studio services...
