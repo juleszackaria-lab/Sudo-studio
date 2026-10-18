@@ -302,7 +302,10 @@ try {
                 if ($editorMain.Count -eq 0) { $editorMain = $null }
             }
             if (-not $editorMain) { throw 'editor main process never appeared within 240s' }
-            Stop-Process -Id $editorMain.ProcessId -Force
+            Start-Sleep -Seconds 15
+            if (Get-Process -Id $editorMain.ProcessId -ErrorAction SilentlyContinue) {
+                Stop-Process -Id $editorMain.ProcessId -Force
+            }
             $deadline = (Get-Date).AddSeconds(120)
             $left = @('x')
             while ((Get-Date) -lt $deadline -and $left.Count -gt 0) {

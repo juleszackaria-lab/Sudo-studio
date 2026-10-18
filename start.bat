@@ -454,10 +454,10 @@ if !MON_WAIT! gtr 24 goto :mon_never
 timeout /t 5 /nobreak >nul
 goto :mon_appear
 :mon_never
-echo [WARN] Editor main process never appeared - services left running.
-echo [WARN] Close this window, then stop backend.exe and runtime.exe manually.
-echo [WARN] Editor never appeared >> "%LOG_FILE%"
-goto :keep_alive
+echo [WARN] Editor main process not appeared yet - services running, still watching.
+echo [WARN] Editor not yet appeared, still watching >> "%LOG_FILE%"
+set "MON_WAIT=0"
+goto :mon_appear
 :mon_loop
 timeout /t 10 /nobreak >nul
 powershell -NoProfile -WindowStyle Hidden -Command "try { $p1 = '--extensions' + '-dir'; $hit = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like ('*' + $p1 + '*') -and $_.CommandLine -like ('*' + $env:V_EXT + '*') }; if ($hit) { exit 0 } else { exit 1 } } catch { exit 0 }" >nul 2>&1
