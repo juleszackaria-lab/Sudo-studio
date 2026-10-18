@@ -44,6 +44,12 @@ function earlyLog(msg) {
 }
 
 earlyLog('=== Sudo Studio Backend starting ===');
+// P29(e): build commit first (build-manifest.json shipped at install root).
+try {
+  const mf = path.join(path.dirname(process.execPath), 'build-manifest.json');
+  const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
+  earlyLog('build: commit=' + (m.sudo_studio_commit || m.commit || '?') + ' date=' + (m.date || '?'));
+} catch (_) { earlyLog('build: dev (no build-manifest.json)'); }
 earlyLog('logDir (pkg-safe): ' + logDir);
 earlyLog('pkg context: ' + (typeof process.pkg !== 'undefined'));
 earlyLog('process.execPath: ' + process.execPath);
@@ -96,8 +102,6 @@ earlyLog('Loading http...');
 const http = require('http');
 earlyLog('Loading socket.io...');
 const { Server } = require('socket.io');
-earlyLog('Loading aiModelsManager...');
-const aiModelsManager = require('./ai/aiModelsManager');
 earlyLog('Loading helmet...');
 const helmet = require('helmet');
 earlyLog('Loading cors...');
@@ -237,66 +241,16 @@ app.get('/', (req, res) => {
   }
 });
 
-// Legacy /api/models endpoints (kept for compatibility)
-app.get('/api/models', (req, res) => {
-  try { res.json(aiModelsManager.listModels()); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.get('/api/models/:modelName', (req, res) => {
-  try {
-    const info = aiModelsManager.getModelInfo(req.params.modelName);
-    if (!info) return res.status(404).json({ error: 'Model not found' });
-    res.json(info);
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/models/start', (req, res) => {
-  const { modelName } = req.body;
-  if (!modelName) return res.status(400).json({ error: 'modelName required' });
-  try { res.json({ message: 'started', state: aiModelsManager.startModel(modelName) }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/models/stop', (req, res) => {
-  const { modelName } = req.body;
-  if (!modelName) return res.status(400).json({ error: 'modelName required' });
-  try { aiModelsManager.stopModel(modelName); res.json({ message: 'stopped' }); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/models/infer', async (req, res) => {
-  const { modelName, input } = req.body;
-  try { res.json(await aiModelsManager.infer(modelName, input)); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/models/download', async (req, res) => {
-  const { modelName, url } = req.body;
-  if (!modelName || !url) return res.status(400).json({ error: 'modelName and url required' });
-  try { res.json({ message: `Model ${modelName} downloaded`, path: await aiModelsManager.downloadModel(modelName, url) }); }
-  catch (e) { res.status(500).json({ error: 'Failed to download model' }); }
-});
-
-app.post('/api/chat', async (req, res) => {
-  const { modelName, prompt } = req.body;
-  if (!prompt) return res.status(400).json({ error: 'Prompt is required.' });
-  const reply = `Réponse simulée pour le prompt: "${prompt}"`;
-  res.json({ reply });
-});
-
-app.delete('/api/models/:modelName', (req, res) => {
-  try { aiModelsManager.deleteModel(req.params.modelName); res.json({ message: `Model deleted` }); }
-  catch (e) { res.status(500).json({ error: 'Failed to delete model' }); }
-});
+// P29(b): legacy /api/models block + fake /api/chat removed (2026-10-18).
+// The block required ./ai/aiModelsManager (deleted in P28) and crashed
+// the backend at boot (MODULE_NOT_FOUND). Real routes live in
+// routes/models.routes.js and routes/ai.routes.js (mounted below).
 
 // Socket.io
 io.on('connection', (socket) => {
   earlyLog('Socket connected: ' + socket.id);
-  socket.on('chat-message', async (data) => {
-    const { prompt } = data || {};
-    socket.emit('chat-response', { reply: `Réponse simulée: ${prompt || ''}` });
-  });
+  // P29(b): fake 'chat-message' handler removed (hardcoded simulated reply).
+  // Real chat: POST /api/ai/chat (routes/ai.routes.js) via the runtime.
   socket.on('disconnect', () => {
     earlyLog('Socket disconnected: ' + socket.id);
   });

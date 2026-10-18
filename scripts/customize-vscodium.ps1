@@ -141,14 +141,19 @@ else {
 # corner / About artwork resolves this file at runtime, so the ICO/rcedit
 # steps alone cannot remove it. We overwrite CONTENT ONLY (same filename),
 # so CSS url()/bundle references keep working with zero syntax risk.
-# Identity = filename + old-logo content markers (gradient id "Gradient_1"
-# + path id "path6008", stable across VSCodium stable/insider builds).
+# Identity = filename + old-logo content markers. TWO artwork generations:
+#   gen-A (older VSCodium, verbose): gradient id "Gradient_1" + path id "path6008".
+#   gen-B (VSCodium 1.97.2, minified, no ids): blue stops "#78AEED" + "#1D6BCA"
+#     + "linearGradient" (found in 1.97.2 code-icon.svg, 1807 bytes).
+# P29: gen-A-only matching left the 1.97.2 title-bar logo untouched
+# ("1 scanned, 0 replaced"). Either generation now triggers replacement.
 # VERIFY: 0 files still carry the old marker afterwards (hash-equivalent
 # proof: the marker bytes are unique to the old artwork).
 # ============================================================
 Write-Host "[STEP 2c] Title-bar SVG sweep (code-icon.svg)..."
 $sudoSvg = Join-Path $repoRoot "resources\sudo-icon.svg"
 $oldSvgMarkers = @('path6008', 'Gradient_1')
+$oldSvgMarkers1972 = @('#78AEED', '#1D6BCA', 'linearGradient')
 $step2cReplaced = 0
 $step2cScanned = 0
 if (-not (Test-Path $sudoSvg)) {
@@ -162,10 +167,15 @@ else {
         $step2cScanned++
         try {
             $svgRaw = [System.IO.File]::ReadAllText($svgFile.FullName, [System.Text.Encoding]::UTF8)
-            $isOld = $true
+            $isGenA = $true
             foreach ($mk in $oldSvgMarkers) {
-                if ($svgRaw -notmatch [regex]::Escape($mk)) { $isOld = $false }
+                if ($svgRaw -notmatch [regex]::Escape($mk)) { $isGenA = $false }
             }
+            $isGenB = $true
+            foreach ($mk in $oldSvgMarkers1972) {
+                if ($svgRaw -notmatch [regex]::Escape($mk)) { $isGenB = $false }
+            }
+            $isOld = ($isGenA -or $isGenB)
             if (-not $isOld) {
                 Write-Host ("[INFO] [2c] Not the old logo (kept): {0}" -f $svgFile.FullName.Substring($resolvedDir.Length))
                 continue
@@ -181,6 +191,22 @@ else {
     Write-Host ("[STEP 2c] DONE: {0} code-icon.svg file(s) scanned, {1} replaced" -f $step2cScanned, $step2cReplaced)
     if ($step2cScanned -eq 0) {
         Write-Warning "[WARN] [2c] No code-icon.svg found under resources\app - build layout may have moved it; title-bar logo NOT verified. Grep the install dir for 'path6008' to confirm."
+    }
+    # P29 VERIFY (per-file): no code-icon.svg may still carry old art afterwards.
+    $step2cStillOld = @($svgCandidates | Where-Object {
+        try {
+            $v2c = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+            $vA = $true; foreach ($mk in $oldSvgMarkers) { if ($v2c -notmatch [regex]::Escape($mk)) { $vA = $false } }
+            $vB = $true; foreach ($mk in $oldSvgMarkers1972) { if ($v2c -notmatch [regex]::Escape($mk)) { $vB = $false } }
+            ($vA -or $vB)
+        } catch { $false }
+    })
+    if ($step2cStillOld.Count -gt 0) {
+        Write-Warning ("[WARN] [2c] VERIFY: {0} code-icon.svg file(s) still carry old-logo art:" -f $step2cStillOld.Count)
+        $step2cStillOld | ForEach-Object { Write-Host ("  [2c-OLD] {0}" -f $_.FullName.Substring($resolvedDir.Length)) }
+    }
+    else {
+        Write-Host "[OK] [2c] VERIFY: 0 code-icon.svg files still carry old-logo art (gen-A/gen-B absent)"
     }
 }
 # VERIFY (hash-equivalent): old marker bytes must be gone from text-based files.

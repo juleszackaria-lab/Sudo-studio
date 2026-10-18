@@ -15,7 +15,12 @@ const path = require('path');
 const HOST = '127.0.0.1';
 
 function defaultServerJs() {
-  // Monorepo dev layout: <root>/sudo-agent/src/server.js
+  // P29(f) CANONICAL agent server path (single source of truth):
+  //   dev      : <repo>/sudo-agent/src/server.js
+  //   installed: {install}\extensions\sudo-agent\src\server.js
+  // (__dirname = .../sudo-ai/src/agent, so up3 = the dir CONTAINING sudo-ai.)
+  // The packager MUST copy sudo-agent/src to extensions\sudo-agent\src
+  // (NOT to the install root). The smoke test asserts this exact file.
   return path.resolve(__dirname, '..', '..', '..', 'sudo-agent', 'src', 'server.js');
 }
 

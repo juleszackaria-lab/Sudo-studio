@@ -197,6 +197,78 @@ begin
   // Nothing to block — just proceed. Python check can be added here if needed.
 end;
 
+// ── P29(d): kill running Sudo Studio processes by EXE PATH ──────────────
+// CloseApplications / Restart Manager often misses console children
+// (backend.exe, runtime.exe) and Electron-as-Node agent processes.
+// We kill ONLY processes whose ExecutablePath lives under the install dir
+// (no collateral on unrelated same-name processes), then verify no exe
+// is still locked. Runs before install/update AND before uninstall.
+procedure KillSudoProcesses(const AppDir: String);
+var
+  Params: String;
+  Code: Integer;
+begin
+  Params := '-NoProfile -ExecutionPolicy Bypass -Command ' +
+    '"$r=''' + AppDir + '''; ' +
+    '$names=(''backend.exe'',''runtime.exe'',''SudoStudio.exe'',''VSCodium.exe''); ' +
+    'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ($r + ''*'') -and ($names -contains $_.Name) } | ' +
+    'ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -EA Stop } catch {} }; ' +
+    'Start-Sleep -Seconds 2"';
+  Exec('powershell.exe', Params, '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Log('P29(d): KillSudoProcesses done for ' + AppDir);
+end;
+
+// True if Path exists and cannot be opened for exclusive write (= locked).
+function FileLocked(const Path: String): Boolean;
+var
+  Stream: TFileStream;
+begin
+  Result := False;
+  if not FileExists(Path) then Exit;
+  try
+    Stream := TFileStream.Create(Path, fmOpenReadWrite or fmShareExclusive);
+    Stream.Free;
+  except
+    Result := True;
+  end;
+end;
+
+// Space-separated list of still-locked exes ('' = all clear).
+function AnyExeLocked(const AppDir: String): String;
+begin
+  Result := '';
+  if FileLocked(AppDir + '\SudoStudio.exe') then Result := Result + 'SudoStudio.exe ';
+  if FileLocked(AppDir + '\VSCodium.exe')   then Result := Result + 'VSCodium.exe ';
+  if FileLocked(AppDir + '\backend.exe')    then Result := Result + 'backend.exe ';
+  if FileLocked(AppDir + '\runtime.exe')    then Result := Result + 'runtime.exe ';
+  Result := Trim(Result);
+end;
+
+// Pre-install (fresh install AND update): kill, then refuse to proceed while
+// an exe is locked. Returning a message blocks setup with Retry support:
+// the user closes the app, clicks Retry, and this runs again.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  AppDir, Locked: String;
+begin
+  Result := '';
+  NeedsRestart := False;
+  AppDir := ExpandConstant('{app}');
+  KillSudoProcesses(AppDir);
+  Locked := AnyExeLocked(AppDir);
+  if Locked <> '' then begin
+    Log('P29(d): still locked after kill, retrying: ' + Locked);
+    KillSudoProcesses(AppDir);
+    Locked := AnyExeLocked(AppDir);
+  end;
+  if Locked <> '' then begin
+    Log('P29(d): BLOCKED, locked exes: ' + Locked);
+    Result := 'Sudo Studio is still running (' + Locked + '). ' +
+      'Close Sudo Studio (the editor AND its console windows), then click Retry. ' +
+      'If the problem persists, reboot and run the installer again.';
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then begin
@@ -207,6 +279,15 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
+  if CurUninstallStep = usUninstall then begin
+    KillSudoProcesses(ExpandConstant('{app}'));
+    if AnyExeLocked(ExpandConstant('{app}')) <> '' then begin
+      MsgBox('Sudo Studio is still running (' + AnyExeLocked(ExpandConstant('{app}')) + '). ' +
+        'Close Sudo Studio completely, then run the uninstaller again.',
+        mbError, MB_OK);
+      Abort;
+    end;
+  end;
   if CurUninstallStep = usPostUninstall then begin
     Log('Sudo Studio uninstalled. Scheduled task removed.');
   end;

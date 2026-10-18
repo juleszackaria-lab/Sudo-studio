@@ -440,6 +440,12 @@
         "title": "📋 Clone Enterprise Env",
         "category": "Sudo Studio",
         "icon": "$(repo-clone)"
+      },
+      {
+        "command": "sudoStudio.showBuildInfo",
+        "title": "A propos du build",
+        "category": "Sudo",
+        "icon": "$(info)"
       }
     ],
     "menus": {

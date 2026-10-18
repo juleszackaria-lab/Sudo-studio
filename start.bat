@@ -50,10 +50,19 @@ if not exist "%LOGS%" (
     exit /b 1
 )
 
+:: -- Build manifest (P29-e): commit first in log ----------------
+set "BUILD_COMMIT=dev (no build-manifest.json)"
+if exist "%ROOT%build-manifest.json" (
+    for /f "delims=" %%c in ('powershell -NoProfile -Command "try { $m = Get-Content '%ROOT%build-manifest.json' -Raw | ConvertFrom-Json; if ($m.sudo_studio_commit) { $m.sudo_studio_commit } elseif ($m.commit) { $m.commit } else { '' } } catch { '' }" 2^>nul') do (
+        if not "%%c"=="" set "BUILD_COMMIT=%%c"
+    )
+)
+
 :: -- Init log file --------------------------------------------
 (
     echo ============================================================
     echo   SUDO STUDIO v4.3 - %DATE% %TIME%
+    echo   Build commit: %BUILD_COMMIT%
     echo   Root: %ROOT%
     echo ============================================================
 ) > "%LOG_FILE%"
@@ -184,9 +193,9 @@ set "RUNTIME_WAIT=0"
 
 :runtime_timeout
     echo.
-    echo   [OK] 600s elapsed. runtime.exe is STILL RUNNING and loading the model.
-    echo   [OK] Sudo Studio will open now. Chat will work once model finishes loading.
-    echo   [OK] Watch SudoRuntime window for: Model Ready on cpu
+    echo   [WAIT] 600s elapsed. runtime.exe is STILL RUNNING and loading the model.
+    echo   [WAIT] Sudo Studio will open now. Chat will work once model finishes loading.
+    echo   [WAIT] Watch SudoRuntime window for: Model Ready on cpu
     echo [PHASE 2] 600s timeout - runtime still loading >> "%LOG_FILE%"
     goto :runtime_done
 
@@ -243,11 +252,9 @@ set "BACKEND_WAIT=0"
 
 :backend_timeout
     echo.
-    echo   [WARNING] Backend did not respond after 60 seconds.
-    echo   [WARNING] Backend timeout - continuing to launch Sudo Studio >> "%LOG_FILE%"
-    echo.
-    echo   Backend may still be starting. Sudo Studio will open.
-    echo   If backend is needed, check: %ROOT%logs\backend.log
+    echo   [ERROR] Backend did not respond after 60 seconds - opening the editor WITHOUT backend.
+    echo   [ERROR] Backend timeout - editor opening WITHOUT backend >> "%LOG_FILE%"
+    echo   [ERROR] Diagnose: %ROOT%logs\backend.log and http://localhost:%BACKEND_PORT%/api/system/health
     echo.
     goto :backend_done
 
@@ -299,7 +306,14 @@ if not exist "%V_DAT%\User\settings.json" (
 :: -- Sync extension to extensions\sudo-ai (production mode, no [Extension Development Host]) --
 :: This replaces --extensionDevelopmentPath (dev/debug mode) with proper extension installation.
 :: Copy sudo-ai-extension/ -> extensions\sudo-ai/ so VSCodium loads it as a real extension.
-if exist "%V_SRC%\package.json" (
+:: P29(c): installed layout ships the extension directly at extensions\sudo-ai
+:: (packager STEP 12). The ROOT\sudo-ai-extension source copy exists only in
+:: dev layouts. Test installed-first; sync only when source exists and target
+:: is missing; otherwise fail LOUD with both expected paths (no silent skip).
+if exist "%V_DEV%\package.json" (
+    echo   [OK] Extension already installed at %V_DEV%
+    echo   [OK] Extension already installed >> "%LOG_FILE%"
+) else if exist "%V_SRC%\package.json" (
     echo [PHASE 5] Syncing extension to extensions\sudo-ai\...
     echo [PHASE 5] Syncing extension >> "%LOG_FILE%"
     if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
@@ -313,8 +327,10 @@ if exist "%V_SRC%\package.json" (
     echo   [OK] Extension synced to %V_DEV%
     echo   [OK] Extension synced >> "%LOG_FILE%"
 ) else (
-    echo   [WARN] sudo-ai-extension\package.json not found - extension may not load
-    echo   [WARN] Extension source missing >> "%LOG_FILE%"
+    echo   [ERROR] No extension found - Sudo AI will NOT load.
+    echo   [ERROR] Looked for: %V_DEV%\package.json and %V_SRC%\package.json
+    echo   [ERROR] Reinstall Sudo Studio. Full log: %LOG_FILE%
+    echo   [ERROR] Extension missing (both paths) >> "%LOG_FILE%"
 )
 
 :: Confirm V_EXE still valid (belt-and-suspenders, should always be set)
@@ -391,17 +407,63 @@ echo   Backend   : http://localhost:%BACKEND_PORT%
 echo   AI Runtime: http://localhost:%RUNTIME_PORT%
 echo.
 echo   Logs      : %LOGS%\startup.log
+if defined LOCALAPPDATA echo   AI journal : %LOCALAPPDATA%\SudoStudio\logs\runtime.log
 echo.
 echo   Sudo Studio should now be opening with Sudo AI loaded.
     echo   If Sudo Studio is not open yet, wait 5-10 seconds.
 echo.
 echo ============================================================
-echo   Keep this window open to maintain services.
-echo   Close this window to stop everything.
+echo   Closing the editor stops Backend + Runtime automatically.
+echo   This window closes itself once everything has stopped.
 echo ============================================================
 echo.
 
-:: -- Keep terminal open, services run in their own windows ---
+:: -- P29(c): monitor the editor main process; on close, stop our children --
+:: Editor-main = process whose command line carries OUR --extensions-dir path.
+:: (Plain tasklist matching would also match agent nodes and VS Code helpers,
+:: which share the SudoStudio.exe image name.)
+:: Cleanup kills ONLY processes whose exe lives under this install dir.
+set "MON_SEEN=0"
+set "MON_WAIT=0"
+echo [MONITOR] Waiting for the editor main process...
+:mon_appear
+powershell -NoProfile -WindowStyle Hidden -Command "try { $hit = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--extensions-dir*' -and $_.CommandLine -like '*%V_EXT%*' }; if ($hit) { exit 0 } else { exit 1 } } catch { exit 0 }" >nul 2>&1
+if !errorlevel! equ 0 (
+    set "MON_SEEN=1"
+    echo [MONITOR] Editor detected - watching. Close the editor to stop everything.
+    echo [MONITOR] Editor detected >> "%LOG_FILE%"
+    goto :mon_loop
+)
+set /a MON_WAIT+=1
+if !MON_WAIT! gtr 24 goto :mon_never
+timeout /t 5 /nobreak >nul
+goto :mon_appear
+:mon_never
+echo [WARN] Editor main process never appeared - services left running.
+echo [WARN] Close this window, then stop backend.exe and runtime.exe manually.
+echo [WARN] Editor never appeared >> "%LOG_FILE%"
+goto :keep_alive
+:mon_loop
+timeout /t 10 /nobreak >nul
+powershell -NoProfile -WindowStyle Hidden -Command "try { $hit = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*--extensions-dir*' -and $_.CommandLine -like '*%V_EXT%*' }; if ($hit) { exit 0 } else { exit 1 } } catch { exit 0 }" >nul 2>&1
+if !errorlevel! equ 0 goto :mon_loop
+echo.
+echo [STOP] Editor closed - stopping Sudo Studio services...
+echo [STOP] Editor closed - cleanup >> "%LOG_FILE%"
+powershell -NoProfile -WindowStyle Hidden -Command "$r='%ROOT%'; $names=('backend.exe','runtime.exe','SudoStudio.exe','VSCodium.exe'); Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ($r + '*') -and ($names -contains $_.Name) } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -EA Stop } catch {} }" >nul 2>&1
+timeout /t 3 /nobreak >nul
+powershell -NoProfile -WindowStyle Hidden -Command "$r='%ROOT%'; $names=('backend.exe','runtime.exe','SudoStudio.exe','VSCodium.exe'); $left = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ($r + '*') -and ($names -contains $_.Name) }).Count; exit $left" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK] All Sudo Studio processes stopped. Log: %LOG_FILE%
+    echo [STOP] Cleanup done - 0 remaining >> "%LOG_FILE%"
+) else (
+    echo   [WARN] !errorlevel! process(es) still alive - kill them manually or reboot.
+    echo   [WARN] Cleanup incomplete: !errorlevel! remaining >> "%LOG_FILE%"
+)
+timeout /t 3 /nobreak >nul
+exit /b 0
+
+:: -- Fallback: editor never started; keep services up until window closes --
 :keep_alive
 timeout /t 30 /nobreak >nul
 goto :keep_alive

@@ -344,6 +344,9 @@ function registerCommands() {
         ['sudoStudio.selectAIProvider',      selectAIProvider],
         ['sudoStudio.runSecurityAudit',      openSecurityPanel],
         ['sudoStudio.cloneEnterprise',       openDuplicationPanel],
+
+        // P29(e): build info
+        ['sudoStudio.showBuildInfo',         showBuildInfo],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -1767,6 +1770,21 @@ function openSdkInstallPanel(sdkId) {
 }
 
 // ── Open Logs Folder (Mission FINALE — Mission 2B) ───────────────────────────
+// P29(e): "Sudo: A propos du build" - shows build-manifest.json (install root).
+function showBuildInfo() {
+    let text = 'Sudo Studio (dev - no build-manifest.json)';
+    try {
+        // Extension dir is {install}\extensions\sudo-ai -> manifest at {install}\.
+        const root = path.resolve(__dirname, '..', '..');
+        const mf = JSON.parse(fs.readFileSync(path.join(root, 'build-manifest.json'), 'utf8'));
+        const nFiles = mf.files ? Object.keys(mf.files).length : 0;
+        text = 'Sudo Studio build ' + (mf.version || '?') +
+            ' | commit ' + (mf.sudo_studio_commit || mf.commit || '?') + ' | date ' + (mf.date || '?') +
+            ' | files: ' + nFiles;
+    } catch (_) { /* dev layout: keep default text */ }
+    vscode.window.showInformationMessage(text);
+}
+
 function openLogsFolder() {
     const path = require('path');
     const fs   = require('fs');
