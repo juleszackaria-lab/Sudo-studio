@@ -3,6 +3,7 @@
  * Real-time system diagnostics with AutoFix buttons.
  */
 const vscode = require('vscode');
+const bf = require('../utils/backendFallback'); // P30(d)
 const axios  = require('axios');
 const { exec } = require('child_process');
 const os = require('os');
@@ -37,10 +38,14 @@ class DoctorPanel {
         DoctorPanel.currentPanel = new DoctorPanel(panel, extensionUri);
     }
 
+    // P30(d): race the load against the 5 s bound; overlay if backend down.
+    _p30Ensure() { return bf.ensureBackend(this.panel, () => this.runDiagnostic()); }
+
     async handleMessage(msg) {
+        if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
-            case 'runDiagnostic': await this.runDiagnostic(); break;
+            case 'runDiagnostic': await this._p30Ensure(); break;
             case 'autoFix':       await this.autoFix(msg.issue); break;
             case 'autoFixAll':    await this.autoFixAll(); break;
             case 'installSDK':    await this.installSDK(msg.sdk); break;
@@ -399,6 +404,7 @@ body {
 
 <script>
 const vscode = acquireVsCodeApi();
+window.__sudoBackendInit && window.__sudoBackendInit(vscode);
 let lastResults = [];
 
 function runDiag() {
@@ -590,6 +596,7 @@ window.addEventListener('message', ev => {
 // Auto-run on open
 runDiag();
 </script>
+${bf.webviewSnippet()}
 </body>
 </html>`;
     }

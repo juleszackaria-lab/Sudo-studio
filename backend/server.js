@@ -12,6 +12,12 @@
 // ================================================================
 const fs = require('fs')
 const path = require('path')
+// P30(b): --selftest audits every require() WITHOUT booting (exit 0/1).
+// Placed before EVERYTHING (even log creation): a missing module must fail
+// the audit, never crash the boot. selftest.js is builtins-only.
+if (process.argv.indexOf('--selftest') !== -1) {
+  require('./selftest').runAndExit(__filename);
+}
 const logDir = process.pkg
   ? path.join(path.dirname(process.execPath), '..', 'logs')
   : path.join(__dirname, '..', 'logs')
@@ -57,41 +63,11 @@ earlyLog('Node version: ' + process.version);
 earlyLog('Platform: ' + process.platform + ' ' + process.arch);
 
 // ================================================================
-// STEP 0.5 — GLOBAL CRASH HANDLERS
-// Catch anything that slips through so we ALWAYS get a log entry.
-// ================================================================
-// Track whether we are already inside an error handler to prevent infinite EPIPE loops.
-// earlyLog() writes to process.stderr — if stderr itself is broken (EPIPE) the write
-// triggers another uncaughtException which calls earlyLog again → infinite loop.
-let _inErrorHandler = false;
-
-process.on('uncaughtException', (err) => {
-  if (_inErrorHandler) return; // break the EPIPE → uncaughtException loop
-  _inErrorHandler = true;
-  try {
-    // EPIPE / ECONNRESET on stderr/sockets are harmless — suppress the flood
-    if (err.code === 'EPIPE' || err.code === 'ECONNRESET') {
-      try { fs.appendFileSync(BACKEND_LOG, '[' + new Date().toISOString() + '] ' + err.code + ' (suppressed)\n'); } catch (_) {}
-      _inErrorHandler = false;
-      return;
-    }
-    earlyLog('UNCAUGHT EXCEPTION: ' + err.message);
-    earlyLog('STACK: ' + (err.stack || 'no stack'));
-  } finally {
-    _inErrorHandler = false;
-  }
-});
-
-process.on('unhandledRejection', (reason) => {
-  if (_inErrorHandler) return;
-  _inErrorHandler = true;
-  try {
-    earlyLog('UNHANDLED REJECTION: ' + (reason && reason.message ? reason.message : String(reason)));
-    if (reason && reason.stack) earlyLog('STACK: ' + reason.stack);
-  } finally {
-    _inErrorHandler = false;
-  }
-});
+// STEP 0.5 - GLOBAL CRASH HANDLERS (P30-c)
+// Cause -> unified journal (%LOCALAPPDATA%\SudoStudio\logs\backend.log)
+// + local backend.log + STDOUT, then exit(1). Never a silent exit 0.
+// crashHandler.js is builtins-only: safe to require this early.
+require('./crashHandler').setup({ localLog: BACKEND_LOG });
 
 // ================================================================
 // STEP 1 — REQUIRE ALL MODULES (each wrapped, logged on failure)
@@ -245,6 +221,15 @@ app.get('/', (req, res) => {
 // The block required ./ai/aiModelsManager (deleted in P28) and crashed
 // the backend at boot (MODULE_NOT_FOUND). Real routes live in
 // routes/models.routes.js and routes/ai.routes.js (mounted below).
+// P30(a) root cause: backend/ai/aiModelsManager.js was deleted in 772ee6f
+// (P28, 17/10 - legacy per-model sidecar design, superseded by the single
+// enterprise runtime on port 6000) but this require (here since 5841616)
+// was never updated. Every backend.exe built after P28 crashed at boot.
+// No .gitignore cause (only backend/ai/models* ignored), no case issue
+// (backend/ai/ is gone entirely), pkg config was fine (static requires are
+// bundled automatically - pkg only WARNED on the missing file and still
+// produced a crashing exe). Deletion (not restore) is the correct fix;
+// --selftest now gates the build against any repeat.
 
 // Socket.io
 io.on('connection', (socket) => {

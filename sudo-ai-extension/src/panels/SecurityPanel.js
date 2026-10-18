@@ -10,6 +10,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const bf = require('../utils/backendFallback'); // P30(d)
 const { exec } = require('child_process');
 const { appendAudit } = require('../utils/auditLog');
 const { loadAdvisories, collectPackages, matchAdvisories, dbIsStale, userDbPath, uncoveredEcosystems } = require('../utils/localAudit');
@@ -57,7 +58,7 @@ class SecurityPanel {
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
         this.panel.webview.onDidReceiveMessage(m => this._onMessage(m), null, this.disposables);
 
-        setTimeout(() => this._runAudit(), 400);
+        setTimeout(() => this._p30Ensure(), 400);
     }
 
     static createOrShow(extensionUri) {
@@ -71,7 +72,11 @@ class SecurityPanel {
     }
 
     // ── Message handler ──────────────────────────────────────────────────────
+    // P30(d): race the load against the 5 s bound; overlay if backend down.
+    _p30Ensure() { return bf.ensureBackend(this.panel, () => this._runAudit()); }
+
     async _onMessage(msg) {
+        if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         // Input validation: all incoming webview messages are untrusted
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
@@ -621,6 +626,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
 <script>
 const vscode = acquireVsCodeApi();
+window.__sudoBackendInit && window.__sudoBackendInit(vscode);
 function refresh(){ document.getElementById('refreshBtn').disabled=true; vscode.postMessage({type:'refresh'}); }
 function openFile(f,l){ vscode.postMessage({type:'openFile',filePath:f,line:l}); }
 function fixGi(e){ vscode.postMessage({type:'fixGitignore',entry:e}); }
@@ -812,6 +818,7 @@ function renderAudit(a){
 
 function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 </script>
+${bf.webviewSnippet()}
 </body>
 </html>`;
     }

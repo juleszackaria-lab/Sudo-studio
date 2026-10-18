@@ -21,6 +21,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const bf = require('../utils/backendFallback'); // P30(d)
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
@@ -197,7 +198,7 @@ class CentralMgmtPanel {
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
         this.panel.webview.onDidReceiveMessage(m => this._onMessage(m), null, this.disposables);
 
-        setTimeout(() => this._loadAll(), 400);
+        setTimeout(() => this._p30Ensure(), 400);
     }
 
     static createOrShow(extensionUri, initialTab) {
@@ -220,10 +221,14 @@ class CentralMgmtPanel {
         try { this.panel.webview.postMessage({ type: 'showTab', tab }); } catch (_) {}
     }
 
+    // P30(d): race the load against the 5 s bound; overlay if backend down.
+    _p30Ensure() { return bf.ensureBackend(this.panel, () => this._loadAll()); }
+
     async _onMessage(msg) {
+        if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
-            case 'load':           this._loadAll(); break;
+            case 'load':           this._p30Ensure(); break;
             case 'retryBackend':   this._retryBackend(); break;
             case 'addUser': {
                 const u = msg.user;
@@ -879,6 +884,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <div id="tab-audit"   class="tab-content"></div>
 <script>
 const vscode = acquireVsCodeApi();
+window.__sudoBackendInit && window.__sudoBackendInit(vscode);
 const NL = String.fromCharCode(10);
 let waiting = false;
 let loadTimer = null;
@@ -1211,6 +1217,7 @@ document.addEventListener("change", function(ev){
   }
 });
 </script>
+${bf.webviewSnippet()}
 </body>
 </html>`;
     }

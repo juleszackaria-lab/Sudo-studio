@@ -14,6 +14,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const bf = require('../utils/backendFallback'); // P30(d)
 const { exec, execSync } = require('child_process');
 const fs   = require('fs');
 const path = require('path');
@@ -247,7 +248,7 @@ class DuplicationPanel {
         this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
         this.panel.webview.onDidReceiveMessage(m => this._onMessage(m), null, this.disposables);
 
-        setTimeout(() => this._scanLocal(), 400);
+        setTimeout(() => this._p30Ensure(), 400);
     }
 
     static createOrShow(extensionUri) {
@@ -260,7 +261,11 @@ class DuplicationPanel {
         DuplicationPanel.currentPanel = new DuplicationPanel(panel, extensionUri);
     }
 
+    // P30(d): race the load against the 5 s bound; overlay if backend down.
+    _p30Ensure() { return bf.ensureBackend(this.panel, () => this._scanLocal()); }
+
     async _onMessage(msg) {
+        if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
             case 'scanLocal':      await this._scanLocal(); break;
@@ -565,6 +570,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
 <script>
 const vscode = acquireVsCodeApi();
+window.__sudoBackendInit && window.__sudoBackendInit(vscode);
 let localProfile = null;
 
 function scanLocal(){ vscode.postMessage({type:'scanLocal'}); showScanning(); }
@@ -702,6 +708,7 @@ function renderDupDone(m){
 }
 function escHtml(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 </script>
+${bf.webviewSnippet()}
 </body>
 </html>`;
     }

@@ -5,6 +5,7 @@
  * Also has AI-powered generation via runtime port 6000.
  */
 const vscode = require('vscode');
+const bf = require('../utils/backendFallback'); // P30(d)
 const axios  = require('axios');
 const path   = require('path');
 const fs     = require('fs');
@@ -43,6 +44,9 @@ class DevOpsPanel {
     }
 
     async handleMessage(msg) {
+        // P30(d): static form, zero backend dependency (AI-gen errors already
+        // handled locally); snippet + routing only, no auto-probe that could cry wolf.
+        if (bf.handlePanelMessage(this.panel, msg, () => {})) return;
         switch (msg.type) {
             case 'generateDockerfile':   await this.generateDockerfile(msg.opts); break;
             case 'generateCompose':      await this.generateCompose(msg.opts); break;
@@ -812,6 +816,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 
 <script>
 const vscode = acquireVsCodeApi();
+window.__sudoBackendInit && window.__sudoBackendInit(vscode);
 function vscPost(m) { vscode.postMessage(m); }
 
 function generate(type, opts, el) {
@@ -875,6 +880,7 @@ window.addEventListener('message', ev => {
     }
 });
 </script>
+${bf.webviewSnippet()}
 </body>
 </html>`;
     }

@@ -5,6 +5,7 @@
  * No backend required - works standalone.
  */
 const vscode = require('vscode');
+const bf = require('../utils/backendFallback'); // P30(d)
 const { exec } = require('child_process');
 const { appendAudit } = require('../utils/auditLog');
 const { sharedLog } = require('../utils/techLog'); // P21-g: NOOP until extension activation enables it
@@ -287,10 +288,14 @@ class SDKPanel {
         SDKPanel.currentPanel = new SDKPanel(panel, extensionUri);
     }
 
+    // P30(d): race the load against the 5 s bound; overlay if backend down.
+    _p30Ensure() { return bf.ensureBackend(this.panel, () => this.detectAll()); }
+
     async handleMessage(msg) {
+        if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
-            case 'refresh':   await this.detectAll(); break;
+            case 'refresh':   await this._p30Ensure(); break;
             case 'install': {
                 if (typeof msg.sdkId !== 'string' || !/^[a-z0-9\-]+$/.test(msg.sdkId)) return;
                 await this.runAction(msg.sdkId, 'install'); break;
@@ -733,6 +738,7 @@ body {
 
 <script>
 const vscode = acquireVsCodeApi();
+window.__sudoBackendInit && window.__sudoBackendInit(vscode);
 let sdks = [];
 
 function refresh() {
@@ -831,6 +837,7 @@ window.addEventListener('message', ev => {
     }
 });
 </script>
+${bf.webviewSnippet()}
 </body>
 </html>`;
     }
