@@ -87,7 +87,7 @@ try {
     $files = @(
         'SudoStudio.exe', 'backend.exe', 'runtime.exe', 'start.bat', 'unins000.exe',
         'build-manifest.json', 'logo.ico', 'resources\icon.ico',
-        'extensions\sudo-agent\src\server.js',
+        'sudo-agent\src\server.js',
         'extensions\sudo-ai\extension.js', 'extensions\sudo-ai\package.json',
         'extensions\sudo-ai\node_modules\axios\package.json',
         'extensions\sudo-ai\resources\sudo-robot.svg',
@@ -159,7 +159,7 @@ try {
     # -- 8. agent handshake via the product exe (Electron-as-Node) --
     $agentOk = $false
     try {
-        $serverJs = Join-Path $InstallDir 'extensions\sudo-agent\src\server.js'
+        $serverJs = Join-Path $InstallDir 'sudo-agent\src\server.js'
         $token = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
         $env:ELECTRON_RUN_AS_NODE = '1'
         $env:SUDO_AGENT_TOKEN = $token

@@ -125,7 +125,7 @@ async function activate(ctx) {
                 .then((provider) => {
                     try {
                         if (agentServer) { try { agentServer.stop(); } catch (_) {} }
-                        agentServer = AgentServer.launch({ provider, logger: agentLog });
+                        agentServer = AgentServer.launch(agentServerOpts(provider, agentLog));
                     } catch (e) { try { agentLog.error('launch failed: ' + String((e && e.message) || e)); } catch (_) {} }
                 })
                 .catch(() => {});
@@ -729,6 +729,16 @@ function agentServerState() {
     catch (e) { return { status: 'error', detail: String((e && e.message) || e) }; }
 }
 
+// P31(a+c): agent server paths. extensionDir lets AgentServer derive the
+// install root (context.extensionPath); journalPath is the agent journal
+// file shown in the panel when the server fails.
+function agentServerOpts(provider, agentLog) {
+    const opts = { provider, logger: agentLog };
+    try { if (context && context.extensionPath) opts.extensionDir = context.extensionPath; } catch (_) {}
+    try { if (agentLog && typeof agentLog.base === 'string') opts.journalPath = agentLog.base + '.log'; } catch (_) {}
+    return opts;
+}
+
 // P27: stop + relaunch the agent server (provider/model switch, manual
 // Relancer). Config errors propagate (clear panel message, no silent
 // fallback: the user explicitly asked for this provider).
@@ -743,7 +753,7 @@ async function relaunchAgentServer(reason) {
     } catch (_) {}
     const provider = await getAIProviderService().getServerProviderConfig();
     try { agentLog.info('relaunch agent server (' + (reason || 'manual') + ')', {}); } catch (_) {}
-    agentServer = AgentServer.launch({ provider, logger: agentLog });
+    agentServer = AgentServer.launch(agentServerOpts(provider, agentLog));
     refreshAgentBar();
     return agentServerState();
 }

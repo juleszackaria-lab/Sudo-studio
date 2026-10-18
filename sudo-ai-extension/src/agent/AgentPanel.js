@@ -237,6 +237,10 @@ button.linklike:hover { text-decoration:underline; }
 .sugg { display:flex; gap:8px; margin-top:16px; flex-wrap:wrap; justify-content:center; }
 .errline { color:var(--vscode-errorForeground,var(--sudo-err)); font-size:12px; padding:4px 0; display:flex; gap:8px; align-items:center; flex-wrap:wrap; max-width:72ch; }
 .errline span { flex:1; }
+.srvdet { font-size:11px; max-width:72ch; margin:2px 0 6px 24px; color:var(--vscode-descriptionForeground,var(--sudo-dim)); }
+.srvdet summary { cursor:pointer; }
+.srvpre { font-size:11px; max-height:220px; overflow:auto; white-space:pre-wrap; word-break:break-word; background:var(--vscode-editorWidget-background,var(--sudo-raised)); border:1px solid var(--vscode-editorWidget-border,var(--sudo-border)); border-radius:6px; padding:6px 8px; margin:4px 0; color:var(--vscode-editor-foreground,var(--sudo-text)); }
+.srvlog { font-size:11px; word-break:break-all; }
 .skel { margin-top:8px; display:flex; flex-direction:column; gap:8px; max-width:72ch; }
 .skel i { display:block; height:12px; border-radius:6px; background:var(--vscode-editorWidget-background,var(--sudo-raised)); border:1px solid var(--vscode-editorWidget-border,var(--sudo-border)); }
 .skel .w90 { width:90%; } .skel .w70 { width:70%; } .skel .w80 { width:80%; }
@@ -771,6 +775,36 @@ function renderError(msg) {
   a.bubble.appendChild(d);
   stick();
 }
+function renderServerError(m) {
+  renderError(m.message || "Serveur agent : echec");
+  var tail = Array.isArray(m.stderrTail) ? m.stderrTail : [];
+  if (!tail.length && !m.journalPath) return;
+  var a = ensureAgent();
+  var det = document.createElement("details");
+  det.className = "srvdet";
+  var sum = document.createElement("summary");
+  sum.textContent = "Dernier stderr (" + tail.length + " lignes) - voir le journal";
+  det.appendChild(sum);
+  if (tail.length) {
+    var pre = document.createElement("pre");
+    pre.className = "srvpre";
+    pre.textContent = tail.join("\\n").slice(-4000);
+    det.appendChild(pre);
+  }
+  if (m.journalPath) {
+    var lp = document.createElement("div");
+    lp.className = "srvlog";
+    lp.textContent = "Journal : " + m.journalPath;
+    det.appendChild(lp);
+  }
+  var rb = document.createElement("button");
+  rb.className = "btn sm";
+  rb.textContent = "Relancer le serveur";
+  rb.addEventListener("click", function() { post({ type: "relaunchServer" }); });
+  det.appendChild(rb);
+  a.bubble.appendChild(det);
+  stick();
+}
 function setRunning(v, queued) {
   running = v;
   btnStop.disabled = !v;
@@ -987,6 +1021,7 @@ window.addEventListener("message", function(ev) {
   else if (m.type === "server") setServer(m);
   else if (m.type === "done") renderDone(m);
   else if (m.type === "error") renderError(m.message);
+  else if (m.type === "serverError") renderServerError(m);
   else if (m.type === "undoResult") addStep("undo",
     m.ok ? ("Annul\\u00e9 : " + (m.restored || []).join(", ")) : ("Echec : " + m.error));
   else if (m.type === "runtime") setRuntime(m);
@@ -1277,7 +1312,10 @@ class AgentPanel {
             await host.relaunch(reason || 'manual');
             if (host.serverState) this._post(Object.assign({ type: 'server' }, host.serverState()));
         } catch (e) {
-            this._post({ type: 'error', message: 'Relance serveur agent: ' + e.message });
+            let st = null;
+            try { st = host.serverState ? host.serverState() : null; } catch (_) { st = null; }
+            this._post({ type: 'serverError', message: 'Relance serveur agent: ' + e.message,
+                stderrTail: (st && st.stderrTail) || [], journalPath: (st && st.journalPath) || null });
         }
     }
 
@@ -1454,7 +1492,16 @@ class AgentPanel {
         this._post({ type: 'runState', running: this._running, queued: this._queue.length });
         try {
             const host = getAgentHost();
-            if (host.serverState) this._post(Object.assign({ type: 'server' }, host.serverState()));
+            if (!host.serverState) return;
+            const st = host.serverState();
+            this._post(Object.assign({ type: 'server' }, st));
+            // P31(c): surface a failed server ONCE per distinct error (tail + journal).
+            if (st && st.status === 'error' && st.detail && st.detail !== this._srvErrShown &&
+                (((st.stderrTail && st.stderrTail.length) || st.journalPath))) {
+                this._srvErrShown = st.detail;
+                this._post({ type: 'serverError', message: 'Serveur agent : ' + st.detail,
+                    stderrTail: st.stderrTail || [], journalPath: st.journalPath || null });
+            }
         } catch (_) {}
     }
 

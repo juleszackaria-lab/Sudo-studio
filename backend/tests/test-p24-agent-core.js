@@ -661,7 +661,7 @@ t('I1', 'spawn opts: hidden window, token via env only (injected spawn)', async 
     setImmediate(() => fake.stdout.emit('data', Buffer.from(JSON.stringify({ ready: true, host: HOST, port: 41234, pid: 4242 }) + '\n')));
     return fake;
   };
-  const srv = new AgentServer({ provider: { type: 'local', baseUrl: 'http://x', model: '' }, spawnFn, serverPath: '/tmp/x.js', handshakeTimeoutMs: 5000 });
+  const srv = new AgentServer({ provider: { type: 'local', baseUrl: 'http://x', model: '' }, spawnFn, serverPath: SERVER_JS, handshakeTimeoutMs: 5000 }); // P31(b): existing file (spawn stubbed)
   const r = await srv.start();
   assert(r.port === 41234, 'handshake port');
   assert(seen.windowsHide === true, 'windowsHide missing');

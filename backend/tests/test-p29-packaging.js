@@ -159,10 +159,12 @@ check('E4: launcher header carries the commit', () => {
 });
 
 // -- F: canonical agent path ----------------------------------------------------
-check('F1: canonical path documented', () => {
+check('F1: single documented location (P31-a), wrong P29(f) canonical gone', () => {
     const ag = read('sudo-ai-extension/src/agent/AgentServer.js');
-    assert.ok(ag.includes('extensions\\sudo-agent\\src\\server.js'));
-    assert.ok(ag.includes('P29(f)'));
+    assert.ok(ag.includes('<installRoot>/sudo-agent/src/server.js'));
+    assert.ok(ag.includes('P31(a)'));
+    assert.ok(ag.includes('resolveInstallRoot'));
+    assert.ok(!ag.includes('P29(f) CANONICAL'));
 });
 check('F2: dev-side resolution hits the real file', () => {
     const { defaultServerJs } = require('../../sudo-ai-extension/src/agent/AgentServer.js');

@@ -14,19 +14,32 @@ const path = require('path');
 
 const HOST = '127.0.0.1';
 
-function defaultServerJs() {
-  // P29(f) CANONICAL agent server path (single source of truth):
-  //   dev      : <repo>/sudo-agent/src/server.js
-  //   installed: {install}\extensions\sudo-agent\src\server.js
-  // (__dirname = .../sudo-ai/src/agent, so up3 = the dir CONTAINING sudo-ai.)
-  // The packager MUST copy sudo-agent/src to extensions\sudo-agent\src
-  // (NOT to the install root). The smoke test asserts this exact file.
-  return path.resolve(__dirname, '..', '..', '..', 'sudo-agent', 'src', 'server.js');
+function resolveInstallRoot(explicitExtDir) {
+  // P31(a) SINGLE resolution point: the install root. Precedence: explicit
+  // extension dir (the host passes context.extensionPath) -> SUDO_STUDIO_ROOT
+  // env (launcher-provided) -> dev fallback derived from this file. The root
+  // is the dir whose CHILD holds the sudo-ai extension folder:
+  //   dev      : <repo>/sudo-ai-extension     -> <repo>
+  //   installed: {install}\extensions\sudo-ai -> {install}
+  // Never an assumed extension-relative guess: P29(f) pointed at
+  // extensions\sudo-agent, which the packager never creates (03 copies
+  // sudo-agent/src to the install ROOT) - that wrong guess is the PC crash
+  // (MODULE_NOT_FOUND, requireStack []: the node ENTRY was missing).
+  if (explicitExtDir) return path.resolve(explicitExtDir, '..', '..');
+  if (process.env.SUDO_STUDIO_ROOT) return path.resolve(process.env.SUDO_STUDIO_ROOT);
+  return path.resolve(__dirname, '..', '..', '..');
 }
 
-function defaultExe() {
-  // Packaged layout (bundled later by packaging): <extension>/sudo-agent/sudo-agent.exe
-  return path.resolve(__dirname, '..', '..', 'sudo-agent', 'sudo-agent.exe');
+function defaultServerJs(fromDir) {
+  // THE single documented location (dev AND installed):
+  //   <installRoot>/sudo-agent/src/server.js
+  return path.join(resolveInstallRoot(fromDir), 'sudo-agent', 'src', 'server.js');
+}
+
+function defaultExe(fromDir) {
+  // Future bundled location under the same single root (absent today, so
+  // resolveTarget falls back to node + server.js).
+  return path.join(resolveInstallRoot(fromDir), 'sudo-agent', 'sudo-agent.exe');
 }
 
 function safeLogger(l) {
@@ -40,6 +53,8 @@ class AgentServer {
     if (!opts.provider || typeof opts.provider !== 'object') throw new Error('AgentServer: provider config required');
     this.provider = opts.provider;
     this.serverPath = opts.serverPath || null;
+    this.extensionDir = opts.extensionDir || null; // P31(a): host extension path
+    this.journalPath = opts.journalPath || null; // P31(c): shown with failures
     this.useNode = opts.useNode;
     // MINI node: an explicit runtime, else SUDO_AGENT_NODE, else the host
     // binary itself (process.execPath). Under a real extension host that is
@@ -48,6 +63,8 @@ class AgentServer {
     // harmless no-op. The PC's PATH 'node' is never used by default.
     this.nodePath = opts.nodePath || process.env.SUDO_AGENT_NODE || process.execPath;
     this.lastError = null; // last start failure (for the status bar), cleared on success
+    this.lastFailure = null; // P31(c): { message, stderrTail, journalPath, at }
+    this._stderrRaw = ''; // P31(c): capped raw stderr, tail derived on read
     this.extraArgs = Array.isArray(opts.args) ? opts.args.slice() : [];
     this.home = opts.home || null;
     this.logsDir = opts.logsDir || null;
@@ -73,8 +90,8 @@ class AgentServer {
   resolveTarget() {
     let sp = this.serverPath;
     if (!sp) {
-      try { sp = fs.existsSync(defaultExe()) ? defaultExe() : defaultServerJs(); }
-      catch (_) { sp = defaultServerJs(); }
+      try { sp = fs.existsSync(defaultExe(this.extensionDir)) ? defaultExe(this.extensionDir) : defaultServerJs(this.extensionDir); }
+      catch (_) { sp = defaultServerJs(this.extensionDir); }
     }
     const wantNode = this.useNode === true || (this.useNode !== false && /\.js$/i.test(sp));
     if (wantNode) return { cmd: this.nodePath, args: [sp].concat(this.extraArgs), mode: 'node', runAsNode: true };
@@ -83,15 +100,27 @@ class AgentServer {
 
   get started() { return !!this.child && !!this.port; }
 
+  _pushStderr(chunk) {
+    this._stderrRaw += String(chunk || '');
+    if (this._stderrRaw.length > 8192) this._stderrRaw = this._stderrRaw.slice(-8192);
+  }
+
+  lastStderr() {
+    const lines = this._stderrRaw.split(/\r?\n/);
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    return lines.slice(-30);
+  }
+
   start() {
     if (this.child) return Promise.resolve({ port: this.port, pid: this.pid });
     if (this.startup) return this.startup;
     this.stopped = false;
     this.startup = this._spawnOnce().then(
-      (r) => { this.startup = null; this.attempts = 0; this.lastError = null; return r; },
+      (r) => { this.startup = null; this.attempts = 0; this.lastError = null; this.lastFailure = null; return r; },
       (e) => {
         this.startup = null;
         this.lastError = String((e && e.message) || e);
+        this.lastFailure = { message: this.lastError, stderrTail: this.lastStderr(), journalPath: this.journalPath || null, at: new Date().toISOString() };
         try { this.log.error('agent server start failed: ' + this.lastError); } catch (_) {}
         this._scheduleRestart('start-failed');
         throw e;
@@ -105,7 +134,9 @@ class AgentServer {
     if (this.started) return { status: 'ready', detail: 'port ' + this.port };
     if (this.startup) return { status: 'starting', detail: 'attempt #' + (this.attempts + 1) };
     if (this.stopped) return { status: 'stopped', detail: '' };
-    if (this.lastError) return { status: 'error', detail: this.lastError };
+    if (this.lastError) return { status: 'error', detail: this.lastError,
+      stderrTail: this.lastFailure ? this.lastFailure.stderrTail.slice() : [],
+      journalPath: this.journalPath || null };
     return { status: 'starting', detail: 'not started yet' };
   }
 
@@ -113,6 +144,15 @@ class AgentServer {
     return new Promise((resolve, reject) => {
       let target = null;
       try { target = this.resolveTarget(); } catch (e) { reject(e); return; }
+      if (target.mode === 'node' && target.args && target.args[0]) {
+        try { this.log.info('agent server target: ' + target.args[0]); } catch (_) {}
+        if (!fs.existsSync(target.args[0])) {
+          const msg = 'server.js introuvable \u00e0 ' + target.args[0];
+          try { this.log.error(msg); } catch (_) {}
+          reject(new Error(msg));
+          return;
+        }
+      }
       const token = crypto.randomBytes(32).toString('hex');
       const env = Object.assign({}, process.env, {
         SUDO_AGENT_TOKEN: token,
@@ -174,12 +214,13 @@ class AgentServer {
         try { this.log.info('agent server started (port ' + hs.port + ', pid ' + this.pid + ')'); } catch (_) {}
         child.on('exit', (code, signal) => this._onExit(code, signal));
         child.stderr.on('data', (cc) => {
+          try { this._pushStderr(cc.toString('utf8')); } catch (_) {}
           const t = cc.toString('utf8').trim();
           if (t) { try { this.log.warn('agent server stderr: ' + t.slice(0, 300)); } catch (_) {} }
         });
         resolve({ port: this.port, pid: this.pid });
       });
-      child.stderr.on('data', (c) => { errText += c.toString('utf8'); if (errText.length > 2048) errText = errText.slice(-2048); });
+      child.stderr.on('data', (c) => { const t = c.toString('utf8'); try { this._pushStderr(t); } catch (_) {} errText += t; if (errText.length > 2048) errText = errText.slice(-2048); });
       child.on('error', (e) => fail('agent server spawn error: ' + String((e && e.message) || e)));
       child.on('exit', (code) => { if (!settled) fail('agent server exited during handshake (code ' + code + ')' + (errText ? ' stderr: ' + errText.slice(-300) : '')); });
     });
@@ -322,4 +363,4 @@ class AgentServer {
   }
 }
 
-module.exports = { AgentServer, HOST, defaultServerJs, defaultExe };
+module.exports = { AgentServer, HOST, defaultServerJs, defaultExe, resolveInstallRoot };

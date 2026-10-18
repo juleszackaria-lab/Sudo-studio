@@ -397,7 +397,7 @@ async function main() {
   }
   {
     const { EventEmitter: EE } = require('events');
-    const failing = new AgentServer({ provider: { type: 'local' }, serverPath: '/tmp/x.js',
+    const failing = new AgentServer({ provider: { type: 'local' }, serverPath: path.join(ROOT, 'sudo-agent', 'src', 'server.js'), // P31(b)
       handshakeTimeoutMs: 200, killTimeoutMs: 50,
       spawnFn: () => { throw new Error('spawn node ENOENT'); } });
     let err = null;
@@ -408,7 +408,7 @@ async function main() {
     failing.stop();
     const fake = new EE();
     fake.stdout = new EE(); fake.stderr = new EE(); fake.pid = 4242; fake.kill = () => {};
-    const ok = new AgentServer({ provider: { type: 'local' }, serverPath: '/tmp/x.js',
+    const ok = new AgentServer({ provider: { type: 'local' }, serverPath: path.join(ROOT, 'sudo-agent', 'src', 'server.js'), // P31(b)
       handshakeTimeoutMs: 2000, killTimeoutMs: 50,
       spawnFn: () => {
         setImmediate(() => fake.stdout.emit('data',
