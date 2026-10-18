@@ -11,7 +11,119 @@ const path   = require('path');
 const fs     = require('fs');
 const { exec } = require('child_process');
 const crypto = require('crypto');
+const os = require('os'); // P34(c): temp diff file
 const { appendAudit } = require('../utils/auditLog');
+
+// -- P34: GitHub Actions per-stack pipelines (test + build + gated docker) --
+// Setup = toolchain + clean install. Test = checks + tests. Build = package.
+// Families: node (nodejs/react/vue), nextjs (strict build), python
+// (flask/django), javaMaven/javaGradle, flutter, generic (green TODO).
+function sanitizeDockerTag(name) {
+    const t = String(name || 'app').toLowerCase()
+        .replace(/[^a-z0-9_.-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+    return t || 'app';
+}
+
+function pickJavaBuildTool(hasPom, hasGradle) {
+    if (hasGradle && !hasPom) return 'gradle';
+    return 'maven';
+}
+
+function ghaFamily(stack, buildTool) {
+    if (['nodejs', 'react', 'vue'].includes(stack)) return 'node';
+    if (stack === 'nextjs') return 'nextjs';
+    if (['python', 'flask', 'django'].includes(stack)) return 'python';
+    if (stack === 'java') return buildTool === 'gradle' ? 'javaGradle' : 'javaMaven';
+    if (stack === 'flutter') return 'flutter';
+    return 'generic';
+}
+
+const GHA_SETUP = {
+    node: `      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci`,
+    python: `      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi`,
+    javaMaven: `      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'maven'`,
+    javaGradle: `      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'`,
+    flutter: `      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get`,
+    generic: ``,
+};
+
+const GHA_TEST = {
+    node: `      - name: Lint
+        run: npm run lint --if-present
+
+      - name: Test
+        run: npm test --if-present`,
+    python: `      - name: Lint (errors only)
+        run: |
+          pip install -q ruff
+          ruff check . --select E,F
+
+      - name: Test
+        run: |
+          if [ -d tests ] || [ -d test ]; then pip install -q pytest && python -m pytest -q; else echo "no tests directory - skipping"; fi`,
+    javaMaven: `      - name: Verify
+        run: mvn -B -ntp verify`,
+    javaGradle: `      - name: Build and test
+        run: gradle build --no-daemon`,
+    flutter: `      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test`,
+    generic: `      - name: Stack steps
+        run: echo "TODO - add this stack checks (template is green by default)"`,
+};
+
+const GHA_BUILD = {
+    node: `      - name: Build
+        run: npm run build --if-present`,
+    nextjs: `      - name: Build
+        run: npm run build`,
+    python: `      - name: Build package
+        run: |
+          if [ -f pyproject.toml ] || [ -f setup.py ]; then pip install -q build && python -m build; else echo "no build metadata - skipping"; fi`,
+    javaMaven: `      - name: Package
+        run: mvn -B -ntp package -DskipTests`,
+    javaGradle: `      - name: Assemble
+        run: gradle assemble --no-daemon`,
+    flutter: `      - name: Build web release
+        run: flutter build web --release`,
+    generic: `      - name: Stack build
+        run: echo "TODO - add this stack build (template is green by default)"`,
+};
 
 class DevOpsPanel {
     static currentPanel = undefined;
@@ -95,8 +207,9 @@ class DevOpsPanel {
             else { info.stack = 'python'; info.port = 8000; }
         } else if (exists('go.mod')) {
             info.stack = 'go'; info.port = 8080;
-        } else if (exists('pom.xml') || exists('build.gradle')) {
+        } else if (exists('pom.xml') || exists('build.gradle') || exists('build.gradle.kts')) {
             info.stack = 'java'; info.port = 8080;
+            info.buildTool = pickJavaBuildTool(exists('pom.xml'), exists('build.gradle') || exists('build.gradle.kts'));
         } else if (exists('Cargo.toml')) {
             info.stack = 'rust'; info.port = 8080;
         } else if (exists('pubspec.yaml')) {
@@ -295,15 +408,33 @@ volumes:
     }
 
     // ── GitHub Actions Generator ────────────────────────────────────────────
+    // -- GitHub Actions Generator (P34: one REAL pipeline per stack) --
+    // The "on" trigger is QUOTED ("on":): unquoted it parses as boolean true
+    // under YAML 1.1 and the editor schema flags the file ("!" marker).
     async generateGithubActions(opts = {}) {
         const info = this.projectInfo || { stack: 'nodejs', port: 3000 };
         const stack = opts.stack || info.stack;
-        const isNode = ['nodejs', 'nextjs', 'react', 'vue'].includes(stack);
-        const isPython = ['python', 'flask', 'django'].includes(stack);
+        const appName = sanitizeDockerTag(info.name);
+        let buildTool = opts.buildTool || info.buildTool;
+        if (stack === 'java' && !buildTool) {
+            try {
+                const root = info.root || '';
+                buildTool = pickJavaBuildTool(
+                    !!root && fs.existsSync(path.join(root, 'pom.xml')),
+                    !!root && (fs.existsSync(path.join(root, 'build.gradle')) ||
+                        fs.existsSync(path.join(root, 'build.gradle.kts'))));
+            } catch (_) { buildTool = 'maven'; }
+        }
+        const fam = ghaFamily(stack, buildTool);
+        const setupKey = fam === 'nextjs' ? 'node' : fam;
+        const setup = GHA_SETUP[setupKey];
+        const testSteps = GHA_TEST[setupKey];
+        const buildStep = GHA_BUILD[fam];
+        const withSetup = setup ? setup + '\n\n' : '';
 
         const content = `name: CI/CD Pipeline
 
-on:
+"on":
   push:
     branches: [main, develop]
   pull_request:
@@ -316,62 +447,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-${isNode ? `      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
+${withSetup}${testSteps}
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Lint
-        run: npm run lint --if-present
-
-      - name: Test
-        run: npm test --if-present` : ''}
-${isPython ? `      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Test
-        run: pytest --if-present` : ''}
-
-  build-and-push:
+  build:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+${withSetup}${buildStep}
+
+  docker:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    env:
+      HAS_DOCKERHUB: \${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Docker Hub secrets missing - publish skipped
+        if: env.HAS_DOCKERHUB == ''
+        run: echo "Set DOCKERHUB_USERNAME + DOCKERHUB_TOKEN repo secrets to enable publish"
+
       - name: Login to Docker Hub
+        if: env.HAS_DOCKERHUB != ''
         uses: docker/login-action@v3
         with:
           username: \${{ secrets.DOCKERHUB_USERNAME }}
           password: \${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push Docker image
+        if: env.HAS_DOCKERHUB != ''
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           tags: |
-            \${{ secrets.DOCKERHUB_USERNAME }}/${info.name || 'app'}:latest
-            \${{ secrets.DOCKERHUB_USERNAME }}/${info.name || 'app'}:\${{ github.sha }}
-
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    environment: production
-    steps:
-      - name: Deploy to server
-        run: echo "Add your deploy step here (SSH, k8s, etc.)"
+            \${{ secrets.DOCKERHUB_USERNAME }}/${appName}:latest
+            \${{ secrets.DOCKERHUB_USERNAME }}/${appName}:\${{ github.sha }}
 `;
         await this.writeFile('.github/workflows/ci-cd.yml', content, 'yaml', true);
     }
@@ -601,12 +717,27 @@ server {
             fs.mkdirSync(path.dirname(fullPath), { recursive: true });
         }
 
-        // Check if file exists
+        // Check if file exists (P34(c): identical = no-op; else show the
+        // diff BEFORE asking - never blind-overwrite an existing file).
         if (fs.existsSync(fullPath)) {
+            const existing = fs.readFileSync(fullPath, 'utf8');
+            if (existing === content) {
+                vscode.window.showInformationMessage(`${relativePath} est deja a jour.`);
+                this.panel.webview.postMessage({ type: 'fileUpToDate', file: relativePath });
+                return;
+            }
+            const tmpNew = path.join(os.tmpdir(), 'sudo-devops-' + path.basename(fullPath) + '.new');
+            fs.writeFileSync(tmpNew, content, 'utf8');
+            try {
+                await vscode.commands.executeCommand('vscode.diff',
+                    vscode.Uri.file(fullPath), vscode.Uri.file(tmpNew),
+                    `${relativePath} (existant / nouveau)`);
+            } catch (_) { /* diff view is best-effort; confirmation still applies */ }
             const answer = await vscode.window.showWarningMessage(
-                `${relativePath} existe déjà. Écraser?`,
+                `${relativePath} existe deja (diff affiche). Ecraser ?`,
                 'Oui', 'Annuler'
             );
+            try { fs.unlinkSync(tmpNew); } catch (_) {}
             if (answer !== 'Oui') {
                 this.panel.webview.postMessage({ type: 'fileCancelled', file: relativePath });
                 return;
@@ -863,6 +994,9 @@ window.addEventListener('message', ev => {
             break;
         case 'fileCancelled':
             showStatus('ℹ️ Annulé: ' + m.file, 'info');
+            break;
+        case 'fileUpToDate':
+            showStatus('Deja a jour: ' + m.file, 'info');
             break;
         case 'aiGenerating':
             showStatus('🤖 Génération IA...', 'info');
