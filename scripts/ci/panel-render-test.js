@@ -244,6 +244,24 @@ async function evalWebviewFlat(browser, sid) {
   return (r && r.result && r.result.value) || {};
 }
 
+const DIAG_EXPR = '({t: document.title, n: (document.body?document.body.innerText.length:0), ' +
+  'tc: (document.body?document.body.textContent.length:0), loc: String(location.href).slice(0,120), ' +
+  'ready: document.readyState, WL: window.length, ' +
+  'fatal: !(document.getElementById("ssFatal")||{hidden:true}).hidden, ' +
+  'html: (document.documentElement?document.documentElement.outerHTML.slice(0,300):"NO-DOC")})';
+
+function sessionContexts(browser, sid) {
+  const out = [];
+  for (const m of browser.events) {
+    if (m.sessionId === sid && m.method === 'Runtime.executionContextCreated' &&
+        m.params && m.params.context && out.length < 6) {
+      out.push({ id: m.params.context.id, name: m.params.context.name || '',
+        frame: (m.params.context.auxData && m.params.context.auxData.frameId) || '' });
+    }
+  }
+  return out;
+}
+
 function walkFiles(root) {
   const out = [];
   const stack = [root];
@@ -459,9 +477,44 @@ async function main() {
             await browser.send('Runtime.enable', {}, sid);
             await browser.send('Page.enable', {}, sid);
             await sleep(2500);
-            const ev = await evalWebviewFlat(browser, sid);
+            let ev = await evalWebviewFlat(browser, sid);
+            let viaCtx = null;
+            let diag = null;
+            if ((ev.n || 0) === 0 && !(ev.t || '')) {
+              // Default context empty: probe every execution context
+              // (OOPIF navigations can strand the default context).
+              const ctxs = sessionContexts(browser, sid);
+              diag = { nCtx: ctxs.length, probes: [] };
+              for (const c of ctxs) {
+                try {
+                  const r = await browser.send('Runtime.evaluate',
+                    { expression: DIAG_EXPR, contextId: c.id, returnByValue: true }, sid);
+                  const v = (r && r.result && r.result.value) || null;
+                  diag.probes.push({ ctx: c.id, name: (c.name || '').slice(0, 24),
+                    t: v ? String(v.t || '').slice(0, 40) : null,
+                    n: v ? v.n : null, tc: v ? v.tc : null,
+                    loc: v ? v.loc : null, ready: v ? v.ready : null, WL: v ? v.WL : null,
+                    html: v ? v.html : null });
+                  if (v && ((v.n || 0) > 0 || (v.t || '').length > 0 || (v.tc || 0) > 0)) {
+                    ev = { t: v.t || '', n: v.n || v.tc || 0, fatal: !!v.fatal, fb: false };
+                    viaCtx = c.id;
+                    break;
+                  }
+                } catch (pe) {
+                  diag.probes.push({ ctx: c.id, error: String(pe && pe.message || pe).slice(0, 80) });
+                }
+              }
+              if (!viaCtx) { // ground truth from first context even if empty
+                try {
+                  const r0 = await browser.send('Runtime.evaluate',
+                    { expression: DIAG_EXPR, returnByValue: true }, sid);
+                  const v0 = (r0 && r0.result && r0.result.value) || null;
+                  diag.defaultCtx = v0;
+                } catch (_) {}
+              }
+            }
             const { errs, warns } = browser.drainErrors(sid);
-            const info = { type: t.type || '', url: (t.url || '').slice(0, 120), title: ev.t || '', textLen: ev.n || 0, fatal: !!ev.fatal, fb: !!ev.fb, errs, warns, shot: null };
+            const info = { type: t.type || '', url: (t.url || '').slice(0, 120), title: ev.t || '', textLen: ev.n || 0, fatal: !!ev.fatal, fb: !!ev.fb, errs, warns, shot: null, viaCtx, diag };
             try { // screenshot is evidence only; keep verdict on eval
               const shot = await browser.send('Page.captureScreenshot', { format: 'png' }, sid);
               const shotPath = path.join(outDir, label + '-' + id + '.png');
