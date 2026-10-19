@@ -7,6 +7,8 @@
 'use strict';
 
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 
 class AgentActivityView {
     static VIEW_ID = 'sudoAgentLauncher';
@@ -21,6 +23,7 @@ class AgentActivityView {
         view.webview.options = { enableScripts: true };
         view.webview.html = this._html();
         view.webview.onDidReceiveMessage((m) => {
+            if (wvFallback.handlePanelMessage(null, m)) return;
             if (m && m.type === 'open') {
                 vscode.commands.executeCommand('sudoAgent.open');
             }
@@ -46,6 +49,7 @@ class AgentActivityView {
         'kbd { background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); ' +
         'border-radius:3px; padding:0 4px; font-family:inherit; }\n' +
         '</style>\n</head>\n<body>\n' +
+        guardSnippet({ nonce: nonce }) +
         '<h2>Sudo Agent</h2>\n' +
         '<p>Agent de programmation autonome (serveur agent local). La conversation s&rsquo;ouvre dans un onglet d&rsquo;&eacute;diteur.</p>\n' +
         '<button class="btn" id="openBtn">Ouvrir Sudo Agent</button>\n' +

@@ -93,6 +93,17 @@ async function activate(ctx) {
                 model: 'see runtime panel', ports: { backend: 5000, runtime: 6000 },
                 policies: { edition: 'see license panel' } }));
             extTech.info('extension activated', {});
+            // P35(d): surface launcher failures recorded by start.bat.
+            try {
+                const flagPath = path.join(techLog.resolveLogsDir({}), 'startup-errors.txt');
+                const flag = fs.readFileSync(flagPath, 'utf8').trim();
+                if (flag) {
+                    extTech.warn('startup errors from launcher', { flag: flag.slice(0, 500) });
+                    vscode.window.showErrorMessage('Sudo Studio: ' + flag.split(/\r?\n/)[0].slice(0, 300), 'Ouvrir les journaux').then((sel) => {
+                        if (sel === 'Ouvrir les journaux') vscode.commands.executeCommand('sudoStudio.openLogsFolder');
+                    });
+                }
+            } catch (_) { /* no flag file: clean start */ }
         } catch (_) { /* journal never breaks activation */ }
 
         // P24/P27: start the Sudo Agent core server (fire-and-forget, never
@@ -1786,8 +1797,15 @@ function openSdkInstallPanel(sdkId) {
 function showBuildInfo() {
     let text = 'Sudo Studio (dev - no build-manifest.json)';
     try {
-        // Extension dir is {install}\extensions\sudo-ai -> manifest at {install}\.
-        const root = path.resolve(__dirname, '..', '..');
+        // P35(c): the live extension may live outside the install root
+        // (%LOCALAPPDATA%\SudoStudio\extensions\sudo-ai). Prefer the app
+        // root (vscode.env.appRoot = {install}\resources\app).
+        let root = null;
+        try {
+            const appRoot = vscode.env.appRoot;
+            if (appRoot) root = path.resolve(appRoot, '..', '..');
+        } catch (_) {}
+        if (!root) root = path.resolve(__dirname, '..', '..');
         const mf = JSON.parse(fs.readFileSync(path.join(root, 'build-manifest.json'), 'utf8'));
         const nFiles = mf.files ? Object.keys(mf.files).length : 0;
         text = 'Sudo Studio build ' + (mf.version || '?') +

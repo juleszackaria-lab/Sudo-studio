@@ -341,6 +341,22 @@ try {
         } catch { Add-Check 'logs-single-dir' 'FAIL' $_.Exception.Message }
     }
 
+    # -- 9c. P35(c): live extension outside install + install has no data dir --
+    if ($SkipEditorTest) {
+        Add-Check 'extension-live-copy' 'SKIP' 'flag (no launcher run)'
+    } else {
+        try {
+            $live = Join-Path $env:LOCALAPPDATA 'SudoStudio\extensions\sudo-ai'
+            foreach ($lf in @('package.json', 'extension.js')) {
+                if (-not (Test-Path (Join-Path $live $lf))) { throw ('live copy missing: ' + $lf) }
+            }
+            $lp = Get-Content (Join-Path $live 'package.json') -Raw | ConvertFrom-Json
+            if (@($lp.contributes.viewsContainers.activitybar)[0].id -ne 'sudo-studio') { throw 'live container != sudo-studio' }
+            if (Test-Path (Join-Path $InstallDir 'data')) { throw 'install still carries a data dir' }
+            Add-Check 'extension-live-copy' 'PASS' 'live + no install data'
+        } catch { Add-Check 'extension-live-copy' 'FAIL' $_.Exception.Message }
+    }
+
     # -- 10. clean uninstall --
     try {
         $unins = Join-Path $InstallDir 'unins000.exe'

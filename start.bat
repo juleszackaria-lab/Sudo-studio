@@ -22,6 +22,10 @@ set "LOGS=%LOCALAPPDATA%\SudoStudio\logs"
 set "LOG_FILE=%LOGS%\startup.log"
 :: Inherited by backend.exe / runtime.exe / node children (single-dir override).
 set "SUDO_STUDIO_LOGS=%LOGS%"
+:: P35(c): ALL writable state lives outside the install dir.
+set "SSDATA=%LOCALAPPDATA%\SudoStudio"
+:: P35(c)+P31(a): true install root for children (AgentServer env-first).
+set "SUDO_STUDIO_ROOT=%ROOT%"
 set "BACKEND_PORT=5000"
 set "RUNTIME_PORT=6000"
 set "EXT=%ROOT%extensions\sudo-ai"
@@ -46,6 +50,7 @@ echo.
 
 :: -- Create logs folder ---------------------------------------
 if not exist "%LOGS%" mkdir "%LOGS%" 2>nul
+del "%LOGS%\startup-errors.txt" 2>nul
 if not exist "%LOGS%" (
     echo [ERROR] Cannot create logs folder at: %LOGS%
     echo         Check write permissions.
@@ -103,6 +108,7 @@ if "%FOUND_BE%"=="1" (
     echo   [ERROR] backend.exe not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] backend.exe is missing.
+    echo backend.exe is missing - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -121,6 +127,7 @@ if "%FOUND_RT%"=="1" (
     echo   [ERROR] runtime.exe not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] runtime.exe is missing.
+    echo runtime.exe is missing - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -138,6 +145,7 @@ if defined V_EXE (
     echo   [ERROR] Editor not found >> "%LOG_FILE%"
     echo.
     echo [FATAL] No editor executable found in install folder.
+    echo No editor executable found - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -306,15 +314,21 @@ echo.
 
 :: V_EXE already set in Global Variables section — no re-detection needed.
 echo [PHASE 5] Editor exe: %V_EXE% >> "%LOG_FILE%"
-set "V_EXT=%ROOT%extensions"
-set "V_DAT=%ROOT%data"
+:: P35(c): user-data + extensions live in %LOCALAPPDATA%\SudoStudio (never install).
+set "V_EXT=%SSDATA%\extensions"
+set "V_DAT=%SSDATA%\userdata"
 set "V_SRC=%ROOT%sudo-ai-extension"
-set "V_DEV=%ROOT%extensions\sudo-ai"
+set "V_DEV=%SSDATA%\extensions\sudo-ai"
+:: Shipped read-only master (packager STEP 12).
+set "V_MASTER=%ROOT%extensions\sudo-ai"
 
 :: Creer dossiers necessaires
 if not exist "%V_DAT%" mkdir "%V_DAT%" 2>nul
 if not exist "%V_EXT%" mkdir "%V_EXT%" 2>nul
 if not exist "%V_DAT%\User" mkdir "%V_DAT%\User" 2>nul
+:: P35(c): one-way migration of pre-P35 user-data (copy-only, never delete).
+if exist "%ROOT%data\User\settings.json" if not exist "%V_DAT%\User\settings.json" xcopy /S /E /Y /Q /I "%ROOT%data" "%V_DAT%\" >nul 2>&1
+if not exist "%V_DEV%\package.json" if exist "%ROOT%extensions" xcopy /S /E /Y /Q /I "%ROOT%extensions" "%V_EXT%\" >nul 2>&1
 
 :: -- Seed default settings on FIRST run only (never overwrite user settings) --
 :: The custom titlebar shows no product name by default ("Welcome" only), so
@@ -331,31 +345,41 @@ if not exist "%V_DAT%\User\settings.json" (
 :: (packager STEP 12). The ROOT\sudo-ai-extension source copy exists only in
 :: dev layouts. Test installed-first; sync only when source exists and target
 :: is missing; otherwise fail LOUD with both expected paths (no silent skip).
-set "EXT_HAVE_INSTALLED=0"
+set "EXT_HAVE_MASTER=0"
+set "EXT_HAVE_LIVE=0"
 set "EXT_HAVE_SRC=0"
-if exist "%V_DEV%\package.json" set "EXT_HAVE_INSTALLED=1"
+if exist "%V_MASTER%\package.json" set "EXT_HAVE_MASTER=1"
+if exist "%V_DEV%\package.json" set "EXT_HAVE_LIVE=1"
 if exist "%V_SRC%\package.json" set "EXT_HAVE_SRC=1"
-if "%EXT_HAVE_INSTALLED%"=="1" (
-    echo   [OK] Extension already installed at %V_DEV%
-    echo   [OK] Extension already installed >> "%LOG_FILE%"
+if "%EXT_HAVE_LIVE%"=="1" if "%EXT_HAVE_MASTER%"=="1" (
+    echo [PHASE 5] Refreshing live extension from shipped master...
+    xcopy /S /E /Y /D /Q /I "%V_MASTER%" "%V_DEV%\" >nul 2>&1
+    echo   [OK] Extension live at %V_DEV%
+    echo   [OK] Extension refreshed >> "%LOG_FILE%"
 )
-if "%EXT_HAVE_INSTALLED%"=="0" if "%EXT_HAVE_SRC%"=="1" (
-    echo [PHASE 5] Syncing extension to extensions\sudo-ai\...
-    echo [PHASE 5] Syncing extension >> "%LOG_FILE%"
+if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="1" (
+    echo [PHASE 5] Installing extension to live dir...
+    echo [PHASE 5] Installing extension >> "%LOG_FILE%"
     if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
-    :: Copy key extension files
-    :: /Y=overwrite  /Q=quiet  /I=assume destination is dir  /E=include empty subdirs
-    xcopy /Y /Q /I "%V_SRC%\extension.js"   "%V_DEV%\" >nul 2>&1
-    xcopy /Y /Q /I "%V_SRC%\package.json"   "%V_DEV%\" >nul 2>&1
-    xcopy /S /E /Y /Q /I "%V_SRC%\src"      "%V_DEV%\src\" >nul 2>&1
-    if exist "%V_SRC%\resources"    xcopy /S /E /Y /Q /I "%V_SRC%\resources"    "%V_DEV%\resources\"    >nul 2>&1
-    if exist "%V_SRC%\node_modules" xcopy /S /E /Y /Q /I "%V_SRC%\node_modules" "%V_DEV%\node_modules\" >nul 2>&1
-    echo   [OK] Extension synced to %V_DEV%
-    echo   [OK] Extension synced >> "%LOG_FILE%"
+    xcopy /S /E /Y /Q /I "%V_MASTER%" "%V_DEV%\" >nul 2>&1
+    echo   [OK] Extension installed at %V_DEV%
+    echo   [OK] Extension installed >> "%LOG_FILE%"
 )
-if "%EXT_HAVE_INSTALLED%"=="0" if "%EXT_HAVE_SRC%"=="0" (
+if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="0" if "%EXT_HAVE_SRC%"=="1" (
+    echo [PHASE 5] Syncing extension from dev source...
+    echo [PHASE 5] Syncing extension (dev) >> "%LOG_FILE%"
+    if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
+    xcopy /S /E /Y /Q /I "%V_SRC%" "%V_DEV%\" >nul 2>&1
+    echo   [OK] Extension synced to %V_DEV%
+    echo   [OK] Extension synced (dev) >> "%LOG_FILE%"
+)
+if "%EXT_HAVE_LIVE%"=="1" if "%EXT_HAVE_MASTER%"=="0" (
+    echo   [OK] Extension live at %V_DEV% (dev)
+    echo   [OK] Extension live (dev) >> "%LOG_FILE%"
+)
+if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="0" if "%EXT_HAVE_SRC%"=="0" (
     echo   [ERROR] No extension found - Sudo AI will NOT load.
-    echo   [ERROR] Looked for: %V_DEV%\package.json and %V_SRC%\package.json
+    echo   [ERROR] Looked for: %V_MASTER%\package.json, %V_DEV%\package.json and %V_SRC%\package.json
     echo   [ERROR] Reinstall Sudo Studio. Full log: %LOG_FILE%
     echo   [ERROR] Extension missing (both paths) >> "%LOG_FILE%"
 )
@@ -364,19 +388,21 @@ if "%EXT_HAVE_INSTALLED%"=="0" if "%EXT_HAVE_SRC%"=="0" (
 if not defined V_EXE (
     echo [FATAL] V_EXE undefined at launch time >> "%LOG_FILE%"
     echo [FATAL] Editor path not set - cannot launch.
+    echo Editor path not set - cannot launch>>"%LOGS%\startup-errors.txt"
     pause
     exit /b 1
 )
 if not exist "%V_EXE%" (
     echo [FATAL] Editor not found at: %V_EXE% >> "%LOG_FILE%"
     echo [FATAL] Editor not found at: %V_EXE%
+    echo Editor not found - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
     pause
     exit /b 1
 )
 echo [PHASE 5] Launching: %V_EXE% >> "%LOG_FILE%"
 
 :: Ecrire un script de lancement propre (bloc parenthese - seule methode sans corruption)
-set "LAUNCHER=%ROOT%launch.bat"
+set "LAUNCHER=%SSDATA%\launch.bat"
 (
     echo @echo off
     echo start "" "%V_EXE%" --extensions-dir "%V_EXT%" --user-data-dir "%V_DAT%"

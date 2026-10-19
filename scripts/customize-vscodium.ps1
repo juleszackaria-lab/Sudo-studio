@@ -4,7 +4,8 @@ param(
     [string]$RceditPath = '',
     [string]$OldLogoSvgSha256 = '88bb8eb6c643403be96d1d218a564c28a05f3b31368aad10c0db0bc1efbed75f',
     [string]$OldIconPngSha256 = 'b9971d910cb2502df37d7c65b2e36c9061d030fd41699bf9dafee46551c5505c',
-    [string]$NewIconPngSha256 = 'f9a9ccc40f3a630132f9485084e33a0504493b3d7adda663950e50600b219d42'
+    [string]$NewIconPngSha256 = 'f9a9ccc40f3a630132f9485084e33a0504493b3d7adda663950e50600b219d42',
+    [string]$SudoStudioCommit = ''
 )
 Write-Host "=== Sudo Studio Branding Customization ==="
 Write-Host "VSCodium directory: $VSCodiumDir"
@@ -44,6 +45,13 @@ if (Test-Path $productJsonPath) {
         $json | Add-Member -NotePropertyName "win32MutexName"       -NotePropertyValue "sudostudio"        -Force
         $json | Add-Member -NotePropertyName "win32RegValueName"    -NotePropertyValue "SudoStudio"        -Force
         $json | Add-Member -NotePropertyName "darwinBundleIdentifier" -NotePropertyValue "com.sudostudio.app" -Force
+        # P35(e): About dialog shows OUR commit (was: upstream VSCodium sha).
+        if ($SudoStudioCommit -and $SudoStudioCommit -match '^[0-9a-f]{7,40}$') {
+            $json | Add-Member -NotePropertyName "commit" -NotePropertyValue $SudoStudioCommit -Force
+            $json | Add-Member -NotePropertyName "date" -NotePropertyValue ([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')) -Force
+            Write-Host "[OK] product.json commit/date set to Sudo-studio $SudoStudioCommit"
+        }
+        else { Write-Warning "[WARN] product.json keeps upstream commit (no -SudoStudioCommit)" }
 
         if ($json.PSObject.Properties.Name -contains 'checksums') {
             $json.PSObject.Properties.Remove('checksums')
@@ -975,6 +983,62 @@ if (Test-Path $oldManifest) {
         Write-Warning ("[WARN] Manifest rename failed: {0}" -f $_.Exception.Message)
     }
 }
+
+# ============================================================
+# STEP 4e2 - Sentence-exact survivors (P35-e): prose strings the
+# display-context guards keep by design (a trailing period blocks the
+# generic patterns, e.g. "bundled with VSCodium."). Full sentences
+# only - they can never match code, paths, URLs or exe names.
+# KEEP (documented): the "VSCodium/vscodium" repo path (functional
+# GitHub URL), "Code - OSS" dev fallbacks (dead code), license texts.
+# ============================================================
+Write-Host "[STEP 4e2] Sentence-exact brand survivors..."
+$step4e2Pairs = @(
+    @('bundled with VSCodium.', 'bundled with Sudo Studio.'),
+    @('get started in VSCodium.', 'get started in Sudo Studio.'),
+    @('editing features in VSCodium.', 'editing features in Sudo Studio.'),
+    @('Please reinstall VSCodium.', 'Please reinstall Sudo Studio.'),
+    @('filing an issue against VSCodium.', 'filing an issue against Sudo Studio.'),
+    @('arguments to VS Code.', 'arguments to Sudo Studio.'),
+    @('restart of VS Code.', 'restart of Sudo Studio.'),
+    @('rendering issues in VS Code.', 'rendering issues in Sudo Studio.')
+)
+$step4e2Files = Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
+    Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch "\\.git\\" } |
+    Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-?PARTY|COPYING|CREDITS|ATTRIBUTION)' } |
+    Where-Object { $_.Length -lt 64MB }
+$step4e2Patched = 0
+$step4e2Replaced = 0
+foreach ($file in $step4e2Files) {
+    try {
+        $raw = [System.IO.File]::ReadAllText($file.FullName, [System.Text.Encoding]::UTF8)
+        $hit = $false
+        foreach ($pr in $step4e2Pairs) { if ($raw.Contains($pr[0])) { $hit = $true; break } }
+        if (-not $hit) { continue }
+        $patched = $raw
+        foreach ($pr in $step4e2Pairs) {
+            if ($patched.Contains($pr[0])) {
+                $n = ([regex]::Matches($patched, [regex]::Escape($pr[0]))).Count
+                $patched = $patched.Replace($pr[0], $pr[1])
+                $step4e2Replaced += $n
+            }
+        }
+        if ($patched -ne $raw) {
+            $rb2 = [System.IO.File]::ReadAllBytes($file.FullName)
+            $hb2 = ($rb2.Length -ge 3 -and $rb2[0] -eq 0xEF -and $rb2[1] -eq 0xBB -and $rb2[2] -eq 0xBF)
+            $en2 = if ($hb2) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
+            [System.IO.File]::WriteAllText($file.FullName, $patched, $en2)
+            Write-Host ("[OK] [4e2] Patched: {0}" -f $file.FullName.Substring($resolvedDir.Length))
+            $step4e2Patched++
+        }
+    } catch {
+        Write-Warning ("[WARN] [4e2] Could not patch {0}: {1}" -f $file.Name, $_.Exception.Message)
+    }
+}
+Write-Host ("[STEP 4e2] DONE: {0} file(s) patched, {1} sentence occurrence(s) replaced" -f $step4e2Patched, $step4e2Replaced)
+if ($step4e2Patched -eq 0) { Write-Warning "[WARN] [4e2] 0 files patched - survivors may have moved (VSCodium update?) or were already clean." }
 
 # STEP 5 - Re-confirm product.json display names (safe JSON patch)
 # ============================================================

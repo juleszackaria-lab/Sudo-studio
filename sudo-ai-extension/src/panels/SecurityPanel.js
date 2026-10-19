@@ -10,6 +10,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const { exec } = require('child_process');
 const { appendAudit } = require('../utils/auditLog');
@@ -609,6 +610,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
   <div><h1>🔒 Security Audit</h1><p id="subtitle" style="font-size:12px;color:var(--muted);">Scanning workspace...</p></div>
   <button class="btn" onclick="refresh()" id="refreshBtn">🔄 Refresh</button>

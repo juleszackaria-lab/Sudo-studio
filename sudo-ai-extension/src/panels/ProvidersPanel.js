@@ -9,6 +9,8 @@
 'use strict';
 
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const { getAIProviderService } = require('../services/AIProviderService');
 const { getAuditLog } = require('../utils/auditLog');
 
@@ -35,6 +37,7 @@ class ProvidersPanel {
         this.svc = getAIProviderService();
         this.panel.webview.html = this.getHtmlContent();
         this.panel.webview.onDidReceiveMessage(async (msg) => {
+            if (wvFallback.handlePanelMessage(null, msg)) return;
             try { await this._onMessage(msg); }
             catch (e) { this._post({ type: 'error', text: e.message }); }
         }, null, this.disposables);
@@ -146,6 +149,7 @@ table.audit{width:100%;font-size:11px;border-collapse:collapse;}
 table.audit td,table.audit th{border-bottom:1px solid var(--border);padding:4px 6px;text-align:left;vertical-align:top;}
 .muted{color:var(--muted);}
 </style></head><body>
+${guardSnippet()}
 <h1>\u{1F517} Fournisseurs IA</h1>
 <div id="msg"></div>
 <div id="banner"></div>

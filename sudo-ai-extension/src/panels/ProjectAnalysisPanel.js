@@ -4,6 +4,8 @@
  * No backend required. AI recommendations via runtime port 6000.
  */
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const axios  = require('axios');
 const path   = require('path');
 const fs     = require('fs');
@@ -56,6 +58,7 @@ class ProjectAnalysisPanel {
     }
 
     async handleMessage(msg) {
+        if (wvFallback.handlePanelMessage(null, msg)) return;
         switch (msg.type) {
             case 'reanalyze':      await this.analyzeProject(); break;
             case 'autoFix':       await this.runAutoFix(msg.issue); break;
@@ -568,6 +571,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
     <div>
         <h1>🔍 Project Analysis</h1>

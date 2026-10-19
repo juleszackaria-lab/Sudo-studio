@@ -27,7 +27,8 @@ const TYPES = {
   unavailable: 'sudoBackendUnavailable',
   ok: 'sudoBackendOk',
   retry: 'sudoBackendRetry',
-  logs: 'sudoOpenLogs'
+  logs: 'sudoOpenLogs',
+  webviewError: 'sudoWebviewError'
 };
 
 // Panels currently showing the overlay (so Ok is posted only to dismiss).
@@ -150,6 +151,13 @@ function handlePanelMessage(panel, msg, reloadFn, cmds) {
       const c = cmds || require('vscode').commands;
       c.executeCommand('sudoStudio.openLogsFolder');
     } catch (_) { /* extension host unavailable (tests) */ }
+    return true;
+  }
+  if (msg.type === TYPES.webviewError) {
+    try {
+      require('./techLog').sharedLog('extension').warn(
+        'webview error: ' + String(msg.cause || 'cause inconnue').slice(0, 200), {});
+    } catch (_) { /* logging never breaks panels */ }
     return true;
   }
   return false;

@@ -21,6 +21,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const fs   = require('fs');
 const path = require('path');
@@ -860,6 +861,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
   <div><h1>Central Management</h1><p id="subtitle" style="font-size:12px;color:var(--muted)">Chargement...</p></div>
   <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">

@@ -3,6 +3,7 @@
  * Real-time system diagnostics with AutoFix buttons.
  */
 const vscode = require('vscode');
+const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const axios  = require('axios');
 const { exec } = require('child_process');
@@ -381,6 +382,7 @@ body {
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
     <h1>🩺 System Doctor</h1>
     <span id="lastCheck" style="font-size:11px;opacity:.6;"></span>

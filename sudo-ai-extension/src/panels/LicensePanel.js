@@ -16,6 +16,8 @@
 'use strict';
 
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
@@ -57,6 +59,7 @@ class LicensePanel {
     }
 
     async _onMessage(msg) {
+        if (wvFallback.handlePanelMessage(null, msg)) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
             case 'load':       this._load(); break;
@@ -346,6 +349,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
   <div><h1>🔑 License Management</h1></div>
   <div style="display:flex;gap:6px">

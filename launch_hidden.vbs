@@ -15,10 +15,11 @@ Dim i
 
 Set objShell = CreateObject("WScript.Shell")
 
-' Build command line: first arg is the executable, rest are arguments
+' Build command line: first arg is the executable, rest are arguments.
+' P35(d): quote EVERY argument (install paths contain spaces).
 cmdLine = Chr(34) & WScript.Arguments(0) & Chr(34)
 For i = 1 To WScript.Arguments.Count - 1
-    cmdLine = cmdLine & " " & WScript.Arguments(i)
+    cmdLine = cmdLine & " " & Chr(34) & WScript.Arguments(i) & Chr(34)
 Next
 
 ' 0 = SW_HIDE (no window), False = do not wait

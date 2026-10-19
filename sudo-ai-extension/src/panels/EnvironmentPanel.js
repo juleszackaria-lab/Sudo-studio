@@ -11,6 +11,8 @@
  * - Actions: propose des corrections pour chaque outil manquant/désynchronisé
  */
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const axios  = require('axios');
 const { exec } = require('child_process');
 const os   = require('os');
@@ -67,6 +69,7 @@ class EnvironmentPanel {
     }
 
     async handleMessage(msg) {
+        if (wvFallback.handlePanelMessage(null, msg)) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
             case 'scan':       await this.scanEnvironment(); break;
@@ -419,6 +422,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
     <div>
         <h1>🔄 Environnements Reproductibles</h1>

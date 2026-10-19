@@ -7,6 +7,8 @@
 'use strict';
 
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const fs = require('fs');
 const path = require('path');
 const { resolveLogsDir } = require('../utils/techLog');
@@ -98,6 +100,7 @@ class LogsPanel {
   }
 
   async handleMessage(msg) {
+    if (wvFallback.handlePanelMessage(null, msg)) return;
     if (!msg || typeof msg !== 'object') return;
     try {
       if (msg.type === 'load' || msg.type === 'listFiles') {
@@ -137,6 +140,7 @@ label { font-size: 11px; color: #7d8590; }
 </style>
 </head>
 <body>
+${guardSnippet()}
 <h2>Technical logs</h2>
 <div id="meta">loading...</div>
 <div class="row">

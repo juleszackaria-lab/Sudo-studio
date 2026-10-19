@@ -16,6 +16,8 @@
 'use strict';
 
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -273,6 +275,7 @@ details.toolrow[open] pre { animation:none; }
 </style>
 </head>
 <body>
+${guardSnippet({ nonce: nonce })}
 <div id="hdr">
   <span class="title"><span class="codicon codicon-comment-discussion"></span>${titleText}</span>
 ${modeBlock}  <label for="providerSel">Fournisseur</label>
@@ -1099,6 +1102,7 @@ class AgentPanel {
 
     async handleMessage(msg) {
         try {
+        if (wvFallback.handlePanelMessage(null, msg)) return;
             switch (msg && msg.type) {
                 case 'send': await this._handleSend(msg.text); break;
                 case 'stop': this.stopAgent(); break;

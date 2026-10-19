@@ -14,6 +14,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const { exec, execSync } = require('child_process');
 const fs   = require('fs');
@@ -560,6 +561,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
   <div><h1>📋 Enterprise Duplication</h1><p id="subtitle" style="font-size:12px;color:var(--muted)">Reproduce environments at scale</p></div>
   <button class="btn btn-secondary" onclick="scanLocal()">🔄 Rescan</button>

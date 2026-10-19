@@ -4,6 +4,8 @@
  * 100% offline for all scan/select logic — network only for explicit Download.
  */
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const axios  = require('axios');
 const { installAxiosConnRetry } = require('../utils/httpRetry');
 const { isModelAllowed } = require('./CentralMgmtPanel');
@@ -76,6 +78,7 @@ class RuntimePanel {
     }
 
     async handleMessage(msg) {
+        if (wvFallback.handlePanelMessage(null, msg)) return;
         console.log('[RUNTIME] handleMessage:', msg.type);
         switch (msg.type) {
             case 'refresh':        await this.fetchStatus(); break;
@@ -489,6 +492,7 @@ h2 { font-size:15px; font-weight:700; margin-bottom:12px; display:flex; align-it
 </style>
 </head>
 <body>
+${guardSnippet({ nonce: nonce })}
 <h2>🤖 Runtime & Modèles IA</h2>
 
 <div class="mock-warning" id="mockWarning">

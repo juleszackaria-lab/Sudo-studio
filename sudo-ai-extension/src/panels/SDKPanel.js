@@ -5,6 +5,8 @@
  * No backend required - works standalone.
  */
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
+const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const { exec } = require('child_process');
 const { appendAudit } = require('../utils/auditLog');
@@ -714,6 +716,7 @@ body {
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
     <div>
         <h1>📦 SDK Manager</h1>
@@ -929,6 +932,7 @@ class SdkInstallPanel {
     }
 
     async _onMessage(msg) {
+        if (wvFallback.handlePanelMessage(null, msg)) return;
         switch (msg.type) {
             case 'install': await this._startInstall(msg.sdkId); break;
             case 'clear':   this.log = []; this._sendLog(); break;
@@ -999,6 +1003,7 @@ h1{font-size:17px;font-weight:600;margin-bottom:12px;}
 </style>
 </head>
 <body>
+${guardSnippet()}
 <h1>⬇ SDK Install</h1>
 <div id="status">Waiting for installation request...</div>
 <div id="logBox"><div style="color:var(--muted)">Log will appear here...</div></div>

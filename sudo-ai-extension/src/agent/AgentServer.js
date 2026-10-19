@@ -25,8 +25,12 @@ function resolveInstallRoot(explicitExtDir) {
   // extensions\sudo-agent, which the packager never creates (03 copies
   // sudo-agent/src to the install ROOT) - that wrong guess is the PC crash
   // (MODULE_NOT_FOUND, requireStack []: the node ENTRY was missing).
-  if (explicitExtDir) return path.resolve(explicitExtDir, '..', '..');
+  // P35(c): the launcher always exports the true install root. It wins
+  // over the extension-relative guess (the live extension may live in
+  // %LOCALAPPDATA%\SudoStudio\extensions\sudo-ai, whose '../..' is NOT
+  // the install root). Dev (no env) keeps the old behavior.
   if (process.env.SUDO_STUDIO_ROOT) return path.resolve(process.env.SUDO_STUDIO_ROOT);
+  if (explicitExtDir) return path.resolve(explicitExtDir, '..', '..');
   return path.resolve(__dirname, '..', '..', '..');
 }
 

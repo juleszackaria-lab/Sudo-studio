@@ -15,6 +15,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const wvFallback = require('../utils/backendFallback');
 const path = require('path');
 const fs = require('fs');
 const { AgentEngine } = require('../agent/AgentEngine');
@@ -193,6 +194,7 @@ class ChatPanel {
 
     async handleMessage(msg) {
         try {
+        if (wvFallback.handlePanelMessage(null, msg)) return;
             switch (msg && msg.type) {
                 case 'send': await this._handleSend(msg.text); break;
                 case 'stop': this.stopChat(); break;

@@ -5,6 +5,7 @@
  * Also has AI-powered generation via runtime port 6000.
  */
 const vscode = require('vscode');
+const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const axios  = require('axios');
 const path   = require('path');
@@ -854,6 +855,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </style>
 </head>
 <body>
+${guardSnippet()}
 <div id="header">
     <div>
         <h1>🚀 DevOps Automation</h1>
