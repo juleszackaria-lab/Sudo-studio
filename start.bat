@@ -68,7 +68,7 @@ if exist "%USERPROFILE%\.sudo_studio\logs" xcopy /Y /D /I "%USERPROFILE%\.sudo_s
 :: -- Build manifest (P29-e): commit first in log ----------------
 set "BUILD_COMMIT=dev (no build-manifest.json)"
 if exist "%ROOT%build-manifest.json" (
-    for /f "delims=" %%c in ('powershell -NoProfile -Command "try { $m = Get-Content '%ROOT%build-manifest.json' -Raw | ConvertFrom-Json; if ($m.sudo_studio_commit) { $m.sudo_studio_commit } elseif ($m.commit) { $m.commit } else { '' } } catch { '' }" 2^>nul') do (
+    for /f "delims=" %%c in ('powershell -NoProfile -Command "try { $mf = Join-Path $env:ROOT 'build-manifest.json'; $m = Get-Content $mf -Raw | ConvertFrom-Json; if ($m.sudo_studio_commit) { $m.sudo_studio_commit } elseif ($m.commit) { $m.commit } else { '' } } catch { '' }" 2^>nul') do (
         if not "%%c"=="" set "BUILD_COMMIT=%%c"
     )
 )

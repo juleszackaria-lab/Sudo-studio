@@ -1,6 +1,7 @@
 'use strict'
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const bcryptjs = require('bcryptjs')
 
 console.log('[user.model] Starting with lowdb...')
@@ -9,7 +10,7 @@ const low = require('lowdb')
 const FileSync = require('lowdb/adapters/FileSync')
 
 const BASE = process.pkg
-  ? path.join(path.dirname(process.execPath), '..')
+  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio')
   : path.join(__dirname, '..', '..')
 
 const dbDir = path.join(BASE, 'data')
@@ -18,6 +19,17 @@ if (!fs.existsSync(dbDir)) {
 }
 
 const dbPath = path.join(dbDir, 'enterprise.json')
+// One-way migration from the pre-hotfix location (sibling `data` next to
+// the install dir): copy only, never delete, never blocks boot.
+try {
+  if (process.pkg && !fs.existsSync(dbPath)) {
+    const legacyDb = path.join(path.dirname(process.execPath), '..', 'data', 'enterprise.json')
+    if (fs.existsSync(legacyDb)) {
+      fs.copyFileSync(legacyDb, dbPath)
+      console.log('[user.model] migrated legacy DB to', dbPath)
+    }
+  }
+} catch (_) { /* best-effort migration */ }
 const adapter = new FileSync(dbPath)
 const db = low(adapter)
 db.defaults({ users: [], sessions: [] }).write()
