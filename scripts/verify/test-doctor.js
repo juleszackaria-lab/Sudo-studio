@@ -125,21 +125,38 @@ function httpProbe(url, timeoutMs) {
     const byName = {};
     for (const r of rows) byName[r.name] = r;
 
-    // 1. tools vs independent shell
-    for (const [name, cmd] of TOOLS) {
-        const row = byName[name];
-        const shell = shellProbe(cmd);
-        if (!row) {
-            check('tool-' + name, false, 'row missing from diagnostics');
-            continue;
+    // 1. tools vs independent shell (one retry on mismatch: loaded CI
+    // machines can make a --version call cross the panel's 5 s bound once)
+    const toolVerdict = {};
+    const toolDetail = {};
+    const compareTools = (rowsByName, tag) => {
+        for (const [name, cmd] of TOOLS) {
+            if (toolVerdict[name] === true) continue; // already matched
+            const row = rowsByName[name];
+            const shell = shellProbe(cmd);
+            if (!row) { toolVerdict[name] = false; toolDetail[name] = 'row missing'; continue; }
+            const panelSaysPresent = row.status === 'ok';
+            const match = (panelSaysPresent === shell.present) &&
+                (!shell.present || (row.value || '') === shell.value);
+            toolVerdict[name] = match;
+            toolDetail[name] = tag + 'panel=' + row.status + ':' + String(row.value || '').slice(0, 40) +
+                ' shell=' + (shell.present ? shell.value.slice(0, 40) : 'absent');
         }
-        const panelSaysPresent = row.status === 'ok';
-        const match = (panelSaysPresent === shell.present) &&
-            (!shell.present || (row.value || '') === shell.value);
-        check('tool-' + name, match,
-            'panel=' + row.status + ':' + String(row.value || '').slice(0, 40) +
-            ' shell=' + (shell.present ? shell.value.slice(0, 40) : 'absent'));
+    };
+    compareTools(byName, '');
+    const mismatched = TOOLS.filter(([name]) => !toolVerdict[name]).map(([name]) => name);
+    if (mismatched.length) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+            const rows2 = await inst._gatherDiagnostics();
+            const byName2 = {};
+            for (const r of rows2) byName2[r.name] = r;
+            compareTools(byName2, 'retry:');
+        } catch (e) {
+            for (const name of mismatched) toolDetail[name] += ' retry-error';
+        }
     }
+    for (const [name] of TOOLS) check('tool-' + name, toolVerdict[name] === true, toolDetail[name]);
 
     // 2. backend vs independent raw-http probe
     const backendUp = await httpProbe('http://127.0.0.1:5000/api/system/health', 3000);

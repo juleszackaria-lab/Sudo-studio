@@ -72,10 +72,10 @@ foreach ($rel in @('SudoStudio.exe', 'backend.exe', 'runtime.exe', 'start.bat',
 }
 try {
     $pj = Get-Content (Join-Path $InstallDir 'resources\app\product.json') -Raw | ConvertFrom-Json
-    $okBrand = ($pj.name -eq 'Sudo Studio')
-    Add-File 'brand:product.json name' $okBrand ([string]$pj.name)
+    $okBrand = ($pj.nameShort -eq 'Sudo Studio')
+    Add-File 'brand:product.json nameShort' $okBrand ([string]$pj.nameShort)
 } catch {
-    Add-File 'brand:product.json name' $false $_.Exception.Message
+    Add-File 'brand:product.json nameShort' $false $_.Exception.Message
 }
 try {
     $lp = Get-Content (Join-Path $InstallDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json

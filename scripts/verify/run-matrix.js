@@ -143,8 +143,10 @@ function runVerifyPs1() {
     }
     try {
         const j = JSON.parse(deBOM(fs.readFileSync(outFile, 'utf8')));
+        const bad = (j.files || []).filter((f) => !f.ok).map((f) => f.path);
         return { ok: j.verdict === 'PASS', detail: 'verdict=' + j.verdict +
-            ' files=' + (j.files || []).filter((f) => f.ok).length + '/' + (j.files || []).length };
+            ' files=' + (j.files || []).filter((f) => f.ok).length + '/' + (j.files || []).length +
+            (bad.length ? (' BAD:' + bad.join(',')) : '') };
     } catch (_) {
         return { ok: false, detail: 'verify-result.json unparseable' };
     }
@@ -190,11 +192,11 @@ function parseSmokeLog(p) {
         for (const s of ['security', 'doctor', 'autofix', 'license']) {
             suites[s] = runSuite(s, (s === 'doctor' && !NO_SPAWN) ? ['--require-backend'] : []);
         }
-        const checkVerdict = (suite, name) => {
+        const checkInfo = (suite, name) => {
             const j = suites[suite] && suites[suite].json;
-            if (!j || !Array.isArray(j.checks)) return 'SUITE-FAILED';
+            if (!j || !Array.isArray(j.checks)) return { verdict: 'SUITE-FAILED', detail: '' };
             const c = j.checks.filter((x) => x.name === name)[0];
-            return c ? c.verdict : 'CHECK-MISSING';
+            return c ? { verdict: c.verdict, detail: c.detail || '' } : { verdict: 'CHECK-MISSING', detail: '' };
         };
 
         // 3. manifest + verify-ps1 (need --install; ps1 needs Windows powershell)
@@ -218,10 +220,13 @@ function parseSmokeLog(p) {
                 const [suite, names] = P36MAP[line.id] || [];
                 if (!suite) { r.verdict = 'FAIL'; r.preuve = 'runner has no mapping (BUG)'; }
                 else {
-                    const vs = names.map((n) => checkVerdict(suite, n));
-                    const fails = names.filter((n, i) => vs[i] !== 'PASS');
+                    const infos = names.map((n) => checkInfo(suite, n));
+                    const fails = names.filter((n, i) => infos[i].verdict !== 'PASS');
                     r.verdict = fails.length ? 'FAIL' : 'PASS';
-                    r.preuve = suite + ': ' + (fails.length ? ('FAIL ' + fails.join(',')) : (names.length + '/' + names.length + ' PASS'));
+                    r.preuve = fails.length
+                        ? (suite + ': FAIL ' + names.filter((n, i) => infos[i].verdict !== 'PASS')
+                            .map((n, k) => n + '=' + infos.filter((x) => x.verdict !== 'PASS')[k].detail.slice(0, 120)).join(' | '))
+                        : (suite + ': ' + names.length + '/' + names.length + ' PASS');
                     if (line.id === 'P36-DOCTOR-BACKEND') r.preuve += ' [' + (NO_SPAWN ? 'informational (no spawn)' : 'required, ' + spawnNote) + ']';
                     if (line.id === 'P25-COPYTEST') r.preuve += ' (shared with P36-AUDIT-NODB by design)';
                 }
