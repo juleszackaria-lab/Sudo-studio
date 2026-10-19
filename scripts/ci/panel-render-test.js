@@ -248,7 +248,8 @@ const DIAG_EXPR = '({t: document.title, n: (document.body?document.body.innerTex
   'tc: (document.body?document.body.textContent.length:0), loc: String(location.href).slice(0,120), ' +
   'ready: document.readyState, WL: window.length, ' +
   'fatal: !(document.getElementById("ssFatal")||{hidden:true}).hidden, ' +
-  'html: (document.documentElement?document.documentElement.outerHTML.slice(0,300):"NO-DOC")})';
+  'html: (document.documentElement?document.documentElement.outerHTML.slice(0,300):"NO-DOC"), ' +
+  'body: (document.body?document.body.innerHTML.slice(0,500):"NO-BODY")})';
 
 function sessionContexts(browser, sid) {
   const out = [];
@@ -329,6 +330,45 @@ function readJson(p) {
   let t = fs.readFileSync(p, 'utf8');
   if (t.charCodeAt(0) === 0xFEFF) t = t.slice(1); // PS5.1 Set-Content UTF8 BOM
   return JSON.parse(t);
+}
+
+function harvestExthost(userDataDir, outDir) {
+  const found = [];
+  try {
+    const logsRoot = path.join(userDataDir, 'logs');
+    const days = fs.readdirSync(logsRoot).filter((d) => /^\d{8}T/.test(d)).sort().reverse();
+    for (const day of days.slice(0, 1)) {
+      const dp = path.join(logsRoot, day);
+      let wins = [];
+      try { wins = fs.readdirSync(dp).filter((w) => w.indexOf('window') === 0).sort().reverse(); } catch (_) {}
+      for (const w of wins.slice(0, 2)) {
+        const wp = path.join(dp, w);
+        const stack = [wp];
+        while (stack.length) {
+          const d = stack.pop();
+          let ents;
+          try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { continue; }
+          for (const e of ents) {
+            const p = path.join(d, e.name);
+            if (e.isDirectory()) { stack.push(p); continue; }
+            if (!/\.(txt|log)$/.test(e.name)) continue;
+            const rel = path.relative(wp, p);
+            if (rel.indexOf('exthost') === -1 && rel.indexOf('renderer') === -1) continue;
+            try {
+              const dest = path.join(outDir, 'exthost', day + '-' + w + '-' + rel.replace(/[\\/]/g, '_'));
+              fs.mkdirSync(path.dirname(dest), { recursive: true });
+              fs.copyFileSync(p, dest);
+              const tail = fs.readFileSync(p, 'utf8').split('\n')
+                .filter((l) => /error|ERR|fail|exception|reject/i.test(l)).slice(-12);
+              if (tail.length) found.push({ file: day + '/' + w + '/' + rel,
+                lines: tail.map((l) => l.slice(0, 220)) });
+            } catch (_) {}
+          }
+        }
+      }
+    }
+  } catch (_) {}
+  return found;
 }
 
 async function main() {
@@ -477,44 +517,40 @@ async function main() {
             await browser.send('Runtime.enable', {}, sid);
             await browser.send('Page.enable', {}, sid);
             await sleep(2500);
-            let ev = await evalWebviewFlat(browser, sid);
+            const ev0 = await evalWebviewFlat(browser, sid);
+            // Probe every execution context (OOPIF navigations can strand
+            // the default context) and require OUR guard markup: the bare
+            // VS Code wrapper alone must never count as a rendered panel.
+            const ctxs = sessionContexts(browser, sid);
+            const diag = { nCtx: ctxs.length, probes: [] };
+            let ev = ev0;
             let viaCtx = null;
-            let diag = null;
-            if ((ev.n || 0) === 0 && !(ev.t || '')) {
-              // Default context empty: probe every execution context
-              // (OOPIF navigations can strand the default context).
-              const ctxs = sessionContexts(browser, sid);
-              diag = { nCtx: ctxs.length, probes: [] };
-              for (const c of ctxs) {
-                try {
-                  const r = await browser.send('Runtime.evaluate',
-                    { expression: DIAG_EXPR, contextId: c.id, returnByValue: true }, sid);
-                  const v = (r && r.result && r.result.value) || null;
-                  diag.probes.push({ ctx: c.id, name: (c.name || '').slice(0, 24),
-                    t: v ? String(v.t || '').slice(0, 40) : null,
-                    n: v ? v.n : null, tc: v ? v.tc : null,
-                    loc: v ? v.loc : null, ready: v ? v.ready : null, WL: v ? v.WL : null,
-                    html: v ? v.html : null });
-                  if (v && ((v.n || 0) > 0 || (v.t || '').length > 0 || (v.tc || 0) > 0)) {
-                    ev = { t: v.t || '', n: v.n || v.tc || 0, fatal: !!v.fatal, fb: false };
-                    viaCtx = c.id;
-                    break;
-                  }
-                } catch (pe) {
-                  diag.probes.push({ ctx: c.id, error: String(pe && pe.message || pe).slice(0, 80) });
+            let hasGuard = null;
+            for (const c of ctxs) {
+              try {
+                const r = await browser.send('Runtime.evaluate',
+                  { expression: DIAG_EXPR, contextId: c.id, returnByValue: true }, sid);
+                const v = (r && r.result && r.result.value) || null;
+                const hg = v ? (String(v.body || '').indexOf('ssFatal') !== -1 ||
+                  String(v.body || '').indexOf('ssLoading') !== -1) : false;
+                diag.probes.push({ ctx: c.id, name: (c.name || '').slice(0, 24),
+                  t: v ? String(v.t || '').slice(0, 40) : null,
+                  n: v ? v.n : null, tc: v ? v.tc : null,
+                  loc: v ? v.loc : null, ready: v ? v.ready : null, WL: v ? v.WL : null,
+                  body: v ? v.body : null, hasGuard: hg });
+                if (hasGuard === null) hasGuard = hg;
+                if (!viaCtx && v && ((v.n || 0) > 0 || (v.t || '').length > 0 || (v.tc || 0) > 0)) {
+                  ev = { t: v.t || '', n: v.n || v.tc || 0, fatal: !!v.fatal, fb: false };
+                  viaCtx = c.id;
+                  hasGuard = hg;
                 }
+              } catch (pe) {
+                diag.probes.push({ ctx: c.id, error: String(pe && pe.message || pe).slice(0, 80) });
               }
-              if (!viaCtx) { // ground truth from first context even if empty
-                try {
-                  const r0 = await browser.send('Runtime.evaluate',
-                    { expression: DIAG_EXPR, returnByValue: true }, sid);
-                  const v0 = (r0 && r0.result && r0.result.value) || null;
-                  diag.defaultCtx = v0;
-                } catch (_) {}
-              }
+              if (viaCtx) break;
             }
             const { errs, warns } = browser.drainErrors(sid);
-            const info = { type: t.type || '', url: (t.url || '').slice(0, 120), title: ev.t || '', textLen: ev.n || 0, fatal: !!ev.fatal, fb: !!ev.fb, errs, warns, shot: null, viaCtx, diag };
+            const info = { type: t.type || '', url: (t.url || '').slice(0, 120), title: ev.t || '', textLen: ev.n || 0, fatal: !!ev.fatal, fb: !!ev.fb, errs, warns, shot: null, viaCtx, hasGuard, diag };
             try { // screenshot is evidence only; keep verdict on eval
               const shot = await browser.send('Page.captureScreenshot', { format: 'png' }, sid);
               const shotPath = path.join(outDir, label + '-' + id + '.png');
@@ -543,6 +579,7 @@ async function main() {
         if (rec.pass && best) {
           if (best.fatal) { rec.pass = false; rec.error = 'guard fatal overlay visible'; }
           else if ((best.textLen || 0) < MIN_TEXT_LEN) { rec.pass = false; rec.error = 'blank (textLen=' + best.textLen + ')'; }
+          else if (best.hasGuard === false) { rec.pass = false; rec.error = 'content not served (wrapper-only, no guard markup)'; }
           const allErrs = (rec.targets || []).reduce((a, x) => a.concat(x.errs || []), []);
           if (allErrs.length) { rec.pass = false; rec.error = allErrs[0]; rec.allErrs = allErrs; }
         }
@@ -563,6 +600,10 @@ async function main() {
     } catch (_) {}
     main.close();
     try { if (typeof browser !== 'undefined' && browser) browser.close(); } catch (_) {}
+    try { // extension-host + renderer errors: catches prod throws (command failures)
+      report.exthostErrs = harvestExthost(userDataDir, outDir);
+      console.log('[PANEL] exthost error files: ' + report.exthostErrs.length);
+    } catch (_) { report.exthostErrs = []; }
 
     // Old logo + titlebar svg.
     const ol = oldLogoCheck(installDir);
