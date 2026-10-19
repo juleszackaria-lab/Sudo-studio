@@ -292,7 +292,8 @@ try {
         if (@(Get-SudoProcesses $InstallDir).Count -gt 0) { throw 'pre-cleanup left sudo processes alive' }
         $launcher = Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', 'start.bat' -WorkingDirectory $InstallDir -WindowStyle Minimized -PassThru
         try {
-            $extDir = Join-Path $InstallDir 'extensions'
+            # P35c: start.bat runs the editor with the per-user live dir.
+            $extDir = Join-Path $env:LOCALAPPDATA 'SudoStudio\extensions'
             $deadline = (Get-Date).AddSeconds(240)
             $editorMain = $null
             while ((Get-Date) -lt $deadline -and -not $editorMain) {
