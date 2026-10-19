@@ -621,6 +621,18 @@ foreach ($wtDir in $walkthroughDirs) {
 }
 
 # ============================================================
+# ROOT CAUSE pages-vides (Oct 2026, proven): the webview loader served to
+# EVERY extension webview is the disk file
+#   resources/app/out/vs/workbench/contrib/webview/browser/pre/index.html
+# Its inline <script type="module"> is guarded by a checked-in CSP meta tag
+# (script-src 'sha256-...'). ANY byte change inside that script (even a
+# comment or an error-message string) invalidates the hash, Chromium blocks
+# the loader script, no 'webview-ready' is ever sent, and ALL webviews stay
+# empty (15/15 panels + minimal discriminant, tc=39090 wrapper-only).
+# STEP 4e replaced 2x 'VS Code'->'Sudo Studio' in that file and killed every
+# webview. The pre/ files hold ZERO UI-visible brand strings, so excluding
+# the whole pre/ directory from ALL text sweeps (patch + verify) is safe.
+$webviewPreGuard = 'webview[/\\]browser[/\\]pre[/\\]'
 # ============================================================
 # STEP 4c - Exhaustive branding sweep: nls.messages.js + any remaining file
 # This is a safety net for any file missed by the targeted sweeps above.
@@ -631,6 +643,7 @@ Write-Host "[STEP 4c] Exhaustive final branding sweep (nls.messages.js + all rem
 $allTextFiles = Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -in @('.js','.json','.nls','.ts') } |
     Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch $webviewPreGuard } |
     Where-Object { $_.Length -lt 8MB }
 
 $step4cPatched = 0
@@ -677,6 +690,7 @@ $feedNew = "raw.githubusercontent.com/juleszackaria-lab/Sudo-studio"
 $feedFiles = Get-ChildItem (Join-Path $resolvedDir "resources\app") -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Extension -eq ".js" } |
     Where-Object { $_.FullName -notmatch "node_modules" } |
+    Where-Object { $_.FullName -notmatch $webviewPreGuard } |
     Where-Object { $_.Length -lt 64MB }
 $step4dPatched = 0
 foreach ($file in $feedFiles) {
@@ -816,6 +830,7 @@ $brandPatterns = @(
 $step4eFiles = Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
     Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch $webviewPreGuard } |
     Where-Object { $_.FullName -notmatch '\\.git\\' } |
     Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-?PARTY|COPYING|CREDITS|ATTRIBUTION)' } |
     Where-Object { $_.Length -lt 64MB }
@@ -955,6 +970,7 @@ Write-Host ("[STEP 4e] DONE: {0} files scanned, {1} patched, {2} skipped(validat
 $verifyLeftovers = @(Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
     Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch $webviewPreGuard } |
     Where-Object { $_.FullName -notmatch '\\.git\\' } |
     Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-?PARTY|COPYING|CREDITS|ATTRIBUTION)' } |
     Where-Object { $_.Length -lt 64MB } |
@@ -1006,6 +1022,7 @@ $step4e2Pairs = @(
 $step4e2Files = Get-ChildItem $resolvedDir -Recurse -File -ErrorAction SilentlyContinue |
     Where-Object { $step4eExts -contains $_.Extension.ToLower() } |
     Where-Object { $_.FullName -notmatch 'node_modules' } |
+    Where-Object { $_.FullName -notmatch $webviewPreGuard } |
     Where-Object { $_.FullName -notmatch "\\.git\\" } |
     Where-Object { $_.Name -notmatch '^(LICENSE|LICENCE|NOTICE|THIRD-?PARTY|COPYING|CREDITS|ATTRIBUTION)' } |
     Where-Object { $_.Length -lt 64MB }
