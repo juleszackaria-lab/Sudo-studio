@@ -137,18 +137,47 @@ async function listTargets(port) {
   return httpGetJson('http://127.0.0.1:' + port + '/json/list');
 }
 
+async function paletteState(main) {
+  try {
+    const r = await main.send('Runtime.evaluate', {
+      expression: '(() => { const rows = document.querySelectorAll(".quick-input-list .monaco-list-row");' +
+        ' return { rows: rows.length, first: rows.length ? rows[0].innerText.slice(0, 120) : "" }; })()',
+      returnByValue: true,
+    });
+    return (r && r.result && r.result.value) || {};
+  } catch (_) { return {}; }
+}
+
+async function pressEscape(main) {
+  const e = { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, modifiers: 0 };
+  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, e));
+  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, e));
+  await sleep(800);
+}
+
 async function openPaletteAndRun(main, substr, first) {
   // Ctrl+Shift+P
   const o = { key: 'P', code: 'KeyP', windowsVirtualKeyCode: 80, modifiers: 10 };
-  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, o));
-  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, o));
-  await sleep(first ? 2500 : 1200);
-  await main.send('Input.insertText', { text: substr });
-  await sleep(2500);
+  const openOnce = async () => {
+    await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, o));
+    await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, o));
+    await sleep(first ? 2500 : 1200);
+    await main.send('Input.insertText', { text: substr });
+    await sleep(2500);
+  };
+  await pressEscape(main); // defocus webviews / close stale pickers
+  await openOnce();
+  let st = await paletteState(main);
+  if (!st.rows) { // retry once: close + reopen + retype
+    await pressEscape(main);
+    await openOnce();
+    st = await paletteState(main);
+  }
   const e = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers: 0 };
   await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown', text: '\r' }, e));
   await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, e));
-  await sleep(first ? 14000 : 6000);
+  await sleep(first ? 14000 : 8000);
+  return st;
 }
 
 async function evalWebview(cdp) {
@@ -279,7 +308,7 @@ async function main() {
   console.log('[PANEL] install snapshot: ' + Object.keys(before).length + ' files');
 
   // Launch editor.
-  const logsDir = path.join(outDir, 'ext-logs');
+  const logsDir = path.resolve(outDir, 'ext-logs'); // absolute: outside install (pristine) + uploaded
   fs.mkdirSync(logsDir, { recursive: true });
   const child = spawn(exe, [
     '--remote-debugging-port=' + port,
@@ -336,13 +365,22 @@ async function main() {
     for (const [id, substr] of PANELS) {
       const rec = { id, substr, pass: true };
       try {
-        await openPaletteAndRun(main, substr, first);
+        const pst = await openPaletteAndRun(main, substr, first);
+        rec.palette = pst;
         first = false;
-        const now = await listTargets(port);
-        const fresh = now.filter((t) => !seen.has(t.id) && t.webSocketDebuggerUrl && !(t.url || '').startsWith('devtools://'));
+        if (pst && pst.rows === 0) { rec.pass = false; rec.error = 'palette no match: ' + substr; }
+        let now = await listTargets(port);
+        let fresh = now.filter((t) => !seen.has(t.id) && t.webSocketDebuggerUrl && !(t.url || '').startsWith('devtools://'));
+        if (!fresh.length) { // slow webview registration: second chance
+          await sleep(6000);
+          now = await listTargets(port);
+          fresh = now.filter((t) => !seen.has(t.id) && t.webSocketDebuggerUrl && !(t.url || '').startsWith('devtools://'));
+        }
         fresh.forEach((t) => seen.add(t.id));
         if (!fresh.length) { rec.pass = false; rec.error = 'no new webview target'; }
         let best = null;
+        // Inspect page-type targets first (webviews); workers rarely usable.
+        fresh.sort((a, b) => ((b.type === 'page') - (a.type === 'page')));
         for (const t of fresh) {
           const c = new Cdp(t.webSocketDebuggerUrl);
           try {
@@ -350,17 +388,25 @@ async function main() {
             await c.send('Runtime.enable');
             await sleep(2500);
             const ev = await evalWebview(c);
-            const shot = await c.send('Page.captureScreenshot', { format: 'png' });
-            const shotPath = path.join(outDir, label + '-' + id + '.png');
-            fs.writeFileSync(shotPath, Buffer.from(shot.data, 'base64'));
             const { errs, warns } = c.drainErrors();
-            const info = { url: (t.url || '').slice(0, 120), title: ev.t || '', textLen: ev.n || 0, fatal: !!ev.fatal, fb: !!ev.fb, errs, warns, shot: path.basename(shotPath) };
+            const info = { type: t.type || '', url: (t.url || '').slice(0, 120), title: ev.t || '', textLen: ev.n || 0, fatal: !!ev.fatal, fb: !!ev.fb, errs, warns, shot: null };
+            try { // screenshot is evidence only; webviews may reject it (-32000)
+              const shot = await c.send('Page.captureScreenshot', { format: 'png' });
+              const shotPath = path.join(outDir, label + '-' + id + '.png');
+              fs.writeFileSync(shotPath, Buffer.from(shot.data, 'base64'));
+              info.shot = path.basename(shotPath);
+            } catch (se) { info.shotErr = String(se && se.message || se).slice(0, 120); }
             if (!best || (info.textLen || 0) > (best.textLen || 0)) best = info;
             (rec.targets = rec.targets || []).push(info);
           } catch (e) {
-            (rec.targets = rec.targets || []).push({ url: (t.url || '').slice(0, 120), error: String(e && e.message || e).slice(0, 200) });
+            (rec.targets = rec.targets || []).push({ type: t.type || '', url: (t.url || '').slice(0, 120), error: String(e && e.message || e).slice(0, 200) });
           } finally { c.close(); }
         }
+        try { // whole-window evidence (main target is top-level: always works)
+          const ws = await main.send('Page.captureScreenshot', { format: 'png' });
+          fs.writeFileSync(path.join(outDir, label + '-' + id + '-window.png'), Buffer.from(ws.data, 'base64'));
+          rec.windowShot = true;
+        } catch (_) { rec.windowShot = false; }
         rec.best = best;
         if (rec.pass && !best) {
           rec.pass = false;
@@ -383,6 +429,11 @@ async function main() {
         (rec.error ? ' :: ' + rec.error : ''));
       if (!rec.pass) fail('panel ' + id + ': ' + (rec.error || '?'));
     }
+    try { // workbench-side errors (command failures, host crashes): diagnostic only
+      const me = main.drainErrors();
+      report.mainErrs = (me.errs || []).slice(0, 8);
+      report.mainWarns = (me.warns || []).slice(0, 4);
+    } catch (_) {}
     main.close();
 
     // Old logo + titlebar svg.
