@@ -446,6 +446,12 @@
         "title": "A propos du build",
         "category": "Sudo",
         "icon": "$(info)"
+      },
+      {
+        "command": "sudoStudio.debugMinimalWebview",
+        "title": "Debug Minimal Webview",
+        "category": "Sudo",
+        "icon": "$(info)"
       }
     ],
     "menus": {

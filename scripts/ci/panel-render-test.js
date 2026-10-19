@@ -479,7 +479,49 @@ async function main() {
     report.browserCdp = true;
 
     const seen = new Set(targets.map((t) => t.id));
-    let first = true;
+    // TEMP-DIAG-P37 pre-phase: minimal webview discriminant (diagnostic only,
+    // never affects the verdict). Opens a guard-free static webview first:
+    // if IT renders, our panel HTML breaks serving; if bare too, the
+    // workbench/packaging breaks ALL webviews.
+    report.minimal = null;
+    try {
+      const pst0 = await openPaletteAndRun(main, 'Debug Minimal Webview', true);
+      const now0 = await listTargets(port);
+      const fresh0 = now0.filter((t) => !seen.has(t.id) && t.webSocketDebuggerUrl && !(t.url || '').startsWith('devtools://'));
+      fresh0.forEach((t) => seen.add(t.id));
+      if (fresh0.length) {
+        const t0 = fresh0[0];
+        let sid0 = null;
+        try {
+          const att0 = await browser.send('Target.attachToTarget', { targetId: t0.id, flatten: true });
+          sid0 = att0 && att0.sessionId;
+          if (sid0) {
+            await browser.send('Runtime.enable', {}, sid0);
+            await sleep(2000);
+            const r0 = await browser.send('Runtime.evaluate', { expression: DIAG_EXPR, returnByValue: true }, sid0);
+            let vv = (r0 && r0.result && r0.result.value) || null;
+            const ctxs0 = sessionContexts(browser, sid0);
+            for (const c0 of ctxs0.slice(0, 3)) {
+              try {
+                const rc = await browser.send('Runtime.evaluate', { expression: DIAG_EXPR, contextId: c0.id, returnByValue: true }, sid0);
+                const vc = (rc && rc.result && rc.result.value) || null;
+                if (vc && (vc.tc || 0) > ((vv && vv.tc) || 0)) vv = vc;
+              } catch (_) {}
+            }
+            const full0 = vv ? (String(vv.body || '') + ' ' + String(vv.t || '')) : '';
+            report.minimal = { confirmed: pst0.confirmed, nFresh: fresh0.length,
+              type: t0.type || '', tc: vv ? vv.tc : null, title: vv ? vv.t : null,
+              hasMarker: full0.indexOf('MINIMAL-12345') !== -1,
+              body: vv ? String(vv.body || '').slice(0, 300) : null };
+          } else { report.minimal = { confirmed: pst0.confirmed, nFresh: fresh0.length, error: 'attach failed' }; }
+        } finally {
+          try { if (sid0) await browser.send('Target.detachFromTarget', { sessionId: sid0 }); } catch (_) {}
+        }
+      } else { report.minimal = { confirmed: pst0.confirmed, nFresh: 0 }; }
+      console.log('[PANEL] minimal: confirmed=' + report.minimal.confirmed +
+        ' nFresh=' + report.minimal.nFresh + ' hasMarker=' + report.minimal.hasMarker);
+    } catch (e) { report.minimal = { error: String(e && e.message || e).slice(0, 150) }; }
+    let first = false; // minimal consumed the warmup wait
     for (const [id, substr] of PANELS) {
       const rec = { id, substr, pass: true };
       try {

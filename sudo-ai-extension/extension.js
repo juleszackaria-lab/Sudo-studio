@@ -358,6 +358,9 @@ function registerCommands() {
 
         // P29(e): build info
         ['sudoStudio.showBuildInfo',         showBuildInfo],
+
+        // TEMP-DIAG-P37: minimal webview discriminant (revert after diagnosis)
+        ['sudoStudio.debugMinimalWebview',   debugMinimalWebview],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -1813,6 +1816,19 @@ function showBuildInfo() {
             ' | files: ' + nFiles;
     } catch (_) { /* dev layout: keep default text */ }
     vscode.window.showInformationMessage(text);
+}
+
+// TEMP-DIAG-P37: minimal webview discriminant (revert after diagnosis).
+// No guard, no scripts, no vscode API: proves whether the workbench serves
+// ANY extension webview content in this build.
+function debugMinimalWebview() {
+    const panel = vscode.window.createWebviewPanel(
+        'sudoDebugMinimal', 'Debug Minimal', vscode.ViewColumn.One,
+        { enableScripts: true, retainContextWhenHidden: true }
+    );
+    panel.webview.html = '<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+        '<title>Minimal</title></head><body><h1>MINIMAL-12345</h1>' +
+        '<p>plain static content without guard</p></body></html>';
 }
 
 function openLogsFolder() {
