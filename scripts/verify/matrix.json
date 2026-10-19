@@ -1,12 +1,12 @@
 {
   "version": 1,
   "title": "P36 - Matrice des prompts 1-35 sur le PAQUET INSTALLE",
-  "gate": "Packaging FAILS if any evaluated line verdict is FAIL. Lines with source unit/panel-job/e2e-job are enforced by their own pre-existing gates (03 pins+01/02 gate, panel job, e2e step). doc lines are SKIP (paper prompts, see (f) list).",
+  "gate": "Packaging FAILS if any evaluated line verdict is FAIL. unit/e2e-job lines are enforced by their own pre-existing gates (03 pins+01/02 gate, e2e step). panel-job lines are INFORMATIONAL (best-effort job, user decision 19/10). doc lines are SKIP (paper prompts, see (f) list).",
   "sources": {
     "p36": "run by scripts/verify/run-matrix.js on the installed package (this repo: test-*.js)",
     "smoke": "parsed by run-matrix.js from the 03 smoke summary.txt ([PASS]/[FAIL] lines)",
     "manifest": "checked by run-matrix.js (re-hash + shipped verify script execution)",
-    "panel-job": "external: 03 panel-render job (P35) must be green; its failure fails packaging",
+    "panel-job": "informational: 03 panel-render job (P35, best-effort); report reviewed, never fails packaging",
     "e2e-job": "external: 03 agent-e2e step (P31d) must be green; its failure fails packaging",
     "unit": "external: pre-existing 03 gate (01+02 green, pins==main) on the original suites",
     "doc": "SKIP: paper prompt (report/plan), not replayable on an installed package"

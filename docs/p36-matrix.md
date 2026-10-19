@@ -11,7 +11,7 @@ Regle (e) : le packaging ECHOUE si une ligne evaluee est FAIL.
 | p36 | execute par run-matrix.js sur le paquet installe | run-matrix exit 1 |
 | smoke | relu par run-matrix.js depuis `summary.txt` du smoke 03 | run-matrix exit 1 (+ le step smoke lui-meme) |
 | manifest | re-hash complet + execution du ps1 livre, par run-matrix | run-matrix exit 1 |
-| panel-job | job 03 panel-render (P35), externe | le job lui-meme |
+| panel-job | job 03 panel-render (P35), best-effort | personne (informatif, decision user 19/10) |
 | e2e-job | step 03 agent-e2e (P31d), externe | le step lui-meme |
 | unit | suites d'origine 01/02 | gate 03 pre-existant (01+02 verts, pins==main) |
 | doc | SKIP : prompt papier (rapport/plan) | personne (rien a executer) |

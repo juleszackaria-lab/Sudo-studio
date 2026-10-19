@@ -63,7 +63,7 @@ Time budget: ~60-90 s (spawn polls + 4 suites + manifest re-hash + ps1 run).
 | scope | enforced by |
 |---|---|
 | p36/smoke/manifest lines (27) | this matrix step (exit 1) |
-| panel-job lines (3) | panel-render job must be green (P35 spec) |
+| panel-job lines (3) | informational (best-effort job, user decision 19/10) |
 | e2e-job line (1) | agent-e2e step must be green (existing) |
 | unit lines (22) | pre-existing 03 gate (01+02 green, pins==main) |
 | doc lines (3) | SKIP by nature (paper prompts) |

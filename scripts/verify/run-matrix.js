@@ -31,6 +31,7 @@ const OUT = argVal('--out', path.join(process.cwd(), 'matrix-result.json'));
 const NO_SPAWN = process.argv.indexOf('--no-spawn') !== -1;
 
 const MATRIX = JSON.parse(fs.readFileSync(path.join(__dirname, 'matrix.json'), 'utf8'));
+const deBOM = (t) => String(t).replace(/^\uFEFF/, ''); // PS5.1 UTF8 files carry BOM
 
 // line -> { suite, checks[] } for source=p36 (suites: security/doctor/autofix/license)
 const P36MAP = {
@@ -100,7 +101,7 @@ function checkManifest() {
     const mfPath = path.join(INSTALL, 'build-manifest.json');
     if (!fs.existsSync(mfPath)) return { ok: false, detail: 'build-manifest.json missing' };
     let mf;
-    try { mf = JSON.parse(fs.readFileSync(mfPath, 'utf8')); }
+    try { mf = JSON.parse(deBOM(fs.readFileSync(mfPath, 'utf8'))); }
     catch (e) { return { ok: false, detail: 'manifest unparseable' }; }
     if (!mf.version || !mf.date || !mf.sudo_studio_commit) fails.push('missing version/date/sudo_studio_commit');
     const files = (mf.files && typeof mf.files === 'object') ? mf.files : {};
@@ -141,7 +142,7 @@ function runVerifyPs1() {
         return { ok: false, detail: 'ps1 produced no result (exit=' + r.status + ')' };
     }
     try {
-        const j = JSON.parse(fs.readFileSync(outFile, 'utf8'));
+        const j = JSON.parse(deBOM(fs.readFileSync(outFile, 'utf8')));
         return { ok: j.verdict === 'PASS', detail: 'verdict=' + j.verdict +
             ' files=' + (j.files || []).filter((f) => f.ok).length + '/' + (j.files || []).length };
     } catch (_) {
@@ -247,6 +248,8 @@ function parseSmokeLog(p) {
                         r.verdict = 'SKIP'; r.preuve = 'smoke SKIPped by flags: ' + skips.join(',');
                     } else { r.verdict = 'PASS'; r.preuve = 'smoke: ' + names.length + '/' + names.length + ' PASS'; }
                 }
+            } else if (line.source === 'panel-job') {
+                r.preuve = 'reported by best-effort 03 panel job (informational, user decision 19/10)';
             } else {
                 r.preuve = line.source === 'doc' ? ('SKIP: ' + (line.raison || 'paper prompt'))
                     : line.source === 'unit' ? 'enforced by pre-existing 03 gate (01+02 green, pins==main)'

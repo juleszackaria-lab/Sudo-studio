@@ -69,6 +69,7 @@ try {
     Write-Host ("installer: {0}" -f $InstallerPath)
     Write-Host ("installdir: {0}" -f $InstallDir)
     if (-not (Test-Path $InstallerPath)) { Add-Check 'installer-present' 'FAIL' $InstallerPath; throw 'installer not found' }
+    Add-Check 'installer-present' 'PASS' $InstallerPath
 
     # -- 1. preconditions: ports free, target absent --
     if (-not (Test-PortFree 5000)) { Add-Check 'pre-port-5000-free' 'FAIL' 'occupied'; throw 'port 5000 occupied' }

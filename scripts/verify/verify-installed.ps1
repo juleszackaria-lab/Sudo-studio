@@ -123,6 +123,6 @@ $result = [ordered]@{
     verdict  = $verdict
 }
 if (-not $OutFile) { $OutFile = Join-Path (Get-Location).Path 'verify-result.json' }
-$result | ConvertTo-Json -Depth 6 | Set-Content $OutFile -Encoding UTF8
+[System.IO.File]::WriteAllText($OutFile, ($result | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
 Write-Host ("verify-installed: {0} (files={1} probes={2}) -> {3}" -f $verdict, $files.Count, $probes.Count, $OutFile)
 if ($verdict -eq 'FAIL') { exit 1 }
