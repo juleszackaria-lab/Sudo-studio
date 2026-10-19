@@ -99,21 +99,24 @@ class Cdp {
       };
     });
   }
-  send(method, params) {
+  send(method, params, sessionId) {
     const id = ++this.id;
+    const msg = { id, method, params: params || {} };
+    if (sessionId) msg.sessionId = sessionId;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
-      try { this.ws.send(JSON.stringify({ id, method, params: params || {} })); }
+      try { this.ws.send(JSON.stringify(msg)); }
       catch (e) { this.pending.delete(id); reject(e); }
       setTimeout(() => {
         if (this.pending.has(id)) { this.pending.delete(id); reject(new Error('cdp timeout: ' + method)); }
       }, 15000);
     });
   }
-  drainErrors() {
+  drainErrors(sid) {
     const errs = [];
     const warns = [];
     for (const m of this.events) {
+      if (sid && m.sessionId !== sid) continue;
       if (m.method === 'Runtime.consoleAPICalled') {
         const t = (m.params && m.params.type) || '';
         const args = ((m.params && m.params.args) || []).map((a) => {
@@ -127,10 +130,16 @@ class Cdp {
         errs.push('exception: ' + ((d && (d.text || (d.exception && d.exception.description))) || '?').slice(0, 300));
       }
     }
-    this.events = [];
+    this.events = sid ? this.events.filter((m) => m.sessionId !== sid) : [];
     return { errs, warns };
   }
   close() { try { this.ws.close(); } catch (_) {} }
+}
+
+async function browserWsUrl(port) {
+  const v = await httpGetJson('http://127.0.0.1:' + port + '/json/version');
+  if (!v || !v.webSocketDebuggerUrl) throw new Error('no browser ws url');
+  return v.webSocketDebuggerUrl;
 }
 
 async function listTargets(port) {
@@ -155,6 +164,29 @@ async function pressEscape(main) {
   await sleep(800);
 }
 
+async function paletteInputValue(main) {
+  try {
+    const r = await main.send('Runtime.evaluate', {
+      expression: '(() => { const i = document.querySelector(".quick-input-box input"); return i ? i.value : null; })()',
+      returnByValue: true,
+    });
+    return (r && r.result && typeof r.result.value === 'string') ? r.result.value : null;
+  } catch (_) { return null; }
+}
+
+async function clearAndType(main, substr) {
+  const a = { key: 'A', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: 2 }; // Ctrl+A
+  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, a));
+  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, a));
+  await sleep(400);
+  const b = { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, modifiers: 0 };
+  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown' }, b));
+  await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, b));
+  await sleep(400);
+  await main.send('Input.insertText', { text: substr });
+  await sleep(2000);
+}
+
 async function openPaletteAndRun(main, substr, first) {
   // Ctrl+Shift+P
   const o = { key: 'P', code: 'KeyP', windowsVirtualKeyCode: 80, modifiers: 10 };
@@ -165,19 +197,31 @@ async function openPaletteAndRun(main, substr, first) {
     await main.send('Input.insertText', { text: substr });
     await sleep(2500);
   };
+  const good = (st, value) => value !== null &&
+    value.toLowerCase().indexOf(substr.toLowerCase()) !== -1 && st && st.rows > 0;
   await pressEscape(main); // defocus webviews / close stale pickers
   await openOnce();
   let st = await paletteState(main);
-  if (!st.rows) { // retry once: close + reopen + retype
-    await pressEscape(main);
+  let value = await paletteInputValue(main);
+  let attempts = 1;
+  for (let k = 0; k < 3 && !good(st, value); k++) {
+    await clearAndType(main, substr);
+    st = await paletteState(main);
+    value = await paletteInputValue(main);
+    attempts++;
+    if (good(st, value)) break;
+    await pressEscape(main); // reopen from scratch
     await openOnce();
     st = await paletteState(main);
+    value = await paletteInputValue(main);
+    attempts++;
   }
+  if (!good(st, value)) { await pressEscape(main); return { st, value, confirmed: false, attempts }; }
   const e = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers: 0 };
   await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyDown', text: '\r' }, e));
   await main.send('Input.dispatchKeyEvent', Object.assign({ type: 'keyUp' }, e));
   await sleep(first ? 14000 : 8000);
-  return st;
+  return { st, value, confirmed: true, attempts };
 }
 
 async function evalWebview(cdp) {
@@ -187,6 +231,16 @@ async function evalWebview(cdp) {
       'fb: !(document.getElementById("sudoBackendFallback")||{hidden:true}).hidden})',
     returnByValue: true,
   });
+  return (r && r.result && r.result.value) || {};
+}
+
+async function evalWebviewFlat(browser, sid) {
+  const r = await browser.send('Runtime.evaluate', {
+    expression: '({t: document.title, n: (document.body?document.body.innerText.length:0), ' +
+      'fatal: !(document.getElementById("ssFatal")||{hidden:true}).hidden, ' +
+      'fb: !(document.getElementById("sudoBackendFallback")||{hidden:true}).hidden})',
+    returnByValue: true,
+  }, sid);
   return (r && r.result && r.result.value) || {};
 }
 
@@ -359,6 +413,12 @@ async function main() {
     await main.send('Log.enable');
     await main.send('Page.enable');
     main.drainErrors(); // flush startup noise
+    let browser = null;
+    try {
+      browser = new Cdp(await browserWsUrl(port));
+      await browser.connect();
+    } catch (e) { fail('browser cdp unavailable: ' + String(e.message || e).slice(0, 150)); throw new Error('no-browser-cdp'); }
+    report.browserCdp = true;
 
     const seen = new Set(targets.map((t) => t.id));
     let first = true;
@@ -368,7 +428,15 @@ async function main() {
         const pst = await openPaletteAndRun(main, substr, first);
         rec.palette = pst;
         first = false;
-        if (pst && pst.rows === 0) { rec.pass = false; rec.error = 'palette no match: ' + substr; }
+        if (!pst.confirmed) {
+          rec.pass = false;
+          rec.error = 'palette stuck (input=' + JSON.stringify(pst.value) +
+            ' rows=' + ((pst.st && pst.st.rows) || 0) + ' attempts=' + pst.attempts + ')';
+          report.panels.push(rec);
+          console.log('[PANEL-FAIL] ' + id + ' :: ' + rec.error);
+          fail('panel ' + id + ': ' + rec.error);
+          continue;
+        }
         let now = await listTargets(port);
         let fresh = now.filter((t) => !seen.has(t.id) && t.webSocketDebuggerUrl && !(t.url || '').startsWith('devtools://'));
         if (!fresh.length) { // slow webview registration: second chance
@@ -379,19 +447,23 @@ async function main() {
         fresh.forEach((t) => seen.add(t.id));
         if (!fresh.length) { rec.pass = false; rec.error = 'no new webview target'; }
         let best = null;
-        // Inspect page-type targets first (webviews); workers rarely usable.
+        // Webviews are OOPIF ('iframe') targets: drive them through one
+        // browser-level flat session (direct per-target CDP reads empty).
         fresh.sort((a, b) => ((b.type === 'page') - (a.type === 'page')));
         for (const t of fresh) {
-          const c = new Cdp(t.webSocketDebuggerUrl);
+          let sid = null;
           try {
-            await c.connect();
-            await c.send('Runtime.enable');
+            const att = await browser.send('Target.attachToTarget', { targetId: t.id, flatten: true });
+            sid = att && att.sessionId;
+            if (!sid) throw new Error('attach: no sessionId');
+            await browser.send('Runtime.enable', {}, sid);
+            await browser.send('Page.enable', {}, sid);
             await sleep(2500);
-            const ev = await evalWebview(c);
-            const { errs, warns } = c.drainErrors();
+            const ev = await evalWebviewFlat(browser, sid);
+            const { errs, warns } = browser.drainErrors(sid);
             const info = { type: t.type || '', url: (t.url || '').slice(0, 120), title: ev.t || '', textLen: ev.n || 0, fatal: !!ev.fatal, fb: !!ev.fb, errs, warns, shot: null };
-            try { // screenshot is evidence only; webviews may reject it (-32000)
-              const shot = await c.send('Page.captureScreenshot', { format: 'png' });
+            try { // screenshot is evidence only; keep verdict on eval
+              const shot = await browser.send('Page.captureScreenshot', { format: 'png' }, sid);
               const shotPath = path.join(outDir, label + '-' + id + '.png');
               fs.writeFileSync(shotPath, Buffer.from(shot.data, 'base64'));
               info.shot = path.basename(shotPath);
@@ -400,7 +472,9 @@ async function main() {
             (rec.targets = rec.targets || []).push(info);
           } catch (e) {
             (rec.targets = rec.targets || []).push({ type: t.type || '', url: (t.url || '').slice(0, 120), error: String(e && e.message || e).slice(0, 200) });
-          } finally { c.close(); }
+          } finally {
+            try { if (sid) await browser.send('Target.detachFromTarget', { sessionId: sid }); } catch (_) {}
+          }
         }
         try { // whole-window evidence (main target is top-level: always works)
           const ws = await main.send('Page.captureScreenshot', { format: 'png' });
@@ -435,6 +509,7 @@ async function main() {
       report.mainWarns = (me.warns || []).slice(0, 4);
     } catch (_) {}
     main.close();
+    try { if (typeof browser !== 'undefined' && browser) browser.close(); } catch (_) {}
 
     // Old logo + titlebar svg.
     const ol = oldLogoCheck(installDir);
