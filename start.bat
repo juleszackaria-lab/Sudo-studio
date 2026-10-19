@@ -92,7 +92,9 @@ echo [PHASE 1] Checking files... >> "%LOG_FILE%"
 echo.
 
 :: --- backend.exe ---
-if exist "%APP%backend.exe" (
+set "FOUND_BE=0"
+if exist "%APP%backend.exe" set "FOUND_BE=1"
+if "%FOUND_BE%"=="1" (
     echo   [OK] backend.exe found
     echo   [OK] backend.exe >> "%LOG_FILE%"
 ) else (
@@ -108,7 +110,9 @@ if exist "%APP%backend.exe" (
 )
 
 :: --- runtime.exe ---
-if exist "%APP%runtime.exe" (
+set "FOUND_RT=0"
+if exist "%APP%runtime.exe" set "FOUND_RT=1"
+if "%FOUND_RT%"=="1" (
     echo   [OK] runtime.exe found
     echo   [OK] runtime.exe >> "%LOG_FILE%"
 ) else (
@@ -141,7 +145,9 @@ if defined V_EXE (
 )
 
 :: --- Sudo AI Extension (warning only - not fatal) ---
-if exist "%EXT%\extension.js" (
+set "FOUND_EXTJS=0"
+if exist "%EXT%\extension.js" set "FOUND_EXTJS=1"
+if "%FOUND_EXTJS%"=="1" (
     echo   [OK] Sudo AI extension found
     echo   [OK] extension.js >> "%LOG_FILE%"
 ) else (
@@ -325,10 +331,15 @@ if not exist "%V_DAT%\User\settings.json" (
 :: (packager STEP 12). The ROOT\sudo-ai-extension source copy exists only in
 :: dev layouts. Test installed-first; sync only when source exists and target
 :: is missing; otherwise fail LOUD with both expected paths (no silent skip).
-if exist "%V_DEV%\package.json" (
+set "EXT_HAVE_INSTALLED=0"
+set "EXT_HAVE_SRC=0"
+if exist "%V_DEV%\package.json" set "EXT_HAVE_INSTALLED=1"
+if exist "%V_SRC%\package.json" set "EXT_HAVE_SRC=1"
+if "%EXT_HAVE_INSTALLED%"=="1" (
     echo   [OK] Extension already installed at %V_DEV%
     echo   [OK] Extension already installed >> "%LOG_FILE%"
-) else if exist "%V_SRC%\package.json" (
+)
+if "%EXT_HAVE_INSTALLED%"=="0" if "%EXT_HAVE_SRC%"=="1" (
     echo [PHASE 5] Syncing extension to extensions\sudo-ai\...
     echo [PHASE 5] Syncing extension >> "%LOG_FILE%"
     if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
@@ -341,7 +352,8 @@ if exist "%V_DEV%\package.json" (
     if exist "%V_SRC%\node_modules" xcopy /S /E /Y /Q /I "%V_SRC%\node_modules" "%V_DEV%\node_modules\" >nul 2>&1
     echo   [OK] Extension synced to %V_DEV%
     echo   [OK] Extension synced >> "%LOG_FILE%"
-) else (
+)
+if "%EXT_HAVE_INSTALLED%"=="0" if "%EXT_HAVE_SRC%"=="0" (
     echo   [ERROR] No extension found - Sudo AI will NOT load.
     echo   [ERROR] Looked for: %V_DEV%\package.json and %V_SRC%\package.json
     echo   [ERROR] Reinstall Sudo Studio. Full log: %LOG_FILE%
@@ -391,17 +403,23 @@ echo.
 ::  PHASE 6 - EXTENSION VERIFICATION (STEP 7)
 :: ============================================================
 echo [STEP 7] Extension Verification:
-if exist "%EXT%\extension.js" (
+set "FOUND_P6_JS=0"
+if exist "%EXT%\extension.js" set "FOUND_P6_JS=1"
+if "%FOUND_P6_JS%"=="1" (
     echo   [OK] extension.js present
 ) else (
     echo   [WARN] extension.js not found - Sudo AI features unavailable
 )
-if exist "%EXT%\package.json" (
+set "FOUND_P6_JSON=0"
+if exist "%EXT%\package.json" set "FOUND_P6_JSON=1"
+if "%FOUND_P6_JSON%"=="1" (
     echo   [OK] package.json present
 ) else (
     echo   [WARN] package.json not found
 )
-if exist "%EXT%\src" (
+set "FOUND_P6_SRC=0"
+if exist "%EXT%\src" set "FOUND_P6_SRC=1"
+if "%FOUND_P6_SRC%"=="1" (
     echo   [OK] src\ directory present
 ) else (
     echo   [WARN] src\ directory not found
