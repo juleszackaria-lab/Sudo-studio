@@ -18,6 +18,13 @@
  * Styling is inline <style> (allowed by 'unsafe-inline' everywhere here).
  * ASCII only (French text via \u escapes, same convention as
  * backendFallback.js). Zero dependency.
+ * P37: the guard runs FIRST in every panel (right after <body>), so it
+ * installs an idempotent acquireVsCodeApi() shim. Real VS Code throws on
+ * the 2nd acquire call, which used to kill every panel script (fatal
+ * overlay on all pages). With the shim every caller shares one instance.
+ * If the shim cannot be installed, the guard stays lazy (no eager
+ * acquire) so the panel script still gets the single instance; only the
+ * error telemetry to the extension is lost in that case.
  */
 'use strict';
 
@@ -52,9 +59,30 @@ function guardSnippet(opts) {
 '</div>\n' +
 '<script' + nonceAttr + '>\n' +
 '(function () {\n' +
+'  var __ssShimOk = false;\n' +
+'  try {\n' +
+'    if (typeof acquireVsCodeApi === "function" && !acquireVsCodeApi.__ssShim) {\n' +
+'      var __ssOrig = acquireVsCodeApi;\n' +
+'      var __ssApi = null;\n' +
+'      var __ssShim = function () {\n' +
+'        if (!__ssApi) { __ssApi = __ssOrig(); }\n' +
+'        return __ssApi;\n' +
+'      };\n' +
+'      __ssShim.__ssShim = true;\n' +
+'      acquireVsCodeApi = __ssShim;\n' +
+'      __ssShimOk = (acquireVsCodeApi === __ssShim);\n' +
+'    } else if (acquireVsCodeApi && acquireVsCodeApi.__ssShim) {\n' +
+'      __ssShimOk = true;\n' +
+'    }\n' +
+'  } catch (_) { __ssShimOk = false; }\n' +
 '  var api = null;\n' +
-'  try { api = acquireVsCodeApi(); } catch (_) { api = null; }\n' +
-'  function post(m) { try { if (api) api.postMessage(m); } catch (_) {} }\n' +
+'  if (__ssShimOk) { try { api = acquireVsCodeApi(); } catch (_) { api = null; } }\n' +
+'  function post(m) {\n' +
+'    try {\n' +
+'      if (!api) { try { api = acquireVsCodeApi(); } catch (_) { api = null; } }\n' +
+'      if (api) api.postMessage(m);\n' +
+'    } catch (_) {}\n' +
+'  }\n' +
 '  function hideLoader() { var l = document.getElementById("ssLoading"); if (l) l.style.display = "none"; }\n' +
 '  var fatalShown = false;\n' +
 '  function showFatal(cause) {\n' +

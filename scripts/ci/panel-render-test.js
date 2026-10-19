@@ -37,7 +37,7 @@ const PANELS = [
   ['doctor', 'Run System Doctor'],
   ['sdk', 'Open SDK Manager Panel'],
   ['sdkinstall', 'SDK Install'],
-  ['agent', 'Sudo Agent:'],
+  ['agent', 'Sudo Agent: Ouvrir'],
   ['chat', 'Open AI Chat'],
   ['runtime', 'Runtime & Models'],
   ['devops', 'DevOps Automation'],
@@ -220,8 +220,14 @@ function oldLogoCheck(root) {
 }
 
 function shellFolder(kind) {
-  const ps = '[Environment]::GetFolderPath("' + kind + '")';
+  const ps = "[Environment]::GetFolderPath('" + kind + "')";
   return execSync('powershell -NoProfile -Command "' + ps + '"', { encoding: 'utf8' }).trim();
+}
+
+function readJson(p) {
+  let t = fs.readFileSync(p, 'utf8');
+  if (t.charCodeAt(0) === 0xFEFF) t = t.slice(1); // PS5.1 Set-Content UTF8 BOM
+  return JSON.parse(t);
 }
 
 async function main() {
@@ -246,15 +252,26 @@ async function main() {
   const fail = (m) => { report.failures.push(m); report.pass = false; console.log('[PANEL-FAIL] ' + m); };
 
   // Preconditions: live extension + exe.
+  // --live-dir accepts the extensions ROOT (contains sudo-ai/) or the
+  // sudo-ai dir itself (job versions drifted); --extensions-dir gets root.
+  let extRoot = liveDir;
+  let extDir = path.join(liveDir, 'sudo-ai');
+  if (!fs.existsSync(path.join(extDir, 'package.json')) &&
+      fs.existsSync(path.join(liveDir, 'package.json'))) {
+    extDir = liveDir;
+    extRoot = path.dirname(liveDir);
+  }
+  report.liveDirs = { arg: liveDir, extRoot, extDir };
+  console.log('[PANEL] live root=' + extRoot + ' ext=' + extDir);
   for (const f of ['package.json', 'extension.js']) {
-    if (!fs.existsSync(path.join(liveDir, 'sudo-ai', f))) fail('live copy missing: ' + f);
+    if (!fs.existsSync(path.join(extDir, f))) fail('live copy missing: ' + f);
   }
   let exe = path.join(installDir, 'SudoStudio.exe');
   if (!fs.existsSync(exe)) exe = path.join(installDir, 'VSCodium.exe');
   if (!fs.existsSync(exe)) { fail('no editor exe'); }
   let manifestCommit = null;
   try {
-    manifestCommit = JSON.parse(fs.readFileSync(path.join(installDir, 'build-manifest.json'), 'utf8')).sudo_studio_commit;
+    manifestCommit = readJson(path.join(installDir, 'build-manifest.json')).sudo_studio_commit;
   } catch (_) { fail('build-manifest unreadable'); }
   report.manifestCommit = manifestCommit;
 
@@ -270,7 +287,7 @@ async function main() {
     '--no-first-run',
     '--new-window',
     '--disable-gpu',
-    '--extensions-dir=' + liveDir,
+    '--extensions-dir=' + extRoot,
     '--user-data-dir=' + userDataDir,
   ], {
     stdio: 'ignore',
@@ -296,6 +313,15 @@ async function main() {
     if (!targets || !targets.length) { fail('cdp never came up'); throw new Error('no-cdp'); }
     const mainT = targets.find((t) => t.type === 'page' && t.url && !t.url.startsWith('devtools://')) || targets[0];
     report.windowTitle = mainT.title || '';
+    for (let i = 0; i < 15 && report.windowTitle.indexOf('Sudo Studio') === -1; i++) {
+      await sleep(2000);
+      try {
+        const re = await listTargets(port);
+        const mt = re.find((t) => t.id === mainT.id) ||
+          re.find((t) => t.type === 'page' && t.url && !t.url.startsWith('devtools://'));
+        if (mt && mt.title) report.windowTitle = mt.title;
+      } catch (_) {}
+    }
     console.log('[PANEL] window title: ' + report.windowTitle);
     if (report.windowTitle.indexOf('Sudo Studio') === -1) fail('window title lacks "Sudo Studio": ' + report.windowTitle);
     const main = new Cdp(mainT.webSocketDebuggerUrl);
@@ -336,6 +362,11 @@ async function main() {
           } finally { c.close(); }
         }
         rec.best = best;
+        if (rec.pass && !best) {
+          rec.pass = false;
+          const terr = (rec.targets || []).map((x) => x.error).filter(Boolean)[0];
+          rec.error = 'webview inspection failed' + (terr ? ': ' + terr : ' (no usable target)');
+        }
         if (rec.pass && best) {
           if (best.fatal) { rec.pass = false; rec.error = 'guard fatal overlay visible'; }
           else if ((best.textLen || 0) < MIN_TEXT_LEN) { rec.pass = false; rec.error = 'blank (textLen=' + best.textLen + ')'; }
@@ -362,7 +393,7 @@ async function main() {
 
     // product.json commit.
     try {
-      const pj = JSON.parse(fs.readFileSync(path.join(installDir, 'resources', 'app', 'product.json'), 'utf8'));
+      const pj = readJson(path.join(installDir, 'resources', 'app', 'product.json'));
       report.product = { nameShort: pj.nameShort, commit: pj.commit };
       if (pj.nameShort !== 'Sudo Studio') fail('product nameShort=' + pj.nameShort);
       if (manifestCommit && pj.commit !== manifestCommit) fail('product commit != manifest (' + pj.commit + ')');

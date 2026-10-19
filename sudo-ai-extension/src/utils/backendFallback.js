@@ -184,6 +184,8 @@ function webviewSnippet() {
 (function () {
   var api = null;
   window.__sudoBackendInit = function (vscodeApi) {
+    if (window.__sudoBackendWired) return;
+    window.__sudoBackendWired = true;
     api = vscodeApi;
     document.getElementById('sbfRetry').addEventListener('click', function () {
       if (api) api.postMessage({ type: 'sudoBackendRetry' });
@@ -204,6 +206,7 @@ function webviewSnippet() {
       box.hidden = true;
     }
   });
+  try { if (window.__sudoBackendInit) window.__sudoBackendInit(acquireVsCodeApi()); } catch (_) {}
 })();
 </script>`;
 }
