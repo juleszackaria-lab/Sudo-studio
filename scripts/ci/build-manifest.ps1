@@ -36,11 +36,12 @@ $need = @('backend.exe', 'runtime.exe', 'SudoStudio.exe', 'start.bat',
     'extensions\sudo-ai\package.json', 'extensions\sudo-ai\extension.js',
     'sudo-agent\src\server.js', 'resources\app\product.json',
     'resources\app\out\media\code-icon.svg', 'resources\sudo-icon.svg',
-    'resources\icon.ico', 'extensions\sudo-ai\resources\sudo-robot.svg')
+    'resources\icon.ico', 'extensions\sudo-ai\resources\sudo-robot.svg',
+    'launch_hidden.vbs', 'verify-installed.ps1')
 foreach ($f in $need) {
     if (-not (Test-Path (Join-Path $BuildDir $f))) { Deny ("component file missing: {0}" -f $f) }
 }
-Write-Host '[MANIFEST] 12/12 component files present'
+Write-Host '[MANIFEST] 14/14 component files present'
 
 # -- 2. backend + runtime commits must match the source checkout -----------------
 if (-not $Token) { $Token = $env:GH_TOKEN }
@@ -103,6 +104,8 @@ $mf = [ordered]@{
         'start.bat'                         = Sha-Of 'start.bat'
         'sudo-agent\src\server.js'          = Sha-Of 'sudo-agent\src\server.js'
         'resources\app\product.json'        = Sha-Of 'resources\app\product.json'
+        'launch_hidden.vbs'                 = Sha-Of 'launch_hidden.vbs'
+        'verify-installed.ps1'              = Sha-Of 'verify-installed.ps1'
     }
     components         = [ordered]@{
         backend   = [ordered]@{ commit = $beRun.head_sha; date = $beRun.created_at; run_id = $BackendRunId; sha256 = Sha-Of 'backend.exe' }

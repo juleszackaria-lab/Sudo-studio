@@ -89,6 +89,7 @@ try {
     # -- 3. expected files --
     $files = @(
         'SudoStudio.exe', 'backend.exe', 'runtime.exe', 'start.bat', 'unins000.exe',
+        'launch_hidden.vbs', 'verify-installed.ps1',
         'build-manifest.json', 'logo.ico', 'resources\icon.ico',
         'sudo-agent\src\server.js',
         'extensions\sudo-ai\extension.js', 'extensions\sudo-ai\package.json',

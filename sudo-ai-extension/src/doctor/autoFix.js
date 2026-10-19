@@ -9,6 +9,8 @@
  * - success gate: the fix counts as "fixed" ONLY if the post-check
  *   (--version or equivalent) passes with a refreshed PATH.
  * - every step is reported back (progress + final rows) and audited.
+ * - dry-run (P36): pass deps.dryRun to plan without executing anything
+ *   (no subprocess, no installer, no elevation); rows get status 'dry-run'.
  *
  * Pure module: no vscode import. All side effects are injected via `deps`
  * so plain-node tests can script every scenario (see test-p7-autofix.js).
@@ -313,6 +315,7 @@ async function fixAll(issues, deps) {
         } catch (_) { /* ignore */ }
     };
     const onProgress = deps.onProgress || (() => {});
+    const dry = !!deps.dryRun; // P36: plan only, never execute
     const offlineDir = deps.offlineDir || defaultOfflineDir();
     const installTimeout = deps.installTimeoutMs || DEFAULT_INSTALL_TIMEOUT_MS;
     const isWin = platform === 'win32';
@@ -349,7 +352,7 @@ async function fixAll(issues, deps) {
     // P19-b pre-detection: journaled, never silent.
     let wingetPresent = false;
     let wingetText = 'non teste';
-    if (isWin && online) {
+    if (isWin && online && !dry) {
         try {
             const w = await execFn('winget --version', { timeout: 15000 });
             wingetPresent = w.code === 0;
@@ -458,6 +461,17 @@ async function fixAll(issues, deps) {
         return null;
     };
 
+    // P36: dry-run returns the plan here; nothing below this line executes.
+    if (dry) {
+        const planned = plan.map((p) => ({ issue: p.issue, kind: p.kind,
+            cmd: p.cmd || null, reason: p.reason || null }));
+        audit('AUTOFIX_DRYRUN', 'Problemes: ' + ordered.join(', ') + ' (simulation)', 'ok');
+        tlog('info', 'dry-run plan', { planned });
+        const firstCmd = (plan.filter((p) => !!p.cmd)[0] || {}).cmd || null;
+        return { rows: planned.map((p) => ({ issue: p.issue, status: 'dry-run',
+            method: p.kind, reason: p.cmd || p.reason || 'plan only', cmd: p.cmd })),
+            terminalCmd: firstCmd, dryRun: true, planned };
+    }
     const runnable = plan.filter((p) => !!p.cmd);
     const results = {}; // issue -> { code } from batch execution
 

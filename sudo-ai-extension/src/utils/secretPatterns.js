@@ -17,6 +17,9 @@ const SECRET_PATTERNS = [
     { label: 'Slack Token',           re: /xox[baprs]-[A-Za-z0-9-]{10,}/ },
     { label: 'PyPI Token',            re: /pypi-[A-Za-z0-9_-]{20,}/ },
     { label: 'NPM Token',             re: /_authToken\s*=\s*[^\s'"]+/ },
+    // P36: connection strings with embedded credentials (postgres/mysql/mongodb).
+    // Requires ':password@' so bare 'postgres://host/db' (no secret) never matches.
+    { label: 'Database URL',        re: /(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?):\/\/[^\/\s:]+:[^\/\s@]+@[^\/\s]+/i },
 ];
 
 module.exports = SECRET_PATTERNS;
