@@ -35,7 +35,7 @@ class LicenseProvider {
     }
 
     createActionsSection() {
-        const item = new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Expanded);
+        const item = new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Collapsed);
         item.iconPath = new vscode.ThemeIcon('key');
         item.contextValue = 'actionsSection';
         return item;

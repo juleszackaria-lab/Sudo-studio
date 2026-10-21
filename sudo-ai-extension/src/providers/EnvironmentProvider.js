@@ -43,14 +43,14 @@ class EnvironmentProvider {
     }
 
     createCurrentEnvironmentSection() {
-        const item = new vscode.TreeItem('Current Environment', vscode.TreeItemCollapsibleState.Expanded);
+        const item = new vscode.TreeItem('Current Environment', vscode.TreeItemCollapsibleState.Collapsed);
         item.iconPath = new vscode.ThemeIcon('server-environment');
         item.contextValue = 'currentEnv';
         return item;
     }
 
     createActionsSection() {
-        const item = new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Expanded);
+        const item = new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Collapsed);
         item.iconPath = new vscode.ThemeIcon('gear');
         item.contextValue = 'actionsSection';
         return item;

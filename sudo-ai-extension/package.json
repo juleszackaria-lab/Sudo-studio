@@ -57,34 +57,10 @@
           "contextualTitle": "Sudo Studio Dashboard"
         },
         {
-          "id": "sudoStudioChat",
-          "name": "💬 AI Chat",
-          "icon": "$(comment-discussion)",
-          "contextualTitle": "AI Assistant"
-        },
-        {
-          "id": "sudoStudioRuntime",
-          "name": "🤖 AI Runtime",
-          "icon": "$(server-process)",
-          "contextualTitle": "Runtime & Models"
-        },
-        {
-          "id": "sudoStudioDoctor",
-          "name": "🩺 System Doctor",
-          "icon": "$(pulse)",
-          "contextualTitle": "System Health"
-        },
-        {
-          "id": "sudoStudioSDK",
-          "name": "📦 SDK Manager",
-          "icon": "$(package)",
-          "contextualTitle": "Development SDKs"
-        },
-        {
-          "id": "sudoStudioDevOps",
-          "name": "🚀 DevOps",
-          "icon": "$(rocket)",
-          "contextualTitle": "DevOps Automation"
+          "id": "sudoStudio",
+          "name": "Sudo Studio",
+          "icon": "$(home)",
+          "contextualTitle": "Sudo Studio"
         },
         {
           "id": "sudoStudioEnvironment",
@@ -446,6 +422,12 @@
         "title": "A propos du build",
         "category": "Sudo",
         "icon": "$(info)"
+      },
+      {
+        "command": "sudoStudio.resetLayout",
+        "title": "Réinitialiser la disposition",
+        "category": "Sudo",
+        "icon": "$(layout)"
       }
     ],
     "menus": {
@@ -486,51 +468,6 @@
           "command": "sudoStudio.refreshDashboard",
           "when": "view == sudoStudioDashboard",
           "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.openChat",
-          "when": "view == sudoStudioChat",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.clearChatHistory",
-          "when": "view == sudoStudioChat",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.openRuntimePanel",
-          "when": "view == sudoStudioRuntime",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.restartRuntime",
-          "when": "view == sudoStudioRuntime",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.checkRuntimeHealth",
-          "when": "view == sudoStudioRuntime",
-          "group": "navigation@3"
-        },
-        {
-          "command": "sudoStudio.runDoctor",
-          "when": "view == sudoStudioDoctor",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.autoFix",
-          "when": "view == sudoStudioDoctor",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.openSDKPanel",
-          "when": "view == sudoStudioSDK",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.openDevOpsPanel",
-          "when": "view == sudoStudioDevOps",
-          "group": "navigation@1"
         },
         {
           "command": "sudoStudio.exportEnvironment",
@@ -581,18 +518,6 @@
           "command": "sudoStudio.openLicensePanel",
           "when": "view == sudoStudioLicense",
           "group": "navigation@1"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "sudoStudio.explainCode",
-          "when": "view == sudoStudioChat",
-          "group": "inline@1"
-        },
-        {
-          "command": "sudoStudio.reloadModel",
-          "when": "view == sudoStudioRuntime && viewItem == model",
-          "group": "inline@1"
         }
       ],
       "commandPalette": [

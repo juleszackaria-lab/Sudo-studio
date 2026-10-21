@@ -39,10 +39,13 @@ check('A3: robot is 24px + currentColor, no hardcoded colors',
 const views = pkg.contributes.views || {};
 const studioViews = views['sudo-studio'] || [];
 const ids = studioViews.map((v) => v.id);
-check('A4: 12 Sudo views in the container (launcher + dashboard)',
-    studioViews.length === 12 && ids.indexOf('sudoAgentLauncher') !== -1 &&
-    ids.indexOf('sudoStudioDashboard') !== -1 && ids.indexOf('sudoStudioLicense') !== -1,
-    String(studioViews.length));
+// P38-c: the 5 one-button views merged into the single "Sudo Studio" nav view.
+const GONE = ['sudoStudioChat', 'sudoStudioRuntime', 'sudoStudioDoctor', 'sudoStudioSDK', 'sudoStudioDevOps'];
+check('A4: 8 Sudo views in the container (unified nav, no one-button views)',
+    studioViews.length === 8 && ids.indexOf('sudoAgentLauncher') !== -1 &&
+    ids.indexOf('sudoStudioDashboard') !== -1 && ids.indexOf('sudoStudio') !== -1 &&
+    ids.indexOf('sudoStudioLicense') !== -1 && GONE.every((g) => ids.indexOf(g) === -1),
+    JSON.stringify(ids));
 check('A5: nothing under explorer or the old container',
     !views.explorer && !views['sudo-agent'] && !bars.some((b) => b.id === 'sudo-agent'));
 check('A6: container icon is SVG art, not a codicon string',
@@ -152,6 +155,16 @@ check('E2: icon.ico is a real ICO (magic 00 00 01 00)',
 const iss = fs.readFileSync(path.join(ROOT, 'installer.iss'), 'utf8');
 check('E3: installer uses brand icon + exe name',
     iss.indexOf('resources\\icon.ico') !== -1 && iss.indexOf('SudoStudio.exe') !== -1);
+// P38-b: technical vs display names (exe stays "sudo-studio", all visible
+// names carry "Sudo Studio" with the space).
+check('E4: applicationName technical, installer AppName display',
+    prod.applicationName === 'sudo-studio' &&
+    /#define MyAppName\s+"Sudo Studio"/.test(iss));
+const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', '03-package.yml'), 'utf8');
+check('E5: rcedit strings + product verify gate in the package workflow',
+    yml.indexOf('rcedit ProductName failed') !== -1 &&
+    yml.indexOf('FileDescription') !== -1 &&
+    yml.indexOf("expected 'Sudo Studio'") !== -1);
 
 // -- F: wiring + legal preserved -----------------------------------------------------------------
 const extSrc = fs.readFileSync(path.join(EXT, 'extension.js'), 'utf8');
@@ -162,6 +175,38 @@ check('F1: launcher view still wired (same id)',
     extSrc.indexOf('registerWebviewViewProvider') !== -1);
 check('F2: third-party notices preserved',
     fs.existsSync(path.join(EXT, 'THIRD_PARTY_NOTICES.md')));
+
+// -- G: P38 unified nav + reset + reveal-once + collapsed defaults --------------
+const NAV_CMDS = ['sudoStudio.openChat', 'sudoStudio.openRuntimePanel', 'sudoStudio.runDoctor',
+    'sudoStudio.openSDKPanel', 'sudoStudio.openDevOpsPanel', 'sudoStudio.openAnalysisPanel'];
+const navSrc = fs.readFileSync(path.join(EXT, 'src', 'providers', 'SudoStudioProvider.js'), 'utf8');
+check('G1: unified nav view lists exactly the 6 quick-open entries',
+    NAV_CMDS.every((c) => navSrc.indexOf("'" + c + "'") !== -1) &&
+    (navSrc.match(/this\.createItem\(/g) || []).length === 6);
+check('G2: nav provider registered, old view registrations gone',
+    extSrc.indexOf("registerTreeDataProvider('sudoStudio'") !== -1 &&
+    GONE.every((g) => extSrc.indexOf("registerTreeDataProvider('" + g + "'") === -1));
+check('G3: reset-layout command contributed + wired + handled',
+    pkg.contributes.commands.some((c) => c.command === 'sudoStudio.resetLayout' && c.category === 'Sudo') &&
+    extSrc.indexOf("['sudoStudio.resetLayout'") !== -1 &&
+    extSrc.indexOf('async function resetLayout()') !== -1);
+check('G4: reveal-once per version (containerShownFor + workbench command)',
+    extSrc.indexOf('workbench.view.extension.sudo-studio') !== -1 &&
+    extSrc.indexOf('sudoStudio.containerShownFor') !== -1 &&
+    extSrc.indexOf("require('./package.json').version") !== -1);
+check('G5: no orphan menu whens on removed views',
+    GONE.every((g) => JSON.stringify(pkg.contributes.menus).indexOf(g) === -1));
+check('G6: detailed sections collapsed by default (dashboard untouched)',
+    ['Environment', 'Security', 'Duplication', 'Central', 'License'].every((n) =>
+        fs.readFileSync(path.join(EXT, 'src', 'providers', n + 'Provider.js'), 'utf8')
+            .indexOf('CollapsibleState.Expanded') === -1) &&
+    fs.readFileSync(path.join(EXT, 'src', 'providers', 'DashboardProvider.js'), 'utf8')
+        .indexOf('CollapsibleState.Expanded') !== -1);
+const navChk = spawnSync(process.execPath, ['--check',
+    path.join(EXT, 'src', 'providers', 'SudoStudioProvider.js')]);
+check('G7: SudoStudioProvider compiles', navChk.status === 0);
+// G8 dropped (P38): CI step 7b rejected by user vote on 2026-10-21.
+// The suite stays the reference gate, to run locally / manually.
 
 console.log(fail === 0 ? `\nP20: ${pass} checks passed (all green)`
     : `\nP20: ${pass} passed, ${fail} FAILED`);

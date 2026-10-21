@@ -26,6 +26,7 @@ const licCore = require('./src/license/license'); // P11: edition gates
 const { DuplicationProvider } = require('./src/providers/DuplicationProvider');
 const { CentralProvider } = require('./src/providers/CentralProvider');
 const { LicenseProvider } = require('./src/providers/LicenseProvider');
+const { SudoStudioProvider } = require('./src/providers/SudoStudioProvider'); // P38-c: unified nav view
 
 // Panels
 const { ChatPanel }            = require('./src/panels/ChatPanel');
@@ -81,6 +82,20 @@ async function activate(ctx) {
 
         // Register all commands (synchronous)
         registerCommands();
+
+        // P38-a: reveal the Sudo container once per extension version, so a
+        // hidden state kept from a previous version can never hide the robot
+        // after an update. Best-effort, never breaks activation.
+        try {
+            const shownFor = ctx.globalState.get('sudoStudio.containerShownFor');
+            let extVersion = 'unknown';
+            try { extVersion = String(require('./package.json').version || 'unknown'); } catch (_) {}
+            if (shownFor !== extVersion) {
+                vscode.commands.executeCommand('workbench.view.extension.sudo-studio').then(
+                    () => { try { ctx.globalState.update('sudoStudio.containerShownFor', extVersion); } catch (_) {} },
+                    () => { /* reveal failed: retry on next activation (version not stored) */ });
+            }
+        } catch (_) { /* never breaks activation */ }
 
         // P21: uniform technical journal (extension side) + session header.
         try {
@@ -217,29 +232,29 @@ function registerProviders() {
     providers.dashboard = new DashboardProvider();
     vscode.window.registerTreeDataProvider('sudoStudioDashboard', providers.dashboard);
     
-    // Chat Provider
+    // P38-c: unified quick-open nav view (Chat, Runtime, Doctor, SDK, DevOps, Analysis)
+    providers.sudoStudio = new SudoStudioProvider();
+    vscode.window.registerTreeDataProvider('sudoStudio', providers.sudoStudio);
+
+    // Chat Provider (P38: sidebar view merged into the unified nav view above;
+    // the instance stays for refresh() callers)
     providers.chat = new ChatProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioChat', providers.chat);
-    
-    // Doctor Provider
+
+    // Doctor Provider (P38: sidebar view merged into the unified nav view)
     providers.doctor = new DoctorProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioDoctor', providers.doctor);
-    
-    // SDK Provider
+
+    // SDK Provider (P38: sidebar view merged into the unified nav view)
     providers.sdk = new SDKProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioSDK', providers.sdk);
-    
-    // DevOps Provider
+
+    // DevOps Provider (P38: sidebar view merged into the unified nav view)
     providers.devops = new DevOpsProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioDevOps', providers.devops);
     
     // Environment Provider
     providers.environment = new EnvironmentProvider();
     vscode.window.registerTreeDataProvider('sudoStudioEnvironment', providers.environment);
     
-    // Runtime Provider
+    // Runtime Provider (P38: sidebar view merged into the unified nav view)
     providers.runtime = new RuntimeProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioRuntime', providers.runtime);
 
     // Security Provider (sidebar quick actions -> SecurityPanel)
     providers.security = new SecurityProvider();
@@ -358,6 +373,7 @@ function registerCommands() {
 
         // P29(e): build info
         ['sudoStudio.showBuildInfo',         showBuildInfo],
+        ['sudoStudio.resetLayout',           resetLayout],
     ];
     
     commands.forEach(([commandName, handler]) => {
@@ -1794,6 +1810,21 @@ function openSdkInstallPanel(sdkId) {
 
 // ── Open Logs Folder (Mission FINALE — Mission 2B) ───────────────────────────
 // P29(e): "Sudo: A propos du build" - shows build-manifest.json (install root).
+// P38-a/c: reset the Sudo sidebar to its default state (reveal the robot
+// container, collapse the detailed sections). Never throws.
+async function resetLayout() {
+    try {
+        await vscode.commands.executeCommand('workbench.view.extension.sudo-studio');
+    } catch (_) { /* container reveal is best-effort */ }
+    for (const v of ['sudoStudioEnvironment', 'sudoStudioSecurity', 'sudoStudioDuplication',
+        'sudoStudioCentral', 'sudoStudioLicense']) {
+        try { await vscode.commands.executeCommand('workbench.actions.treeView.' + v + '.collapseAll'); }
+        catch (_) { /* per-view collapse is best-effort */ }
+    }
+    try { vscode.window.showInformationMessage('Sudo : conteneur affiché, sections repliées.'); }
+    catch (_) { /* notification is best-effort */ }
+}
+
 function showBuildInfo() {
     let text = 'Sudo Studio (dev - no build-manifest.json)';
     try {

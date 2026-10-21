@@ -35,7 +35,7 @@ class DuplicationProvider {
     }
 
     createActionsSection() {
-        const item = new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Expanded);
+        const item = new vscode.TreeItem('Actions', vscode.TreeItemCollapsibleState.Collapsed);
         item.iconPath = new vscode.ThemeIcon('copy');
         item.contextValue = 'actionsSection';
         return item;
