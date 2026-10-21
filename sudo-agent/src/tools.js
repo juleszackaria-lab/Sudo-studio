@@ -15,6 +15,7 @@ const perm = require('./permissions');
 const ckpt = require('./checkpoints');
 const { maskSecrets } = require('./journal');
 const { PLAN_REFUSED } = require('./modes');
+const pmap = require('./projectmap');
 const profiles = require('./profiles');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
@@ -226,6 +227,12 @@ function isText(buf) {
   return true;
 }
 
+// P39-b: not_found is never bare: close files + parent listing (bounded).
+function richNotFound(tool, ctx, r, fallbackRel) {
+  const hint = pmap.notFoundHint(ctx.root, r.abs);
+  return { ok: false, code: 'not_found', error: tool + ': ' + pmap.formatNotFound(r.rel || fallbackRel, hint) };
+}
+
 async function hRead(ctx, args, resolved) {
   const file = args.file;
   if (typeof file !== 'string' || !file.trim()) return { ok: false, code: 'bad_args', error: 'read: file requis.' };
@@ -233,7 +240,7 @@ async function hRead(ctx, args, resolved) {
   if (!r.ok) return { ok: false, code: r.code, error: 'read refuse: ' + r.reason };
   let buf = null;
   try { buf = fs.readFileSync(r.abs); }
-  catch (_) { return { ok: false, code: 'not_found', error: 'read: fichier introuvable : ' + r.rel }; }
+  catch (_) { return richNotFound('read', ctx, r, '.'); }
   if (buf.length > MAX_READ_BYTES) return { ok: false, code: 'too_big', error: 'read: fichier trop volumineux (' + buf.length + ' octets).' };
   if (!isText(buf)) return { ok: true, data: { rel: r.rel, binary: true, size: buf.length }, summary: 'fichier binaire (' + buf.length + ' octets), contenu non affiche.', markRead: [r.rel] };
   const text = buf.toString('utf8');
@@ -253,7 +260,7 @@ async function hList(ctx, args, resolved) {
   const r = resolved;
   if (!r.ok) return { ok: false, code: r.code, error: 'list refuse: ' + r.reason };
   let st = null;
-  try { st = fs.statSync(r.abs); } catch (_) { return { ok: false, code: 'not_found', error: 'list: dossier introuvable : ' + (r.rel || '.') }; }
+  try { st = fs.statSync(r.abs); } catch (_) { return richNotFound('list', ctx, r, '.'); }
   if (!st.isDirectory()) return { ok: false, code: 'not_dir', error: 'list: pas un dossier : ' + r.rel };
   const recursive = args.recursive === true;
   const limit = Math.min(1000, Math.max(1, parseInt(args.limit, 10) || MAX_LIST));
@@ -362,7 +369,7 @@ async function hEdit(ctx, args, resolved) {
   const r = resolved;
   if (!r.ok) return { ok: false, code: r.code, error: 'edit refuse: ' + r.reason };
   let text = null;
-  try { text = fs.readFileSync(r.abs, 'utf8'); } catch (_) { return { ok: false, code: 'not_found', error: 'edit: fichier introuvable : ' + r.rel }; }
+  try { text = fs.readFileSync(r.abs, 'utf8'); } catch (_) { return richNotFound('edit', ctx, r, '.'); }
   const parts = text.split(args.old);
   const count = parts.length - 1;
   if (count === 0) return { ok: false, code: 'not_found', error: 'edit: chaine introuvable dans ' + r.rel + '.' };
@@ -794,7 +801,10 @@ async function executeTool(ctx, toolName, args, opts) {
   call.diff = res.diff || null;
   if (ctx.log) {
     try {
-      ctx.log[res.ok ? 'info' : 'warn']('tool ' + (res.ok ? 'ok' : 'fail'), { tool: toolName, target: pattern.text.slice(0, 120), code: call.code, ms, rule: (chk.rule || 'none') + (opts.preApproved ? '+approved' : '') }, ctx.corr);
+      // P39-b: failures journal the full error text (incl. enriched hints).
+      const fields = { tool: toolName, target: pattern.text.slice(0, 120), code: call.code, ms, rule: (chk.rule || 'none') + (opts.preApproved ? '+approved' : '') };
+      if (!res.ok && res.error) fields.error = String(res.error);
+      ctx.log[res.ok ? 'info' : 'warn']('tool ' + (res.ok ? 'ok' : 'fail'), fields, ctx.corr);
     } catch (_) {}
   }
   if (!res.ok) return { status: 'error', reason: res.error, code: res.code || 'error', call };

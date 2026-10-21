@@ -464,21 +464,85 @@ class ProjectAnalysisPanel {
         await this.analyzeProject();
     }
 
+    _safePost(obj) {
+        try {
+            if (this.panel && this.panel.webview) this.panel.webview.postMessage(obj);
+        } catch (_) { /* panel disposed mid-flight: never throw */ }
+    }
+
+    // P39-f: compact deterministic context (same analysis as the panel).
+    _aiContextFromAnalysis(a) {
+        try {
+            if (!a || typeof a !== 'object') return '';
+            const parts = [];
+            if (a.name) parts.push('projet: ' + String(a.name).slice(0, 80));
+            if (a.stats) {
+                parts.push('fichiers: ' + (a.stats.files || 0) + ', lignes: ' + (a.stats.lines || 0));
+                const langs = a.stats.byLang && typeof a.stats.byLang === 'object'
+                    ? Object.keys(a.stats.byLang).sort((x, y) => (a.stats.byLang[y] || 0) - (a.stats.byLang[x] || 0)).slice(0, 5)
+                    : [];
+                if (langs.length) parts.push('langages: ' + langs.join(', '));
+            }
+            if (Array.isArray(a.deps)) {
+                for (const eco of a.deps.slice(0, 3)) {
+                    const names = Array.isArray(eco.manifestDeps)
+                        ? eco.manifestDeps.map((d) => d && d.name).filter(Boolean).slice(0, 12)
+                        : [];
+                    if (names.length) parts.push('deps ' + (eco.ecosystem || '?') + ': ' + names.join(', '));
+                }
+            }
+            if (Array.isArray(a.entryPoints) && a.entryPoints.length) {
+                const eps = a.entryPoints.slice(0, 6).map((e) => (e && (e.path || e)) || '').filter(Boolean);
+                if (eps.length) parts.push('entrees: ' + eps.join(', '));
+            }
+            if (a.todos && (a.todos.count || 0) > 0) parts.push('TODO/FIXME: ' + a.todos.count);
+            return parts.join('\n').slice(0, 1500);
+        } catch (_) { return ''; }
+    }
+
     async aiRecommendations() {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) return;
+        // P39-f: one run at a time (double clicks do not stack requests).
+        if (this._aiRunning) return;
+        this._aiRunning = true;
 
-        this.panel.webview.postMessage({ type: 'aiLoading' });
+        this._safePost({ type: 'aiLoading' });
         try {
+            // P39-f: same context as the panel: run the deterministic
+            // analysis first when it is missing.
+            if (!this._lastAnalysis && !this._analyzing) {
+                try { await this.analyzeProject(); } catch (_) {}
+            }
+            if (!this._lastAnalysis) {
+                this._safePost({ type: 'aiError',
+                    text: 'Analyse deterministe indisponible : ouvrez un dossier et relancez l\u2019analyse.' });
+                return;
+            }
+            const ctx = this._aiContextFromAnalysis(this._lastAnalysis);
             const r = await axios.post('http://127.0.0.1:6000/infer', {
-                message: `Analyse ce projet et donne 5 recommandations concrètes pour améliorer la qualité, sécurité et maintenabilité. Répertoire: ${path.basename(folder.uri.fsPath)}. Soit concis et actionnable.`,
+                message: 'Analyse ce projet et donne 5 recommandations concretes pour ameliorer la qualite, securite et maintenabilite. Soit concis et actionnable.\nContexte deterministe :\n' + (ctx || '(vide)'),
                 max_tokens: 400
             }, { timeout: 60000 });
-            this.panel.webview.postMessage({ type: 'aiRecommendations', text: r.data.reply });
+            const text = r && r.data ? String(r.data.reply || '') : '';
+            if (!text.trim()) {
+                this._safePost({ type: 'aiError', text: 'Reponse vide du runtime : rechargez le modele et reessayez.' });
+                return;
+            }
+            this._safePost({ type: 'aiRecommendations', text });
         } catch (e) {
             // TASK 4a: runtime up but no model loaded (503 no_model_loaded).
-            const isNoModel = e.response && e.response.status === 503;
-            this.panel.webview.postMessage({ type: 'aiError', text: isNoModel ? 'Aucun modele charge - ouvrez Runtime & Models pour charger un modele' : 'Runtime IA non disponible' });
+            // P39-f: distinct timeout state, never stuck on "en cours".
+            const status = e && e.response ? e.response.status : 0;
+            const code = e ? e.code : '';
+            let text;
+            if (status === 503) text = 'Aucun modele charge - ouvrez Runtime & Models pour charger un modele';
+            else if (code === 'ECONNABORTED' || /timeout/i.test(String((e && e.message) || ''))) text = 'Delai depasse (60s) : le runtime n\u2019a pas repondu. Reessayez ou rechargez le modele.';
+            else if (code === 'ECONNREFUSED') text = 'Runtime IA injoignable (connexion refusee) : demarrez le runtime.';
+            else text = 'Runtime IA non disponible (' + String(code || ('HTTP ' + status) || 'erreur').slice(0, 60) + ')';
+            this._safePost({ type: 'aiError', text });
+        } finally {
+            this._aiRunning = false;
         }
     }
 

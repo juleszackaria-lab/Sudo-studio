@@ -475,7 +475,7 @@ t('D1', 'same tool+target 3x -> PARTIEL loop', async () => {
     { content: '', toolCalls: [{ name: 'read', args: { file: 'notes.txt' } }] },
     { content: '', toolCalls: [{ name: 'read', args: { file: 'notes.txt' } }] },
     { content: '', toolCalls: [{ name: 'read', args: { file: 'notes.txt' } }] },
-    { content: 'never reached' },
+    { content: 'rescue answer' },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
@@ -488,7 +488,13 @@ t('D1', 'same tool+target 3x -> PARTIEL loop', async () => {
     assert(done.stopReason === 'loop', 'stopReason loop, got ' + done.stopReason);
     assert(done.reason.indexOf('boucle repetitive') !== -1, 'loop reason');
     assert(starts === 2, 'third call never executed, got ' + starts);
-    assert(mock.chats.length === 3, 'three model steps');
+    // P39 evolution: a 4th no-tools rescue round answers from collected
+    // context, so a loop never ends without a reply.
+    assert(mock.chats.length === 4, 'three steps + rescue, got ' + mock.chats.length);
+    assert(!('tools' in mock.chats[3]) || mock.chats[3].tools === undefined, 'rescue has no tools');
+    const g = await httpJson(port, token, 'GET', '/sessions/' + sid);
+    const msgs = g.body.messages;
+    assert(msgs[msgs.length - 1].content === 'rescue answer', 'rescue reply stored');
   } finally { killChild(a.child); await mock.close(); }
 });
 

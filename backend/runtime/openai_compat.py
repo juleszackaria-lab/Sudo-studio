@@ -34,14 +34,21 @@ N_CTX_MAX = 32768
 
 
 def default_n_ctx(avail_gb):
-    """Prudent default context size from free RAM (GB). Pure function."""
+    """Prudent default context size from free RAM (GB). Pure function.
+
+    P39-e: 4096 from 4 GB free (was 6 GB). Rationale: a 1.5B Q4_K_M GGUF is
+    ~1 GB and the 2048->4096 KV-cache delta is ~0.1-0.2 GB, so 4096 still
+    fits a 4 GB-free machine with margin; the RAM watchdog (critical min)
+    still aborts pathological loads. The agent needs ~2-4k tokens (system
+    prompt + tool schemas + project map + tool results, see journal est0).
+    """
     try:
         avail = float(avail_gb)
     except (TypeError, ValueError):
         return 4096
     if avail >= 12.0:
         return 8192
-    if avail >= 6.0:
+    if avail >= 4.0:
         return 4096
     return 2048
 

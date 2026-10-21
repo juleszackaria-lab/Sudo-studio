@@ -1385,9 +1385,13 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                     n_threads = max(2, multiprocessing.cpu_count() - 1)
                     dlog(f"[GGUF] n_threads={n_threads}")
                     # P1-c: configurable n_ctx, prudent default from free RAM.
+                    # P39-e: report free RAM with the choice (memory before/after
+                    # is logged around the load: search [RAM] Before/After).
+                    _avail_now = get_available_ram_gb()
                     eff_n_ctx = (openai_compat.clamp_n_ctx(n_ctx) or
-                                 openai_compat.default_n_ctx(get_available_ram_gb()))
-                    dlog(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx})")
+                                 openai_compat.default_n_ctx(_avail_now))
+                    dlog(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx}, freeRAM={_avail_now:.1f}GB)")
+                    logger.info(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx}, freeRAM={_avail_now:.1f}GB)")
 
                     _wd = _RamWatchdog(model_id)
                     _wd.start()

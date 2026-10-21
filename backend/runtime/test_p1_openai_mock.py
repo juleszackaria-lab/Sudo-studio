@@ -244,9 +244,10 @@ lines = list(r.gen)
 check("fallback chatml stream", lines[-1] == "data: [DONE]\n\n"
       and json.loads(lines[0][6:])["choices"][0]["delta"]["role"] == "assistant")
 
-# 12. politique n_ctx
+# 12. politique n_ctx (P39-e: 4096 des 4 Go libres, cf. openai_compat)
 check("default_n_ctx", oc.default_n_ctx(16) == 8192 and oc.default_n_ctx(8) == 4096
-      and oc.default_n_ctx(4) == 2048 and oc.default_n_ctx("xx") == 4096)
+      and oc.default_n_ctx(4) == 4096 and oc.default_n_ctx(3.9) == 2048
+      and oc.default_n_ctx("xx") == 4096)
 check("clamp_n_ctx", oc.clamp_n_ctx(100) == 512 and oc.clamp_n_ctx(99999) == 32768
       and oc.clamp_n_ctx("abc") is None and oc.clamp_n_ctx(4096) == 4096)
 

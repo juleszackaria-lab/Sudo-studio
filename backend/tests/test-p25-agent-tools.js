@@ -915,9 +915,11 @@ t('F3', 'AGENTS.md injected as project instructions', async () => {
     const sys = mock.chats[0].messages.filter((m) => m.role === 'system');
     // P26 evolution: a mode system prompt now precedes AGENTS.md (2 system
     // messages; project instructions must still be injected intact).
+    // P39 evolution: the project map sits between mode and AGENTS.md (3).
     const hasAgents = sys.some((m) => m.content.indexOf('FROBNICATE') !== -1);
     const hasMode = sys.some((m) => m.content.indexOf('BUILD mode') !== -1);
-    assert(sys.length === 2 && hasAgents && hasMode, 'instructions missing');
+    const hasMap = sys.some((m) => m.content.indexOf('[carte du projet]') !== -1);
+    assert(sys.length === 3 && hasAgents && hasMode && hasMap, 'instructions missing');
   } finally { killChild(a.child); await mock.close(); }
 });
 

@@ -21,6 +21,7 @@ const profiles = require('./profiles');
 const compressMod = require('./compress');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
+const pmap = require('./projectmap');
 
 const MAX_HISTORY = 50;
 const MAX_PROMPT = 200000;
@@ -217,6 +218,54 @@ async function toolsTurn(base, session, toolsCtx) {
     return { status: 'error', code: 'bad_project', error };
   }
 
+  // P39-a: project map, rebuilt every turn (fresh in Build mode: files may
+  // have changed). Agent AND chat share toolsTurn, so both get the map.
+  // Journaled on first build and whenever the text changes (proof line).
+  let mapText = '';
+  let mapInfo = null;
+  try {
+    const built = pmap.buildProjectMap(root);
+    if (built.ok) {
+      mapText = built.text;
+      mapInfo = built;
+      let prev = null;
+      try { prev = (store.get(sessionId) || {}).meta || null; } catch (_) { prev = null; }
+      const prevText = prev && prev.projectMap ? prev.projectMap.text : null;
+      if (prevText !== mapText) {
+        try {
+          store.update(sessionId, (s) => {
+            if (!s.meta) s.meta = {};
+            s.meta.projectMap = { root, text: mapText, tokens: built.tokens,
+              entries: built.entries, type: built.type, at: new Date().toISOString() };
+          });
+        } catch (_) {}
+        journal('info', prevText === null ? 'carte projet injectee' : 'carte projet mise a jour',
+          { entries: built.entries, type: built.type, tokens: built.tokens, truncated: !!built.truncated });
+      }
+    } else {
+      journal('warn', 'carte projet impossible', { error: String(built.error || '').slice(0, 120) });
+    }
+  } catch (e) {
+    journal('warn', 'carte projet erreur', { error: String((e && e.message) || e).slice(0, 120) });
+    mapText = '';
+    mapInfo = null;
+  }
+
+  // P39-c: general questions get README + manifests + deterministic
+  // mini-analysis in context before the first model call.
+  let preloadText = '';
+  try {
+    if (mapText && pmap.isGeneralQuestion(base.prompt)) {
+      const pre = pmap.buildPreload(root, mapInfo);
+      if (pre && pre.text) {
+        preloadText = pre.text;
+        journal('info', 'contexte general precharge', { tokens: pre.tokens });
+      }
+    }
+  } catch (e) {
+    journal('warn', 'precharge impossible', { error: String((e && e.message) || e).slice(0, 120) });
+  }
+
   // P26-a/b: mode, size profile, context budget.
   const mode = modes.getMode(session);
   const profile = profiles.selectProfile({ modelId: model, providerType: provider.type, override: provider.profile || process.env.SUDO_AGENT_PROFILE });
@@ -274,10 +323,21 @@ async function toolsTurn(base, session, toolsCtx) {
     const note = profiles.chunkNote(profile);
     if (note) sys += '\n' + note;
     out.unshift({ role: 'system', content: sys });
+    // P39-a/c: map then preload, right after the system prompt (both are
+    // counted by the context estimate, P39-e).
+    if (preloadText) out.splice(1, 0, { role: 'system', content: preloadText });
+    if (mapText) out.splice(1, 0, { role: 'system', content: mapText });
     return out;
   };
   // Field named `ctx` (not ctxTokens): the journal masks *token* substrings.
-  journal('info', 'turn start', { model, tools: true, mode, profile, ctx: ctxTokens, est0: profiles.estimateTokens(modelMessages(), schemaChars), agentsMd: agentsMd ? agentsMd.length : 0 });
+  // P39-e: initial estimate covers system prompt + schemas + map + preload.
+  const est0 = profiles.estimateTokens(modelMessages(), schemaChars);
+  journal('info', 'turn start', { model, tools: true, mode, profile, ctx: ctxTokens, est0,
+    mapTokens: mapInfo ? mapInfo.tokens : 0, preload: preloadText ? preloadText.length : 0,
+    agentsMd: agentsMd ? agentsMd.length : 0 });
+  if (est0 > ctxTokens * 0.75) {
+    journal('warn', 'contexte initial eleve', { est0, ctx: ctxTokens });
+  }
 
   const currentFilesModified = () => {
     if (!run.checkpointName || !run.snapshot) return [];
@@ -424,6 +484,38 @@ async function toolsTurn(base, session, toolsCtx) {
         stopReason = 'loop';
         stopDetail = 'boucle repetitive detectee : ' + key.slice(0, 160) + ' (3 appels identiques, arret).';
         journal('warn', 'repeat loop', { key: key.slice(0, 160) });
+        // Close the dangling 3rd call so the transcript stays valid.
+        const loopCallId = first.id || ('call-' + run.calls.length);
+        run.calls.push({ tool: first.name || '?', target: '', ok: false, code: 'skipped', ms: 0,
+          at: new Date().toISOString(), summary: 'non execute : boucle repetitive detectee.' });
+        store.append(sessionId, { role: 'tool', tool_call_id: loopCallId, name: first.name,
+          content: JSON.stringify({ ok: false, code: 'skipped', error: 'non execute : boucle repetitive (3 appels identiques).' }) });
+        // P39-d: a loop stop NEVER ends without an answer. Last round
+        // WITHOUT tools (answer from what is collected), else a labelled
+        // deterministic fallback. Status stays PARTIEL (loop happened).
+        if (!runEntry.aborted) {
+          try {
+            const rescue = await chatOnce(provider, { model,
+              messages: modelMessages().concat([{ role: 'user',
+                content: 'STOP OUTILS : tu as repete 3 fois le meme appel (' + key.slice(0, 160) +
+                  '). SANS appeler d\'outils, reponds avec ce qui est deja collecte. ' +
+                  'Si vraiment impossible, dis-le brievement.' }]),
+            });
+            const rt = String((rescue && rescue.text) || '').trim();
+            if (rt) {
+              finalText = rt;
+              store.append(sessionId, { role: 'assistant', content: finalText });
+              journal('info', 'reponse secours IA', { chars: rt.length });
+            }
+          } catch (e) {
+            journal('warn', 'reponse secours IA echouee', { error: String((e && e.message) || e).slice(0, 160) });
+          }
+          if (!finalText) {
+            finalText = pmap.deterministicFallback({ root, map: mapInfo, calls: run.calls, loopKey: key, prompt: base.prompt });
+            store.append(sessionId, { role: 'assistant', content: finalText });
+            journal('warn', 'reponse secours deterministe', { chars: finalText.length });
+          }
+        }
         break;
       }
       const callId = first.id || ('call-' + run.calls.length);

@@ -15,6 +15,8 @@ function buildSystem() {
     'before the next step. Never repeat a failing call unchanged: read the',
     'error, adapt, or explain. Small steps on small models. When the task is',
     'done, answer with a short summary of what changed.',
+    'List or search (list, glob, grep) before reading a path you have not',
+    'seen listed: never guess unread paths.',
   ].join('\n');
 }
 
@@ -24,6 +26,8 @@ function planSystem() {
     'Read-only tools only (read, list, glob, grep, todo). The tools write,',
     'edit, patch, bash and undo are REFUSED in this mode: do not call them.',
     'End with a numbered plan: goal, files to touch, steps, checks to run.',
+    'List or search (list, glob, grep) before reading a path you have not',
+    'seen listed: never guess unread paths.',
   ].join('\n');
 }
 

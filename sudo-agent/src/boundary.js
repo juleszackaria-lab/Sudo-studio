@@ -37,6 +37,35 @@ function resolveLinks(mod, abs) {
   } catch (_) { return abs; }
 }
 
+// Rewalk root -> abs segment by segment, matching each segment against the
+// real directory entries case-insensitively. Returns the corrected absolute
+// path on full match, null otherwise. Bounded, never throws.
+function fixCaseSegments(root, abs, mod) {
+  try {
+    let rel = mod.relative(root, abs);
+    if (!rel || rel === '..' || rel.indexOf('..' + mod.sep) === 0) return null;
+    const segs = rel.split(mod.sep).filter((s) => s && s !== '.');
+    if (!segs.length || segs.length > 64) return null;
+    // Lexical segments come from `mod` (win32 spelling); the fs walk uses
+    // the HOST path module so { platform:'win32' } stays testable on posix.
+    let cur = root;
+    const fixed = [];
+    for (const seg of segs) {
+      let entries = null;
+      try { entries = fs.readdirSync(cur); } catch (_) { return null; }
+      const low = seg.toLowerCase();
+      let hit = null;
+      for (const e of entries) {
+        if (e.toLowerCase() === low) { hit = e; break; }
+      }
+      if (hit === null) return null;
+      fixed.push(hit);
+      cur = path.join(cur, hit);
+    }
+    return cur; // host-joined: identical on win32, usable under override
+  } catch (_) { return null; }
+}
+
 // Resolve `input` inside `root`.
 // Returns { ok:true, abs, rel, flavor } or { ok:false, reason, code }.
 // Codes: bad_input | unc | win32_on_posix | ads | drive | outside | symlink_escape.
@@ -100,8 +129,21 @@ function resolveInRoot(root, input, opts) {
     return { rel };
   };
 
-  const lex = contained(abs);
+  let lex = contained(abs);
   if (!lex) return fail('outside', 'chemin hors projet (.. ou absolu exterieur).');
+
+  // P39-b: on win32 spellings, resolve each segment against the real
+  // directory entries (case-insensitive, like the OS). A full match
+  // corrects the case; a partial match leaves the original spelling so
+  // the caller reports not_found with an enriched hint. Separators / and
+  // \ are both accepted by mod.resolve above on win32.
+  if (plat === 'win32' && lex.rel !== '') {
+    const fixed = fixCaseSegments(root, abs, mod);
+    if (fixed && fixed !== abs) {
+      const lex2 = contained(fixed);
+      if (lex2) { abs = fixed; lex = lex2; }
+    }
+  }
 
   // Symlink-aware recheck on the real path.
   const real = resolveLinks(mod, abs);
@@ -113,4 +155,4 @@ function resolveInRoot(root, input, opts) {
   return { ok: true, abs, rel: lex.rel, flavor, viaSymlink: false };
 }
 
-module.exports = { resolveInRoot, tokenFlavor, isUNC, MAX_PATH_CHARS };
+module.exports = { resolveInRoot, tokenFlavor, isUNC, MAX_PATH_CHARS, fixCaseSegments };
