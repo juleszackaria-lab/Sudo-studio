@@ -30,6 +30,7 @@ const SECRET_SEVERITY = {
     'PyPI Token': 'high',
     'NPM Token': 'high',
     'Database Password': 'medium',
+    'Database URL': 'high', // P41: same base as its 'URL with Credentials' sibling (P36 added the label, no base)
     'Slack Webhook': 'medium',
     'Secret Assignment': 'high',
     'Generic Secret Key (sk-)': 'high',
@@ -43,11 +44,12 @@ const ADVISORY_POINTS = { critical: 10, high: 5, medium: 2, low: 1 };
 const CAPS = { secrets: 40, advisories: 30, files: 15, tests: 5 };
 
 // Placeholder values that are NOT secrets (exact match, case-insensitive).
+// P41-b: redaction markers added; your-* handled as a prefix rule in check().
 const PLACEHOLDERS = new Set([
     'your_key_here', 'your_api_key', 'yourkeyhere', 'your_secret_here',
-    'your_token_here', 'changeme', 'change_me', 'changeit', 'placeholder',
+    'your_token_here', 'changeme', 'change_me', 'change-me', 'changeit', 'placeholder',
     'example', 'sample', 'test', 'testing', 'none', 'null', 'undefined',
-    'tbd', 'todo', 'xxx',
+    'tbd', 'todo', 'xxx', '***', '...', 'redacted',
 ]);
 
 // Extra scanner patterns, kept OUT of shared secretPatterns.js so the cloud
@@ -63,6 +65,13 @@ const EXTRA_SECRET_PATTERNS = [
             const v = String((m && m[2]) || '');
             if (v.length < 8) return false;
             if (PLACEHOLDERS.has(v.toLowerCase())) return false;
+            if (/^your[-_]/.test(v.toLowerCase())) return false; // P41-b
+            return true;
+        },
+        checkV1(m) { // P41: pre-P41 check, kept for --before comparisons.
+            const v = String((m && m[2]) || '');
+            if (v.length < 8) return false;
+            if (PLACEHOLDERS.has(v.toLowerCase())) return false;
             return true;
         },
     },
@@ -71,9 +80,27 @@ const EXTRA_SECRET_PATTERNS = [
         // P18: NAME=value where NAME carries a secret word (JWT_SECRET,
         // PASSWORD, CLIENT_SECRET, DB_TOKEN, apiKey, ...). The name is split
         // into segments so MONKEY/keyboard never match. Optional quotes.
+        // P41-b: values that READ the environment (process.env.X, Deno.env,
+        // os.environ, import.meta.env, System.getenv, ...), function calls
+        // and dotted references are NOT secrets. Bare single words still
+        // flag (a weak password beats a missed secret).
         re: /([A-Za-z_][A-Za-z0-9_]*)\s*[:=]+\s*['"]?([^\s'";#]{8,})['"]?/,
         valueGroup: 2,
         check(m) {
+            const name = String((m && m[1]) || '');
+            const v = String((m && m[2]) || '').replace(/['",;]+$/, '');
+            if (v.length < 8) return false;
+            if (!looksLikeSecretName(name)) return false;
+            if (PLACEHOLDERS.has(v.toLowerCase())) return false;
+            if (/^your[-_]/.test(v.toLowerCase())) return false;
+            if (/^(\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|<[^>]*>|\[[^\]]*\]|%[^%]+%|true|false|null|none|undefined)$/i.test(v)) return false;
+            if (/^[A-Za-z]:\\/.test(v) || v.indexOf('\\\\') !== -1) return false;
+            if (v.indexOf('(') !== -1 || v.indexOf(')') !== -1) return false;
+            if (v.indexOf('.') !== -1 && !looksLikeKnownToken(v)) return false;
+            return true;
+        },
+        // P41: pre-P41 check, kept for --before comparisons (CLI legacy mode).
+        checkV1(m) {
             const name = String((m && m[1]) || '');
             const v = String((m && m[2]) || '').replace(/['",;]+$/, '');
             if (v.length < 8) return false;
@@ -124,6 +151,21 @@ function looksLikeSecretName(name) {
     return false;
 }
 
+// P41: strong token shapes (known prefix, or plausible secret length and
+// charset). Used to (1) exempt dotted values that are real tokens (a JWT
+// has dots but is no reference), (2) grade NAME-based findings as high
+// confidence. Only called at scan time (helpers below are load-order safe).
+function looksLikeKnownToken(v) {
+    const s = String(v || '');
+    if (/^eyJ[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}\.[A-Za-z0-9_\-]{6,}/.test(s)) return true;
+    if (/^sk-[A-Za-z0-9_\-]{6,}/.test(s)) return true;
+    if (/^[A-Za-z][A-Za-z0-9+.\-]{1,20}:\/\/[^/\s:@?#'"]+:[^/\s@?#'"]+@/.test(s)) return true;
+    if (/^[0-9a-fA-F]{32,}$/.test(s)) return true;
+    if (/^[A-Za-z0-9+=\-_]{32,}$/.test(s) && looksRandomToken(s) &&
+        shannonEntropy(s) >= ENTROPY_B64_BAR) return true;
+    return false;
+}
+
 // P18: Shannon entropy per character (bits). Random base64-ish text scores
 // near 6; English prose and identifiers stay well below the bar.
 function shannonEntropy(s) {
@@ -151,18 +193,60 @@ const ENTROPY_B64_BAR = 4.5;
 const ENTROPY_HEX_MIN = 32;
 const ENTROPY_HEX_BAR = 3.0;
 
+// P41-c: line-level noise that must never feed the entropy test.
+function entropyHasSkipMarker(line) {
+    return String(line || '').indexOf('sourceMappingURL') !== -1;
+}
+function stripEntropyNoise(text) {
+    return String(text || '')
+        .replace(/\bsha(?:1|256|384|512)-[A-Za-z0-9+/=]+/g, ' ')
+        .replace(/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/g, ' ')
+        .replace(/#[0-9a-fA-F]{3,8}\b/g, ' ');
+}
+// P41-c: ordered alphabets/charsets (SQL v_alphabet, charset constants):
+// mostly sequential code points AND mostly unique chars. Repeated junk
+// (low uniqueness) and true random (low sequentiality) never match.
+function looksLikeAlphabet(tok) {
+    const s = String(tok || '');
+    if (s.length < 12) return false;
+    let seq = 0;
+    for (let i = 1; i < s.length; i++) {
+        if (s.charCodeAt(i) === s.charCodeAt(i - 1) + 1) seq++;
+    }
+    if (seq / (s.length - 1) < 0.5) return false;
+    return new Set(s).size / s.length >= 0.6;
+}
+// P41-c: secret context on the line (secret-ish assigned name or known
+// token prefix). Bare tokens without context face a stricter length bar.
+function entropyHasSecretContext(line) {
+    const text = String(line || '');
+    const nm = text.match(/([A-Za-z_][A-Za-z0-9_]*)\s*[:=]/);
+    if (nm && looksLikeSecretName(nm[1])) return true;
+    return /\b(sk-|eyJ|AKIA|gh[pousr]_|xox[baprs]-|AIza|rk_live|rk_test|sk_live|sk_test|-----BEGIN )/.test(text);
+}
+
 // First high-entropy token on the line, or null. Hex first: a hex token
 // also matches the base64 class, and hex tops out near 4 bits per char.
-function findHighEntropyToken(line) {
+// P41-c: integrity hashes, UUIDs, hex colors, sourcemap lines and ordered
+// alphabets are ignored; context-free base64 needs 32+ chars. legacy=true
+// reproduces the pre-P41 behaviour (--before comparisons).
+function findHighEntropyToken(line, legacy) {
     const text = String(line || '');
+    if (!legacy && entropyHasSkipMarker(text)) return null;
+    const scrubbed = legacy ? text : stripEntropyNoise(text);
     let m;
     const hexRe = /[0-9a-fA-F]{32,}/g;
-    while ((m = hexRe.exec(text)) !== null) {
-        if (shannonEntropy(m[0]) >= ENTROPY_HEX_BAR) return m[0];
+    while ((m = hexRe.exec(scrubbed)) !== null) {
+        if (shannonEntropy(m[0]) < ENTROPY_HEX_BAR) continue;
+        if (!legacy && looksLikeAlphabet(m[0])) continue;
+        return m[0];
     }
-    const b64Re = /[A-Za-z0-9+=\-_]{20,}/g;
-    while ((m = b64Re.exec(text)) !== null) {
-        if (looksRandomToken(m[0]) && shannonEntropy(m[0]) >= ENTROPY_B64_BAR) return m[0];
+    const context = legacy ? true : entropyHasSecretContext(text);
+    const b64Re = context ? /[A-Za-z0-9+=\-_]{20,}/g : /[A-Za-z0-9+=\-_]{32,}/g;
+    while ((m = b64Re.exec(scrubbed)) !== null) {
+        if (!looksRandomToken(m[0]) || shannonEntropy(m[0]) < ENTROPY_B64_BAR) continue;
+        if (!legacy && looksLikeAlphabet(m[0])) continue;
+        return m[0];
     }
     return null;
 }
@@ -237,6 +321,32 @@ function severityOfSecret(label) {
 
 function secretPoints(severity) {
     return SECRET_POINTS[severity] || SECRET_POINTS.medium;
+}
+
+// P41-d: labels whose FORMAT alone proves a secret (unforgeable prefix or
+// shape) are high confidence. NAME-based labels ('Secret Assignment', ...)
+// reach high only when the value itself is a strong token shape; bare
+// entropy without strong shape stays medium/low (low = hidden by default,
+// still exported and scored at half weight, never dropped).
+const HIGH_CONFIDENCE_LABELS = new Set([
+    'AWS Access Key', 'Private Key (PEM)', 'GitHub Token', 'Bearer Token',
+    'Stripe Key', 'Google API Key', 'Slack Token', 'PyPI Token', 'NPM Token',
+    'Database URL', 'Generic Secret Key (sk-)', 'JWT Token', 'URL with Credentials',
+]);
+const CONFIDENCE_FACTOR = { high: 1, medium: 1, low: 0.5 };
+function findingConfidence(label, value, line) {
+    if (HIGH_CONFIDENCE_LABELS.has(label)) return 'high';
+    if (label === 'High-Entropy String') {
+        if (entropyHasSecretContext(line)) return 'medium';
+        if (String(value || '').length >= 48) return 'medium';
+        return 'low';
+    }
+    return looksLikeKnownToken(value) ? 'high' : 'medium';
+}
+// P41-d: CRITICAL is reserved for high-confidence secrets NOT ignored by git.
+function severityOfFinding(label, confidence, ignored) {
+    if (!ignored && confidence === 'high') return 'critical';
+    return severityOfSecret(label);
 }
 
 function advisoryPoints(severity) {
@@ -372,8 +482,14 @@ function computeSecurityScore(input) {
 
     const secList = secrets.map((s) => {
         const sev = s.severity || severityOfSecret(s.label);
-        return { points: secretPoints(sev), category: 'Secret',
-            detail: (s.label || 'secret') + ' (' + sev + ')',
+        // P41-e: the score weighs confidence (missing = high = full weight,
+        // so older callers are unaffected). Low-confidence findings count
+        // half, rounded down, but are never dropped from the report.
+        const conf = (s.confidence === 'low' || s.confidence === 'medium' || s.confidence === 'high')
+            ? s.confidence : 'high';
+        return { points: Math.floor(secretPoints(sev) * (CONFIDENCE_FACTOR[conf] || 1)), category: 'Secret',
+            detail: (s.label || 'secret') + ' (' + sev + ', confiance ' + conf + ')',
+            confidence: conf,
             file: s.file || null, line: s.line || null };
     });
     const advList = advisories.map((m) => {
@@ -466,8 +582,10 @@ function buildReportHtml(report) {
 
 module.exports = {
     SCORE_VERSION, BASE_SCORE, CAPS, SECRET_POINTS, SECRET_SEVERITY, ADVISORY_POINTS,
-    EXTRA_SECRET_PATTERNS, PLACEHOLDERS,
-    looksLikeSecretName, shannonEntropy, findHighEntropyToken, isIgnoredByGitignore,
+    EXTRA_SECRET_PATTERNS, PLACEHOLDERS, CONFIDENCE_FACTOR,
+    looksLikeSecretName, looksLikeKnownToken, looksLikeAlphabet, entropyHasSecretContext,
+    findingConfidence, severityOfFinding,
+    shannonEntropy, findHighEntropyToken, isIgnoredByGitignore,
     severityOfSecret, secretPoints, advisoryPoints,
     checkSecurityFiles, hasTests, locateDepLine,
     applyCap, unavailable, computeSecurityScore,

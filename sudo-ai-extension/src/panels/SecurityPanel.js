@@ -39,7 +39,14 @@ const SECRET_PATTERNS = require('../utils/secretPatterns');
 
 const GITIGNORE_SENSITIVE = ['.env', '.env.local', '.env.production', '*.pem', '*.key', '*.p12', 'secrets.json', 'credentials.json'];
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.dart_tool', '.pub-cache',
+    'vendor', 'Pods', '.venv', 'venv', 'target', 'bower_components', '.gradle', 'Pods',
+    '.next', '.nuxt', '.vercel', 'out', 'coverage', '.turbo', '.cache']); // P41-a: generated dirs excluded
+// P41: pre-P41 skip set, kept for --before comparisons (CLI legacy mode).
+const SKIP_DIRS_V1 = new Set(['node_modules', '.git', 'dist', 'build', '__pycache__', '.dart_tool', '.pub-cache',
     'vendor', 'Pods', '.venv', 'venv', 'target', 'bower_components', '.gradle', 'Pods']);
+// P41-a: generated dirs are skipped AND counted (transparency counter).
+const GENERATED_SKIP_DIRS = new Set(['node_modules', 'dist', 'build', 'vendor', '.dart_tool',
+    '.next', '.nuxt', '.vercel', 'out', 'coverage', '.turbo', '.cache']);
 const ENTROPY_SKIP_FILES = new Set(['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'bun.lockb',
     'cargo.lock', 'poetry.lock', 'pipfile.lock', 'composer.lock', 'gemfile.lock', 'go.sum',
     'pubspec.lock', 'packages.lock.json']);
@@ -139,6 +146,7 @@ class SecurityPanel {
             timestamp:   new Date().toISOString(),
             wsRoot,
             secrets:     [],
+            secretsHidden: [],
             secretsSkipped: 0,
             gitignore:   { missing: [], found: [] },
             npmAudit:    null,
@@ -155,7 +163,8 @@ class SecurityPanel {
             audit.secrets = await this._scanSecrets(wsRoot);
             audit.secretsSkipped = this._lastSecretsSkipped || 0;
             audit.secretsMeta = this._lastSecretsMeta || null;
-            audit.issues += audit.secrets.length;
+            audit.secretsHidden = this._lastSecretsHidden || [];
+            audit.issues += audit.secrets.length + audit.secretsHidden.length;
         }
 
         // 2. .gitignore check
@@ -252,7 +261,9 @@ class SecurityPanel {
                 }
             }
             scored = securityScore.computeSecurityScore({
-                secrets: audit.secrets,
+                // P41: masked findings still count (half weight for low
+                // confidence): hidden from view is not dropped from record.
+                secrets: audit.secrets.concat(audit.secretsHidden || []),
                 advisories: matches,
                 files: securityScore.checkSecurityFiles(wsRoot),
                 hasTests: securityScore.hasTests(wsRoot),
@@ -271,14 +282,19 @@ class SecurityPanel {
     }
 
     // ── Secret scanner (walks workspace files) ───────────────────────────────
-    async _scanSecrets(root) {
+    // P41: opts.legacy reproduces the pre-P41 scan (--before comparisons).
+    async _scanSecrets(root, opts) {
+        const legacy = !!(opts && opts.legacy);
         const hits = [];
+        const hidden = []; // P41-d: low-confidence findings (masked, never dropped)
         // P18: every text file is scanned (dotfiles and extensionless files
         // included); only dependency dirs, huge files and binaries are left
         // out, and every skip is counted. meta drives the honest UI.
         const meta = { scanned: 0,
-            skipped: { large: 0, binary: 0, unreadable: 0, dirs: 0, symlink: 0 },
+            skipped: { large: 0, binary: 0, unreadable: 0, dirs: 0, symlink: 0, generatedDirs: 0 },
+            generatedDirs: [], // P41-a: which generated dirs were skipped
             error: null };
+        const skipSet = legacy ? SKIP_DIRS_V1 : SKIP_DIRS;
         const patterns = SECRET_PATTERNS.concat(securityScore.EXTRA_SECRET_PATTERNS);
         let giText = '';
         try { giText = fs.readFileSync(path.join(root, '.gitignore'), 'utf8'); } catch { giText = ''; }
@@ -298,7 +314,10 @@ class SecurityPanel {
                 try { isLink = e.isSymbolicLink(); } catch { /* ignore */ }
                 if (isLink) { meta.skipped.symlink++; continue; }
                 if (e.isDirectory()) {
-                    if (!SKIP_DIRS.has(e.name)) walk(full, depth + 1);
+                    if (!legacy && GENERATED_SKIP_DIRS.has(e.name)) {
+                        meta.skipped.generatedDirs++;
+                        if (meta.generatedDirs.length < 20) meta.generatedDirs.push(path.relative(root, full));
+                    } else if (!skipSet.has(e.name)) walk(full, depth + 1);
                     continue;
                 }
                 if (!e.isFile()) continue;
@@ -313,7 +332,10 @@ class SecurityPanel {
                 const rel = path.relative(root, full);
                 const ignored = securityScore.isIgnoredByGitignore(rel, giText);
                 const lowName = e.name.toLowerCase();
-                const skipEntropy = ENTROPY_SKIP_FILES.has(lowName) || lowName.endsWith('.min.js');
+                // P41-c: sourcemap files carry no entropy signal (mappings +
+                // sourceMappingURL comments are the documented false positive).
+                const skipEntropy = ENTROPY_SKIP_FILES.has(lowName) || lowName.endsWith('.min.js') ||
+                    (!legacy && lowName.endsWith('.map'));
                 const lines = buf.toString('utf8').split('\n');
                 for (let idx = 0; idx < lines.length; idx++) {
                     const line = lines[idx];
@@ -321,13 +343,14 @@ class SecurityPanel {
                     for (const pat of patterns) {
                         const m = line.match(pat.re);
                         if (!m) continue;
-                        if (typeof pat.check === 'function' && !pat.check(m)) continue;
+                        const chk = (legacy && typeof pat.checkV1 === 'function') ? pat.checkV1 : pat.check;
+                        if (typeof chk === 'function' && !chk(m)) continue;
                         hit = { pat, m };
                         break; // P18: first (strongest) pattern wins per line
                     }
                     let token = null;
                     if (!hit && !skipEntropy && line.length <= MAX_ENTROPY_LINE) {
-                        token = securityScore.findHighEntropyToken(line);
+                        token = securityScore.findHighEntropyToken(line, legacy);
                     }
                     if (!hit && !token) continue;
                     const label = hit ? hit.pat.label : 'High-Entropy String';
@@ -342,20 +365,33 @@ class SecurityPanel {
                         : line.trim().slice(0, 100);
                     const at = snippet.indexOf('[REDACTED]');
                     snippet = at > 60 ? ('...' + snippet.slice(at - 40, at + 60)) : snippet.slice(0, 100);
-                    hits.push({
+                    // P41-d: confidence graded per finding; CRITICAL reserved
+                    // for high-confidence unignored secrets; low-confidence is
+                    // masked (hidden array) but never dropped: it stays in
+                    // exports and in the score at half weight.
+                    const confidence = legacy ? 'high'
+                        : securityScore.findingConfidence(label, secretPart, line);
+                    const severity = legacy
+                        ? (ignored ? securityScore.severityOfSecret(label) : 'critical')
+                        : securityScore.severityOfFinding(label, confidence, ignored);
+                    const rec = {
                         label,
-                        severity: ignored ? securityScore.severityOfSecret(label) : 'critical',
+                        severity,
+                        confidence,
                         ignored,
                         file: rel,
                         line: idx + 1,
                         snippet,
-                    });
+                    };
+                    if (!legacy && confidence === 'low') hidden.push(rec);
+                    else hits.push(rec);
                 }
             }
         };
         walk(root, 0);
         const sk = meta.skipped;
         this._lastSecretsSkipped = sk.large + sk.binary + sk.unreadable + sk.dirs + sk.symlink;
+        this._lastSecretsHidden = hidden;
         this._lastSecretsMeta = meta;
         return hits;
     }
@@ -410,7 +446,9 @@ class SecurityPanel {
             });
             if (!saveUri) return;
             // Snippets are already redacted by the scanner; never export raw lines.
-            const payload = { exportedAt: new Date().toISOString(), wsRoot: this.results.wsRoot, skippedLarge: this.results.secretsSkipped || 0, scanMeta: this.results.secretsMeta || null, secrets };
+            // P41: masked (low-confidence) findings are exported too: hidden
+            // from view is not dropped from record.
+            const payload = { exportedAt: new Date().toISOString(), wsRoot: this.results.wsRoot, skippedLarge: this.results.secretsSkipped || 0, scanMeta: this.results.secretsMeta || null, secrets, secretsHidden: this.results.secretsHidden || [] };
             fs.writeFileSync(saveUri.fsPath, JSON.stringify(payload, null, 2), 'utf8');
             const back = JSON.parse(fs.readFileSync(saveUri.fsPath, 'utf8'));
             if (!back || (back.secrets || []).length !== secrets.length) throw new Error('verify-mismatch');
@@ -441,6 +479,7 @@ class SecurityPanel {
                 ? securityScore.buildReportHtml(audit)
                 : JSON.stringify({ exportedAt: new Date().toISOString(), wsRoot: audit.wsRoot,
                     scoreResult: audit.scoreResult, secrets: audit.secrets,
+                    secretsHidden: audit.secretsHidden || [],
                     secretsSkipped: audit.secretsSkipped || 0, secretsMeta: audit.secretsMeta || null,
                     localAudit: audit.localAudit, npmAudit: audit.npmAudit }, null, 2);
             fs.writeFileSync(saveUri.fsPath, payload, 'utf8');
@@ -639,6 +678,7 @@ function exportReportHtml(){ vscode.postMessage({type:'exportReportHtml'}); }
 function openWhyFile(el){ openFile(el.getAttribute("data-f"), parseInt(el.getAttribute("data-l") || "0", 10)); }
 function importDb(){ vscode.postMessage({type:'importAdvisories'}); }
 function measureCoverage(){ vscode.postMessage({type:'measureCoverage'}); }
+function toggleHidden(){ window._showHidden=!window._showHidden; if(window._lastAudit) renderAudit(window._lastAudit); }
 function renderCoverage(c){
   let h='<div class="section"><h2>Coverage</h2>';
   if(!c.measured){ h+='<p class="empty">'+escHtml(c.reason)+'</p>'; }
@@ -658,7 +698,7 @@ window.addEventListener('message', e => {
     document.getElementById('content').innerHTML='<div style="text-align:center;padding:40px"><div class="spinner"></div><p style="margin-top:12px;color:var(--muted)">Running security audit...</p></div>';
     return;
   }
-  if(msg.type==='auditResult') renderAudit(msg.audit);
+  if(msg.type==='auditResult'){window._lastAudit=msg.audit;renderAudit(msg.audit);}
   if(msg.type==='coverageStarted'){document.getElementById('coverageBtn').disabled=true;document.getElementById('coverage').innerHTML='<div class="section"><h2>Coverage</h2><div style="text-align:center;padding:20px"><div class="spinner"></div><p style="margin-top:8px;color:var(--muted)">Measuring coverage (runs project tests)...</p></div></div>';return;}
   if(msg.type==='coverageResult'){document.getElementById('coverageBtn').disabled=false;renderCoverage(msg.coverage);return;}
 });
@@ -714,14 +754,19 @@ function renderAudit(a){
   var ssk = sm.skipped || {};
   var skN = (ssk.large||0)+(ssk.binary||0)+(ssk.unreadable||0)+(ssk.dirs||0)+(ssk.symlink||0);
   html+='<p style="font-size:12px;color:var(--muted)">'+sm.scanned+' file(s) analyzed.</p>';
+  var hidList = a.secretsHidden || [];
+  var genSk = ssk.generatedDirs || 0;
+  if(genSk>0){html+='<p style="font-size:12px;color:var(--muted)">'+genSk+' generated folder(s) skipped: '+escHtml((sm.generatedDirs||[]).slice(0,8).join(', '))+'.</p>';}
+  if(hidList.length>0){html+='<p style="font-size:12px;color:#e3b341">'+hidList.length+' finding(s) hidden (low confidence). <button class="btn btn-sm" onclick="toggleHidden()">'+(window._showHidden?'Hide masked':'Show masked')+'</button></p>';}
   if(sm.error){html+='<p style="font-size:13px;font-weight:700;color:#f85149">Scan FAILED ('+escHtml(sm.error)+') - results incomplete, absence of secrets NOT established.</p>';}
   else if(skN>0){html+='<p style="font-size:12px;color:#e3b341">Partial scan: '+skN+' file(s) skipped (large: '+(ssk.large||0)+', binary: '+(ssk.binary||0)+', unreadable: '+(ssk.unreadable||0)+', dirs: '+(ssk.dirs||0)+', links: '+(ssk.symlink||0)+').</p>';}
   if(a.secrets.length===0 && !sm.error){html+='<p class="empty">No secrets detected in '+sm.scanned+' file(s).</p>';}
   else{
-    a.secrets.forEach(s=>{
+    a.secrets.concat(window._showHidden ? hidList : []).forEach(s=>{
       html+=\`<div class="issue-row">
         <span class="badge \${(s.severity==='critical'||s.severity==='high')?'badge-red':(s.severity==='medium'?'badge-yellow':'badge-green')}">\${escHtml((s.severity||'medium').toUpperCase())}</span>
         <span class="badge \${s.ignored?'badge-green':'badge-red'}">\${s.ignored?'IGNORED':'NOT IGNORED'}</span>
+        <span class="badge badge-blue">CONF:\${escHtml((s.confidence||'high').toUpperCase())}</span>
         <div style="flex:1">
           <div><strong>\${s.label}</strong> — <span class="file-link" onclick="openFile('\${s.file}',\${s.line})">\${s.file}:\${s.line}</span></div>
           <div style="font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px">\${escHtml(s.snippet)}</div>

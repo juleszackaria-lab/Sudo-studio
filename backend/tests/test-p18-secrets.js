@@ -114,7 +114,10 @@ async function auditOn(dir) {
 }
 function renderHtml(audit) {
     const html0 = SecurityPanel.prototype._buildHtml.call({});
-    const clientJs = html0.match(/<script>([\s\S]*?)<\/script>/)[1];
+    // P41: P37 prepends a guard <script> to every panel; the audit renderer is
+    // the script block that defines renderAudit (harness fix, no product change).
+    const blocks = [...html0.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((x) => x[1]);
+    const clientJs = blocks.find((b) => b.indexOf('function renderAudit') !== -1) || blocks[0];
     const store = {};
     const mkEl = () => ({ _h: '',
         set innerHTML(v) { this._h = v; }, get innerHTML() { return this._h; },
@@ -136,24 +139,36 @@ async function main() {
     check('A1: all 4 prompt secrets detected with file+line',
         envHits.length === 4 &&
         envHits.map((h) => h.line).join(',') === '1,2,3,4');
+    // P41: P36's shared 'Database URL' pattern wins over 'URL with Credentials'
+    // on postgres lines (first-match order); locked in here.
     check('A2: one hit per line with the right labels',
         envHits[0].label === 'Secret Assignment' &&
         envHits[1].label === 'Secret Assignment' &&
         envHits[2].label === 'High-Entropy String' &&
-        envHits[3].label === 'URL with Credentials');
-    check('A3: not git-ignored -> max severity on all 9 hits',
+        envHits[3].label === 'Database URL');
+    // P41-d: CRITICAL reserved for high-confidence unignored secrets (5 JWT/sk-/
+    // URL-shaped); name-only and bare-entropy findings keep base severity.
+    const sevCount = {};
+    for (const h of aA.audit.secrets) sevCount[h.severity] = (sevCount[h.severity] || 0) + 1;
+    check('A3: critical only for high-confidence unignored (5/2/2 mix)',
         aA.audit.secrets.length === 9 &&
-        aA.audit.secrets.every((h) => h.severity === 'critical' && h.ignored === false));
+        aA.audit.secrets.every((h) => h.ignored === false) &&
+        sevCount.critical === 5 && sevCount.high === 2 && sevCount.medium === 2 &&
+        aA.audit.secrets.every((h) => (h.severity === 'critical') === (h.confidence === 'high')),
+        JSON.stringify(aA.audit.secrets.map((h) => h.file + ':' + h.line + '=' + h.severity + '/' + h.confidence)));
     check('A4: values never survive in hits/snippets',
         SECRETS.every((v) => JSON.stringify(aA.audit.secrets).indexOf(v) === -1));
     check('A5: 6 files analyzed (dotfiles + extensionless counted)',
         aA.audit.secretsMeta && aA.audit.secretsMeta.scanned === 6 &&
         aA.audit.secretsMeta.error === null);
     const secPen = aA.audit.scoreResult.penalties.filter((x) => x.category === 'Secret');
-    check('A6: heavily penalized score (50, secrets 30 applied, issues 17)',
-        aA.audit.score === 50 && aA.audit.scoreResult.appliedByCat.secrets === 30 &&
-        secPen.length === 9 && secPen.filter((x) => x.applied).length === 2 &&
-        secPen[0].file === '.env' && secPen[0].line === 1 && aA.audit.issues === 17);
+    // P41: 5x15 + 2x8 + 2x4, greedy cap 40 -> 15+15+8=38 applied (3 items);
+    // files 15 (.env present+unignored 10, no .gitignore 5) + tests 5.
+    check('A6: heavily penalized score (42, secrets 38 applied, issues 17)',
+        aA.audit.score === 42 && aA.audit.scoreResult.appliedByCat.secrets === 38 &&
+        secPen.length === 9 && secPen.filter((x) => x.applied).length === 3 &&
+        secPen[0].file === '.env' && secPen[0].line === 1 && aA.audit.issues === 17,
+        'score=' + aA.audit.score + ' applied=' + aA.audit.scoreResult.appliedByCat.secrets);
 
     // -- B: same project with .env git-ignored -> reduced but still flagged ---
     wf(LEAK, '.gitignore', '.env\n');
@@ -166,8 +181,12 @@ async function main() {
         envB[0].severity === 'high' && envB[2].severity === 'medium' &&
         envB[3].severity === 'high');
     const dockB = aB.audit.secrets.filter((h) => h.file === 'Dockerfile')[0];
-    check('B3: unignored files stay critical',
-        dockB && dockB.severity === 'critical' && dockB.ignored === false);
+    const jwtB = aB.audit.secrets.filter((h) => h.file === 'app.js')[0];
+    // P41-d: unignored + high-confidence stays critical; weaker shapes keep
+    // base severity (still found, still scored, never critical).
+    check('B3: critical only when high-confidence; weaker shapes keep base',
+        dockB && dockB.severity === 'high' && dockB.confidence === 'medium' && dockB.ignored === false &&
+        jwtB && jwtB.severity === 'critical' && jwtB.confidence === 'high' && jwtB.ignored === false);
     check('B4: 7 analyzed, score improved (57) but still penalized',
         aB.audit.secretsMeta.scanned === 7 && aB.audit.score === 57 &&
         aB.audit.score > aA.audit.score && aB.audit.issues === 16);
@@ -198,6 +217,9 @@ async function main() {
         eMeta.skipped.large === 1 && eMeta.skipped.binary === 1);
     check('E2: the lockfile hash WOULD hit (skip is what saves it)',
         ss.findHighEntropyToken(LOCKHASH) === LOCKHASH);
+    check('E2b: integrity-prefixed hash is silent anywhere (P41-c)',
+        ss.findHighEntropyToken('sha512-' + LOCKHASH) === null &&
+        ss.findHighEntropyToken('x sha256-abcdef0123456789abcdef0123456789abcdef01 y') === null);
     const eP2 = barePanel().p;
     const eHits2 = await eP2._scanSecrets(path.join(FX, 'nope-missing'));
     check('E3: unreadable root errors instead of fake-clean',
@@ -266,6 +288,37 @@ async function main() {
         ss.findHighEntropyToken('id=' + HEX64) === HEX64 &&
         ss.findHighEntropyToken('just a normal sentence here') === null &&
         ss.findHighEntropyToken('abcdefghijklmnopqrstuvwxyzabcdefghijklmn') === null);
+    // P41 false-positive battery (units): env reads, calls, references and
+    // placeholders stay silent; true secrets still hit. All literals below
+    // avoid the digit pair checked by I4.
+    const saPat = ss.EXTRA_SECRET_PATTERNS.find((p) => p.label === 'Secret Assignment');
+    const saHit = (line) => { const m = line.match(saPat.re); return !!m && saPat.check(m); };
+    check('I5: env/call/ref/placeholder silent, true secrets hit, confidence graded',
+        saHit('const WHATSAPP_TOKEN = getConfig("WHATSAPP_TOKEN")') === false &&
+        saHit('const TOKEN = process.env.TOKEN') === false &&
+        saHit('X_KEY = Deno.env.get("X_KEY")') === false &&
+        saHit('X_KEY = os.environ["X_KEY"]') === false &&
+        saHit('const API_KEY = import.meta.env.VITE_API_KEY') === false &&
+        saHit('X_PWD = System.getenv("X_PWD")') === false &&
+        saHit('X_TOKEN = Environment.GetEnvironmentVariable("X_TOK")') === false &&
+        saHit('X_KEY = config.apiKey') === false &&
+        saHit('X_KEY = your-secret-here') === false &&
+        saHit('X_KEY = ***') === false &&
+        saHit('JWT_SECRET=' + JWT) === true &&
+        saHit('X_SECRET=' + SKV) === true &&
+        saHit('PASSWORD=hunter2099') === true &&
+        ss.findHighEntropyToken('//# sourceMappingURL=app.js.map') === null &&
+        ss.findHighEntropyToken('id="550e8400-e29b-41d4-a716-446655440000"') === null &&
+        ss.findHighEntropyToken('color: #a1b2c3;') === null &&
+        ss.findHighEntropyToken("v_alphabet constant text := 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';") === null &&
+        ss.findHighEntropyToken('BACKUP_HEX=' + HEX64) === HEX64 &&
+        ss.findingConfidence('Secret Assignment', JWT, 'JWT_SECRET=x') === 'high' &&
+        ss.findingConfidence('Secret Assignment', 'topsecret-fake-value-12345678', 'SECRET=x') === 'medium' &&
+        ss.findingConfidence('High-Entropy String', HEX64, 'k=' + HEX64) === 'medium' &&
+        ss.findingConfidence('High-Entropy String', 'Ab3xYz81QwErTyUiOpLmN02cx', 'v=Ab3xYz81QwErTyUiOpLmN02cx') === 'low' &&
+        ss.severityOfFinding('Secret Assignment', 'high', false) === 'critical' &&
+        ss.severityOfFinding('Secret Assignment', 'medium', false) === 'high' &&
+        ss.severityOfFinding('Secret Assignment', 'high', true) === 'high');
     const nineZero = String.fromCharCode(57, 48);
     check('I4: this suite contains no hardcoded ninety',
         fs.readFileSync(__filename, 'utf8').indexOf(nineZero) === -1);

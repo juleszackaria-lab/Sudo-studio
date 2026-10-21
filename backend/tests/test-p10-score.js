@@ -338,7 +338,10 @@ async function main() {
 
     // -- G: client ------------------------------------------------------------------
     const html = SecurityPanel.prototype._buildHtml.call({});
-    const clientJs = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+    // P41: P37 prepends a guard <script> to every panel; the audit renderer is
+    // the script block that defines renderAudit (harness fix, no product change).
+    const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((x) => x[1]);
+    const clientJs = blocks.find((b) => b.indexOf('function renderAudit') !== -1) || blocks[0];
     const clientFile = path.join(FX, 'client-extract.js');
     fs.writeFileSync(clientFile, clientJs);
     const chk = spawnSync(process.execPath, ['--check', clientFile]);

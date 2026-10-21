@@ -36,6 +36,9 @@ rien n'est caché, le total débité est borné).
 
 Plancher effectif : 10 (100 − 40 − 30 − 15 − 5) ; le `max(0, …)` reste en
 garde-fou. Le score est **recalculé à chaque exécution** (ouverture + Refresh).
+P41 : chaque pénalité Secrets est multipliée par le facteur de confiance
+(élevée/moyenne : ×1, faible : ×0,5 arrondi bas) ; un appelant sans champ
+`confidence` compte poids plein (compatibilité ascendante).
 
 ## Règles de détection (déterministes)
 
@@ -48,6 +51,19 @@ garde-fou. Le score est **recalculé à chaque exécution** (ouverture + Refresh
   les fichiers texte (dotfiles et sans extension compris), sauf dossiers de
   dépendances, binaires (octet NUL) et fichiers > 1 Mo — chaque exclusion est
   comptée et affichée. Fichier non ignoré par git → gravité maximale.
+- **Secrets** (P41, anti-faux-positifs) : dossiers générés exclus ET comptés
+  (`.next`, `.nuxt`, `.vercel`, `dist`, `build`, `out`, `coverage`,
+  `.dart_tool`, `.turbo`, `.cache`, `node_modules`, `vendor`) ; une valeur
+  qui lit l'environnement (`process.env`, `Deno.env`, `os.environ`,
+  `import.meta.env`, `System.getenv`, `Environment.Get…`), un appel de
+  fonction ou une référence pointée n'est jamais un secret ; placeholders
+  `your-*` exclus ; entropie : `sourceMappingURL`, empreintes `sha…-`,
+  UUID, couleurs hex et alphabets ordonnés ignorés, base64 sans contexte
+  exigée ≥ 32 caractères, `.map` exclus. Chaque constat porte une confiance
+  (élevée/moyenne/faible) ; CRITICAL réservé aux secrets de confiance
+  élevée non ignorés par git ; confiance faible = masqué par défaut (bouton
+  d'affichage + compteur), TOUJOURS exporté et compté au score à poids
+  moitié (arrondi bas). Mode `--before` du CLI : comportement pré-P41.
 - **Dépendances** : versions verrouillées (`package-lock.json`,
   `requirements.txt` épinglé, `poetry.lock`, `pubspec.lock`) croisées avec la
   base d'avis locale — **jamais** `npm audit` (réseau, non déterministe).
