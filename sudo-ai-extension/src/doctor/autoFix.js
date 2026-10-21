@@ -11,6 +11,12 @@
  * - every step is reported back (progress + final rows) and audited.
  * - dry-run (P36): pass deps.dryRun to plan without executing anything
  *   (no subprocess, no installer, no elevation); rows get status 'dry-run'.
+ * - P40: the elevated step runs WITHOUT a script file (execution policies /
+ *   AV / GPOs kept blocking the temp .ps1 after a granted UAC): the batch
+ *   script is sent via powershell -EncodedCommand (base64 UTF-16LE, no
+ *   quoting fragility), output markers go to a journal file created BEFORE
+ *   elevation in a folder both levels can reach; empty journal triggers
+ *   precise no-start diagnostics (execution policy, winget, Defender).
  *
  * Pure module: no vscode import. All side effects are injected via `deps`
  * so plain-node tests can script every scenario (see test-p7-autofix.js).
@@ -107,15 +113,59 @@ function defaultExec(cmd, opts) {
     });
 }
 
-function defaultHasInternet() {
-    const dns = require('dns');
+// P40-d: REAL connectivity test against the winget source host (any HTTP
+// answer counts as reachable), with a DNS fallback to tell DNS failures
+// apart from HTTP blocks. opts override the target for hermetic tests:
+// { protocol, host, port, path, timeoutMs }. Never throws.
+function probeWingetSource(opts) {
+    opts = opts || {};
+    const protocol = opts.protocol || 'https:';
+    const host = opts.host || 'cdn.winget.microsoft.com';
+    const port = opts.port || (protocol === 'http:' ? 80 : 443);
+    const reqPath = opts.path || '/cache';
+    const timeoutMs = opts.timeoutMs || 5000;
+    const t0 = Date.now();
+    const ms = () => Date.now() - t0;
+    const dnsCheck = () => new Promise((resolve) => {
+        let done = false;
+        const t = setTimeout(() => { if (!done) { done = true; resolve('timeout'); } }, 2000);
+        try {
+            require('dns').resolve(host, () => {
+                if (!done) { done = true; clearTimeout(t); resolve('ok'); }
+            });
+        } catch (_) { clearTimeout(t); resolve('erreur'); }
+    });
     return new Promise((resolve) => {
         let done = false;
-        const t = setTimeout(() => { if (!done) { done = true; resolve(false); } }, 3000);
-        dns.resolve('winget.microsoft.com', () => {
-            if (!done) { done = true; clearTimeout(t); resolve(true); }
-        });
+        const finish = (ok, detail) => {
+            if (done) return;
+            done = true;
+            resolve({ ok, ms: ms(), detail: host + ' : ' + detail + ' (' + ms() + ' ms)' });
+        };
+        let req = null;
+        try {
+            const lib = protocol === 'http:' ? require('http') : require('https');
+            req = lib.get({ hostname: host, port, path: reqPath, timeout: timeoutMs }, (res) => {
+                try { res.resume(); } catch (_) {}
+                try { if (req) req.destroy(); } catch (_) {}
+                finish(true, 'HTTP ' + res.statusCode);
+            });
+            req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (_) {} });
+            req.on('error', async (e) => {
+                const dns = await dnsCheck();
+                finish(false, 'injoignable (' + String((e && e.code) || (e && e.message) || e).slice(0, 60) + ', dns=' + dns + ')');
+            });
+        } catch (e) {
+            finish(false, 'sonde impossible (' + String((e && e.message) || e).slice(0, 60) + ')');
+        }
+        setTimeout(() => finish(false, 'delai depasse (' + timeoutMs + ' ms)'), timeoutMs + 500);
     });
+}
+
+function defaultHasInternet() {
+    return probeWingetSource().then(
+        (p) => p.ok,
+        () => false);
 }
 
 function defaultAudit() { /* wired by the panel */ }
@@ -269,8 +319,98 @@ function parsePsStepOutputs(text) {
     return out;
 }
 
-// P19-c: precise cause for a step with no DONE marker.
-function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind) {
+// P40-a: encode the batch script for `powershell -EncodedCommand`
+// (base64 UTF-16LE). No script FILE is ever written, so execution
+// policies / AV / GPOs cannot block a temp .ps1, and nested quoting
+// cannot corrupt the payload. Pure, easily round-tripped in tests.
+function buildEncodedLaunch(innerScript) {
+    return Buffer.from(String(innerScript || ''), 'utf16le').toString('base64');
+}
+
+function encodedLauncher(elevated, b64) {
+    const inner = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + b64;
+    if (!elevated) return 'powershell ' + inner;
+    return 'powershell -NoProfile -Command ' +
+        psQuote('Start-Process powershell -Verb RunAs -Wait -ArgumentList ' + psQuote(inner));
+}
+
+// P40-a: journal folder reachable from BOTH privilege levels (the elevated
+// child may run as another admin whose %TEMP% differs). First creatable
+// candidate wins; deps.logDir overrides (tests). Never throws.
+function defaultElevatedLogDir() {
+    const cands = [];
+    if (process.env.ProgramData) cands.push(path.join(process.env.ProgramData, 'SudoStudio', 'logs'));
+    if (process.env.PUBLIC) cands.push(path.join(process.env.PUBLIC, 'SudoStudio'));
+    cands.push(os.tmpdir());
+    for (const d of cands) {
+        try {
+            fs.mkdirSync(d, { recursive: true });
+            fs.accessSync(d, fs.constants.W_OK);
+            return d;
+        } catch (_) { /* next candidate */ }
+    }
+    return os.tmpdir();
+}
+
+async function wslPresent(execFn) {
+    try {
+        const r = await execFn('wsl --status', { timeout: 15000 });
+        return r.code === 0
+            ? { present: true, text: 'oui' }
+            : { present: false, text: 'non (code ' + r.code + ')' };
+    } catch (e) {
+        return { present: false, text: 'non (' + String((e && e.message) || e).slice(0, 80) + ')' };
+    }
+}
+
+// P40-b: the elevated child wrote NOTHING (UAC granted, empty journal).
+// Probe, WITHOUT elevation, the three usual suspects and return a precise
+// one-paragraph cause. Every probe is bounded and best-effort.
+async function diagnoseElevatedNoStart(execFn) {
+    const parts = [];
+    try {
+        const p = await execFn(
+            'powershell -NoProfile -Command "Get-ExecutionPolicy -List | ForEach-Object { $_.Scope + \'=\' + $_.ExecutionPolicy }"',
+            { timeout: 15000 });
+        parts.push('politique d\'execution : ' +
+            (p.code === 0 && p.stdout.trim()
+                ? p.stdout.replace(/\r/g, '').split('\n').map((s) => s.trim()).filter(Boolean).join('; ')
+                : 'illisible (code ' + p.code + ')'));
+    } catch (e) {
+        parts.push('politique d\'execution : sonde impossible (' + String((e && e.message) || e).slice(0, 80) + ')');
+    }
+    try {
+        const w = await execFn('winget --version', { timeout: 15000 });
+        parts.push('winget : ' + (w.code === 0
+            ? String(w.stdout || '').trim().split('\n')[0].slice(0, 80)
+            : 'absent (code ' + w.code + ')'));
+    } catch (e) {
+        parts.push('winget : sonde impossible (' + String((e && e.message) || e).slice(0, 80) + ')');
+    }
+    try {
+        const d = await execFn(
+            'powershell -NoProfile -Command "Get-WinEvent -LogName \'Microsoft-Windows-Windows Defender/Operational\' -MaxEvents 3 -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }"',
+            { timeout: 15000 });
+        const ids = String(d.stdout || '').replace(/\r/g, '').split('\n').map((s) => s.trim()).filter(Boolean);
+        parts.push('Defender : ' + (d.code === 0
+            ? (ids.length ? 'evenements recents : ' + ids.join(',') : 'aucun evenement recent')
+            : 'journal illisible (code ' + d.code + ')'));
+    } catch (e) {
+        parts.push('Defender : sonde impossible (' + String((e && e.message) || e).slice(0, 80) + ')');
+    }
+    return parts.join(' | ');
+}
+
+// P40: reverse of buildEncodedLaunch (tests + journal forensics on PC).
+function decodeEncodedLaunch(cmd) {
+    const m = String(cmd || '').match(/-EncodedCommand ([A-Za-z0-9+/=]+)/);
+    if (!m) throw new Error('EncodedCommand introuvable');
+    return Buffer.from(m[1], 'base64').toString('utf16le');
+}
+
+// P19-c: precise cause for a step with no DONE marker. Optional `extra`
+// (P40 no-start diagnostics) is appended to the empty-log branch.
+function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind, extra) {
     const lastLog = logText ? tail(logText, 4) : '';
     if (launch && launch.timedOut) {
         return { short: 'delai depasse',
@@ -283,6 +423,7 @@ function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind) {
                 (launch.stderr ? ' : ' + tail(launch.stderr, 3) : '');
         } else {
             reason += " : le processus fils n'a rien ecrit (UAC validee mais script non demarre - antivirus, GPO ou elevation partielle ?)";
+            if (extra) reason += ' [diagnostic : ' + extra + ']';
         }
         return { short: 'script non execute', reason };
     }
@@ -329,7 +470,13 @@ async function fixAll(issues, deps) {
         if (d && !ordered.includes(d)) ordered.unshift(d);
     }
     const rows = [];
+    let dockerPrereq = ''; // P40-e: computed after PLAN, appended by push
     const push = (row) => {
+        // P40-e: Docker install attempts always carry the prereq announcement
+        // (final table + audit; live progress toasts may predate it).
+        if (row.issue === 'Docker' && dockerPrereq && (row.method === 'winget' || row.method === 'offline')) {
+            row.reason += ' (' + dockerPrereq + ')';
+        }
         rows.push(row);
         audit(row.status === 'fixed' ? 'AUTOFIX_OK' : row.status === 'restart' ? 'AUTOFIX_RESTART'
             : row.status === 'manual' ? 'AUTOFIX_MANUAL' : 'AUTOFIX_FAIL',
@@ -343,9 +490,18 @@ async function fixAll(issues, deps) {
     if (!ordered.length) return { rows, terminalCmd: null };
     audit('AUTOFIX_START', 'Problemes: ' + ordered.join(', '), 'ok');
 
+    // P40-d: online/offline from a REAL winget-source probe (or the injected test).
     let online = false;
-    try { online = (deps.hasInternet || defaultHasInternet)(); online = online && typeof online.then === 'function' ? await online : !!online; }
-    catch (_) { online = false; }
+    let probeDetail = 'test fourni (panneau/test)';
+    try {
+        if (deps.hasInternet) {
+            online = !!(await deps.hasInternet());
+        } else {
+            const p = await probeWingetSource();
+            online = p.ok;
+            probeDetail = p.detail;
+        }
+    } catch (_) { online = false; probeDetail = 'sonde en erreur'; }
 
     // Plan each issue: method + command (or immediate manual/failed row).
     const plan = [];
@@ -362,6 +518,19 @@ async function fixAll(issues, deps) {
     } else if (isWin) {
         wingetText = 'non teste (hors ligne)';
     }
+    // P40-b: journal the execution policy on every real Windows run (prime
+    // suspect when an elevated step never starts). Gated by !dry (P36).
+    let policyText = 'non testee';
+    if (isWin && !dry) {
+        try {
+            const p = await execFn(
+                'powershell -NoProfile -Command "Get-ExecutionPolicy -List | ForEach-Object { $_.Scope + \'=\' + $_.ExecutionPolicy }"',
+                { timeout: 15000 });
+            policyText = (p.code === 0 && p.stdout.trim())
+                ? p.stdout.replace(/\r/g, '').split('\n').map((s) => s.trim()).filter(Boolean).join('; ').slice(0, 300)
+                : 'illisible (code ' + p.code + ')';
+        } catch (e) { policyText = 'sonde impossible (' + String((e && e.message) || e).slice(0, 80) + ')'; }
+    }
     let offlineList = 'dossier absent';
     try {
         if (fs.existsSync(offlineDir)) {
@@ -370,9 +539,10 @@ async function fixAll(issues, deps) {
         }
     } catch (e) { offlineList = 'illisible (' + (e && e.message ? e.message : '?') + ')'; }
     audit('AUTOFIX_PRECHECK', 'winget=[' + wingetText + '] reseau=' + (online ? 'oui' : 'non') +
+        ' (' + probeDetail + ') politique=[' + policyText + ']' +
         ' installateurs=[' + offlineDir + '] ' + offlineList,
         (wingetPresent || !isWin || !online) ? 'ok' : 'missing');
-    tlog('info', 'precheck', { winget: wingetText, online, offlineDir, offlineList, wingetPresent });
+    tlog('info', 'precheck', { winget: wingetText, online, probeDetail, policy: policyText, offlineDir, offlineList, wingetPresent });
     for (const issue of ordered) {
         const f = resolveFix(issue);
         const checkCmd = isWin ? f.check.win : f.check.posix;
@@ -406,7 +576,7 @@ async function fixAll(issues, deps) {
         if (!fs.existsSync(file)) {
             if (online && !wingetPresent) {
                 plan.push({ issue, kind: 'manual-missing', fix: f,
-                    reason: "winget absent : importez l'installateur " + issue + ' ' + f.offline.file + ' (dossier : ' + offlineDir + ')' });
+                    reason: "winget absent : importez '" + f.offline.file + "' (installateur " + issue + ") dans : " + offlineDir });
             } else {
                 plan.push({ issue, kind: 'manual-missing', fix: f,
                     reason: 'hors ligne et installateur hors ligne manquant : ' + f.offline.file + ' attendu dans ' + offlineDir });
@@ -443,6 +613,19 @@ async function fixAll(issues, deps) {
 
     audit('AUTOFIX_PLAN', 'mode=' + (online ? 'online' : 'offline') + ' etapes=' +
         plan.filter((p) => p.cmd).map((p) => p.issue + ':' + p.kind).join(', '), 'ok');
+
+    // P40-e: Docker prerequisites announced up front (virtualization, WSL2,
+    // likely reboot). Gated by !dry like every other probe.
+    if (isWin && !dry && plan.some((p) => p.issue === 'Docker' && p.cmd)) {
+        const virt = await virtualizationEnabled(execFn);
+        const wsl = await wslPresent(execFn);
+        const virtTxt = virt === null ? 'inconnue' : (virt ? 'oui' : 'non');
+        dockerPrereq = 'prerequis Docker : virtualisation=' + virtTxt + ', WSL2=' + wsl.text +
+            ' ; un redemarrage est probablement requis pour finaliser';
+        audit('AUTOFIX_PREREQ', 'Docker : virtualisation=' + virtTxt + ' wsl2=' + wsl.text +
+            ' redemarrage probablement requis', virt === false ? 'missing' : 'ok');
+        tlog(virt === false ? 'warn' : 'info', 'prereq', { issue: 'Docker', virtualization: virtTxt, wsl2: wsl.text });
+    }
 
     // Immediate rows (no execution needed).
     const immediate = (p) => {
@@ -502,28 +685,22 @@ async function fixAll(issues, deps) {
                 elevated = true;
             }
             const tag = 'autofix-' + process.pid + '-' + Date.now();
-            const scriptFile = path.join(os.tmpdir(), tag + '.ps1');
-            const logFile = path.join(os.tmpdir(), tag + '.log');
+            // P40-a: NO script file (policies/AV/GPO kept blocking the temp
+            // .ps1 after a granted UAC). The batch goes through
+            // -EncodedCommand; the journal is created BEFORE elevation in a
+            // folder both levels can reach (deps.logDir overrides in tests).
+            const logDir = deps.logDir || defaultElevatedLogDir();
+            try { fs.mkdirSync(logDir, { recursive: true }); } catch (_) {}
+            const logFile = path.join(logDir, tag + '.log');
             try { fs.writeFileSync(logFile, '', 'utf8'); } catch (_) {}
+            audit('AUTOFIX_LOGDIR', logFile, 'ok');
             const steps = runnable.map((p, i) => ({ id: 'S' + i, cmd: p.cmd }));
             const byId = {};
             runnable.forEach((p, i) => { byId['S' + i] = p; });
-            try { fs.writeFileSync(scriptFile, buildPsScript(steps, logFile), 'utf8'); }
-            catch (e) {
-                for (const p of runnable) push({ issue: p.issue, status: 'failed', method: p.kind, reason: "script temporaire impossible : " + e.message });
-                return finish();
-            }
+            const b64 = buildEncodedLaunch(buildPsScript(steps, logFile));
             let launch;
             const tLaunch0 = Date.now();
-            if (elevated) {
-                launch = await execFn('powershell -NoProfile -Command ' +
-                    psQuote('Start-Process powershell -Verb RunAs -Wait -ArgumentList ' +
-                        psQuote('-NoProfile -ExecutionPolicy Bypass -File ' + psQuote(scriptFile))),
-                    { timeout: installTimeout });
-            } else {
-                launch = await execFn('powershell -NoProfile -ExecutionPolicy Bypass -File ' + psQuote(scriptFile),
-                    { timeout: installTimeout });
-            }
+            launch = await execFn(encodedLauncher(elevated, b64), { timeout: installTimeout });
             const launchMs = Date.now() - tLaunch0;
             launch = launch || {};
             let logText = '';
@@ -531,8 +708,16 @@ async function fixAll(issues, deps) {
             try { logText = fs.readFileSync(logFile, 'utf8'); } catch (_) { logText = ''; logRead = false; }
             const parsed = parsePsLog(logText);
             const stepOuts = parsePsStepOutputs(logText);
-            try { fs.unlinkSync(scriptFile); } catch (_) {}
             try { fs.unlinkSync(logFile); } catch (_) {}
+            // P40-b: granted UAC but the child wrote NOTHING: run the precise
+            // no-start diagnostics once (policy, winget, Defender).
+            let noStartDiag = '';
+            if (elevated && launch.code === 0 && !/START/.test(String(logText || ''))) {
+                try { noStartDiag = await diagnoseElevatedNoStart(execFn); }
+                catch (e) { noStartDiag = 'diagnostic impossible (' + String((e && e.message) || e).slice(0, 80) + ')'; }
+                audit('AUTOFIX_NOSTART', noStartDiag, 'fail');
+                tlog('warn', 'no-start', { batchMs: launchMs, diag: noStartDiag });
+            }
             if (elevated && launch.code !== 0 && Object.keys(parsed).length === 0) {
                 // UAC prompt itself refused/cancelled: nothing ran.
                 audit('AUTOFIX_ELEVATION', 'UAC refusee (code ' + launch.code + ')' +
@@ -551,7 +736,7 @@ async function fixAll(issues, deps) {
                 // P19-a: journal EVERY step (exact cmd, code, last-30 output, duration, elevation).
                 const entry = has
                     ? { code: parsed[id], out: full ? tail(full, 5) : (launch.stderr ? tail(launch.stderr, 3) : '') }
-                    : { code: null, out: '', cause: diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, p.kind) };
+                    : { code: null, out: '', cause: diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, p.kind, noStartDiag || null) };
                 results[p.issue] = entry;
                 audit('AUTOFIX_STEP', p.issue + ' [' + p.kind + '] elevation=' + (elevated ? 'accordee' : 'non requise') +
                     ' code=' + (has ? parsed[id] : 'aucun (' + entry.cause.short + ')') +
@@ -689,4 +874,6 @@ async function fixOne(issue, deps) {
 }
 
 module.exports = { fixAll, fixOne, isKnownTool, orderIssues, resolveFix, buildPsScript, parsePsLog,
-    parsePsStepOutputs, diagnoseMissingStep, defaultOfflineDir, FIXES };
+    parsePsStepOutputs, diagnoseMissingStep, defaultOfflineDir, FIXES,
+    buildEncodedLaunch, decodeEncodedLaunch, encodedLauncher, defaultElevatedLogDir, probeWingetSource,
+    defaultHasInternet, diagnoseElevatedNoStart, wslPresent };

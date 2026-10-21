@@ -55,7 +55,7 @@ const { writeZip, readZip } = require('../../sudo-ai-extension/src/utils/minizip
 const { buildDiagnosticBundle, exportDiagnosticsZip } = require('../../sudo-ai-extension/src/utils/diagExport');
 const { LogsPanel, listLogFiles, getTail } = require('../../sudo-ai-extension/src/panels/LogsPanel');
 const { RuntimeSupervisor } = require('../supervisor/runtimeSupervisor');
-const { fixAll } = require('../../sudo-ai-extension/src/doctor/autoFix');
+const { fixAll, decodeEncodedLaunch } = require('../../sudo-ai-extension/src/doctor/autoFix');
 const { DoctorPanel } = require('../../sudo-ai-extension/src/panels/DoctorPanel');
 
 let pass = 0;
@@ -85,11 +85,9 @@ function mockExec(scenarios) {
 }
 function psRun(codes, outputs) {
   return async (cmd) => {
-    const flat = cmd.replace(/''/g, "'");
-    const m = flat.match(/'([^']+\.ps1)'/);
-    const ps1 = fs.readFileSync(m[1], 'utf8');
-    const ids = [...ps1.matchAll(/STEP ([A-Za-z0-9_]+)/g)].map((x) => x[1]);
-    const lm = ps1.match(/\$log = '((?:''|[^'])+)'/);
+    const script = decodeEncodedLaunch(cmd);
+    const ids = [...script.matchAll(/STEP ([A-Za-z0-9_]+)/g)].map((x) => x[1]);
+    const lm = script.match(/\$log = '((?:''|[^'])+)'/);
     const log = lm[1].replace(/''/g, "'");
     const lines = ['START'];
     for (const id of ids) {
@@ -352,7 +350,7 @@ async function main() {
     { match: 'python --version', stdout: 'Python 3.11.0' },
   ];
   const rh = await fixAll(['Python'], { platform: 'win32',
-    execFn: mockExec([{ match: 'net session', code: 0 }, { match: '-File ', action: psRun({}, { S0: 'ok line' }) }, ...WIN_BASE]),
+    execFn: mockExec([{ match: 'net session', code: 0 }, { match: 'EncodedCommand', action: psRun({}, { S0: 'ok line' }) }, ...WIN_BASE]),
     hasInternet: async () => true, techLog: colH.tech, installTimeoutMs: 5000 });
   const stepH = colH.got.find((g) => g.msg === 'step');
   check('H1: autofix step journaled (cmd, code, tail, ms)',
@@ -363,7 +361,7 @@ async function main() {
   const colH2 = techCollector();
   const rh2 = await fixAll(['Python'], { platform: 'win32',
     execFn: mockExec([{ match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({ S0: 1 }, { S0: 'ERROR 0x80070005 denied' }) }, ...WIN_BASE]),
+      { match: 'EncodedCommand', action: psRun({ S0: 1 }, { S0: 'ERROR 0x80070005 denied' }) }, ...WIN_BASE]),
     hasInternet: async () => true, techLog: colH2.tech, installTimeoutMs: 5000 });
   const failStep = colH2.got.find((g) => g.msg === 'step');
   check('H2: failing step journaled with cause + stderr',
@@ -376,7 +374,7 @@ async function main() {
   check('H3: panel engine deps carry the autofix tech journal',
     depsH3 && depsH3.techLog && typeof depsH3.techLog.info === 'function' && depsH3.techLog !== xTech.NOOP);
   const rh3 = await fixAll(['Python'], { ...depsH3, platform: 'win32',
-    execFn: mockExec([{ match: 'net session', code: 0 }, { match: '-File ', action: psRun({}) }, ...WIN_BASE]),
+    execFn: mockExec([{ match: 'net session', code: 0 }, { match: 'EncodedCommand', action: psRun({}) }, ...WIN_BASE]),
     hasInternet: async () => true, installTimeoutMs: 5000 });
   const autoLog = fs.readFileSync(path.join(process.env.SUDO_STUDIO_LOGS, 'autofix.log'), 'utf8');
   check('H3b: panel-driven fix writes autofix.log entries',

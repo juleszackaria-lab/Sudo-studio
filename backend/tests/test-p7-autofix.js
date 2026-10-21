@@ -67,7 +67,7 @@ Module._load = function (req, parent, isMain) {
   return origLoad.call(this, req, parent, isMain);
 };
 
-const { fixAll, fixOne, isKnownTool, orderIssues, buildPsScript, parsePsLog } =
+const { fixAll, fixOne, isKnownTool, orderIssues, buildPsScript, parsePsLog, decodeEncodedLaunch: decodeLaunch } =
   require('../../sudo-ai-extension/src/doctor/autoFix');
 const { DoctorPanel } = require('../../sudo-ai-extension/src/panels/DoctorPanel');
 
@@ -97,15 +97,13 @@ function mockExec(scenarios, calls) {
     return { code: 1, stdout: '', stderr: 'UNSCRIPTED: ' + cmd.slice(0, 120) };
   };
 }
-// Simulate the PowerShell batch run: parse STEP ids from the .ps1, write DONE lines.
+// Simulate the PowerShell batch run: decode the -EncodedCommand payload (P40:
+// no .ps1 file anymore), parse STEP ids from it, write DONE lines to $log.
 function psRun(codes) {
   return async (cmd) => {
-    const flat = cmd.replace(/''/g, "'");
-    const m = flat.match(/'([^']+\.ps1)'/);
-    if (!m) throw new Error('ps1 path not found in: ' + cmd.slice(0, 200));
-    const ps1 = fs.readFileSync(m[1], 'utf8');
-    const ids = [...ps1.matchAll(/STEP ([A-Za-z0-9_]+)/g)].map((x) => x[1]);
-    const lm = ps1.match(/\$log = '((?:''|[^'])+)'/);
+    const script = decodeLaunch(cmd);
+    const ids = [...script.matchAll(/STEP ([A-Za-z0-9_]+)/g)].map((x) => x[1]);
+    const lm = script.match(/\$log = '((?:''|[^'])+)'/);
     const log = lm[1].replace(/''/g, "'");
     const lines = ['START', ...ids.map((id) => 'DONE ' + id + ' code=' + (codes[id] !== undefined ? codes[id] : 0)), 'END'];
     fs.writeFileSync(log, lines.join('\n'), 'utf8');
@@ -159,7 +157,7 @@ async function main() {
   const depsA = engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({}) },
+      { match: 'EncodedCommand', action: psRun({}) },
       ...WIN_BASE, ...winVerify(),
     ], calls),
     askElevation: async () => { throw new Error('should not ask when admin'); },
@@ -168,8 +166,8 @@ async function main() {
   });
   const ra = await fixAll(['Python', 'Docker'], depsA);
   check('A1: online batch fixes all', ra.rows.length === 2 && ra.rows.every((r) => r.status === 'fixed' && r.method === 'winget'), ra.rows);
-  check('A2: one script, one launch', calls.filter((c) => c.includes('-File ')).length === 1
-    && calls.filter((c) => c.includes('RunAs')).length === 0);
+  check('A2: one encoded launch, no script file', calls.filter((c) => c.includes('-EncodedCommand ')).length === 1
+    && !calls.some((c) => c.includes('-File ')) && calls.filter((c) => c.includes('RunAs')).length === 0);
   check('A3: verify outputs in reasons', ra.rows.every((r) => /verifie : /.test(r.reason)));
   check('A4: progress sequential', progress.includes('verify:Python') && progress.indexOf('done:Python') < progress.indexOf('verify:Docker'), progress);
   check('A5: audit trail', ['AUTOFIX_START', 'AUTOFIX_PLAN', 'AUTOFIX_OK', 'AUTOFIX_DONE'].every((a) => audits.some(([x]) => x === a))
@@ -177,20 +175,21 @@ async function main() {
 
   // Single UAC when not admin.
   calls = [];
-  let ps1Content = '';
+  let batchDecoded = '';
   let elevCount = 0;
   const depsB = engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 1 },
-      { match: '-File ', action: async (cmd) => { const m = cmd.replace(/''/g, "'").match(/'([^']+\.ps1)'/); ps1Content = fs.readFileSync(m[1], 'utf8'); await psRun({})(cmd); } },
+      { match: 'EncodedCommand', action: async (cmd) => { batchDecoded = decodeLaunch(cmd); await psRun({})(cmd); } },
       ...WIN_BASE, ...winVerify(),
     ], calls),
     askElevation: async (t) => { elevCount++; depsB._elevText = t; return true; },
   });
   const rb = await fixAll(['Python', 'Git'], depsB);
   check('A6: single explained elevation', elevCount === 1 && /seule elevation/.test(depsB._elevText) && /Python/.test(depsB._elevText));
-  check('A7: single elevated script for all', calls.filter((c) => c.includes('RunAs')).length === 1
-    && ps1Content.includes('Python.Python.3.11') && ps1Content.includes('Git.Git'));
+  check('A7: single elevated launch for all', calls.filter((c) => c.includes('RunAs')).length === 1
+    && calls.filter((c) => c.includes('-EncodedCommand ')).length === 1
+    && batchDecoded.includes('Python.Python.3.11') && batchDecoded.includes('Git.Git'));
   check('A8: fixed after elevation', rb.rows.every((r) => r.status === 'fixed'));
 
   // Refused elevation.
@@ -208,7 +207,7 @@ async function main() {
   const depsD = engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 1 },
-      { match: '-File ', code: 1, stdout: '', stderr: 'cancelled' },
+      { match: 'EncodedCommand', code: 1, stdout: '', stderr: 'cancelled' },
       ...WIN_BASE,
     ], []),
     askElevation: async () => true,
@@ -223,16 +222,16 @@ async function main() {
   const depsE = engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({}) },
+      { match: 'EncodedCommand', action: psRun({}) },
       ...WIN_BASE, ...winVerify(),
     ], calls),
     hasInternet: async () => false,
   });
   const re = await fixAll(['Python', 'Node.js'], depsE);
   check('B1: offline installs from folder', re.rows.every((r) => r.status === 'fixed' && r.method === 'offline'), re.rows);
-  const psCmd = calls.find((c) => c.includes('-File '));
-  const psf = psCmd.replace(/''/g, "'").match(/'([^']+\.ps1)'/);
-  check('B2: script cleaned after run', !fs.existsSync(psf[1]));
+  const psCmd = calls.find((c) => c.includes('-EncodedCommand '));
+  const psf = decodeLaunch(psCmd).match(/\$log = '((?:''|[^'])+)'/);
+  check('B2: journal cleaned after run', !fs.existsSync(psf[1].replace(/''/g, "'")));
   const rf = await fixAll(['Git'], engineDeps({ execFn: mockExec([{ match: 'net session', code: 0 }]), hasInternet: async () => false }));
   check('B3: missing installer -> manual with expected name',
     rf.rows[0].status === 'manual' && rf.rows[0].reason.includes('git-setup.exe') && rf.rows[0].reason.includes(OFFLINE), rf.rows[0].reason);
@@ -254,7 +253,7 @@ async function main() {
     execFn: mockExec([
       { match: 'winget --version', code: 1 },
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({}) },
+      { match: 'EncodedCommand', action: psRun({}) },
       ...WIN_BASE, ...winVerify(),
     ], calls),
     hasInternet: async () => true,
@@ -265,7 +264,7 @@ async function main() {
   const rj = await fixAll(['Python'], engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({}) },
+      { match: 'EncodedCommand', action: psRun({}) },
       ...WIN_BASE,
       { match: 'python --version', code: 1, stdout: '', stderr: 'not found' },
     ]),
@@ -274,7 +273,7 @@ async function main() {
   const rk = await fixAll(['Git'], engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({ S0: 3010 }) },
+      { match: 'EncodedCommand', action: psRun({ S0: 3010 }) },
       ...WIN_BASE, ...winVerify(),
     ]),
   }));
@@ -283,7 +282,7 @@ async function main() {
     execFn: mockExec([
       { match: 'winget --version', stdout: 'v1.0.0' },
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({}) },
+      { match: 'EncodedCommand', action: psRun({}) },
       { match: 'GetEnvironmentVariable', stdout: 'x' },
       { match: 'HyperVRequirement', stdout: 'False' },
       { match: 'docker --version', code: 1, stdout: '', stderr: 'no docker' },
@@ -294,7 +293,7 @@ async function main() {
   const rm = await fixOne('pip', engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({}) },
+      { match: 'EncodedCommand', action: psRun({}) },
       ...WIN_BASE, ...winVerify(),
       { match: 'ensurepip', code: 0, stdout: 'ok' },
     ]),
@@ -304,7 +303,7 @@ async function main() {
   const rn = await fixOne('npm', engineDeps({
     execFn: mockExec([
       { match: 'net session', code: 0 },
-      { match: '-File ', action: psRun({}) },
+      { match: 'EncodedCommand', action: psRun({}) },
       ...WIN_BASE, ...winVerify(),
     ]),
   }));
@@ -348,7 +347,7 @@ async function main() {
     dp._engineDeps = (p) => ({ ...realDeps(p),
       execFn: mockExec([
         { match: 'net session', code: 0 },
-        { match: '-File ', action: psRun({}) },
+        { match: 'EncodedCommand', action: psRun({}) },
         ...WIN_BASE, ...winVerify(),
       ]),
       hasInternet: async () => true,
