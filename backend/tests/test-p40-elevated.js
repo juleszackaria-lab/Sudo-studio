@@ -69,6 +69,7 @@ function engineDeps(o) {
     installTimeoutMs: 5000,
     logDir: o.logDir || LOGDIR,
     dryRun: !!o.dryRun,
+    journalSettleMs: o.journalSettleMs !== undefined ? o.journalSettleMs : 50, // P44: fast tests, PC uses 5000
   };
 }
 const WIN_BASE = [
@@ -91,7 +92,7 @@ async function main() {
   const elev = encodedLauncher(true, b64);
   check('A4: elevated launcher = one RunAs process, no -File',
     /^powershell -NoProfile -Command /.test(elev) && /RunAs/.test(elev) &&
-    /-EncodedCommand /.test(elev) && !/-File /.test(elev) && !/\.ps1/.test(elev), elev.slice(0, 300));
+    /-EncodedCommand/.test(elev) && !/-File /.test(elev) && !/\.ps1/.test(elev), elev.slice(0, 300)); // P44: array form
   check('A5: elevated payload decodes back to the batch', decodeEncodedLaunch(elev) === sample);
 
   // ------------------------------------------------- B. journal pre-created, no script file (P40-a)

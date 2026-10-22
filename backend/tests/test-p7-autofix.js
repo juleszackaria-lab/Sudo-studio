@@ -188,7 +188,7 @@ async function main() {
   const rb = await fixAll(['Python', 'Git'], depsB);
   check('A6: single explained elevation', elevCount === 1 && /seule elevation/.test(depsB._elevText) && /Python/.test(depsB._elevText));
   check('A7: single elevated launch for all', calls.filter((c) => c.includes('RunAs')).length === 1
-    && calls.filter((c) => c.includes('-EncodedCommand ')).length === 1
+    && calls.filter((c) => c.includes('-EncodedCommand')).length === 1 // P44: array form, no trailing space
     && batchDecoded.includes('Python.Python.3.11') && batchDecoded.includes('Git.Git'));
   check('A8: fixed after elevation', rb.rows.every((r) => r.status === 'fixed'));
 

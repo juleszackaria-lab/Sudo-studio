@@ -17,6 +17,13 @@
  *   quoting fragility), output markers go to a journal file created BEFORE
  *   elevation in a folder both levels can reach; empty journal triggers
  *   precise no-start diagnostics (execution policy, winget, Defender).
+ * - P44: the RunAs -ArgumentList is an ARRAY of 5 separate arguments (the
+ *   P40 single-string form reached the child as one argv entry, which
+ *   powershell.exe rejects: granted UAC, instant child exit, empty
+ *   journal). The journal gets up to 5 s to show START before any
+ *   no-start diagnosis, and the diagnosis names the never-started
+ *   command; winget-9009 points at the offline folder with the exact
+ *   filename; the Docker prereq states "redemarrage requis".
  *
  * Pure module: no vscode import. All side effects are injected via `deps`
  * so plain-node tests can script every scenario (see test-p7-autofix.js).
@@ -330,8 +337,16 @@ function buildEncodedLaunch(innerScript) {
 function encodedLauncher(elevated, b64) {
     const inner = '-NoProfile -ExecutionPolicy Bypass -EncodedCommand ' + b64;
     if (!elevated) return 'powershell ' + inner;
+    // P44-1: -ArgumentList as an ARRAY of 5 separate arguments. The P40
+    // single-string form ('-NoProfile -ExecutionPolicy Bypass ...' in ONE
+    // quoted element) reached the elevated child as a single argv entry,
+    // which powershell.exe rejects: UAC granted, child exiting at once,
+    // journal left empty ("script non execute", PC audit ~905 ms). With
+    // the array form the child really starts with Bypass + payload.
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', String(b64)]
+        .map((a) => psQuote(a)).join(',');
     return 'powershell -NoProfile -Command ' +
-        psQuote('Start-Process powershell -Verb RunAs -Wait -ArgumentList ' + psQuote(inner));
+        psQuote('Start-Process powershell -Verb RunAs -Wait -ArgumentList ' + args);
 }
 
 // P40-a: journal folder reachable from BOTH privilege levels (the elevated
@@ -361,6 +376,26 @@ async function wslPresent(execFn) {
     } catch (e) {
         return { present: false, text: 'non (' + String((e && e.message) || e).slice(0, 80) + ')' };
     }
+}
+
+// P44-2: read the journal, waiting up to settleMs for the START marker
+// (the elevated child can lag behind -Wait; an instant read would cry
+// "script non execute" on a merely slow flush). settleMs <= 0 (tests) =
+// single immediate read. Returns { text, logRead }. Never throws.
+async function readJournalSettled(logFile, settleMs) {
+    const once = () => {
+        try { return { text: fs.readFileSync(logFile, 'utf8'), logRead: true }; }
+        catch (_) { return { text: '', logRead: false }; }
+    };
+    let r = once();
+    if (!(settleMs > 0) || /START/.test(r.text)) return r;
+    const t0 = Date.now();
+    while (Date.now() - t0 < settleMs) {
+        await new Promise((res) => setTimeout(res, 250));
+        r = once();
+        if (/START/.test(r.text)) return r;
+    }
+    return r;
 }
 
 // P40-b: the elevated child wrote NOTHING (UAC granted, empty journal).
@@ -402,15 +437,18 @@ async function diagnoseElevatedNoStart(execFn) {
 }
 
 // P40: reverse of buildEncodedLaunch (tests + journal forensics on PC).
+// P44-1: tolerates the elevated array form ('-EncodedCommand','<b64>')
+// as well as the plain space form ('-EncodedCommand <b64>').
 function decodeEncodedLaunch(cmd) {
-    const m = String(cmd || '').match(/-EncodedCommand ([A-Za-z0-9+/=]+)/);
+    const m = String(cmd || '').match(/-EncodedCommand['\s,]+'?([A-Za-z0-9+/=]+)'?/);
     if (!m) throw new Error('EncodedCommand introuvable');
     return Buffer.from(m[1], 'base64').toString('utf16le');
 }
 
 // P19-c: precise cause for a step with no DONE marker. Optional `extra`
-// (P40 no-start diagnostics) is appended to the empty-log branch.
-function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind, extra) {
+// (P40 no-start diagnostics) is appended to the empty-log branch, plus the
+// never-started command itself (P44-2: say WHAT did not start).
+function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind, extra, cmd) {
     const lastLog = logText ? tail(logText, 4) : '';
     if (launch && launch.timedOut) {
         return { short: 'delai depasse',
@@ -423,6 +461,7 @@ function diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, kind, e
                 (launch.stderr ? ' : ' + tail(launch.stderr, 3) : '');
         } else {
             reason += " : le processus fils n'a rien ecrit (UAC validee mais script non demarre - antivirus, GPO ou elevation partielle ?)";
+            if (cmd) reason += ' ; commande jamais demarree : ' + String(cmd).slice(0, 200);
             if (extra) reason += ' [diagnostic : ' + extra + ']';
         }
         return { short: 'script non execute', reason };
@@ -621,9 +660,9 @@ async function fixAll(issues, deps) {
         const wsl = await wslPresent(execFn);
         const virtTxt = virt === null ? 'inconnue' : (virt ? 'oui' : 'non');
         dockerPrereq = 'prerequis Docker : virtualisation=' + virtTxt + ', WSL2=' + wsl.text +
-            ' ; un redemarrage est probablement requis pour finaliser';
+            ' ; redemarrage requis (probable) pour finaliser';
         audit('AUTOFIX_PREREQ', 'Docker : virtualisation=' + virtTxt + ' wsl2=' + wsl.text +
-            ' redemarrage probablement requis', virt === false ? 'missing' : 'ok');
+            ' redemarrage requis (probable)', virt === false ? 'missing' : 'ok');
         tlog(virt === false ? 'warn' : 'info', 'prereq', { issue: 'Docker', virtualization: virtTxt, wsl2: wsl.text });
     }
 
@@ -701,11 +740,18 @@ async function fixAll(issues, deps) {
             let launch;
             const tLaunch0 = Date.now();
             launch = await execFn(encodedLauncher(elevated, b64), { timeout: installTimeout });
-            const launchMs = Date.now() - tLaunch0;
             launch = launch || {};
-            let logText = '';
-            let logRead = true;
-            try { logText = fs.readFileSync(logFile, 'utf8'); } catch (_) { logText = ''; logRead = false; }
+            // P44-2: empty journal right after a code-0 launch proves
+            // nothing yet: settle up to journalSettleMs (default 5 s) for
+            // START. Skipped when the launch itself failed (code != 0:
+            // nothing can appear later). batchMs honestly covers the wait.
+            const settleMs = launch.code === 0
+                ? (deps.journalSettleMs !== undefined ? deps.journalSettleMs : 5000)
+                : 0;
+            const settled = await readJournalSettled(logFile, settleMs);
+            const launchMs = Date.now() - tLaunch0;
+            const logText = settled.text;
+            const logRead = settled.logRead;
             const parsed = parsePsLog(logText);
             const stepOuts = parsePsStepOutputs(logText);
             try { fs.unlinkSync(logFile); } catch (_) {}
@@ -715,7 +761,8 @@ async function fixAll(issues, deps) {
             if (elevated && launch.code === 0 && !/START/.test(String(logText || ''))) {
                 try { noStartDiag = await diagnoseElevatedNoStart(execFn); }
                 catch (e) { noStartDiag = 'diagnostic impossible (' + String((e && e.message) || e).slice(0, 80) + ')'; }
-                audit('AUTOFIX_NOSTART', noStartDiag, 'fail');
+                audit('AUTOFIX_NOSTART', 'etapes non demarrees : ' +
+                    runnable.map((p) => p.issue + ':' + p.kind).join(', ') + ' | ' + noStartDiag, 'fail');
                 tlog('warn', 'no-start', { batchMs: launchMs, diag: noStartDiag });
             }
             if (elevated && launch.code !== 0 && Object.keys(parsed).length === 0) {
@@ -736,7 +783,7 @@ async function fixAll(issues, deps) {
                 // P19-a: journal EVERY step (exact cmd, code, last-30 output, duration, elevation).
                 const entry = has
                     ? { code: parsed[id], out: full ? tail(full, 5) : (launch.stderr ? tail(launch.stderr, 3) : '') }
-                    : { code: null, out: '', cause: diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, p.kind, noStartDiag || null) };
+                    : { code: null, out: '', cause: diagnoseMissingStep(launchMs, launch, logText, logRead, parsed, p.kind, noStartDiag || null, p.cmd) };
                 results[p.issue] = entry;
                 audit('AUTOFIX_STEP', p.issue + ' [' + p.kind + '] elevation=' + (elevated ? 'accordee' : 'non requise') +
                     ' code=' + (has ? parsed[id] : 'aucun (' + entry.cause.short + ')') +
@@ -828,8 +875,17 @@ async function fixAll(issues, deps) {
             continue;
         }
         if (res.code !== 0) {
+            // P44-3: 9009 on a winget step = the step never ran (winget
+            // missing from the child PATH, e.g. Win10 without App
+            // Installer, or truncated journal): point at the offline
+            // folder with the exact filename, like the plan-time message.
+            let hint9009 = '';
+            if (res.code === 9009 && p.kind === 'winget' && p.fix && p.fix.offline) {
+                hint9009 = " : winget probablement absent pendant l'execution - importez '" +
+                    p.fix.offline.file + "' (installateur " + p.issue + ") dans : " + offlineDir;
+            }
             const row = { issue: p.issue, status: 'failed', method: p.kind,
-                reason: "installation echouee (code " + res.code + ")" + (res.out ? " : " + res.out : "") };
+                reason: "installation echouee (code " + res.code + ")" + hint9009 + (res.out && !hint9009 ? " : " + res.out : "") };
             progress(ordered.indexOf(p.issue), p.issue, 'done', row);
             push(row);
             continue;
@@ -876,4 +932,4 @@ async function fixOne(issue, deps) {
 module.exports = { fixAll, fixOne, isKnownTool, orderIssues, resolveFix, buildPsScript, parsePsLog,
     parsePsStepOutputs, diagnoseMissingStep, defaultOfflineDir, FIXES,
     buildEncodedLaunch, decodeEncodedLaunch, encodedLauncher, defaultElevatedLogDir, probeWingetSource,
-    defaultHasInternet, diagnoseElevatedNoStart, wslPresent };
+    defaultHasInternet, diagnoseElevatedNoStart, wslPresent, readJournalSettled };
