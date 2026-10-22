@@ -27,11 +27,13 @@ const bars = (pkg.contributes.viewsContainers || {}).activitybar || [];
 check('A1: exactly one activitybar container (sudo-studio)',
     bars.length === 1 && bars[0].id === 'sudo-studio' && bars[0].title === 'Sudo Studio',
     JSON.stringify(bars.map((b) => b.id)));
-const iconL = bars[0] && bars[0].icon && bars[0].icon.light;
-const iconD = bars[0] && bars[0].icon && bars[0].icon.dark;
-check('A2: container icon is the robot SVG (both themes, on disk)',
-    iconL === 'resources/sudo-robot.svg' && iconD === 'resources/sudo-robot.svg' &&
-    fs.existsSync(path.join(EXT, iconL)));
+const iconStr = bars[0] && bars[0].icon;
+// P42(1): the installed editor rejects an object icon ("property icon is
+// mandatory and must be of type string") and drops every Sudo view into the
+// Explorer. The container icon MUST be a string path to the mono SVG.
+check('A2: container icon is a STRING path to the robot SVG (on disk)',
+    typeof iconStr === 'string' && iconStr === 'resources/sudo-robot.svg' &&
+    fs.existsSync(path.join(EXT, iconStr)));
 const robot = fs.readFileSync(path.join(EXT, 'resources', 'sudo-robot.svg'), 'utf8');
 check('A3: robot is 24px + currentColor, no hardcoded colors',
     robot.indexOf('viewBox="0 0 24 24"') !== -1 && robot.indexOf('currentColor') !== -1 &&
@@ -49,7 +51,8 @@ check('A4: 8 Sudo views in the container (unified nav, no one-button views)',
 check('A5: nothing under explorer or the old container',
     !views.explorer && !views['sudo-agent'] && !bars.some((b) => b.id === 'sudo-agent'));
 check('A6: container icon is SVG art, not a codicon string',
-    typeof bars[0].icon === 'object');
+    typeof bars[0].icon === 'string' && bars[0].icon.endsWith('.svg') &&
+    bars[0].icon.indexOf('$(') === -1);
 check('A7: old agent SVGs removed',
     !fs.existsSync(path.join(EXT, 'resources', 'agent-light.svg')) &&
     !fs.existsSync(path.join(EXT, 'resources', 'agent-dark.svg')));
@@ -99,6 +102,11 @@ check('C7: replacement logo SVG (branded, not the old art)',
     logo.indexOf('<svg') === 0 && logo.indexOf('viewBox') !== -1 &&
     logo.indexOf('ssRing') !== -1 && logo.indexOf('path6008') === -1 &&
     [...logo].every((c) => c.codePointAt(0) < 128));
+// P42(2): shipped title-bar defaults (verified on this build).
+check('C8: configurationDefaults (commandCenter off + classic title)',
+    ps1.indexOf('configurationDefaults') !== -1 &&
+    ps1.indexOf('"window.commandCenter" = $false') !== -1 &&
+    ps1.indexOf("'${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}'") !== -1);
 
 // -- D: pattern-logic simulation (JS mirror of the PS table) ------------------------------
 const PATS = [
@@ -207,6 +215,32 @@ const navChk = spawnSync(process.execPath, ['--check',
 check('G7: SudoStudioProvider compiles', navChk.status === 0);
 // G8 dropped (P38): CI step 7b rejected by user vote on 2026-10-21.
 // The suite stays the reference gate, to run locally / manually.
+
+// -- H: P42 proven root cause (string icon + title defaults + build no) -----
+const mfPs1 = fs.readFileSync(path.join(ROOT, 'scripts', 'ci', 'build-manifest.ps1'), 'utf8');
+check('H1: pack-time gate requires a STRING container icon',
+    mfPs1.indexOf('activity container icon is not a string') !== -1 &&
+    mfPs1.indexOf('container icon not on disk') !== -1);
+check('H2: pack-time gate requires configurationDefaults title keys',
+    mfPs1.indexOf("configurationDefaults window.commandCenter != false") !== -1 &&
+    mfPs1.indexOf('window.title') !== -1 && mfPs1.indexOf('classic template') !== -1);
+check('H3: pack-time stamp of the shipped README (extension page build no)',
+    mfPs1.indexOf('README stamped') !== -1 &&
+    mfPs1.indexOf('extensions\\sudo-ai\\README.md') !== -1);
+const srvJs = fs.readFileSync(path.join(ROOT, 'backend', 'server.js'), 'utf8');
+check('H4: backend boot line carries commit + date + version',
+    srvJs.indexOf('build: commit=') !== -1 && srvJs.indexOf(" + ' version=' + ") !== -1);
+const entPy = fs.readFileSync(path.join(ROOT, 'backend', 'runtime', 'server.enterprise.py'), 'utf8');
+check('H5: runtime build fact carries commit + date + version',
+    entPy.indexOf('" date=" + str(m.get("date"') !== -1 &&
+    entPy.indexOf('" version=" + str(m.get("version"') !== -1);
+check('H6: extension activation logs the build number (guarded)',
+    extSrc.indexOf('Sudo Studio build dev (no build-manifest.json)') !== -1 &&
+    extSrc.indexOf('Sudo Studio build ') !== -1);
+const bat42 = fs.readFileSync(path.join(ROOT, 'start.bat'), 'utf8');
+check('H7: launcher header prints the manifest version',
+    bat42.indexOf('BUILD_VERSION') !== -1 &&
+    bat42.indexOf('SUDO STUDIO v%BUILD_VERSION%') !== -1);
 
 console.log(fail === 0 ? `\nP20: ${pass} checks passed (all green)`
     : `\nP20: ${pass} passed, ${fail} FAILED`);

@@ -145,6 +145,9 @@ check('B4: L3 editor log scan (30 s + 3 registration patterns)', () => {
     assert.ok(verify.includes(m), m);
   }
   assert.ok(verify.includes('\\bicon\\b') || verify.includes('icon'), 'icon pattern');
+  // P42(5): the proven container rejection is a WARNING, so warn context
+  // must count for 'does not exist' (icon stays error-only).
+  assert.ok(verify.includes('\\bwarn\\b'), 'warn context for does-not-exist');
 });
 check('B5: L4 panels via panel-render-test.js', () => {
   assert.ok(verify.includes('panel-render-test.js'));
@@ -152,6 +155,10 @@ check('B5: L4 panels via panel-render-test.js', () => {
 });
 check('B6: L5 branding (container + views + old logo)', () => {
   for (const m of ['sudo-studio', 'viewsContainers', 'code-icon.svg', 'path6008', '88bb8eb6']) {
+    assert.ok(verify.includes(m), m);
+  }
+  // P42: string-only container icon + About commit/date + title defaults.
+  for (const m of ['must be a string path', 'configurationDefaults', 'commit/date (About dialog)']) {
     assert.ok(verify.includes(m), m);
   }
 });

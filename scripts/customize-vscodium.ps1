@@ -45,6 +45,14 @@ if (Test-Path $productJsonPath) {
         $json | Add-Member -NotePropertyName "win32MutexName"       -NotePropertyValue "sudostudio"        -Force
         $json | Add-Member -NotePropertyName "win32RegValueName"    -NotePropertyValue "SudoStudio"        -Force
         $json | Add-Member -NotePropertyName "darwinBundleIdentifier" -NotePropertyValue "com.sudostudio.app" -Force
+        # P42(2): shipped title-bar defaults (verified on this build): no
+        # command center, classic title template (${appName} <- nameLong).
+        $cfgDefaults = [ordered]@{
+            "window.commandCenter" = $false
+            "window.title"         = '${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}'
+        }
+        $json | Add-Member -NotePropertyName "configurationDefaults" -NotePropertyValue $cfgDefaults -Force
+        Write-Host "[OK] product.json configurationDefaults (commandCenter off, classic title)"
         # P35(e): About dialog shows OUR commit (was: upstream VSCodium sha).
         if ($SudoStudioCommit -and $SudoStudioCommit -match '^[0-9a-f]{7,40}$') {
             $json | Add-Member -NotePropertyName "commit" -NotePropertyValue $SudoStudioCommit -Force

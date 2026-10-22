@@ -61,7 +61,7 @@ earlyLog('=== Sudo Studio Backend starting ===');
 try {
   const mf = path.join(path.dirname(process.execPath), 'build-manifest.json');
   const m = JSON.parse(fs.readFileSync(mf, 'utf8').replace(/^\uFEFF/, ''));
-  earlyLog('build: commit=' + (m.sudo_studio_commit || m.commit || '?') + ' date=' + (m.date || '?'));
+  earlyLog('build: commit=' + (m.sudo_studio_commit || m.commit || '?') + ' date=' + (m.date || '?') + ' version=' + (m.version || '?'));
 } catch (_) { earlyLog('build: dev (no build-manifest.json)'); }
 earlyLog('logDir (P33 single): ' + logDir);
 earlyLog('pkg context: ' + (typeof process.pkg !== 'undefined'));

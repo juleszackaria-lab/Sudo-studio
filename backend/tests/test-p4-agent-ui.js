@@ -322,8 +322,8 @@ async function main() {
   const kb = (pkg.contributes.keybindings || []).find((k) => k.command === 'sudoAgent.open');
   check('L2: keybinding ctrl+alt+a', !!kb && kb.key === 'ctrl+alt+a', kb);
   const cont = pkg.contributes.viewsContainers.activitybar.find((v) => v.id === 'sudo-studio');
-  check('L3: activity container + icons on disk', !!cont && cont.title === 'Sudo Studio'
-    && fs.existsSync(path.join(EXT, cont.icon.light)) && fs.existsSync(path.join(EXT, cont.icon.dark))
+  check('L3: activity container + string icon on disk (P42)', !!cont && cont.title === 'Sudo Studio'
+    && typeof cont.icon === 'string' && fs.existsSync(path.join(EXT, cont.icon))
     && !pkg.contributes.viewsContainers.activitybar.some((v) => v.id === 'sudo-agent'));
   check('L4: launcher view declared', (pkg.contributes.views['sudo-studio'] || []).some((v) => v.id === 'sudoAgentLauncher'));
   check('L5: old agent title cleaned', pkg.contributes.commands.find((c) => c.command === 'sudoStudio.openAgentPanel').title === 'Sudo Agent');

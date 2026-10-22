@@ -2764,9 +2764,13 @@ def _p33_build_commit():
             try:
                 with open(mf, "r", encoding="utf-8") as f:
                     m = _json.load(f)
-                c = (m.get("sudo_studio_commit") or m.get("commit")) if isinstance(m, dict) else None
-                if c:
-                    return "commit=" + str(c)[:40]
+                if isinstance(m, dict):
+                    c = m.get("sudo_studio_commit") or m.get("commit")
+                    if c:
+                        # P42(4): version + commit + date in the journal header.
+                        return ("commit=" + str(c)[:40] +
+                                " date=" + str(m.get("date", "?"))[:30] +
+                                " version=" + str(m.get("version", "?"))[:16])
             except Exception:
                 continue
     except Exception:

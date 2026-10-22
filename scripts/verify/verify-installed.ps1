@@ -238,10 +238,13 @@ try {
                 foreach ($ln in $lines) {
                     $nLines++
                     if ($ln -match 'must be of type') { $hits += ('must-be-of-type: ' + (Short $ln 180)); continue }
-                    if ($ln -match '(?i)\berror\b|\bexception\b|\bfailed\b|\bERR\b') {
+                    # P42(5): the proven container rejection is logged as a
+                    # WARNING ("View container ... does not exist"), so warn
+                    # context counts for that pattern; icon stays error-only.
+                    if ($ln -match '(?i)\berror\b|\bexception\b|\bfailed\b|\bwarning\b|\bwarn\b|\bERR\b') {
                         if ($ln -match 'does not exist') { $hits += ('does-not-exist: ' + (Short $ln 180)) }
-                        elseif ($ln -match '(?i)\bicon\b') { $hits += ('icon: ' + (Short $ln 180)) }
                     }
+                    if (($ln -match '(?i)\berror\b|\bexception\b|\bfailed\b|\bERR\b') -and ($ln -match '(?i)\bicon\b')) { $hits += ('icon: ' + (Short $ln 180)) }
                     if ($hits.Count -ge 5) { break }
                 }
                 if ($hits.Count -ge 5) { break }
@@ -297,13 +300,17 @@ try {
         $parts = @()
         $pj = Get-Content (Join-Path $InstallDir 'resources\app\product.json') -Raw | ConvertFrom-Json
         if ($pj.nameShort -ne 'Sudo Studio') { throw ('nameShort=' + $pj.nameShort) }
+        if (-not $pj.commit -or -not $pj.date) { throw 'product.json lacks commit/date (About dialog)' }
+        $cfgV = $pj.configurationDefaults
+        if (-not $cfgV -or $cfgV.'window.commandCenter' -ne $false) { throw 'configurationDefaults window.commandCenter != false' }
+        if ($cfgV.'window.title' -ne '${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}') { throw 'configurationDefaults window.title != classic template' }
         $parts += 'product.json'
         $ep5 = Get-Content (Join-Path $InstallDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json
         $bar = @($ep5.contributes.viewsContainers.activitybar)
         if ($bar.Count -ne 1 -or $bar[0].id -ne 'sudo-studio') { throw 'activitybar container != [sudo-studio]' }
-        foreach ($ip in @($bar[0].icon.light, $bar[0].icon.dark)) {
-            if (-not $ip -or -not (Test-Path (Join-Path $InstallDir ('extensions\sudo-ai\' + ($ip -replace '/', '\'))))) { throw ('container icon missing: ' + $ip) }
-        }
+        $sIcon = $bar[0].icon
+        if ($sIcon -isnot [string]) { throw 'container icon must be a string path (P42: object form rejected by the editor)' }
+        if (-not (Test-Path (Join-Path $InstallDir ('extensions\sudo-ai\' + ($sIcon -replace '/', '\'))))) { throw ('container icon missing: ' + $sIcon) }
         $vs = $ep5.contributes.views
         if (-not $vs.'sudo-studio' -or @($vs.'sudo-studio').Count -lt 1) { throw 'no views in sudo-studio' }
         if ($vs.explorer) { throw 'views still under explorer' }

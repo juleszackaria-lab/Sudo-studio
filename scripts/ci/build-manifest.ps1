@@ -37,11 +37,11 @@ $need = @('backend.exe', 'runtime.exe', 'SudoStudio.exe', 'start.bat',
     'sudo-agent\src\server.js', 'resources\app\product.json',
     'resources\app\out\media\code-icon.svg', 'resources\sudo-icon.svg',
     'resources\icon.ico', 'extensions\sudo-ai\resources\sudo-robot.svg',
-    'launch_hidden.vbs', 'verify-installed.ps1')
+    'launch_hidden.vbs', 'verify-installed.ps1', 'extensions\sudo-ai\README.md')
 foreach ($f in $need) {
     if (-not (Test-Path (Join-Path $BuildDir $f))) { Deny ("component file missing: {0}" -f $f) }
 }
-Write-Host '[MANIFEST] 14/14 component files present'
+Write-Host '[MANIFEST] 15/15 component files present'
 
 # -- 2. backend + runtime commits must match the source checkout -----------------
 if (-not $Token) { $Token = $env:GH_TOKEN }
@@ -88,10 +88,19 @@ if (-not $same) { Deny 'code-icon.svg differs from sudo-icon.svg in the final pa
 $ep = Get-Content (Join-Path $BuildDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json
 $bar = @($ep.contributes.viewsContainers.activitybar)
 if ($bar.Count -ne 1 -or $bar[0].id -ne 'sudo-studio') { Deny 'extension has no single sudo-studio activity container' }
-if (-not $bar[0].icon.light -or -not $bar[0].icon.dark) { Deny 'activity container icon missing (light/dark)' }
+# P42(1): the installed editor rejects an object icon ("property icon is
+# mandatory and must be of type string") and drops every Sudo view into the
+# Explorer. The container icon MUST be a string path to the mono SVG.
+if ($bar[0].icon -isnot [string]) { Deny 'activity container icon is not a string (P42)' }
+$iconRel = 'extensions\sudo-ai\' + ($bar[0].icon -replace '/', '\')
+if (-not (Test-Path (Join-Path $BuildDir $iconRel))) { Deny ('container icon not on disk: ' + $bar[0].icon) }
 $extViews = @($ep.contributes.views.'sudo-studio').Count
 $extVer = $ep.version
 if ($ep.contributes.views.explorer) { Deny 'extension views still under explorer' }
+# P42(2): shipped title-bar defaults (verified on this build).
+$cfgD = $pj.configurationDefaults
+if (-not $cfgD -or $cfgD.'window.commandCenter' -ne $false) { Deny 'product.json configurationDefaults window.commandCenter != false' }
+if ($cfgD.'window.title' -ne '${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}') { Deny 'product.json configurationDefaults window.title != classic template' }
 Write-Host ("[MANIFEST] brand: product.json OK, logo svg bytes match, robot container views={0}" -f $extViews)
 $exeCheck = Join-Path $scriptDir 'check-exe-icon.ps1'
 if (-not (Test-Path $exeCheck)) { Deny 'exe icon checker missing next to this script' }
@@ -107,9 +116,15 @@ try {
     $m = Select-String -Path (Join-Path $SourceDir 'installer.iss') -Pattern '#define MyAppVersion\s+"([^"]+)"'
     if ($m) { $issVer = $m.Matches[0].Groups[1].Value }
 } catch {}
+$packDate = (Get-Date).ToUniversalTime().ToString('o')
+# P42(4): build number on the extension detail page (it renders README.md).
+$rmdPath = Join-Path $BuildDir 'extensions\sudo-ai\README.md'
+$rmdFooter = ("`n`n---`nBuild: {0} | commit {1} | {2}`n" -f $issVer, $SudoStudioCommit, $packDate)
+Add-Content $rmdPath $rmdFooter -Encoding UTF8
+Write-Host ("[MANIFEST] README stamped: Build {0} commit {1}" -f $issVer, $SudoStudioCommit)
 $mf = [ordered]@{
     version            = $issVer
-    date               = (Get-Date).ToUniversalTime().ToString('o')
+    date               = $packDate
     sudo_studio_commit = $SudoStudioCommit
     packager_commit    = $PackagerCommit
     files              = [ordered]@{
@@ -121,6 +136,7 @@ $mf = [ordered]@{
         'resources\app\product.json'        = Sha-Of 'resources\app\product.json'
         'launch_hidden.vbs'                 = Sha-Of 'launch_hidden.vbs'
         'verify-installed.ps1'              = Sha-Of 'verify-installed.ps1'
+        'extensions\sudo-ai\README.md'      = Sha-Of 'extensions\sudo-ai\README.md'
     }
     components         = [ordered]@{
         backend   = [ordered]@{ commit = $beRun.head_sha; date = $beRun.created_at; run_id = $BackendRunId; sha256 = Sha-Of 'backend.exe' }

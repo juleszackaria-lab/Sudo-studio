@@ -76,12 +76,16 @@ if exist "%ROOT%build-manifest.json" (
     for /f "delims=" %%c in ('powershell -NoProfile -Command "try { $mf = Join-Path $env:ROOT 'build-manifest.json'; $m = Get-Content $mf -Raw | ConvertFrom-Json; if ($m.sudo_studio_commit) { $m.sudo_studio_commit } elseif ($m.commit) { $m.commit } else { '' } } catch { '' }" 2^>nul') do (
         if not "%%c"=="" set "BUILD_COMMIT=%%c"
     )
+    for /f "delims=" %%v in ('powershell -NoProfile -Command "try { $mf = Join-Path $env:ROOT 'build-manifest.json'; $m = Get-Content $mf -Raw | ConvertFrom-Json; if ($m.version) { $m.version } else { '' } } catch { '' }" 2^>nul') do (
+        if not "%%v"=="" set "BUILD_VERSION=%%v"
+    )
 )
+if "%BUILD_VERSION%"=="" set "BUILD_VERSION=4.3"
 
 :: -- Init log file --------------------------------------------
 (
     echo ============================================================
-    echo   SUDO STUDIO v4.3 - %DATE% %TIME%
+    echo   SUDO STUDIO v%BUILD_VERSION% - %DATE% %TIME%
     echo   Build commit: %BUILD_COMMIT%
     echo   Root: %ROOT%
     echo ============================================================

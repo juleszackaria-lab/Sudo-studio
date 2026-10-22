@@ -33,12 +33,9 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "sudo-studio",
-          "title": "Sudo Studio",
-          "icon": {
-            "light": "resources/sudo-robot.svg",
-            "dark": "resources/sudo-robot.svg"
-          }
+   "id": "sudo-studio",
+   "title": "Sudo Studio",
+   "icon": "resources/sudo-robot.svg"
         }
       ]
     },

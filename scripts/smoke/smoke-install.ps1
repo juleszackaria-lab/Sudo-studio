@@ -197,9 +197,9 @@ try {
         $ep = Get-Content (Join-Path $InstallDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json
         $bar = @($ep.contributes.viewsContainers.activitybar)
         if ($bar.Count -ne 1 -or $bar[0].id -ne 'sudo-studio') { throw 'activitybar container != [sudo-studio]' }
-        foreach ($ip in @($bar[0].icon.light, $bar[0].icon.dark)) {
-            if (-not $ip -or -not (Test-Path (Join-Path $InstallDir ('extensions\sudo-ai\' + ($ip -replace '/', '\'))))) { throw ('container icon missing: ' + $ip) }
-        }
+        $sIcon = $bar[0].icon
+        if ($sIcon -isnot [string]) { throw 'container icon must be a string path (P42: object form rejected by the editor)' }
+        if (-not (Test-Path (Join-Path $InstallDir ('extensions\sudo-ai\' + ($sIcon -replace '/', '\'))))) { throw ('container icon missing: ' + $sIcon) }
         $vs = $ep.contributes.views
         if (-not $vs.'sudo-studio' -or @($vs.'sudo-studio').Count -lt 1) { throw 'no views in sudo-studio' }
         if ($vs.explorer) { throw 'views still under explorer' }

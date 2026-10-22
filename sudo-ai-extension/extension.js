@@ -71,6 +71,15 @@ async function activate(ctx) {
     context = ctx;
     console.log('Sudo AI extension activating...');
     console.log('Sudo Studio Enterprise - Activation starting...');
+    try {
+        // P42(4): build identity at the head of the extension-host log.
+        // Same appRoot resolution as showBuildInfo (P29e/P35c).
+        let mfRoot = null;
+        try { if (vscode.env.appRoot) mfRoot = path.resolve(vscode.env.appRoot, '..', '..'); } catch (_) {}
+        if (!mfRoot) mfRoot = path.resolve(__dirname, '..', '..');
+        const mf = JSON.parse(fs.readFileSync(path.join(mfRoot, 'build-manifest.json'), 'utf8'));
+        console.log('Sudo Studio build ' + (mf.version || '?') + ' commit ' + (mf.sudo_studio_commit || '?') + ' date ' + (mf.date || '?'));
+    } catch (_) { console.log('Sudo Studio build dev (no build-manifest.json)'); }
 
     try {
         // Initialize core services (synchronous - no network calls)
