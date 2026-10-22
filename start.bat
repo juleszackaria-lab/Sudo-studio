@@ -49,13 +49,22 @@ echo ============================================================
 echo.
 
 :: -- Create logs folder ---------------------------------------
-:: P46-fix: never IF + paren-capable path + redirect on ONE line (cmd
-:: misparses on paren paths: "\SudoStudio\ was unexpected at this time").
-if not exist "%LOGS%" (
+:: P46-fix(cmd-parens): cmd cannot parse an IF whose expanded condition
+:: contains ")" (even quoted) unless the command is a bare SET: a block
+:: or redirect after a paren-valued condition aborts the whole script
+:: ("\SudoStudio\ was unexpected at this time", exit 255, zero output)
+:: on paths like C:\ptest (x86)\.... So EVERY path-valued test below
+:: goes through a 0/1 flag, and branches test the flag only. NEVER put
+:: %ROOT% etc. directly in an IF with a block or a redirect.
+set "F_MKLOG=0"
+if not exist "%LOGS%" set "F_MKLOG=1"
+if "%F_MKLOG%"=="1" (
     mkdir "%LOGS%" 2>nul
 )
 del "%LOGS%\startup-errors.txt" 2>nul
-if not exist "%LOGS%" (
+set "F_LOGDIR_OK=1"
+if not exist "%LOGS%" set "F_LOGDIR_OK=0"
+if "%F_LOGDIR_OK%"=="0" (
     echo [ERROR] Cannot create logs folder at: %LOGS%
     echo         Check write permissions.
     echo.
@@ -67,28 +76,30 @@ if not exist "%LOGS%" (
 :: Copy newer-only (/D), never delete: the sources live under the
 :: install folder (wiped on update) or the old agent folder, so the
 :: migrated copies are the only survivors. *.log* covers rotations.
-if exist "%ROOT%logs" (
+set "F_MIG_ROOT=0"
+if exist "%ROOT%logs" set "F_MIG_ROOT=1"
+set "F_MIG_PAR=0"
+if exist "%ROOT%..\logs" set "F_MIG_PAR=1"
+set "F_MIG_USR=0"
+if exist "%USERPROFILE%\.sudo_studio\logs" set "F_MIG_USR=1"
+if "%F_MIG_ROOT%"=="1" (
     xcopy /Y /D /I "%ROOT%logs\*.log*" "%LOGS%\" >nul 2>&1
-)
-if exist "%ROOT%..\logs" (
-    xcopy /Y /D /I "%ROOT%..\logs\*.log*" "%LOGS%\" >nul 2>&1
-)
-if exist "%USERPROFILE%\.sudo_studio\logs" (
-    xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.log*" "%LOGS%\" >nul 2>&1
-)
-if exist "%ROOT%logs" (
     xcopy /Y /D /I "%ROOT%logs\*.jsonl" "%LOGS%\" >nul 2>&1
 )
-if exist "%ROOT%..\logs" (
+if "%F_MIG_PAR%"=="1" (
+    xcopy /Y /D /I "%ROOT%..\logs\*.log*" "%LOGS%\" >nul 2>&1
     xcopy /Y /D /I "%ROOT%..\logs\*.jsonl" "%LOGS%\" >nul 2>&1
 )
-if exist "%USERPROFILE%\.sudo_studio\logs" (
+if "%F_MIG_USR%"=="1" (
+    xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.log*" "%LOGS%\" >nul 2>&1
     xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.jsonl" "%LOGS%\" >nul 2>&1
 )
 
 :: -- Build manifest (P29-e): commit first in log ----------------
 set "BUILD_COMMIT=dev (no build-manifest.json)"
-if exist "%ROOT%build-manifest.json" (
+set "F_MANIFEST=0"
+if exist "%ROOT%build-manifest.json" set "F_MANIFEST=1"
+if "%F_MANIFEST%"=="1" (
     for /f "delims=" %%c in ('powershell -NoProfile -Command "try { $mf = Join-Path $env:ROOT 'build-manifest.json'; $m = Get-Content $mf -Raw | ConvertFrom-Json; if ($m.sudo_studio_commit) { $m.sudo_studio_commit } elseif ($m.commit) { $m.commit } else { '' } } catch { '' }" 2^>nul') do (
         if not "%%c"=="" set "BUILD_COMMIT=%%c"
     )
@@ -343,23 +354,37 @@ set "V_DEV=%SSDATA%\extensions\sudo-ai"
 set "V_MASTER=%ROOT%extensions\sudo-ai"
 
 :: Creer dossiers necessaires
-if not exist "%V_DAT%" (
+set "F_MKVDAT=0"
+if not exist "%V_DAT%" set "F_MKVDAT=1"
+if "%F_MKVDAT%"=="1" (
     mkdir "%V_DAT%" 2>nul
 )
-if not exist "%V_EXT%" (
+set "F_MKVEXT=0"
+if not exist "%V_EXT%" set "F_MKVEXT=1"
+if "%F_MKVEXT%"=="1" (
     mkdir "%V_EXT%" 2>nul
 )
-if not exist "%V_DAT%\User" (
+set "F_MKVUSR=0"
+if not exist "%V_DAT%\User" set "F_MKVUSR=1"
+if "%F_MKVUSR%"=="1" (
     mkdir "%V_DAT%\User" 2>nul
 )
 :: P35(c): one-way migration of pre-P35 user-data (copy-only, never delete).
-if exist "%ROOT%data\User\settings.json" (
-    if not exist "%V_DAT%\User\settings.json" (
+set "F_SETSRC=0"
+if exist "%ROOT%data\User\settings.json" set "F_SETSRC=1"
+set "F_SETABS=0"
+if not exist "%V_DAT%\User\settings.json" set "F_SETABS=1"
+if "%F_SETSRC%"=="1" (
+    if "%F_SETABS%"=="1" (
         xcopy /S /E /Y /Q /I "%ROOT%data" "%V_DAT%\" >nul 2>&1
     )
 )
-if not exist "%V_DEV%\package.json" (
-    if exist "%ROOT%extensions" (
+set "F_DEVABS=0"
+if not exist "%V_DEV%\package.json" set "F_DEVABS=1"
+set "F_EXTPRESENT=0"
+if exist "%ROOT%extensions" set "F_EXTPRESENT=1"
+if "%F_DEVABS%"=="1" (
+    if "%F_EXTPRESENT%"=="1" (
         xcopy /S /E /Y /Q /I "%ROOT%extensions" "%V_EXT%\" >nul 2>&1
     )
 )
@@ -367,7 +392,9 @@ if not exist "%V_DEV%\package.json" (
 :: -- Seed default settings on FIRST run only (never overwrite user settings) --
 :: The custom titlebar shows no product name by default ("Welcome" only), so
 :: seed an explicit window title ending with Sudo Studio.
-if not exist "%V_DAT%\User\settings.json" (
+set "F_SEEDABS=0"
+if not exist "%V_DAT%\User\settings.json" set "F_SEEDABS=1"
+if "%F_SEEDABS%"=="1" (
     echo {"window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}Sudo Studio"}>"%V_DAT%\User\settings.json"
     echo [PHASE 5] Default settings seeded - window title set
 )
@@ -394,7 +421,9 @@ if "%EXT_HAVE_LIVE%"=="1" if "%EXT_HAVE_MASTER%"=="1" (
 if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="1" (
     echo [PHASE 5] Installing extension to live dir...
     echo [PHASE 5] Installing extension >> "%LOG_FILE%"
-    if not exist "%V_DEV%" (
+    set "F_MKDEV1=0"
+    if not exist "%V_DEV%" set "F_MKDEV1=1"
+    if "%F_MKDEV1%"=="1" (
         mkdir "%V_DEV%" 2>nul
     )
     xcopy /S /E /Y /Q /I "%V_MASTER%" "%V_DEV%\" >nul 2>&1
@@ -404,7 +433,9 @@ if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="1" (
 if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="0" if "%EXT_HAVE_SRC%"=="1" (
     echo [PHASE 5] Syncing extension from dev source...
     echo [PHASE 5] Syncing extension (dev) >> "%LOG_FILE%"
-    if not exist "%V_DEV%" (
+    set "F_MKDEV2=0"
+    if not exist "%V_DEV%" set "F_MKDEV2=1"
+    if "%F_MKDEV2%"=="1" (
         mkdir "%V_DEV%" 2>nul
     )
     xcopy /S /E /Y /Q /I "%V_SRC%" "%V_DEV%\" >nul 2>&1
@@ -430,7 +461,9 @@ if not defined V_EXE (
     pause
     exit /b 1
 )
-if not exist "%V_EXE%" (
+set "F_VEXE_OK=1"
+if not exist "%V_EXE%" set "F_VEXE_OK=0"
+if "%F_VEXE_OK%"=="0" (
     echo [FATAL] Editor not found at: %V_EXE% >> "%LOG_FILE%"
     echo [FATAL] Editor not found at: %V_EXE%
     echo Editor not found - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
