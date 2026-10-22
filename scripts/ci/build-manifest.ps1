@@ -62,6 +62,21 @@ function Run-Info([string]$runId, [string]$what) {
 $beRun = Run-Info $BackendRunId 'backend'
 $rtRun = Run-Info $RuntimeRunId 'runtime'
 
+# -- 2b. P46: last source touch of the runtime tree (offline freshness) --------
+# Lets the installed-product verifier prove "runtime not older than the last
+# commit that modifies it" WITHOUT network/API: compare components.runtime.date
+# (02 run creation) against this embedded touch date. Same path semantics as
+# the P33-a pack-time guard (plain 'backend/runtime').
+$runtimeTouch = 'unknown'
+try {
+    $t = & git -C $SourceDir log -1 --format='%cI' -- 'backend/runtime' 2>$null
+    if ($LASTEXITCODE -eq 0 -and $t) { $runtimeTouch = ([string]$t).Trim() }
+} catch {}
+if ($runtimeTouch -eq 'unknown' -or $runtimeTouch -notmatch '^\d{4}-\d{2}-\d{2}T') {
+    Deny 'cannot determine last backend/runtime touch (need full-history checkout)'
+}
+Write-Host ("[MANIFEST] runtime last touch: {0}" -f $runtimeTouch)
+
 # -- 3. P20 brand in the FINAL package --------------------------------------------
 $pj = Get-Content (Join-Path $BuildDir 'resources\app\product.json') -Raw | ConvertFrom-Json
 if ($pj.nameShort -ne 'Sudo Studio') { Deny ('product.json nameShort=' + $pj.nameShort) }
@@ -109,7 +124,7 @@ $mf = [ordered]@{
     }
     components         = [ordered]@{
         backend   = [ordered]@{ commit = $beRun.head_sha; date = $beRun.created_at; run_id = $BackendRunId; sha256 = Sha-Of 'backend.exe' }
-        runtime   = [ordered]@{ commit = $rtRun.head_sha; date = $rtRun.created_at; run_id = $RuntimeRunId; sha256 = Sha-Of 'runtime.exe' }
+        runtime   = [ordered]@{ commit = $rtRun.head_sha; date = $rtRun.created_at; run_id = $RuntimeRunId; sha256 = Sha-Of 'runtime.exe'; touch = $runtimeTouch }
         editor    = [ordered]@{ version = $EditorVersion; product = $pj.nameShort; sha256 = Sha-Of 'SudoStudio.exe' }
         extension = [ordered]@{ commit = $SudoStudioCommit; version = $extVer; container = 'sudo-studio'; views = $extViews }
         agent     = [ordered]@{ commit = $SudoStudioCommit; path = 'sudo-agent\src\server.js'; sha256 = Sha-Of 'sudo-agent\src\server.js' }
