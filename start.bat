@@ -49,7 +49,11 @@ echo ============================================================
 echo.
 
 :: -- Create logs folder ---------------------------------------
-if not exist "%LOGS%" mkdir "%LOGS%" 2>nul
+:: P46-fix: never IF + paren-capable path + redirect on ONE line (cmd
+:: misparses on paren paths: "\SudoStudio\ was unexpected at this time").
+if not exist "%LOGS%" (
+    mkdir "%LOGS%" 2>nul
+)
 del "%LOGS%\startup-errors.txt" 2>nul
 if not exist "%LOGS%" (
     echo [ERROR] Cannot create logs folder at: %LOGS%
@@ -63,12 +67,24 @@ if not exist "%LOGS%" (
 :: Copy newer-only (/D), never delete: the sources live under the
 :: install folder (wiped on update) or the old agent folder, so the
 :: migrated copies are the only survivors. *.log* covers rotations.
-if exist "%ROOT%logs" xcopy /Y /D /I "%ROOT%logs\*.log*" "%LOGS%\" >nul 2>&1
-if exist "%ROOT%..\logs" xcopy /Y /D /I "%ROOT%..\logs\*.log*" "%LOGS%\" >nul 2>&1
-if exist "%USERPROFILE%\.sudo_studio\logs" xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.log*" "%LOGS%\" >nul 2>&1
-if exist "%ROOT%logs" xcopy /Y /D /I "%ROOT%logs\*.jsonl" "%LOGS%\" >nul 2>&1
-if exist "%ROOT%..\logs" xcopy /Y /D /I "%ROOT%..\logs\*.jsonl" "%LOGS%\" >nul 2>&1
-if exist "%USERPROFILE%\.sudo_studio\logs" xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.jsonl" "%LOGS%\" >nul 2>&1
+if exist "%ROOT%logs" (
+    xcopy /Y /D /I "%ROOT%logs\*.log*" "%LOGS%\" >nul 2>&1
+)
+if exist "%ROOT%..\logs" (
+    xcopy /Y /D /I "%ROOT%..\logs\*.log*" "%LOGS%\" >nul 2>&1
+)
+if exist "%USERPROFILE%\.sudo_studio\logs" (
+    xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.log*" "%LOGS%\" >nul 2>&1
+)
+if exist "%ROOT%logs" (
+    xcopy /Y /D /I "%ROOT%logs\*.jsonl" "%LOGS%\" >nul 2>&1
+)
+if exist "%ROOT%..\logs" (
+    xcopy /Y /D /I "%ROOT%..\logs\*.jsonl" "%LOGS%\" >nul 2>&1
+)
+if exist "%USERPROFILE%\.sudo_studio\logs" (
+    xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.jsonl" "%LOGS%\" >nul 2>&1
+)
 
 :: -- Build manifest (P29-e): commit first in log ----------------
 set "BUILD_COMMIT=dev (no build-manifest.json)"
@@ -327,12 +343,26 @@ set "V_DEV=%SSDATA%\extensions\sudo-ai"
 set "V_MASTER=%ROOT%extensions\sudo-ai"
 
 :: Creer dossiers necessaires
-if not exist "%V_DAT%" mkdir "%V_DAT%" 2>nul
-if not exist "%V_EXT%" mkdir "%V_EXT%" 2>nul
-if not exist "%V_DAT%\User" mkdir "%V_DAT%\User" 2>nul
+if not exist "%V_DAT%" (
+    mkdir "%V_DAT%" 2>nul
+)
+if not exist "%V_EXT%" (
+    mkdir "%V_EXT%" 2>nul
+)
+if not exist "%V_DAT%\User" (
+    mkdir "%V_DAT%\User" 2>nul
+)
 :: P35(c): one-way migration of pre-P35 user-data (copy-only, never delete).
-if exist "%ROOT%data\User\settings.json" if not exist "%V_DAT%\User\settings.json" xcopy /S /E /Y /Q /I "%ROOT%data" "%V_DAT%\" >nul 2>&1
-if not exist "%V_DEV%\package.json" if exist "%ROOT%extensions" xcopy /S /E /Y /Q /I "%ROOT%extensions" "%V_EXT%\" >nul 2>&1
+if exist "%ROOT%data\User\settings.json" (
+    if not exist "%V_DAT%\User\settings.json" (
+        xcopy /S /E /Y /Q /I "%ROOT%data" "%V_DAT%\" >nul 2>&1
+    )
+)
+if not exist "%V_DEV%\package.json" (
+    if exist "%ROOT%extensions" (
+        xcopy /S /E /Y /Q /I "%ROOT%extensions" "%V_EXT%\" >nul 2>&1
+    )
+)
 
 :: -- Seed default settings on FIRST run only (never overwrite user settings) --
 :: The custom titlebar shows no product name by default ("Welcome" only), so
@@ -364,7 +394,9 @@ if "%EXT_HAVE_LIVE%"=="1" if "%EXT_HAVE_MASTER%"=="1" (
 if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="1" (
     echo [PHASE 5] Installing extension to live dir...
     echo [PHASE 5] Installing extension >> "%LOG_FILE%"
-    if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
+    if not exist "%V_DEV%" (
+        mkdir "%V_DEV%" 2>nul
+    )
     xcopy /S /E /Y /Q /I "%V_MASTER%" "%V_DEV%\" >nul 2>&1
     echo   [OK] Extension installed at %V_DEV%
     echo   [OK] Extension installed >> "%LOG_FILE%"
@@ -372,7 +404,9 @@ if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="1" (
 if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="0" if "%EXT_HAVE_SRC%"=="1" (
     echo [PHASE 5] Syncing extension from dev source...
     echo [PHASE 5] Syncing extension (dev) >> "%LOG_FILE%"
-    if not exist "%V_DEV%" mkdir "%V_DEV%" 2>nul
+    if not exist "%V_DEV%" (
+        mkdir "%V_DEV%" 2>nul
+    )
     xcopy /S /E /Y /Q /I "%V_SRC%" "%V_DEV%\" >nul 2>&1
     echo   [OK] Extension synced to %V_DEV%
     echo   [OK] Extension synced (dev) >> "%LOG_FILE%"
