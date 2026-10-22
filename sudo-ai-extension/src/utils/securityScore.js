@@ -84,11 +84,17 @@ const EXTRA_SECRET_PATTERNS = [
         // os.environ, import.meta.env, System.getenv, ...), function calls
         // and dotted references are NOT secrets. Bare single words still
         // flag (a weak password beats a missed secret).
-        re: /([A-Za-z_][A-Za-z0-9_]*)\s*[:=]+\s*['"]?([^\s'";#]{8,})['"]?/,
-        valueGroup: 2,
+        // P45-b: group 2 captures the optional quote (quoted literals are
+        // never "references"); bracket/index access, ${...} templates,
+        // self references (X = "X") and unquoted camelCase identifiers on
+        // code lines are NOT secrets. Flat .env words (hunter2099) still
+        // flag, quoted or not.
+        re: /([A-Za-z_][A-Za-z0-9_]*)\s*[:=]+\s*(['"]?)([^\s'";#]{8,})['"]?/,
+        valueGroup: 3,
         check(m) {
             const name = String((m && m[1]) || '');
-            const v = String((m && m[2]) || '').replace(/['",;]+$/, '');
+            let quoted = String((m && m[2]) || '') !== '';
+            const v = String((m && m[3]) || '').replace(/['",;]+$/, '');
             if (v.length < 8) return false;
             if (!looksLikeSecretName(name)) return false;
             if (PLACEHOLDERS.has(v.toLowerCase())) return false;
@@ -96,13 +102,40 @@ const EXTRA_SECRET_PATTERNS = [
             if (/^(\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|<[^>]*>|\[[^\]]*\]|%[^%]+%|true|false|null|none|undefined)$/i.test(v)) return false;
             if (/^[A-Za-z]:\\/.test(v) || v.indexOf('\\\\') !== -1) return false;
             if (v.indexOf('(') !== -1 || v.indexOf(')') !== -1) return false;
-            if (v.indexOf('.') !== -1 && !looksLikeKnownToken(v)) return false;
+            // P45-b: template literal with a substitution is a reference;
+            // a plain template falls through on its stripped content but
+            // keeps a literal intent (backticks quote like '...': the
+            // reference rules below do not apply to it).
+            let w = v;
+            if (w.length >= 2 && w[0] === '`' && w[w.length - 1] === '`') {
+                w = w.slice(1, -1);
+                if (w.indexOf('${') !== -1) return false;
+                if (w.length < 8) return false;
+                quoted = true;
+            }
+            // P45-b: bracket/index access (config["K"], settings['K'],
+            // myArray[10]) is a reference. Only unquoted: a QUOTED value
+            // keeps its literal intent even with brackets inside.
+            if (!quoted && /^[A-Za-z_$][A-Za-z0-9_$]*\s*\[\s*[A-Za-z0-9_$'"]*\s*\]?$/.test(w)) return false;
+            // P45-b: value identical to its own name (TOKEN = "TOKEN").
+            if (w.toLowerCase() === name.toLowerCase()) return false;
+            // P45-b: unquoted camelCase identifier on a CODE line is a
+            // variable reference (const TOKEN = fallbackValue). The line
+            // (m.input) decides: .env literals (no const/;/keywords) and
+            // all quoted strings still flag.
+            if (!quoted && /^[a-z][A-Za-z0-9_$]*[A-Z][A-Za-z0-9_$]*$/.test(w)) {
+                const line = String((m && m.input) || '');
+                if (/(^|[;{}])\s*(const|let|var|readonly|public|private|final|export|return)\b/.test(line) ||
+                    line.indexOf(';') !== -1) return false;
+            }
+            if (w.indexOf('.') !== -1 && !looksLikeKnownToken(w)) return false;
             return true;
         },
         // P41: pre-P41 check, kept for --before comparisons (CLI legacy mode).
+        // P45: group 2 is the quote now, the value moved to group 3.
         checkV1(m) {
             const name = String((m && m[1]) || '');
-            const v = String((m && m[2]) || '').replace(/['",;]+$/, '');
+            const v = String((m && m[3]) || '').replace(/['",;]+$/, '');
             if (v.length < 8) return false;
             if (!looksLikeSecretName(name)) return false;
             if (PLACEHOLDERS.has(v.toLowerCase())) return false;
@@ -206,6 +239,9 @@ function stripEntropyNoise(text) {
 // P41-c: ordered alphabets/charsets (SQL v_alphabet, charset constants):
 // mostly sequential code points AND mostly unique chars. Repeated junk
 // (low uniqueness) and true random (low sequentiality) never match.
+// P45-c: uniqueness bar 0.6 -> 0.4 (a doubled hex alphabet, 16/32, is
+// still an alphabet; a true 64-hex secret sits near 0.22 AND has low
+// sequentiality, so it still flags).
 function looksLikeAlphabet(tok) {
     const s = String(tok || '');
     if (s.length < 12) return false;
@@ -214,7 +250,7 @@ function looksLikeAlphabet(tok) {
         if (s.charCodeAt(i) === s.charCodeAt(i - 1) + 1) seq++;
     }
     if (seq / (s.length - 1) < 0.5) return false;
-    return new Set(s).size / s.length >= 0.6;
+    return new Set(s).size / s.length >= 0.4;
 }
 // P41-c: secret context on the line (secret-ish assigned name or known
 // token prefix). Bare tokens without context face a stricter length bar.

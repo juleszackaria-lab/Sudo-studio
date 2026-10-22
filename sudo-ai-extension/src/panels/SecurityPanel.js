@@ -91,6 +91,10 @@ class SecurityPanel {
             case 'refresh':
                 this._runAudit();
                 break;
+            case 'toggleGenerated': // P45-a: rescan with/without generated dirs
+                this._showGenerated = !this._showGenerated;
+                this._runAudit();
+                break;
             case 'openFile': {
                 // Validate filePath: must be a non-empty string, no path traversal
                 const fp = msg.filePath;
@@ -160,7 +164,8 @@ class SecurityPanel {
 
         // 1. Secrets scan
         if (wsRoot) {
-            audit.secrets = await this._scanSecrets(wsRoot);
+            audit.showGenerated = !!this._showGenerated; // P45-a
+            audit.secrets = await this._scanSecrets(wsRoot, { showGenerated: !!this._showGenerated });
             audit.secretsSkipped = this._lastSecretsSkipped || 0;
             audit.secretsMeta = this._lastSecretsMeta || null;
             audit.secretsHidden = this._lastSecretsHidden || [];
@@ -285,6 +290,7 @@ class SecurityPanel {
     // P41: opts.legacy reproduces the pre-P41 scan (--before comparisons).
     async _scanSecrets(root, opts) {
         const legacy = !!(opts && opts.legacy);
+        const showGen = !legacy && !!(opts && opts.showGenerated); // P45-a
         const hits = [];
         const hidden = []; // P41-d: low-confidence findings (masked, never dropped)
         // P18: every text file is scanned (dotfiles and extensionless files
@@ -314,10 +320,15 @@ class SecurityPanel {
                 try { isLink = e.isSymbolicLink(); } catch { /* ignore */ }
                 if (isLink) { meta.skipped.symlink++; continue; }
                 if (e.isDirectory()) {
-                    if (!legacy && GENERATED_SKIP_DIRS.has(e.name)) {
+                    // P45-a: "Show generated folders" walks INTO generated
+                    // dirs (default still skips them); legacy never shows.
+                    const gen = GENERATED_SKIP_DIRS.has(e.name);
+                    if (gen && !legacy && !showGen) {
                         meta.skipped.generatedDirs++;
                         if (meta.generatedDirs.length < 20) meta.generatedDirs.push(path.relative(root, full));
-                    } else if (!skipSet.has(e.name)) walk(full, depth + 1);
+                    } else if (!skipSet.has(e.name) || (showGen && gen)) {
+                        walk(full, depth + 1);
+                    }
                     continue;
                 }
                 if (!e.isFile()) continue;
@@ -331,6 +342,9 @@ class SecurityPanel {
                 meta.scanned++;
                 const rel = path.relative(root, full);
                 const ignored = securityScore.isIgnoredByGitignore(rel, giText);
+                // P45-a: findings inside generated dirs are badged (only
+                // reachable with showGenerated, or in legacy mode).
+                const inGenerated = rel.split(/[\\/]/).some((s) => GENERATED_SKIP_DIRS.has(s));
                 const lowName = e.name.toLowerCase();
                 // P41-c: sourcemap files carry no entropy signal (mappings +
                 // sourceMappingURL comments are the documented false positive).
@@ -383,7 +397,12 @@ class SecurityPanel {
                         line: idx + 1,
                         snippet,
                     };
-                    if (!legacy && confidence === 'low') hidden.push(rec);
+                    if (inGenerated) rec.generated = true; // P45-a
+                    // P45-a: explicitly shown generated findings stay
+                    // visible (badged GENERATED, grade kept): masking
+                    // them would make the toggle a no-op on context-free
+                    // tokens, the exact case it exists to reveal.
+                    if (!legacy && confidence === 'low' && !(showGen && inGenerated)) hidden.push(rec);
                     else hits.push(rec);
                 }
             }
@@ -679,6 +698,7 @@ function openWhyFile(el){ openFile(el.getAttribute("data-f"), parseInt(el.getAtt
 function importDb(){ vscode.postMessage({type:'importAdvisories'}); }
 function measureCoverage(){ vscode.postMessage({type:'measureCoverage'}); }
 function toggleHidden(){ window._showHidden=!window._showHidden; if(window._lastAudit) renderAudit(window._lastAudit); }
+function toggleGenerated(){ vscode.postMessage({type:'toggleGenerated'}); }
 function renderCoverage(c){
   let h='<div class="section"><h2>Coverage</h2>';
   if(!c.measured){ h+='<p class="empty">'+escHtml(c.reason)+'</p>'; }
@@ -756,7 +776,8 @@ function renderAudit(a){
   html+='<p style="font-size:12px;color:var(--muted)">'+sm.scanned+' file(s) analyzed.</p>';
   var hidList = a.secretsHidden || [];
   var genSk = ssk.generatedDirs || 0;
-  if(genSk>0){html+='<p style="font-size:12px;color:var(--muted)">'+genSk+' generated folder(s) skipped: '+escHtml((sm.generatedDirs||[]).slice(0,8).join(', '))+'.</p>';}
+  if(genSk>0){html+='<p style="font-size:12px;color:var(--muted)">'+genSk+' generated folder(s) skipped: '+escHtml((sm.generatedDirs||[]).slice(0,8).join(', '))+'. Rescan to include them:</p>';}
+  if(genSk>0||a.showGenerated){html+='<p style="font-size:12px;color:var(--muted)"><label><input type="checkbox" onclick="toggleGenerated()" '+(a.showGenerated?'checked':'')+'> Show generated folders</label></p>';}
   if(hidList.length>0){html+='<p style="font-size:12px;color:#e3b341">'+hidList.length+' finding(s) hidden (low confidence). <button class="btn btn-sm" onclick="toggleHidden()">'+(window._showHidden?'Hide masked':'Show masked')+'</button></p>';}
   if(sm.error){html+='<p style="font-size:13px;font-weight:700;color:#f85149">Scan FAILED ('+escHtml(sm.error)+') - results incomplete, absence of secrets NOT established.</p>';}
   else if(skN>0){html+='<p style="font-size:12px;color:#e3b341">Partial scan: '+skN+' file(s) skipped (large: '+(ssk.large||0)+', binary: '+(ssk.binary||0)+', unreadable: '+(ssk.unreadable||0)+', dirs: '+(ssk.dirs||0)+', links: '+(ssk.symlink||0)+').</p>';}
@@ -767,6 +788,7 @@ function renderAudit(a){
         <span class="badge \${(s.severity==='critical'||s.severity==='high')?'badge-red':(s.severity==='medium'?'badge-yellow':'badge-green')}">\${escHtml((s.severity||'medium').toUpperCase())}</span>
         <span class="badge \${s.ignored?'badge-green':'badge-red'}">\${s.ignored?'IGNORED':'NOT IGNORED'}</span>
         <span class="badge badge-blue">CONF:\${escHtml((s.confidence||'high').toUpperCase())}</span>
+        \${s.generated?'<span class="badge badge-yellow">GENERATED</span>':''}
         <div style="flex:1">
           <div><strong>\${s.label}</strong> — <span class="file-link" onclick="openFile('\${s.file}',\${s.line})">\${s.file}:\${s.line}</span></div>
           <div style="font-size:11px;color:var(--muted);font-family:monospace;margin-top:2px">\${escHtml(s.snippet)}</div>

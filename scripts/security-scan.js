@@ -3,12 +3,13 @@
  * SUDO STUDIO - headless secret scan (P41 proof tool).
  *
  * Runs the REAL SecurityPanel scanner on any folder, without VS Code:
- *   node scripts/security-scan.js <folder> [--before] [--show-hidden] [--json]
+ *   node scripts/security-scan.js <folder> [--before] [--show-hidden] [--show-generated] [--json]
  *
  * --before       legacy pre-P41 scan (old noise included): run with and
  *                without it on the same folder for before/after numbers.
  * --show-hidden  also list masked (low-confidence) findings (redacted).
- * --json         machine-readable output (for the P41 proof paste).
+ * --show-generated  P45: also scan generated folders (.next, dist, ...).
+ * --json         machine-readable output (for the P45 proof paste).
  *
  * Snippets are redacted by the scanner; no raw secret is ever printed.
  * The score needs an advisory DB (panel import); headless it stays N/A.
@@ -39,7 +40,7 @@ const { SecurityPanel } = require(path.join(EXT, 'src', 'panels', 'SecurityPanel
 const ss = require(path.join(EXT, 'src', 'utils', 'securityScore.js'));
 
 function usage() {
-    console.log('Usage: node scripts/security-scan.js <folder> [--before] [--show-hidden] [--json]');
+    console.log('Usage: node scripts/security-scan.js <folder> [--before] [--show-hidden] [--show-generated] [--json]');
 }
 
 async function main() {
@@ -47,6 +48,7 @@ async function main() {
     const dir = args.find((a) => a.charAt(0) !== '-');
     const before = args.indexOf('--before') !== -1;
     const showHidden = args.indexOf('--show-hidden') !== -1;
+    const showGenerated = args.indexOf('--show-generated') !== -1;
     const asJson = args.indexOf('--json') !== -1;
     if (!dir) { usage(); process.exitCode = 2; return; }
     const root = path.resolve(dir);
@@ -63,7 +65,7 @@ async function main() {
     const t0 = Date.now();
     let hits = [];
     try {
-        hits = await panel._scanSecrets(root, { legacy: before });
+        hits = await panel._scanSecrets(root, { legacy: before, showGenerated });
     } catch (e) {
         console.error('Scan failed: ' + String((e && e.message) || e));
         process.exitCode = 2; return;
@@ -82,7 +84,8 @@ async function main() {
     const sk = meta.skipped || {};
     const out = {
         folder: root,
-        mode: before ? 'before (legacy pre-P41)' : 'after (P41)',
+        mode: before ? 'before (legacy pre-P41)' : 'after (P45)',
+        showGenerated: !!showGenerated,
         ms,
         scanned: meta.scanned || 0,
         skipped: { large: sk.large || 0, binary: sk.binary || 0, unreadable: sk.unreadable || 0,
@@ -96,7 +99,8 @@ async function main() {
         score: scored.score,
         scoreStatus: scored.status,
         findings: hits.map((h) => ({ file: h.file, line: h.line, label: h.label,
-            severity: h.severity, confidence: h.confidence, ignored: h.ignored, snippet: h.snippet })),
+            severity: h.severity, confidence: h.confidence, ignored: h.ignored,
+            generated: !!h.generated, snippet: h.snippet })),
         masked: showHidden ? hidden.map((h) => ({ file: h.file, line: h.line, label: h.label,
             severity: h.severity, confidence: h.confidence, snippet: h.snippet })) : undefined,
     };
@@ -117,7 +121,7 @@ async function main() {
     console.log('Score : ' + (scored.score === null ? 'N/A (base d\'avis absente en headless)' : scored.score));
     for (const f of out.findings) {
         console.log('  ' + f.file + ':' + f.line + ' [' + f.severity + '/' + f.confidence + ']' +
-            (f.ignored ? ' [ignore]' : '') + ' ' + f.label + ' :: ' + f.snippet);
+            (f.ignored ? ' [ignore]' : '') + (f.generated ? ' [genere]' : '') + ' ' + f.label + ' :: ' + f.snippet);
     }
     if (showHidden) {
         for (const f of out.masked) {
