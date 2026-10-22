@@ -198,7 +198,8 @@ async function openPaletteAndRun(main, substr, first) {
     await sleep(2500);
   };
   const good = (st, value) => value !== null &&
-    value.toLowerCase().indexOf(substr.toLowerCase()) !== -1 && st && st.rows > 0;
+    value.toLowerCase().indexOf(substr.toLowerCase()) !== -1 && st && st.rows > 0 &&
+    (st.first || '').toLowerCase().indexOf(substr.toLowerCase()) !== -1;
   await pressEscape(main); // defocus webviews / close stale pickers
   await openOnce();
   let st = await paletteState(main);
