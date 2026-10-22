@@ -59,13 +59,13 @@ echo.
 set "F_MKLOG=0"
 if not exist "%LOGS%" set "F_MKLOG=1"
 if "%F_MKLOG%"=="1" (
-    mkdir "%LOGS%" 2>nul
+    mkdir "!LOGS!" 2>nul
 )
 del "%LOGS%\startup-errors.txt" 2>nul
 set "F_LOGDIR_OK=1"
 if not exist "%LOGS%" set "F_LOGDIR_OK=0"
 if "%F_LOGDIR_OK%"=="0" (
-    echo [ERROR] Cannot create logs folder at: %LOGS%
+    echo [ERROR] Cannot create logs folder at: !LOGS!
     echo         Check write permissions.
     echo.
     pause
@@ -83,16 +83,16 @@ if exist "%ROOT%..\logs" set "F_MIG_PAR=1"
 set "F_MIG_USR=0"
 if exist "%USERPROFILE%\.sudo_studio\logs" set "F_MIG_USR=1"
 if "%F_MIG_ROOT%"=="1" (
-    xcopy /Y /D /I "%ROOT%logs\*.log*" "%LOGS%\" >nul 2>&1
-    xcopy /Y /D /I "%ROOT%logs\*.jsonl" "%LOGS%\" >nul 2>&1
+    xcopy /Y /D /I "!ROOT!logs\*.log*" "!LOGS!\" >nul 2>&1
+    xcopy /Y /D /I "!ROOT!logs\*.jsonl" "!LOGS!\" >nul 2>&1
 )
 if "%F_MIG_PAR%"=="1" (
-    xcopy /Y /D /I "%ROOT%..\logs\*.log*" "%LOGS%\" >nul 2>&1
-    xcopy /Y /D /I "%ROOT%..\logs\*.jsonl" "%LOGS%\" >nul 2>&1
+    xcopy /Y /D /I "!ROOT!..\logs\*.log*" "!LOGS!\" >nul 2>&1
+    xcopy /Y /D /I "!ROOT!..\logs\*.jsonl" "!LOGS!\" >nul 2>&1
 )
 if "%F_MIG_USR%"=="1" (
-    xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.log*" "%LOGS%\" >nul 2>&1
-    xcopy /Y /D /I "%USERPROFILE%\.sudo_studio\logs\*.jsonl" "%LOGS%\" >nul 2>&1
+    xcopy /Y /D /I "!USERPROFILE!\.sudo_studio\logs\*.log*" "!LOGS!\" >nul 2>&1
+    xcopy /Y /D /I "!USERPROFILE!\.sudo_studio\logs\*.jsonl" "!LOGS!\" >nul 2>&1
 )
 
 :: -- Build manifest (P29-e): commit first in log ----------------
@@ -112,11 +112,11 @@ if "%BUILD_VERSION%"=="" set "BUILD_VERSION=4.3"
 :: -- Init log file --------------------------------------------
 (
     echo ============================================================
-    echo   SUDO STUDIO v%BUILD_VERSION% - %DATE% %TIME%
-    echo   Build commit: %BUILD_COMMIT%
-    echo   Root: %ROOT%
+    echo   SUDO STUDIO v!BUILD_VERSION! - %DATE% %TIME%
+    echo   Build commit: !BUILD_COMMIT!
+    echo   Root: !ROOT!
     echo ============================================================
-) >> "%LOG_FILE%"
+) >> "!LOG_FILE!"
 echo [LOG] Logging to: %LOG_FILE%
 echo.
 
@@ -132,14 +132,14 @@ set "FOUND_BE=0"
 if exist "%APP%backend.exe" set "FOUND_BE=1"
 if "%FOUND_BE%"=="1" (
     echo   [OK] backend.exe found
-    echo   [OK] backend.exe >> "%LOG_FILE%"
+    echo   [OK] backend.exe >> "!LOG_FILE!"
 ) else (
     echo   [NOT FOUND] backend.exe
-    echo   Expected at: %APP%backend.exe
-    echo   [ERROR] backend.exe not found >> "%LOG_FILE%"
+    echo   Expected at: !APP!backend.exe
+    echo   [ERROR] backend.exe not found >> "!LOG_FILE!"
     echo.
     echo [FATAL] backend.exe is missing.
-    echo backend.exe is missing - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
+    echo backend.exe is missing - reinstall Sudo Studio>>"!LOGS!\startup-errors.txt"
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -151,14 +151,14 @@ set "FOUND_RT=0"
 if exist "%APP%runtime.exe" set "FOUND_RT=1"
 if "%FOUND_RT%"=="1" (
     echo   [OK] runtime.exe found
-    echo   [OK] runtime.exe >> "%LOG_FILE%"
+    echo   [OK] runtime.exe >> "!LOG_FILE!"
 ) else (
     echo   [NOT FOUND] runtime.exe
-    echo   Expected at: %APP%runtime.exe
-    echo   [ERROR] runtime.exe not found >> "%LOG_FILE%"
+    echo   Expected at: !APP!runtime.exe
+    echo   [ERROR] runtime.exe not found >> "!LOG_FILE!"
     echo.
     echo [FATAL] runtime.exe is missing.
-    echo runtime.exe is missing - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
+    echo runtime.exe is missing - reinstall Sudo Studio>>"!LOGS!\startup-errors.txt"
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -168,15 +168,15 @@ if "%FOUND_RT%"=="1" (
 :: --- Editor executable (SudoStudio.exe or VSCodium.exe) ---
 :: V_EXE was already resolved above in Global Variables section.
 if defined V_EXE (
-    echo   [OK] Editor found: %V_EXE%
-    echo   [OK] Editor: %V_EXE% >> "%LOG_FILE%"
+    echo   [OK] Editor found: !V_EXE!
+    echo   [OK] Editor: !V_EXE! >> "!LOG_FILE!"
 ) else (
     echo   [NOT FOUND] No editor executable found.
-    echo   Looked for SudoStudio.exe and VSCodium.exe in: %ROOT%
-    echo   [ERROR] Editor not found >> "%LOG_FILE%"
+    echo   Looked for SudoStudio.exe and VSCodium.exe in: !ROOT!
+    echo   [ERROR] Editor not found >> "!LOG_FILE!"
     echo.
     echo [FATAL] No editor executable found in install folder.
-    echo No editor executable found - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
+    echo No editor executable found - reinstall Sudo Studio>>"!LOGS!\startup-errors.txt"
     echo         Please reinstall Sudo Studio.
     echo.
     pause
@@ -188,11 +188,11 @@ set "FOUND_EXTJS=0"
 if exist "%EXT%\extension.js" set "FOUND_EXTJS=1"
 if "%FOUND_EXTJS%"=="1" (
     echo   [OK] Sudo AI extension found
-    echo   [OK] extension.js >> "%LOG_FILE%"
+    echo   [OK] extension.js >> "!LOG_FILE!"
 ) else (
     echo   [WARNING] Sudo AI extension not found at:
-    echo             %EXT%\extension.js
-    echo   [WARNING] Extension missing - Sudo Studio will open without Sudo AI >> "%LOG_FILE%"
+    echo             !EXT!\extension.js
+    echo   [WARNING] Extension missing - Sudo Studio will open without Sudo AI >> "!LOG_FILE!"
 )
 
 echo.
@@ -247,7 +247,7 @@ set "RUNTIME_WAIT=0"
     set /a RUNTIME_MOD=RUNTIME_ELAPSED %% 15
     if !RUNTIME_MOD! equ 0 (
         echo   [AI Loading] !RUNTIME_ELAPSED!s elapsed - TinyLlama loading... ^(up to 600s^)
-        echo   [AI Loading] !RUNTIME_ELAPSED!s >> "%LOG_FILE%"
+        echo   [AI Loading] !RUNTIME_ELAPSED!s >> "!LOG_FILE!"
     )
     goto :wait_runtime
 
@@ -357,17 +357,17 @@ set "V_MASTER=%ROOT%extensions\sudo-ai"
 set "F_MKVDAT=0"
 if not exist "%V_DAT%" set "F_MKVDAT=1"
 if "%F_MKVDAT%"=="1" (
-    mkdir "%V_DAT%" 2>nul
+    mkdir "!V_DAT!" 2>nul
 )
 set "F_MKVEXT=0"
 if not exist "%V_EXT%" set "F_MKVEXT=1"
 if "%F_MKVEXT%"=="1" (
-    mkdir "%V_EXT%" 2>nul
+    mkdir "!V_EXT!" 2>nul
 )
 set "F_MKVUSR=0"
 if not exist "%V_DAT%\User" set "F_MKVUSR=1"
 if "%F_MKVUSR%"=="1" (
-    mkdir "%V_DAT%\User" 2>nul
+    mkdir "!V_DAT!\User" 2>nul
 )
 :: P35(c): one-way migration of pre-P35 user-data (copy-only, never delete).
 set "F_SETSRC=0"
@@ -376,7 +376,7 @@ set "F_SETABS=0"
 if not exist "%V_DAT%\User\settings.json" set "F_SETABS=1"
 if "%F_SETSRC%"=="1" (
     if "%F_SETABS%"=="1" (
-        xcopy /S /E /Y /Q /I "%ROOT%data" "%V_DAT%\" >nul 2>&1
+        xcopy /S /E /Y /Q /I "!ROOT!data" "!V_DAT!\" >nul 2>&1
     )
 )
 set "F_DEVABS=0"
@@ -385,7 +385,7 @@ set "F_EXTPRESENT=0"
 if exist "%ROOT%extensions" set "F_EXTPRESENT=1"
 if "%F_DEVABS%"=="1" (
     if "%F_EXTPRESENT%"=="1" (
-        xcopy /S /E /Y /Q /I "%ROOT%extensions" "%V_EXT%\" >nul 2>&1
+        xcopy /S /E /Y /Q /I "!ROOT!extensions" "!V_EXT!\" >nul 2>&1
     )
 )
 
@@ -395,7 +395,7 @@ if "%F_DEVABS%"=="1" (
 set "F_SEEDABS=0"
 if not exist "%V_DAT%\User\settings.json" set "F_SEEDABS=1"
 if "%F_SEEDABS%"=="1" (
-    echo {"window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}Sudo Studio"}>"%V_DAT%\User\settings.json"
+    echo {"window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}Sudo Studio"}>"!V_DAT!\User\settings.json"
     echo [PHASE 5] Default settings seeded - window title set
 )
 
@@ -414,59 +414,59 @@ if exist "%V_DEV%\package.json" set "EXT_HAVE_LIVE=1"
 if exist "%V_SRC%\package.json" set "EXT_HAVE_SRC=1"
 if "%EXT_HAVE_LIVE%"=="1" if "%EXT_HAVE_MASTER%"=="1" (
     echo [PHASE 5] Refreshing live extension from shipped master...
-    xcopy /S /E /Y /D /Q /I "%V_MASTER%" "%V_DEV%\" >nul 2>&1
-    echo   [OK] Extension live at %V_DEV%
-    echo   [OK] Extension refreshed >> "%LOG_FILE%"
+    xcopy /S /E /Y /D /Q /I "!V_MASTER!" "!V_DEV!\" >nul 2>&1
+    echo   [OK] Extension live at !V_DEV!
+    echo   [OK] Extension refreshed >> "!LOG_FILE!"
 )
 if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="1" (
     echo [PHASE 5] Installing extension to live dir...
-    echo [PHASE 5] Installing extension >> "%LOG_FILE%"
+    echo [PHASE 5] Installing extension >> "!LOG_FILE!"
     set "F_MKDEV1=0"
     if not exist "%V_DEV%" set "F_MKDEV1=1"
     if "%F_MKDEV1%"=="1" (
-        mkdir "%V_DEV%" 2>nul
+        mkdir "!V_DEV!" 2>nul
     )
-    xcopy /S /E /Y /Q /I "%V_MASTER%" "%V_DEV%\" >nul 2>&1
-    echo   [OK] Extension installed at %V_DEV%
-    echo   [OK] Extension installed >> "%LOG_FILE%"
+    xcopy /S /E /Y /Q /I "!V_MASTER!" "!V_DEV!\" >nul 2>&1
+    echo   [OK] Extension installed at !V_DEV!
+    echo   [OK] Extension installed >> "!LOG_FILE!"
 )
 if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="0" if "%EXT_HAVE_SRC%"=="1" (
     echo [PHASE 5] Syncing extension from dev source...
-    echo [PHASE 5] Syncing extension (dev) >> "%LOG_FILE%"
+    echo [PHASE 5] Syncing extension (dev) >> "!LOG_FILE!"
     set "F_MKDEV2=0"
     if not exist "%V_DEV%" set "F_MKDEV2=1"
     if "%F_MKDEV2%"=="1" (
-        mkdir "%V_DEV%" 2>nul
+        mkdir "!V_DEV!" 2>nul
     )
-    xcopy /S /E /Y /Q /I "%V_SRC%" "%V_DEV%\" >nul 2>&1
-    echo   [OK] Extension synced to %V_DEV%
-    echo   [OK] Extension synced (dev) >> "%LOG_FILE%"
+    xcopy /S /E /Y /Q /I "!V_SRC!" "!V_DEV!\" >nul 2>&1
+    echo   [OK] Extension synced to !V_DEV!
+    echo   [OK] Extension synced (dev) >> "!LOG_FILE!"
 )
 if "%EXT_HAVE_LIVE%"=="1" if "%EXT_HAVE_MASTER%"=="0" (
-    echo   [OK] Extension live at %V_DEV% (dev)
-    echo   [OK] Extension live (dev) >> "%LOG_FILE%"
+    echo   [OK] Extension live at !V_DEV! (dev)
+    echo   [OK] Extension live (dev) >> "!LOG_FILE!"
 )
 if "%EXT_HAVE_LIVE%"=="0" if "%EXT_HAVE_MASTER%"=="0" if "%EXT_HAVE_SRC%"=="0" (
     echo   [ERROR] No extension found - Sudo AI will NOT load.
-    echo   [ERROR] Looked for: %V_MASTER%\package.json, %V_DEV%\package.json and %V_SRC%\package.json
-    echo   [ERROR] Reinstall Sudo Studio. Full log: %LOG_FILE%
-    echo   [ERROR] Extension missing (both paths) >> "%LOG_FILE%"
+    echo   [ERROR] Looked for: !V_MASTER!\package.json, !V_DEV!\package.json and !V_SRC!\package.json
+    echo   [ERROR] Reinstall Sudo Studio. Full log: !LOG_FILE!
+    echo   [ERROR] Extension missing (both paths) >> "!LOG_FILE!"
 )
 
 :: Confirm V_EXE still valid (belt-and-suspenders, should always be set)
 if not defined V_EXE (
-    echo [FATAL] V_EXE undefined at launch time >> "%LOG_FILE%"
+    echo [FATAL] V_EXE undefined at launch time >> "!LOG_FILE!"
     echo [FATAL] Editor path not set - cannot launch.
-    echo Editor path not set - cannot launch>>"%LOGS%\startup-errors.txt"
+    echo Editor path not set - cannot launch>>"!LOGS!\startup-errors.txt"
     pause
     exit /b 1
 )
 set "F_VEXE_OK=1"
 if not exist "%V_EXE%" set "F_VEXE_OK=0"
 if "%F_VEXE_OK%"=="0" (
-    echo [FATAL] Editor not found at: %V_EXE% >> "%LOG_FILE%"
-    echo [FATAL] Editor not found at: %V_EXE%
-    echo Editor not found - reinstall Sudo Studio>>"%LOGS%\startup-errors.txt"
+    echo [FATAL] Editor not found at: !V_EXE! >> "!LOG_FILE!"
+    echo [FATAL] Editor not found at: !V_EXE!
+    echo Editor not found - reinstall Sudo Studio>>"!LOGS!\startup-errors.txt"
     pause
     exit /b 1
 )
@@ -476,8 +476,8 @@ echo [PHASE 5] Launching: %V_EXE% >> "%LOG_FILE%"
 set "LAUNCHER=%SSDATA%\launch.bat"
 (
     echo @echo off
-    echo start "" "%V_EXE%" --extensions-dir "%V_EXT%" --user-data-dir "%V_DAT%"
-) > "%LAUNCHER%"
+    echo start "" "!V_EXE!" --extensions-dir "!V_EXT!" --user-data-dir "!V_DAT!"
+) > "!LAUNCHER!"
 
 :: Lancer via le script propre
 echo [PHASE 5] Launching via launcher... >> "%LOG_FILE%"
@@ -487,10 +487,10 @@ call "%LAUNCHER%"
 timeout /t 5 /nobreak >nul
 tasklist 2>nul | findstr /I "SudoStudio VSCodium" >nul 2>&1
 if not errorlevel 1 (
-    echo [PHASE 5] Sudo Studio running OK >> "%LOG_FILE%"
+    echo [PHASE 5] Sudo Studio running OK >> "!LOG_FILE!"
     echo   [OK] Sudo Studio is running
 ) else (
-    echo [PHASE 5] Sudo Studio not detected >> "%LOG_FILE%"
+    echo [PHASE 5] Sudo Studio not detected >> "!LOG_FILE!"
     echo   [WARNING] Sudo Studio may have closed
 )
 
@@ -561,7 +561,7 @@ powershell -NoProfile -WindowStyle Hidden -Command "try { $p1 = '--extensions' +
 if !errorlevel! equ 0 (
     set "MON_SEEN=1"
     echo [MONITOR] Editor detected - watching. Close the editor to stop everything.
-    echo [MONITOR] Editor detected >> "%LOG_FILE%"
+    echo [MONITOR] Editor detected >> "!LOG_FILE!"
     goto :mon_loop
 )
 set /a MON_WAIT+=1
@@ -584,11 +584,11 @@ powershell -NoProfile -WindowStyle Hidden -Command "$r='%ROOT%'; $names=('backen
 timeout /t 3 /nobreak >nul
 powershell -NoProfile -WindowStyle Hidden -Command "$r='%ROOT%'; $names=('backend.exe','runtime.exe','SudoStudio.exe','VSCodium.exe'); $left = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like ($r + '*') -and ($names -contains $_.Name) }).Count; exit $left" >nul 2>&1
 if !errorlevel! equ 0 (
-    echo   [OK] All Sudo Studio processes stopped. Log: %LOG_FILE%
-    echo [STOP] Cleanup done - 0 remaining >> "%LOG_FILE%"
+    echo   [OK] All Sudo Studio processes stopped. Log: !LOG_FILE!
+    echo [STOP] Cleanup done - 0 remaining >> "!LOG_FILE!"
 ) else (
     echo   [WARN] !errorlevel! process(es) still alive - kill them manually or reboot.
-    echo   [WARN] Cleanup incomplete: !errorlevel! remaining >> "%LOG_FILE%"
+    echo   [WARN] Cleanup incomplete: !errorlevel! remaining >> "!LOG_FILE!"
 )
 timeout /t 3 /nobreak >nul
 exit /b 0
