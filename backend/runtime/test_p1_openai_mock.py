@@ -251,6 +251,34 @@ check("default_n_ctx", oc.default_n_ctx(16) == 8192 and oc.default_n_ctx(8) == 4
 check("clamp_n_ctx", oc.clamp_n_ctx(100) == 512 and oc.clamp_n_ctx(99999) == 32768
       and oc.clamp_n_ctx("abc") is None and oc.clamp_n_ctx(4096) == 4096)
 
+# 12b. P43-1 fit-based auto policy (<=3B ladder 8192/4096/2048)
+_M15 = "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF"
+_M3 = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+_M7 = "Mistral-7B-GGUF"
+check("parse_params_b", oc.parse_params_b(_M15) == 1.5 and oc.parse_params_b(_M3) == 3.0
+      and oc.parse_params_b(_M7) == 7.0 and oc.parse_params_b("mystery-model") is None
+      and oc.parse_params_b("") is None)
+check("kv_bytes_per_token", oc.kv_bytes_per_token(_M15) == 28 * 1024
+      and oc.kv_bytes_per_token(_M3) == 48 * 1024
+      and oc.kv_bytes_per_token("mystery-model") == 64 * 1024)
+check("auto 1.5B roomy -> 8192", oc.auto_n_ctx(_M15, 1.0, 8.0)["n_ctx"] == 8192,
+      oc.auto_n_ctx(_M15, 1.0, 8.0))
+check("auto 1.5B 3GB free -> 8192 (fit proves it)",
+      oc.auto_n_ctx(_M15, 1.0, 3.0)["n_ctx"] == 8192, oc.auto_n_ctx(_M15, 1.0, 3.0))
+check("auto 1.5B tight -> 4096 then 2048",
+      oc.auto_n_ctx(_M15, 1.0, 2.2)["n_ctx"] == 4096
+      and oc.auto_n_ctx(_M15, 1.0, 2.05)["n_ctx"] == 2048)
+check("auto 1.5B starved -> floor 2048 + warn",
+      oc.auto_n_ctx(_M15, 1.0, 1.0)["n_ctx"] == 2048
+      and "floor" in oc.auto_n_ctx(_M15, 1.0, 1.0)["explain"])
+check("auto 3B roomy -> 8192, tight -> step down",
+      oc.auto_n_ctx(_M3, 2.0, 8.0)["n_ctx"] == 8192
+      and oc.auto_n_ctx(_M3, 2.0, 3.3)["n_ctx"] == 4096)
+check("auto 7B/unknown -> legacy default_n_ctx",
+      oc.auto_n_ctx(_M7, 4.0, 8.0)["n_ctx"] == oc.default_n_ctx(8.0)
+      and oc.auto_n_ctx("mystery", 1.0, 8.0)["n_ctx"] == oc.default_n_ctx(8.0))
+check("auto bad inputs safe", oc.auto_n_ctx(_M15, "xx", "yy")["n_ctx"] == 4096)
+
 # 13. schema + parse
 sch = oc.build_toolcall_json_schema(TOOLS)
 check("toolcall schema", sch["properties"]["name"]["enum"] == ["get_weather"]

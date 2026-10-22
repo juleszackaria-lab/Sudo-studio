@@ -23,6 +23,7 @@ ASCII-only source (project rule).
 """
 
 import json
+import re
 import time
 import uuid
 
@@ -60,6 +61,73 @@ def clamp_n_ctx(n):
     except (TypeError, ValueError):
         return None
     return max(N_CTX_MIN, min(N_CTX_MAX, v))
+
+
+# ---------------------------------------------------------------------------
+# n_ctx auto policy (P43-1): fit-based default for <=3B models.
+# ---------------------------------------------------------------------------
+P43_KV_MARGIN_GB = 1.0  # free RAM kept beyond weights + KV cache
+
+
+def parse_params_b(model_id):
+    """Parameter count in billions from a model id, None if unknown. Pure."""
+    m = re.search(r'(\d+(?:[._]\d+)?)\s*b\b', str(model_id or ''), re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        v = float(m.group(1).replace('_', '.'))
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
+def kv_bytes_per_token(model_id):
+    """Heuristic KV-cache cost per context token. Pure function.
+
+    Qwen2.5-Coder-1.5B reference: ~28 KB/token (28 layers x 256 kv-dim x
+    2 (K+V) x 2 bytes fp16 = 28672; 8192 ctx ~= 235 MB decimal). Scales
+    ~linearly with size; unknown models stay conservative (64 KB). The
+    loader journals a measured cross-check after each load ([GGUF] kv_check).
+    """
+    b = parse_params_b(model_id)
+    if b is None:
+        return 64 * 1024
+    if b <= 1.5:
+        return 28 * 1024
+    if b <= 3.0:
+        return 48 * 1024
+    return 64 * 1024
+
+
+def auto_n_ctx(model_id, weights_gb, avail_gb):
+    """Fit-based default context for <=3B models, else default_n_ctx. Pure.
+
+    Ladder [8192, 4096, 2048]: largest n with
+    weights_gb + n*kv_per_token + margin <= avail_gb.
+    Returns {'n_ctx', 'params_b', 'kv_kb', 'explain'}.
+    """
+    b = parse_params_b(model_id)
+    try:
+        avail = float(avail_gb)
+    except (TypeError, ValueError):
+        avail = 0.0
+    try:
+        weights = float(weights_gb)
+    except (TypeError, ValueError):
+        weights = 0.0
+    if b is None or b > 3.0 or avail <= 0:
+        n = default_n_ctx(avail_gb)
+        return {'n_ctx': n, 'params_b': b, 'kv_kb': None,
+                'explain': 'default_n_ctx (model %s)' % ('unknown' if b is None else '>3B')}
+    kv = kv_bytes_per_token(model_id)
+    for n in (8192, 4096, 2048):
+        need = weights + (n * kv) / 1e9 + P43_KV_MARGIN_GB
+        if need <= avail:
+            return {'n_ctx': n, 'params_b': b, 'kv_kb': kv // 1024,
+                    'explain': 'fit: weights %.2fGB + %d*%dKB + margin <= %.1fGB free'
+                               % (weights, n, kv // 1024, avail)}
+    return {'n_ctx': 2048, 'params_b': b, 'kv_kb': kv // 1024,
+            'explain': 'tight RAM: floor 2048 (watchdog guards)'}
 
 
 # ---------------------------------------------------------------------------

@@ -1387,11 +1387,26 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                     # P1-c: configurable n_ctx, prudent default from free RAM.
                     # P39-e: report free RAM with the choice (memory before/after
                     # is logged around the load: search [RAM] Before/After).
+                    # P43-1: explicit request wins; else the fit-based auto
+                    # policy (<=3B: 8192/4096/2048 by weights + KV cost).
                     _avail_now = get_available_ram_gb()
-                    eff_n_ctx = (openai_compat.clamp_n_ctx(n_ctx) or
-                                 openai_compat.default_n_ctx(_avail_now))
+                    _req = openai_compat.clamp_n_ctx(n_ctx)
+                    if _req:
+                        eff_n_ctx = _req
+                        _pol = 'requested (clamped)'
+                    else:
+                        _weights_gb = 0.0
+                        try:
+                            _weights_gb = os.path.getsize(gguf_path) / 1e9
+                        except Exception:
+                            _weights_gb = 0.0
+                        _auto = openai_compat.auto_n_ctx(model_id, _weights_gb, _avail_now)
+                        eff_n_ctx = _auto['n_ctx']
+                        _pol = _auto['explain']
                     dlog(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx}, freeRAM={_avail_now:.1f}GB)")
                     logger.info(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx}, freeRAM={_avail_now:.1f}GB)")
+                    dlog(f"[GGUF] policy: {_pol}")
+                    logger.info(f"[GGUF] policy: {_pol}")
 
                     _wd = _RamWatchdog(model_id)
                     _wd.start()
@@ -1433,6 +1448,18 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                     ram_used       = ram_before_load - ram_after_load
                     dlog(f"[RAM] After model load: {ram_after_load:.1f}GB free | used: {ram_used:.1f}GB")
                     logger.info(f"[RAM] After load: {ram_after_load:.1f}GB free | model used ~{max(0,ram_used):.1f}GB")
+                    # P43-1: measured cross-check of the KV estimate (weights +
+                    # KV + overhead share the delta; the implied per-token cost
+                    # must land near the policy estimate, else the table lies).
+                    _w_kb = 0.0
+                    _impl_kb = 0.0
+                    try:
+                        _w_kb = os.path.getsize(gguf_path) / 1024.0
+                        _impl_kb = max(0.0, (max(0.0, ram_used) * 1e6 - _w_kb)) / max(1, eff_n_ctx)
+                    except Exception:
+                        _impl_kb = 0.0
+                    logger.info(f"[GGUF] kv_check: n_ctx={eff_n_ctx} used~{max(0,ram_used):.2f}GB "
+                                f"(weights~{_w_kb/1e6:.2f}GB) -> implied ~{_impl_kb:.1f} KB/tok")
 
                     # Save to state
                     state.model      = llm
@@ -2201,6 +2228,7 @@ def health():
             "download_progress":  state.download_progress,
             "error":              state.error,
             "from_local_cache":   state.detected_local,
+            "n_ctx":              state.n_ctx,
         },
         "system": {
             "ram_available_gb":  round(avail_ram, 2),

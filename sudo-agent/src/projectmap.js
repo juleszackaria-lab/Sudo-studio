@@ -356,12 +356,22 @@ function deterministicFallback(opts) {
   const map = opts.map || null;
   const calls = Array.isArray(opts.calls) ? opts.calls : [];
   const loopKey = String(opts.loopKey || '').slice(0, 160);
+  // P43-3: why = 'loop' (unchanged text) | 'context' (saturation rescue
+  // failed) | 'question' (single question call failed).
+  const WHY = {
+    loop: 'Boucle repetitive detectee et arretee : l\'appel "' + (loopKey || '?') +
+      '" a ete repete 3 fois a l\'identique. Le dernier tour sans outils n\'a pas abouti, ' +
+      'voici donc un resume deterministe (sans modele).',
+    context: 'Contexte sature : le tour a depasse le budget du modele meme apres ' +
+      'compression, et l\'appel de secours minimal n\'a pas abouti, voici donc un ' +
+      'resume deterministe (sans modele).',
+    question: 'Le fournisseur n\'a pas repondu (un seul appel, sans outils) : voici ' +
+      'donc un resume deterministe (sans modele).',
+  };
   const lines = [];
   lines.push('[reponse generee sans IA]');
   lines.push('');
-  lines.push('Boucle repetitive detectee et arretee : l\'appel "' + (loopKey || '?') +
-    '" a ete repete 3 fois a l\'identique. Le dernier tour sans outils n\'a pas abouti, ' +
-    'voici donc un resume deterministe (sans modele).');
+  lines.push(WHY[opts.why] || WHY.loop);
   lines.push('');
   if (map && map.type) {
     lines.push('Projet : type ' + map.type + '.');
@@ -386,8 +396,52 @@ function deterministicFallback(opts) {
   return text;
 }
 
+// ---------------------------------------------------------------------------
+// Question context (P43-2). Deterministic, bounded: README head + key
+// manifest heads in a FIXED candidate order (same input -> same output).
+// ---------------------------------------------------------------------------
+const QCTX_FILES = ['README.md', 'package.json', 'pubspec.yaml',
+  'requirements.txt', 'pyproject.toml', 'go.mod'];
+const QCTX_PER_FILE = 1500;
+const QCTX_TOTAL = 6000;
+
+function buildQuestionContext(root, map, opts) {
+  opts = opts || {};
+  const lines = [];
+  const files = [];
+  lines.push('[contexte question]');
+  if (map && map.type) {
+    lines.push('Type detecte : ' + map.type + '.');
+    if (map.keyFiles && map.keyFiles.length) {
+      lines.push('Fichiers cles : ' + map.keyFiles.slice(0, 12).join(', ') + '.');
+    }
+  }
+  let left = opts.totalCap || QCTX_TOTAL;
+  const per = opts.perFileCap || QCTX_PER_FILE;
+  for (const name of QCTX_FILES) {
+    if (left <= 0) break;
+    let s = null;
+    try {
+      const abs = path.join(String(root || ''), name);
+      const st = fs.statSync(abs);
+      if (!st.isFile() || st.size <= 0 || st.size > 200000) continue;
+      s = fs.readFileSync(abs, 'utf8');
+    } catch (_) { continue; }
+    if (!s) continue;
+    const head = s.slice(0, Math.min(per, left));
+    files.push(name);
+    left -= head.length;
+    lines.push('');
+    lines.push('--- ' + name + ' (tete, ' + head.length + ' car.) ---');
+    lines.push(head);
+  }
+  const text = lines.join('\n');
+  return { text, tokens: estTokens(text), files };
+}
+
 module.exports = {
   MAP_SKIP, MAP_MAX_ENTRIES, MAP_TOKEN_BUDGET,
   estTokens, buildProjectMap, isGeneralQuestion, buildPreload,
   parseManifestDeps, notFoundHint, formatNotFound, deterministicFallback,
+  buildQuestionContext,
 };

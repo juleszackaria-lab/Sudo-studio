@@ -74,6 +74,13 @@ function mockProvider(opts) {
         try { body = JSON.parse(raw); } catch (_) { body = {}; }
         chats.push(body);
         const next = queue.length ? queue.shift() : { content: 'default-done' };
+        // P43-2: questions stream (streamChat, stream:true) -> answer SSE.
+        if (body && body.stream === true) {
+          const txt = String(next.content === undefined ? '' : next.content);
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+          res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: txt } }] }) + '\n\ndata: [DONE]\n\n');
+          return;
+        }
         const msg = { content: next.content === undefined ? '' : next.content };
         if (next.toolCalls) {
           msg.tool_calls = next.toolCalls.map((t, i) => ({ id: t.id || ('call-' + chats.length + '-' + i),

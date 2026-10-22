@@ -75,4 +75,19 @@ function estimateTokens(messages, schemaChars) {
   return Math.ceil(chars / 4) + 64;
 }
 
-module.exports = { FULL_TOOLS, SMALL_TOOLS, TERSE, parseParamsB, selectProfile, profileTools, maxIters, chunkNote, resolveCtxTokens, estimateTokens };
+// P43-3: per-part budget table (chars/4 each, ceil). Pure function.
+// parts: { system, tools, map, history, results } in CHARS.
+function tokenBudget(parts) {
+  const p = parts || {};
+  const b = {};
+  let total = 0;
+  for (const k of ['system', 'tools', 'map', 'history', 'results']) {
+    const n = Math.ceil((Number(p[k]) || 0) / 4);
+    b[k] = n;
+    total += n;
+  }
+  b.total = total;
+  return b;
+}
+
+module.exports = { FULL_TOOLS, SMALL_TOOLS, TERSE, parseParamsB, selectProfile, profileTools, maxIters, chunkNote, resolveCtxTokens, estimateTokens, tokenBudget };

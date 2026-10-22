@@ -158,11 +158,16 @@ class RuntimePanel {
             if (rs && rs.data && rs.data.lastRestart) supRestart = rs.data.lastRestart;
         } catch (e) { /* no banner */ }
         // P1-c: current n_ctx (from /models; /health is frozen by spec)
+        // P43-1: remember the effective value so a restart re-transmits it.
         let modelsInfo = null;
         try {
             const rm = await axios.get('http://127.0.0.1:6000/models', { timeout: 3000 });
             if (rm && rm.data) modelsInfo = { n_ctx: rm.data.n_ctx ?? null, n_ctx_default: rm.data.n_ctx_default ?? null };
         } catch (e) { /* ignore */ }
+        try {
+            const n = modelsInfo ? parseInt(modelsInfo.n_ctx, 10) : NaN;
+            this._lastNctx = (Number.isFinite(n) && n >= 512 && n <= 32768) ? n : null;
+        } catch (_) { this._lastNctx = null; }
 
         this.panel.webview.postMessage({
             type:         'statusUpdate',
@@ -327,8 +332,15 @@ class RuntimePanel {
     async restartRuntime() {
         console.log('[RUNTIME] restartRuntime');
         try {
-            // Reload current model
-            await axios.post('http://127.0.0.1:6000/reload', {}, { timeout: 5000 });
+            // Reload current model. P43-1: re-transmit the effective n_ctx
+            // (known from the last status fetch) so a restart never silently
+            // drops the active context size back to the auto default.
+            const payload = {};
+            try {
+                const n = parseInt(this._lastNctx, 10);
+                if (Number.isFinite(n) && n >= 512 && n <= 32768) payload.n_ctx = n;
+            } catch (_) { /* auto default */ }
+            await axios.post('http://127.0.0.1:6000/reload', payload, { timeout: 5000 });
             this.panel.webview.postMessage({ type: 'actionDone', action: 'restart' });
             vscode.window.showInformationMessage('🔄 Runtime en cours de redémarrage...');
             setTimeout(() => this.fetchStatus(), 2000);

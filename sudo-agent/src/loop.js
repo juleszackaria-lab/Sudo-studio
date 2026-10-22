@@ -131,6 +131,98 @@ async function legacyTurn(base) {
 }
 
 // ---------------------------------------------------------------------------
+// Question turn (P43-2). General questions: NO free tool exploration.
+// A deterministic builder assembles map + preload + question context, then
+// ONE streamed model call. On provider failure or empty reply: labelled
+// deterministic fallback (why='question'). Same event vocabulary as
+// toolsTurn (turn.start/message.delta/message.done/turn.done), runStatus
+// TERMINE on success, PARTIEL + real text on fallback. Agent AND chat
+// share it (both call runTurn -> toolsTurn -> here).
+// ---------------------------------------------------------------------------
+async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, preloadText) {
+  const { store, provider, sessionId, corr, log, runs, onEvent, model } = base;
+  const turnId = corr;
+  const cloud = provider.type === 'cloud';
+  const filter = (s) => (cloud ? maskSecrets(String(s === undefined || s === null ? '' : s)) : String(s === undefined || s === null ? '' : s));
+  const journal = (level, event, fields) => { if (log) { try { log[level](event, Object.assign({ session: sessionId }, fields || {}), corr); } catch (_) {} } };
+  const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
+  runs.set(sessionId, runEntry);
+  try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
+
+  // Deterministic context: map + preload (same strings toolsTurn built and
+  // journaled) + bounded question context (README/manifest heads, fixed
+  // order: same project -> same bytes).
+  let qctx = { text: '', tokens: 0, files: [] };
+  try {
+    qctx = pmap.buildQuestionContext(root, mapInfo) || qctx;
+  } catch (e) {
+    journal('warn', 'contexte question impossible', { error: String((e && e.message) || e).slice(0, 120) });
+  }
+  // Bounded tail of the transcript (the current prompt is the last user
+  // message): follow-ups stay answerable, cost stays bounded.
+  let tail = [];
+  try {
+    tail = (store.get(sessionId) || { messages: [] }).messages.slice(-6).map((m) => {
+      if (m.role === 'user' || m.role === 'system') return { role: m.role, content: filter(m.content) };
+      if (m.role === 'assistant') return { role: 'assistant', content: filter(m.content || '') };
+      return { role: 'user', content: '[outil] ' + filter(m.content || '').slice(0, 2000) };
+    });
+  } catch (_) { tail = []; }
+  if (!tail.length || tail[tail.length - 1].role !== 'user') {
+    tail.push({ role: 'user', content: filter(base.prompt) });
+  }
+  const messages = [{ role: 'system', content: 'You are Sudo Agent. Answer the question about this project briefly, from the context. No tools.' }];
+  if (mapText) messages.push({ role: 'system', content: mapText });
+  if (preloadText) messages.push({ role: 'system', content: preloadText });
+  if (qctx.text) messages.push({ role: 'system', content: qctx.text });
+  for (const m of tail) messages.push(m);
+  journal('info', 'question envoyee', { tokens: profiles.estimateTokens(messages, 0), files: qctx.files.join(','), history: tail.length });
+
+  let full = '';
+  try {
+    const res = await streamChat(provider, messages, {
+      model,
+      shouldAbort: () => runEntry.aborted,
+      onToken: (tok) => { try { onEvent({ type: 'message.delta', text: tok }); } catch (_) {} },
+      onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
+    });
+    full = String((res && res.text) || '').trim();
+  } catch (e) {
+    if (e && e.code === 'aborted') {
+      store.append(sessionId, { role: 'assistant', content: full, aborted: true });
+      try { onEvent({ type: 'message.done', text: full, aborted: true }); } catch (_) {}
+      const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
+      try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: true, status: 'PARTIEL', reason: 'aborted', filesModified: [], stopReason: 'aborted' }); } catch (_) {}
+      journal('info', 'question annulee');
+      if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
+      return { status: 'aborted', model };
+    }
+    journal('warn', 'question echouee', { code: (e && e.code) || 'provider_error' });
+    full = '';
+  } finally {
+    runEntry.destroy = null;
+  }
+  let runStatus = 'TERMINE';
+  let reason = '';
+  if (!full && !runEntry.aborted) {
+    full = pmap.deterministicFallback({ root, map: mapInfo, calls: [], prompt: base.prompt, why: 'question' });
+    runStatus = 'PARTIEL';
+    reason = 'fournisseur sans reponse (un seul appel).';
+    journal('warn', 'reponse secours deterministe', { chars: full.length, why: 'question' });
+  }
+  store.append(sessionId, { role: 'assistant', content: full });
+  if (!reason) journal('info', 'question repondue', { chars: full.length });
+  try { onEvent({ type: 'message.done', text: full, aborted: false }); } catch (_) {}
+  const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
+  try {
+    onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: false, status: runStatus, reason, filesModified: [], stopReason: 'question',
+      declaredDone: true, toolCalls: 0, unresolvedErrors: [] });
+  } catch (_) {}
+  if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
+  return { status: 'done', model, messageCount, runStatus };
+}
+
+// ---------------------------------------------------------------------------
 // Tool turn (P25 + P26).
 // ---------------------------------------------------------------------------
 function readAgentsMd(root) {
@@ -266,6 +358,13 @@ async function toolsTurn(base, session, toolsCtx) {
     journal('warn', 'precharge impossible', { error: String((e && e.message) || e).slice(0, 120) });
   }
 
+  // P43-2: QUESTIONS take the single-call path (no free tool exploration).
+  // The map + preload above are shared, so the journal keeps the same
+  // proof lines ('carte projet injectee', 'contexte general precharge').
+  if (pmap.isGeneralQuestion(base.prompt)) {
+    return questionTurn(base, session, toolsCtx, root, mapText, mapInfo, preloadText);
+  }
+
   // P26-a/b: mode, size profile, context budget.
   const mode = modes.getMode(session);
   const profile = profiles.selectProfile({ modelId: model, providerType: provider.type, override: provider.profile || process.env.SUDO_AGENT_PROFILE });
@@ -319,7 +418,7 @@ async function toolsTurn(base, session, toolsCtx) {
     const stored = (store.get(sessionId) || { messages: [] }).messages.slice(-MAX_HISTORY);
     const out = toProviderMessages(stored, false);
     if (agentsMd) out.unshift({ role: 'system', content: 'Project instructions (AGENTS.md):\n' + filter(agentsMd) });
-    let sys = modes.modeSystem(mode);
+    let sys = modes.modeSystem(mode, profile); // P43-3: terse system on small
     const note = profiles.chunkNote(profile);
     if (note) sys += '\n' + note;
     out.unshift({ role: 'system', content: sys });
@@ -338,6 +437,24 @@ async function toolsTurn(base, session, toolsCtx) {
   if (est0 > ctxTokens * 0.75) {
     journal('warn', 'contexte initial eleve', { est0, ctx: ctxTokens });
   }
+  // P43-3: per-part budget table (same chars/4 estimator): proves where the
+  // context goes and makes every saturation diagnosable. Field values are
+  // plain numbers (nothing secret-shaped, nothing *token*-named).
+  try {
+    const mm = modelMessages();
+    let mmChars = 0;
+    let resChars = 0;
+    for (const m of mm) {
+      const c = (m && typeof m.content === 'string') ? m.content.length : 0;
+      mmChars += c;
+      if (m && m.role === 'tool') resChars += c;
+    }
+    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0);
+    const mapChars = mapText.length + preloadText.length;
+    const budget = profiles.tokenBudget({ system: sysChars, tools: schemaChars, map: mapChars,
+      history: Math.max(0, mmChars - sysChars - mapChars - resChars), results: resChars });
+    journal('info', 'budget parties', Object.assign({ ctx: ctxTokens }, budget));
+  } catch (_) {}
 
   const currentFilesModified = () => {
     if (!run.checkpointName || !run.snapshot) return [];
@@ -353,7 +470,7 @@ async function toolsTurn(base, session, toolsCtx) {
     const est = profiles.estimateTokens(modelMessages(), schemaChars);
     if (est <= ctxTokens * 0.75) return { ok: true, compressed: false };
     const stored = (store.get(sessionId) || { messages: [] }).messages;
-    if (stored.length <= 5) return { ok: false, reason: 'contexte sature (' + est + ' tokens estimes pour ' + ctxTokens + ', rien a resumer).' };
+    if (stored.length <= 5) return { ok: false, reason: 'contexte sature (' + est + ' tokens estimes pour ' + ctxTokens + ', historique trop court pour compresser).' };
     const old = stored.slice(0, -4).map((m) => {
       let c = m.content || '';
       if (Array.isArray(m.tool_calls) && m.tool_calls.length) c += '\n[appels: ' + m.tool_calls.map((t) => t.name).join(', ') + ']';
@@ -566,6 +683,32 @@ async function toolsTurn(base, session, toolsCtx) {
   if (runEntry.aborted) {
     store.append(sessionId, { role: 'assistant', content: finalText, aborted: true });
     return finishAborted();
+  }
+
+  // P43-3: a context stop NEVER abandons. Minimal second round: terse
+  // system + map + the raw prompt, NO tools, NO history. If it fails too,
+  // the labelled deterministic fallback (why='context'). Status stays
+  // PARTIEL (honest), but message.done carries real text.
+  if (!declared && stopReason === 'context' && !runEntry.aborted) {
+    let rescued = '';
+    try {
+      const minimal = [{ role: 'system', content: modes.modeSystem(mode, 'small') }];
+      if (mapText) minimal.push({ role: 'system', content: mapText });
+      minimal.push({ role: 'user', content: String(base.prompt || '').slice(0, 2000) });
+      const rr = await chatOnce(provider, { model, messages: minimal });
+      rescued = String((rr && rr.text) || '').trim();
+    } catch (e) {
+      journal('warn', 'reponse secours contexte echouee', { error: String((e && e.message) || e).slice(0, 160) });
+    }
+    if (rescued) {
+      finalText = rescued;
+      store.append(sessionId, { role: 'assistant', content: finalText });
+      journal('info', 'reponse secours contexte', { chars: rescued.length });
+    } else {
+      finalText = pmap.deterministicFallback({ root, map: mapInfo, calls: run.calls, prompt: base.prompt, why: 'context' });
+      store.append(sessionId, { role: 'assistant', content: finalText });
+      journal('warn', 'reponse secours deterministe', { chars: finalText.length, why: 'context' });
+    }
   }
 
   // Honest status (P25-g + P26 stops).

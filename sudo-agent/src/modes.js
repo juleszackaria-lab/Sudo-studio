@@ -31,7 +31,27 @@ function planSystem() {
   ].join('\n');
 }
 
-function modeSystem(mode) {
+// P43-3: terse variants for small models (<=3B / unknown local): the full
+// prompts cost ~150 tokens each; the loop behavior is unchanged (the same
+// rules are enforced by the driver: ONE call per iter, no repeat w/o adapt).
+function buildSystemSmall() {
+  return [
+    'You are Sudo Agent (BUILD mode, terse). Change the project via tools.',
+    'ONE tool call per step; check each result; never repeat a failing call.',
+    'List/search before reading unknown paths. End with a short summary.',
+  ].join('\n');
+}
+
+function planSystemSmall() {
+  return [
+    'You are Sudo Agent (PLAN mode, terse). PROPOSE, never modify (write/edit/patch/bash',
+    'refused). List/search before reading unknown paths. End with a plan.',
+  ].join('\n');
+}
+
+// profile: 'small' -> terse, anything else (incl. undefined = legacy) -> full.
+function modeSystem(mode, profile) {
+  if (profile === 'small') return mode === 'plan' ? planSystemSmall() : buildSystemSmall();
   return mode === 'plan' ? planSystem() : buildSystem();
 }
 
@@ -52,4 +72,4 @@ function setMode(store, id, mode) {
   return s ? mode : null;
 }
 
-module.exports = { MODES, PLAN_REFUSED, buildSystem, planSystem, modeSystem, getMode, setMode };
+module.exports = { MODES, PLAN_REFUSED, buildSystem, planSystem, buildSystemSmall, planSystemSmall, modeSystem, getMode, setMode };

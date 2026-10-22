@@ -248,10 +248,14 @@ async function hRead(ctx, args, resolved) {
   const offset = Math.max(0, parseInt(args.offset, 10) || 0);
   const limit = Math.min(MAX_READ_LINES, Math.max(1, parseInt(args.limit, 10) || MAX_READ_LINES));
   const slice = lines.slice(offset, offset + limit);
+  // P43-3: truncated reads tell the model how to continue (offset/limit).
+  // Line numbers are 1-based: next window starts right after this one.
+  const cut = offset + limit < lines.length;
+  const cont = cut ? ('suite : lignes ' + (offset + limit + 1) + '-' + Math.min(lines.length, offset + 2 * limit)) : '';
   return {
     ok: true,
-    data: { rel: r.rel, offset, totalLines: lines.length, truncated: offset + limit < lines.length, content: slice.join('\n') },
-    summary: 'lu ' + r.rel + ' (' + slice.length + '/' + lines.length + ' lignes).',
+    data: { rel: r.rel, offset, totalLines: lines.length, truncated: cut, content: slice.join('\n'), continuation: cont || undefined },
+    summary: 'lu ' + r.rel + ' (' + slice.length + '/' + lines.length + ' lignes).' + (cont ? ' ' + cont + '.' : ''),
     markRead: [r.rel],
   };
 }
