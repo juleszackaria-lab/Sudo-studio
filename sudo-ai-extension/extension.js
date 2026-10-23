@@ -13,20 +13,10 @@ const { spawn } = require('child_process');
 const { getBackendService } = require('./src/services/BackendService');
 const { getStateManager } = require('./src/services/StateManager');
 
-// Providers
-const { DashboardProvider } = require('./src/providers/DashboardProvider');
-const { ChatProvider } = require('./src/providers/ChatProvider');
-const { DoctorProvider } = require('./src/providers/DoctorProvider');
-const { SDKProvider } = require('./src/providers/SDKProvider');
-const { DevOpsProvider } = require('./src/providers/DevOpsProvider');
-const { EnvironmentProvider } = require('./src/providers/EnvironmentProvider');
-const { RuntimeProvider } = require('./src/providers/RuntimeProvider');
-const { SecurityProvider } = require('./src/providers/SecurityProvider');
+// Providers (P47: single "Sudo Studio" tree view; all other sidebar
+// views deleted, their panels and commands intact)
 const licCore = require('./src/license/license'); // P11: edition gates
-const { DuplicationProvider } = require('./src/providers/DuplicationProvider');
-const { CentralProvider } = require('./src/providers/CentralProvider');
-const { LicenseProvider } = require('./src/providers/LicenseProvider');
-const { SudoStudioProvider } = require('./src/providers/SudoStudioProvider'); // P38-c: unified nav view
+const { SudoStudioProvider } = require('./src/providers/SudoStudioProvider'); // P47: grouped nav tree
 
 // Panels
 const { ChatPanel }            = require('./src/panels/ChatPanel');
@@ -48,7 +38,6 @@ const { LogsPanel }            = require('./src/panels/LogsPanel'); // P21: logs
 
 // Agent Mode (Mission 2 — autonomous programming agent)
 const { AgentPanel }           = require('./src/agent/AgentPanel');
-const { AgentActivityView }    = require('./src/agent/AgentActivityView');
 const { setAgentHost }         = require('./src/agent/agentHost'); // P27: panel wiring
 
 // Global instances
@@ -232,59 +221,16 @@ async function initializeBackend() {
 }
 
 /**
- * Register all tree view providers
+ * Register the single "Sudo Studio" tree view provider (P47).
  */
 function registerProviders() {
     console.log('📊 Registering providers...');
-    
-    // Dashboard Provider
-    providers.dashboard = new DashboardProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioDashboard', providers.dashboard);
-    
-    // P38-c: unified quick-open nav view (Chat, Runtime, Doctor, SDK, DevOps, Analysis)
+
+    // P47: one grouped tree (Agent, Runtime IA, Projet, Environnement,
+    // Duplication, Securite, Outils, Administration, Journaux). All other
+    // sidebar views deleted; their panels and commands stay intact.
     providers.sudoStudio = new SudoStudioProvider();
     vscode.window.registerTreeDataProvider('sudoStudio', providers.sudoStudio);
-
-    // Chat Provider (P38: sidebar view merged into the unified nav view above;
-    // the instance stays for refresh() callers)
-    providers.chat = new ChatProvider();
-
-    // Doctor Provider (P38: sidebar view merged into the unified nav view)
-    providers.doctor = new DoctorProvider();
-
-    // SDK Provider (P38: sidebar view merged into the unified nav view)
-    providers.sdk = new SDKProvider();
-
-    // DevOps Provider (P38: sidebar view merged into the unified nav view)
-    providers.devops = new DevOpsProvider();
-    
-    // Environment Provider
-    providers.environment = new EnvironmentProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioEnvironment', providers.environment);
-    
-    // Runtime Provider (P38: sidebar view merged into the unified nav view)
-    providers.runtime = new RuntimeProvider();
-
-    // Security Provider (sidebar quick actions -> SecurityPanel)
-    providers.security = new SecurityProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioSecurity', providers.security);
-
-    // Duplication Provider (sidebar quick actions -> DuplicationPanel)
-    providers.duplication = new DuplicationProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioDuplication', providers.duplication);
-
-    // Central Provider (sidebar quick actions -> CentralMgmtPanel)
-    providers.central = new CentralProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioCentral', providers.central);
-
-    // License Provider (sidebar quick actions -> LicensePanel)
-    providers.license = new LicenseProvider();
-    vscode.window.registerTreeDataProvider('sudoStudioLicense', providers.license);
-    
-    // P20: Sudo Agent launcher lives in the single Sudo Studio activity-bar container (same view id)
-    providers.agentView = new AgentActivityView(context.extensionUri);
-    vscode.window.registerWebviewViewProvider(
-        AgentActivityView.VIEW_ID, providers.agentView);
 
     console.log('✅ All providers registered');
 }
@@ -1825,8 +1771,7 @@ async function resetLayout() {
     try {
         await vscode.commands.executeCommand('workbench.view.extension.sudo-studio');
     } catch (_) { /* container reveal is best-effort */ }
-    for (const v of ['sudoStudioEnvironment', 'sudoStudioSecurity', 'sudoStudioDuplication',
-        'sudoStudioCentral', 'sudoStudioLicense']) {
+    for (const v of ['sudoStudio']) { // P47: single tree view
         try { await vscode.commands.executeCommand('workbench.actions.treeView.' + v + '.collapseAll'); }
         catch (_) { /* per-view collapse is best-effort */ }
     }

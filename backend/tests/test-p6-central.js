@@ -77,7 +77,7 @@ Module._load = function (req, parent, isMain) {
 const { CentralMgmtPanel, filterAudit, buildAuditCsv, isModelAllowed,
   getCentralPolicies, getOrg } = require('../../sudo-ai-extension/src/panels/CentralMgmtPanel');
 const { RuntimePanel } = require('../../sudo-ai-extension/src/panels/RuntimePanel');
-const { DashboardProvider } = require('../../sudo-ai-extension/src/providers/DashboardProvider');
+const { GROUPS: P47_GROUPS } = require('../../sudo-ai-extension/src/views/sidebarModel'); // P47: dashboard merged into the tree
 const { AIProviderService, POLICY_MSG, _resetAIProviderServiceForTests } = require('../../sudo-ai-extension/src/services/AIProviderService');
 const { appendAudit: sharedAppend } = require('../../sudo-ai-extension/src/utils/auditLog');
 
@@ -333,17 +333,15 @@ async function main() {
   const okR = await svc.complete({ prompt: 'hi' });
   check('G9: cloud-on + whitelist allows use', okR.ok === true && okR.reply === 'HI' && fakeHttp.calls === 1);
 
-  // ------------------------------------------------- H. dashboard + wiring
-  const items = DashboardProvider.prototype.getQuickActions.call(
-    { createActionItem: DashboardProvider.prototype.createActionItem });
-  const labels = items.map((i) => [i.label, i.command && i.command.command]);
-  check('H1: dashboard has unique central + audit entries',
-    labels.some(([l, c]) => l === 'Open Central Management' && c === 'sudoStudio.openCentralMgmtPanel')
-    && labels.some(([l, c]) => l === 'Open Audit Log' && c === 'sudoStudio.openAuditLog')
-    && labels.filter(([l]) => l === 'Open Audit Log').length === 1);
-  check('H2: new entries after Open AI Chat (P4-L7 safe)',
-    labels.findIndex(([l]) => l === 'Sudo Agent') < labels.findIndex(([l]) => l.indexOf('Open AI Chat') !== -1)
-    && labels.findIndex(([l]) => l.indexOf('Open AI Chat') !== -1) < labels.findIndex(([l]) => l === 'Open Central Management'));
+  // ------------------------------------------------- H. tree + wiring (P47)
+  const labels = [];
+  P47_GROUPS.forEach((g) => (g.entries || []).forEach((e) => labels.push([e.label, e.command])));
+  check('H1: tree has unique central + audit entries',
+    labels.some(([l, c]) => l === 'Central Management' && c === 'sudoStudio.openCentralMgmtPanel')
+    && labels.some(([l, c]) => l === 'Audit Log' && c === 'sudoStudio.openAuditLog')
+    && labels.filter(([, c]) => c === 'sudoStudio.openAuditLog').length === 1);
+  check('H2: administration group after agent group (P4-L7 safe)',
+    P47_GROUPS.findIndex((g) => g.id === 'agent') < P47_GROUPS.findIndex((g) => g.id === 'admin'));
   const extSrc = fs.readFileSync(path.join(EXT, 'extension.js'), 'utf8');
   check('H3: extension registers + handles openAuditLog',
     extSrc.includes("'sudoStudio.openAuditLog'") && extSrc.includes("createOrShow(context.extensionUri, 'audit')"));

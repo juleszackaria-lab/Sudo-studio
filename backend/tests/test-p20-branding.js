@@ -41,12 +41,14 @@ check('A3: robot is 24px + currentColor, no hardcoded colors',
 const views = pkg.contributes.views || {};
 const studioViews = views['sudo-studio'] || [];
 const ids = studioViews.map((v) => v.id);
-// P38-c: the 5 one-button views merged into the single "Sudo Studio" nav view.
-const GONE = ['sudoStudioChat', 'sudoStudioRuntime', 'sudoStudioDoctor', 'sudoStudioSDK', 'sudoStudioDevOps'];
-check('A4: 8 Sudo views in the container (unified nav, no one-button views)',
-    studioViews.length === 8 && ids.indexOf('sudoAgentLauncher') !== -1 &&
-    ids.indexOf('sudoStudioDashboard') !== -1 && ids.indexOf('sudoStudio') !== -1 &&
-    ids.indexOf('sudoStudioLicense') !== -1 && GONE.every((g) => ids.indexOf(g) === -1),
+// P47: every sidebar view except the single grouped "Sudo Studio" tree is gone
+// (P38-c had already merged the 5 one-button views into it).
+const GONE = ['sudoStudioChat', 'sudoStudioRuntime', 'sudoStudioDoctor', 'sudoStudioSDK', 'sudoStudioDevOps',
+    'sudoAgentLauncher', 'sudoStudioDashboard', 'sudoStudioEnvironment', 'sudoStudioSecurity',
+    'sudoStudioDuplication', 'sudoStudioCentral', 'sudoStudioLicense'];
+check('A4: single "Sudo Studio" tree view in the container (P47)',
+    studioViews.length === 1 && ids.indexOf('sudoStudio') !== -1 &&
+    GONE.every((g) => ids.indexOf(g) === -1),
     JSON.stringify(ids));
 check('A5: nothing under explorer or the old container',
     !views.explorer && !views['sudo-agent'] && !bars.some((b) => b.id === 'sudo-agent'));
@@ -176,22 +178,27 @@ check('E5: rcedit strings + product verify gate in the package workflow',
 
 // -- F: wiring + legal preserved -----------------------------------------------------------------
 const extSrc = fs.readFileSync(path.join(EXT, 'extension.js'), 'utf8');
-const avSrc = fs.readFileSync(path.join(EXT, 'src', 'agent', 'AgentActivityView.js'), 'utf8');
-check('F1: launcher view still wired (same id)',
-    avSrc.indexOf("VIEW_ID = 'sudoAgentLauncher'") !== -1 &&
-    extSrc.indexOf('AgentActivityView.VIEW_ID') !== -1 &&
-    extSrc.indexOf('registerWebviewViewProvider') !== -1);
+const { GROUPS: P47_GROUPS } = require('../../sudo-ai-extension/src/views/sidebarModel');
+check('F1: launcher view gone (P47), agent opened from the single tree',
+    !fs.existsSync(path.join(EXT, 'src', 'agent', 'AgentActivityView.js')) &&
+    extSrc.indexOf('AgentActivityView') === -1 &&
+    extSrc.indexOf('registerWebviewViewProvider') === -1 &&
+    P47_GROUPS.some((g) => (g.entries || []).some((e) => e.command === 'sudoStudio.openAgentPanel')));
 check('F2: third-party notices preserved',
     fs.existsSync(path.join(EXT, 'THIRD_PARTY_NOTICES.md')));
 
-// -- G: P38 unified nav + reset + reveal-once + collapsed defaults --------------
-const NAV_CMDS = ['sudoStudio.openChat', 'sudoStudio.openRuntimePanel', 'sudoStudio.runDoctor',
-    'sudoStudio.openSDKPanel', 'sudoStudio.openDevOpsPanel', 'sudoStudio.openAnalysisPanel'];
+// -- G: P47 grouped tree + reset + reveal-once ------------------------------------
 const navSrc = fs.readFileSync(path.join(EXT, 'src', 'providers', 'SudoStudioProvider.js'), 'utf8');
-check('G1: unified nav view lists exactly the 6 quick-open entries',
-    NAV_CMDS.every((c) => navSrc.indexOf("'" + c + "'") !== -1) &&
-    (navSrc.match(/this\.createItem\(/g) || []).length === 6);
-check('G2: nav provider registered, old view registrations gone',
+const P47_CMDS = [];
+P47_GROUPS.forEach((g) => (g.entries || []).forEach((e) => P47_CMDS.push(e.command)));
+check('G1: grouped tree renders the 9-group model (old 6 quick-opens kept)',
+    P47_GROUPS.length === 9 &&
+    ['sudoStudio.openChat', 'sudoStudio.openRuntimePanel', 'sudoStudio.runDoctor',
+        'sudoStudio.openSDKPanel', 'sudoStudio.openDevOpsPanel', 'sudoStudio.openAnalysisPanel']
+        .every((c) => P47_CMDS.indexOf(c) !== -1) &&
+    navSrc.indexOf('sidebarModel') !== -1 &&
+    navSrc.indexOf('createGroup') !== -1 && navSrc.indexOf('createEntry') !== -1);
+check('G2: tree provider registered, old view registrations gone',
     extSrc.indexOf("registerTreeDataProvider('sudoStudio'") !== -1 &&
     GONE.every((g) => extSrc.indexOf("registerTreeDataProvider('" + g + "'") === -1));
 check('G3: reset-layout command contributed + wired + handled',
@@ -204,12 +211,12 @@ check('G4: reveal-once per version (containerShownFor + workbench command)',
     extSrc.indexOf("require('./package.json').version") !== -1);
 check('G5: no orphan menu whens on removed views',
     GONE.every((g) => JSON.stringify(pkg.contributes.menus).indexOf(g) === -1));
-check('G6: detailed sections collapsed by default (dashboard untouched)',
-    ['Environment', 'Security', 'Duplication', 'Central', 'License'].every((n) =>
-        fs.readFileSync(path.join(EXT, 'src', 'providers', n + 'Provider.js'), 'utf8')
-            .indexOf('CollapsibleState.Expanded') === -1) &&
-    fs.readFileSync(path.join(EXT, 'src', 'providers', 'DashboardProvider.js'), 'utf8')
-        .indexOf('CollapsibleState.Expanded') !== -1);
+check('G6: old provider files gone, groups expanded-but-collapsible (P47)',
+    ['Dashboard', 'Chat', 'Doctor', 'SDK', 'DevOps', 'Environment', 'Runtime',
+        'Security', 'Duplication', 'Central', 'License'].every((n) =>
+        !fs.existsSync(path.join(EXT, 'src', 'providers', n + 'Provider.js'))) &&
+    navSrc.indexOf('CollapsibleState.Expanded') !== -1 &&
+    navSrc.indexOf('contextValue') !== -1);
 const navChk = spawnSync(process.execPath, ['--check',
     path.join(EXT, 'src', 'providers', 'SudoStudioProvider.js')]);
 check('G7: SudoStudioProvider compiles', navChk.status === 0);

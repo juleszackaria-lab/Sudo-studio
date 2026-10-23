@@ -36,13 +36,8 @@ const requiredFiles = [
     'sudo-ai-extension/package.json',
     'sudo-ai-extension/src/services/BackendService.js',
     'sudo-ai-extension/src/services/StateManager.js',
-    'sudo-ai-extension/src/providers/DashboardProvider.js',
-    'sudo-ai-extension/src/providers/ChatProvider.js',
-    'sudo-ai-extension/src/providers/DoctorProvider.js',
-    'sudo-ai-extension/src/providers/SDKProvider.js',
-    'sudo-ai-extension/src/providers/DevOpsProvider.js',
-    'sudo-ai-extension/src/providers/EnvironmentProvider.js',
-    'sudo-ai-extension/src/providers/RuntimeProvider.js',
+    'sudo-ai-extension/src/providers/SudoStudioProvider.js', // P47: single tree provider
+    'sudo-ai-extension/src/views/sidebarModel.js', // P47: pure tree data model
     'sudo-ai-extension/src/panels/ChatPanel.js',
     'sudo-ai-extension/src/panels/DoctorPanel.js',
     'sudo-ai-extension/src/panels/SDKPanel.js',
@@ -91,13 +86,7 @@ test('Main entry point', packageJson.main === './extension.js');
 // Check views
 const views = packageJson.contributes?.views?.['sudo-studio'] || [];
 const expectedViews = [
-    'sudoStudioDashboard',
-    'sudoStudioChat',
-    'sudoStudioDoctor',
-    'sudoStudioSDK',
-    'sudoStudioDevOps',
-    'sudoStudioEnvironment',
-    'sudoStudioRuntime'
+    'sudoStudio' // P47: single grouped tree view (all other sidebar views deleted)
 ];
 
 expectedViews.forEach(viewId => {
@@ -155,19 +144,13 @@ test('StateManager has updateSystemState', stateManagerContent.includes('updateS
 console.log('\n📊 Testing Providers...\n');
 
 const providers = [
-    'DashboardProvider',
-    'ChatProvider',
-    'DoctorProvider',
-    'SDKProvider',
-    'DevOpsProvider',
-    'EnvironmentProvider',
-    'RuntimeProvider'
+    'SudoStudioProvider' // P47: single tree provider (all other sidebar views deleted)
 ];
 
 providers.forEach(provider => {
     const providerPath = path.join(extPath, `src/providers/${provider}.js`);
     const content = fs.readFileSync(providerPath, 'utf8');
-    
+
     test(`${provider} has getTreeItem`, content.includes('getTreeItem'));
     test(`${provider} has getChildren`, content.includes('getChildren'));
     test(`${provider} has refresh`, content.includes('refresh'));
@@ -209,14 +192,15 @@ test('Extension has activate function', extensionContent.includes('function acti
 test('Extension has deactivate function', extensionContent.includes('function deactivate'));
 test('Extension exports activate', extensionContent.includes('module.exports'));
 
-// Check provider imports
-test('Imports DashboardProvider', extensionContent.includes('DashboardProvider'));
-test('Imports ChatProvider', extensionContent.includes('ChatProvider'));
-test('Imports DoctorProvider', extensionContent.includes('DoctorProvider'));
-test('Imports SDKProvider', extensionContent.includes('SDKProvider'));
-test('Imports DevOpsProvider', extensionContent.includes('DevOpsProvider'));
-test('Imports EnvironmentProvider', extensionContent.includes('EnvironmentProvider'));
-test('Imports RuntimeProvider', extensionContent.includes('RuntimeProvider'));
+// Check provider imports (P47: single tree provider, old views deleted)
+test('Imports SudoStudioProvider', extensionContent.includes('SudoStudioProvider'));
+test('No DashboardProvider import', !extensionContent.includes('DashboardProvider'));
+test('No ChatProvider import', !extensionContent.includes('ChatProvider'));
+test('No DoctorProvider import', !extensionContent.includes('DoctorProvider'));
+test('No SDKProvider import', !extensionContent.includes('SDKProvider'));
+test('No DevOpsProvider import', !extensionContent.includes('DevOpsProvider'));
+test('No EnvironmentProvider import', !extensionContent.includes('EnvironmentProvider'));
+test('No RuntimeProvider import', !extensionContent.includes('RuntimeProvider'));
 
 // Check panel imports
 test('Imports ChatPanel', extensionContent.includes('ChatPanel'));

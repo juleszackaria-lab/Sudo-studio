@@ -42,44 +42,10 @@
     "views": {
       "sudo-studio": [
         {
-          "id": "sudoAgentLauncher",
-          "name": "Sudo Agent",
-          "icon": "$(comment-discussion)",
-          "contextualTitle": "Sudo Agent"
-        },
-        {
-          "id": "sudoStudioDashboard",
-          "name": "Dashboard",
-          "icon": "$(dashboard)",
-          "contextualTitle": "Sudo Studio Dashboard"
-        },
-        {
           "id": "sudoStudio",
           "name": "Sudo Studio",
           "icon": "$(home)",
           "contextualTitle": "Sudo Studio"
-        },
-        {
-          "id": "sudoStudioEnvironment",
-          "name": "🔒 Environment",
-          "icon": "$(server-environment)",
-          "contextualTitle": "Environment Manager"
-        },
-        {
-          "id": "sudoStudioSecurity",
-          "name": "🔒 Security"
-        },
-        {
-          "id": "sudoStudioDuplication",
-          "name": "📋 Duplication"
-        },
-        {
-          "id": "sudoStudioCentral",
-          "name": "⚙️ Central"
-        },
-        {
-          "id": "sudoStudioLicense",
-          "name": "🔑 License"
         }
       ]
     },
@@ -455,68 +421,7 @@
           "group": "sudo-studio@5"
         }
       ],
-      "view/title": [
-        {
-          "command": "sudoStudio.openChat",
-          "when": "view == sudoStudioDashboard",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.refreshDashboard",
-          "when": "view == sudoStudioDashboard",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.exportEnvironment",
-          "when": "view == sudoStudioEnvironment",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.createSnapshot",
-          "when": "view == sudoStudioEnvironment",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.backupEnvironment",
-          "when": "view == sudoStudioEnvironment",
-          "group": "navigation@3"
-        },
-        {
-          "command": "sudoStudio.restoreEnvironment",
-          "when": "view == sudoStudioEnvironment",
-          "group": "navigation@4"
-        },
-        {
-          "command": "sudoStudio.openSecurityPanel",
-          "when": "view == sudoStudioSecurity",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.runSecurityAudit",
-          "when": "view == sudoStudioSecurity",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.openDuplicationPanel",
-          "when": "view == sudoStudioDuplication",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.cloneEnterprise",
-          "when": "view == sudoStudioDuplication",
-          "group": "navigation@2"
-        },
-        {
-          "command": "sudoStudio.openCentralMgmtPanel",
-          "when": "view == sudoStudioCentral",
-          "group": "navigation@1"
-        },
-        {
-          "command": "sudoStudio.openLicensePanel",
-          "when": "view == sudoStudioLicense",
-          "group": "navigation@1"
-        }
-      ],
+      "view/title": [],
       "commandPalette": [
         {
           "command": "sudoStudio.explainCode",
@@ -558,7 +463,6 @@
           "default": "http://127.0.0.1:6000",
           "description": "URL of the Python AI runtime server"
         }
-
       }
     },
     "keybindings": [

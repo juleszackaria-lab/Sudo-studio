@@ -69,7 +69,7 @@ Module._load = function (req, parent, isMain) {
 };
 
 const { AgentPanel, getWebviewHtml, DiffStore } = require('../../sudo-ai-extension/src/agent/AgentPanel');
-const { AgentActivityView } = require('../../sudo-ai-extension/src/agent/AgentActivityView');
+const { GROUPS: P47_GROUPS } = require('../../sudo-ai-extension/src/views/sidebarModel'); // P47: launcher merged into the tree
 
 let pass = 0;
 function check(name, cond, detail) {
@@ -304,16 +304,13 @@ async function main() {
     && /Ouvrir un dossier/.test(ofType(ap, 'error').pop().message));
   vscodeMock.workspace.workspaceFolders = [{ uri: { fsPath: proj } }];
 
-  // ------------------------------------------------- K. activity view
-  const av = new AgentActivityView({ fsPath: EXT });
-  const fakeView = { webview: { options: null, html: '', handler: null,
-    onDidReceiveMessage(fn) { this.handler = fn; } } };
-  av.resolveWebviewView(fakeView);
-  check('K1: launcher html (button + shortcut)', fakeView.webview.html.includes('id="openBtn"')
-    && fakeView.webview.html.includes('Ouvrir Sudo Agent') && fakeView.webview.html.includes('Ctrl'));
-  vscodeMock.commands.executed.length = 0;
-  fakeView.webview.handler({ type: 'open' });
-  check('K2: launcher opens agent tab', vscodeMock.commands.executed.some((c) => c[0] === 'sudoAgent.open'));
+  // ------------------------------------------------- K. agent entries (P47: launcher merged into the tree)
+  const agentGroup = P47_GROUPS.find((g) => g.id === 'agent') || { entries: [] };
+  check('K1: agent group first, opens the agent tab', P47_GROUPS[0].id === 'agent'
+    && agentGroup.entries.some((e) => e.label === 'Sudo Agent' && e.command === 'sudoStudio.openAgentPanel'));
+  check('K2: agent group has chat + agent-logs entries',
+    agentGroup.entries.some((e) => e.command === 'sudoStudio.openChat')
+    && agentGroup.entries.some((e) => e.command === 'sudoStudio.openLogsViewer'));
 
   // ------------------------------------------------- L. VS Code surface (static)
   const pkg = JSON.parse(fs.readFileSync(path.join(EXT, 'package.json'), 'utf8'));
@@ -325,29 +322,33 @@ async function main() {
   check('L3: activity container + string icon on disk (P42)', !!cont && cont.title === 'Sudo Studio'
     && typeof cont.icon === 'string' && fs.existsSync(path.join(EXT, cont.icon))
     && !pkg.contributes.viewsContainers.activitybar.some((v) => v.id === 'sudo-agent'));
-  check('L4: launcher view declared', (pkg.contributes.views['sudo-studio'] || []).some((v) => v.id === 'sudoAgentLauncher'));
+  check('L4: single tree view, launcher gone (P47)', (pkg.contributes.views['sudo-studio'] || []).length === 1
+    && !(pkg.contributes.views['sudo-studio'] || []).some((v) => v.id === 'sudoAgentLauncher'));
   check('L5: old agent title cleaned', pkg.contributes.commands.find((c) => c.command === 'sudoStudio.openAgentPanel').title === 'Sudo Agent');
   const extSrc = fs.readFileSync(path.join(EXT, 'extension.js'), 'utf8');
-  check('L6: extension wires agent commands + view + status bar',
-    extSrc.includes("'sudoAgent.open'") && extSrc.includes('registerWebviewViewProvider')
+  check('L6: extension wires agent commands + tree + status bar',
+    extSrc.includes("'sudoAgent.open'") && extSrc.includes('registerTreeDataProvider')
+    && extSrc.includes('AgentActivityView') === false
     && extSrc.includes('setupAgentBar') && extSrc.includes('$(comment-discussion) Agent'));
-  const dashSrc = fs.readFileSync(path.join(EXT, 'src', 'providers', 'DashboardProvider.js'), 'utf8');
-  check('L7: dashboard entry first', dashSrc.indexOf("'Sudo Agent'") !== -1
-    && dashSrc.indexOf("'Sudo Agent'") < dashSrc.indexOf('Open AI Chat'));
+  const treeCmds = [];
+  P47_GROUPS.forEach((g) => (g.entries || []).forEach((e) => treeCmds.push(e.command)));
+  check('L7: tree agent entry first', treeCmds.indexOf('sudoStudio.openAgentPanel') !== -1
+    && treeCmds.indexOf('sudoStudio.openAgentPanel') < treeCmds.indexOf('sudoStudio.openChat'));
   check('L8: codicons bundled', fs.existsSync(path.join(EXT, 'media', 'codicon.css'))
     && fs.existsSync(path.join(EXT, 'media', 'codicon.ttf')));
   const panelSrc = fs.readFileSync(path.join(EXT, 'src', 'agent', 'AgentPanel.js'), 'utf8');
   check('L9: old protocol gone', !/startTask|approveAction|rejectAction/.test(panelSrc));
 
   // ------------------------------------------------- M. ASCII sources
-  for (const f of ['src/agent/AgentPanel.js', 'src/agent/AgentActivityView.js', 'src/agent/AgentEngine.js',
+  for (const f of ['src/agent/AgentPanel.js', 'src/views/sidebarModel.js', 'src/agent/AgentEngine.js',
       'resources/sudo-robot.svg', 'THIRD_PARTY_NOTICES.md']) {
     const s = fs.readFileSync(path.join(EXT, f), 'utf8');
     const bad = [...new Set([...s].filter((c) => c.codePointAt(0) > 127))];
     check('M: ASCII ' + f, bad.length === 0, bad.slice(0, 3));
   }
-  const agentDashboardLine = dashSrc.split('\n').find((l) => l.includes('Sudo Agent'));
-  check('M: ASCII dashboard agent line', [...agentDashboardLine].every((c) => c.codePointAt(0) < 128));
+  const modelSrc = fs.readFileSync(path.join(EXT, 'src', 'views', 'sidebarModel.js'), 'utf8');
+  const agentModelLine = modelSrc.split('\n').find((l) => l.includes('Sudo Agent'));
+  check('M: ASCII tree agent line', [...agentModelLine].every((c) => c.codePointAt(0) < 128));
 
   for (const p of panels) { try { p.dispose(); } catch (_) {} }
   AgentPanel.currentPanel = undefined;

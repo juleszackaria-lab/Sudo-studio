@@ -1,14 +1,15 @@
 const vscode = require('vscode');
+const { GROUPS } = require('../views/sidebarModel');
 
 /**
- * SudoStudioProvider - TreeDataProvider for the unified "Sudo Studio"
- * sidebar view (P38-c).
+ * SudoStudioProvider - TreeDataProvider for the single "Sudo Studio"
+ * sidebar view (P47).
  *
- * Single compact tree with the 6 quick-open entries (Chat, Runtime,
- * System Doctor, SDK Manager, DevOps, Project Analysis). Each item opens
- * the same full panel as the former one-button views (Chat history lives
- * on in the Chat panel itself). Fully static: no backend dependency, so
- * the tree can never be empty due to a service outage.
+ * One grouped tree listing every feature exactly once. Each entry fires
+ * an EXISTING contributed command (no new logic). Fully static: no
+ * backend dependency, so the tree can never be empty due to a service
+ * outage. Groups start expanded so the full list is visible at a glance;
+ * "Sudo: Reset Layout" collapses them back.
  */
 class SudoStudioProvider {
     constructor() {
@@ -25,25 +26,31 @@ class SudoStudioProvider {
     }
 
     async getChildren(element) {
-        if (element) {
-            return [];
+        if (!element) {
+            return GROUPS.map((g) => this.createGroup(g));
         }
-        return [
-            this.createItem('AI Chat', 'comment-discussion', 'sudoStudio.openChat', 'Open AI Chat'),
-            this.createItem('AI Runtime', 'server-process', 'sudoStudio.openRuntimePanel', 'Open AI Runtime'),
-            this.createItem('System Doctor', 'pulse', 'sudoStudio.runDoctor', 'Open System Doctor'),
-            this.createItem('SDK Manager', 'package', 'sudoStudio.openSDKPanel', 'Open SDK Manager'),
-            this.createItem('DevOps', 'rocket', 'sudoStudio.openDevOpsPanel', 'Open DevOps'),
-            this.createItem('Project Analysis', 'graph', 'sudoStudio.openAnalysisPanel', 'Open Project Analysis'),
-        ];
+        if (element.contextValue === 'p47group' && element.groupId) {
+            const g = GROUPS.find((x) => x.id === element.groupId);
+            if (g) return g.entries.map((e) => this.createEntry(e));
+        }
+        return [];
     }
 
-    createItem(label, icon, command, title) {
-        const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-        item.iconPath = new vscode.ThemeIcon(icon);
-        item.command = { command, title };
-        item.contextValue = 'sudoStudioNav';
-        item.tooltip = title;
+    createGroup(g) {
+        const item = new vscode.TreeItem(g.label, vscode.TreeItemCollapsibleState.Expanded);
+        item.iconPath = new vscode.ThemeIcon(g.icon);
+        item.contextValue = 'p47group';
+        item.groupId = g.id;
+        item.tooltip = g.label;
+        return item;
+    }
+
+    createEntry(e) {
+        const item = new vscode.TreeItem(e.label, vscode.TreeItemCollapsibleState.None);
+        item.iconPath = new vscode.ThemeIcon(e.icon);
+        item.command = { command: e.command, title: e.label };
+        item.contextValue = 'p47entry';
+        item.tooltip = e.label;
         return item;
     }
 }
