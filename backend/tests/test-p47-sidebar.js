@@ -3,10 +3,10 @@
  * A: container | B: single tree view | C: model coverage/exactness |
  * D: registration + wiring | E: hygiene. Hermetic reads only. ASCII-only.
  *
- * Coverage rule (owner list forces one shared command: "Couverture de
- * tests" opens the Security panel like "Security Audit", so the test is
+ * Coverage rule (owner list forces one shared command: "Test Coverage"
+ * opens the Security panel like "Security Audit", so the test is
  * "every non-internal command has >= 1 entry", plus "no duplicate
- * (label, command) entry").
+ * (label, command) entry"). P48: labels are the English set (C6/C8).
  */
 'use strict';
 
@@ -87,30 +87,45 @@ check('C5: tree/internal partition covers all 58 commands exactly once',
     contributed.length === 58 && covered.size + internal.size === 58 &&
     [...covered].every((c) => !internal.has(c)),
     'covered=' + covered.size + ' internal=' + internal.size);
-// panel openers must carry the EXACT webview titles (parsed from panels)
-const panelFiles = fs.readdirSync(path.join(EXT, 'src', 'panels')).filter((f) => f.endsWith('.js'))
-    .map((f) => path.join(EXT, 'src', 'panels', f));
-panelFiles.push(path.join(EXT, 'src', 'agent', 'AgentPanel.js'));
-const titles = new Set();
-panelFiles.forEach((f) => {
-    const src = fs.readFileSync(f, 'utf8');
-    const re = /createWebviewPanel\(\s*'[^']*',\s*'((?:[^'\\]|\\.)*)'/g;
-    let m;
-    while ((m = re.exec(src))) titles.add(m[1]);
-});
-const PANEL_OPENERS = {
-    'sudoStudio.openAgentPanel': 1, 'sudoStudio.openChat': 1, 'sudoStudio.openRuntimePanel': 1,
-    'sudoStudio.openProvidersPanel': 1, 'sudoStudio.openAnalysisPanel': 1,
-    'sudoStudio.openEnvironmentPanel': 1, 'sudoStudio.openDuplicationPanel': 1,
-    'sudoStudio.openSecurityPanel': 1, 'sudoStudio.runDoctor': 1,
-    'sudoStudio.openSDKPanel': 1, 'sudoStudio.openSdkInstallPanel': 1,
-    'sudoStudio.openDevOpsPanel': 1, 'sudoStudio.openCentralMgmtPanel': 1,
-    'sudoStudio.openLicensePanel': 1,
+// P48: tree labels are the EXACT English set (no emoji); panel webview
+// titles themselves are unchanged (French, untouched by P48).
+const EXPECTED_LABELS = {
+    'sudoStudio.openAgentPanel': ['Sudo Agent'],
+    'sudoStudio.openChat': ['Sudo Chat'],
+    'sudoStudio.openLogsViewer': ['Agent Logs'],
+    'sudoStudio.openRuntimePanel': ['Runtime & Models'],
+    'sudoStudio.openProvidersPanel': ['AI Providers'],
+    'sudoStudio.openAnalysisPanel': ['Project Analysis'],
+    'sudoStudio.openEnvironmentPanel': ['Reproducible Environment'],
+    'sudoStudio.backupEnvironment': ['Backup Environment'],
+    'sudoStudio.restoreEnvironment': ['Restore Environment'],
+    'sudoStudio.cloneEnvironment': ['Clone Environment'],
+    'sudoStudio.createSnapshot': ['Create Snapshot'],
+    'sudoStudio.openDuplicationPanel': ['Enterprise Duplication'],
+    'sudoStudio.openSecurityPanel': ['Security Audit', 'Test Coverage'],
+    'sudoStudio.runSecurityAudit': ['Run Security Audit'],
+    'sudoStudio.runDoctor': ['System Doctor'],
+    'sudoStudio.openSDKPanel': ['SDK Manager'],
+    'sudoStudio.openSdkInstallPanel': ['SDK Install'],
+    'sudoStudio.openDevOpsPanel': ['DevOps Automation'],
+    'sudoStudio.openCentralMgmtPanel': ['Central Management'],
+    'sudoStudio.openAuditLog': ['Audit Log'],
+    'sudoStudio.openLicensePanel': ['License Management'],
+    'sudoStudio.openLogsFolder': ['Open Logs Folder'],
+    'sudoStudio.exportDiagnostics': ['Export Diagnostics'],
 };
-const openerLabels = entries.filter((e) => PANEL_OPENERS[e.command] && e.label !== 'Couverture de tests');
-check('C6: panel-opener labels are the EXACT panel titles',
-    openerLabels.every((e) => titles.has(e.label)),
-    JSON.stringify(openerLabels.filter((e) => !titles.has(e.label)).map((e) => e.label)));
+const EXPECTED_GROUPS = ['Agent', 'AI Runtime', 'Project', 'Environment',
+    'Duplication', 'Security', 'Tools', 'Administration', 'Logs'];
+const actualPairs = entries.map((e) => e.command + '|' + e.label).sort();
+const expectedPairs = [];
+Object.keys(EXPECTED_LABELS).forEach((c) => EXPECTED_LABELS[c].forEach((l) => expectedPairs.push(c + '|' + l)));
+expectedPairs.sort();
+const actualGroups = GROUPS.map((g) => g.label);
+check('C6: tree labels are exactly the P48 English set (no emoji)',
+    JSON.stringify(actualPairs) === JSON.stringify(expectedPairs) &&
+    JSON.stringify(actualGroups) === JSON.stringify(EXPECTED_GROUPS),
+    'pairs=' + JSON.stringify(actualPairs.filter((p) => expectedPairs.indexOf(p) === -1)) +
+    ' groups=' + JSON.stringify(actualGroups));
 // every icon must be a bundled codicon
 const css = fs.readFileSync(path.join(EXT, 'media', 'codicon.css'), 'utf8');
 const allIcons = [];
@@ -118,6 +133,15 @@ GROUPS.forEach((g) => { allIcons.push(g.icon); (g.entries || []).forEach((e) => 
 check('C7: every group/entry icon is a bundled codicon',
     allIcons.every((i) => css.indexOf('.codicon-' + i + ':') !== -1 || css.indexOf('.codicon-' + i + '::') !== -1 || css.indexOf('.codicon-' + i + ' :') !== -1),
     JSON.stringify(allIcons.filter((i) => css.indexOf('.codicon-' + i) === -1)));
+// P48: labels carry no emoji and no accents (ASCII printable only).
+const asciiRe = /^[\x20-\x7E]+$/;
+const badLabels = [];
+GROUPS.forEach((g) => {
+    if (!asciiRe.test(g.label)) badLabels.push(g.label);
+    (g.entries || []).forEach((e) => { if (!asciiRe.test(e.label)) badLabels.push(e.label); });
+});
+check('C8: every group/entry label is ASCII-only (no emoji, no accents)',
+    badLabels.length === 0, JSON.stringify(badLabels));
 
 // -- D: registration + wiring ---------------------------------------------------
 check('D1: only the single tree registration left',

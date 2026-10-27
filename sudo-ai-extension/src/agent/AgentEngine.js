@@ -308,6 +308,14 @@ class AgentEngine extends EventEmitter {
             this._leg('tool', d);
         } else if (type === 'turn.start') {
             this._raw('turn', { phase: 'turn-start', sessionId: sid, turnId: o.turnId || '' });
+        } else if (type === 'runtime.wait') {
+            // P48(4): the runtime is restarting under supervision; the turn
+            // waits (<=60s) and resumes transparently. Panels already
+            // forward 'step' to their webviews (no panel change needed).
+            this._leg('step', { phase: 'runtime-restart',
+                message: typeof o.message === 'string' && o.message
+                    ? o.message : 'Runtime restarting, attempt ' +
+                        (o.attempt || '?') + '/' + (o.maxAttempts || '?') });
         }
         // turn.done resolves stream(); turn.error rejects it (both handled
         // by the caller). Nothing else to do here.

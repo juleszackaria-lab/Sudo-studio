@@ -212,10 +212,12 @@ router.post('/api/models/download', verifyToken, requireModelAllowed, async (req
       });
     } catch (runtimeErr) {
       if (runtimeErr.code === 'ECONNREFUSED') {
+        // P48(4): the supervisor restarts the runtime by itself; never
+        // order the user to relaunch the runtime by hand.
         return res.status(503).json({
           error: 'AI Runtime not running',
-          message: 'Start runtime.exe first (port 6000)',
-          fix: 'Launch runtime.exe from start.bat'
+          message: 'Runtime offline (port 6000): supervised restart in progress',
+          fix: 'Wait for the supervised restart or press Restart now in the Runtime panel'
         });
       }
       throw runtimeErr;

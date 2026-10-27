@@ -85,6 +85,7 @@ class RuntimePanel {
             case 'downloadModel':  await this.downloadModel(msg.modelId); break;
             case 'switchModel':    await this.switchModel(msg.modelId, msg.nCtx); break;
             case 'restartRuntime': await this.restartRuntime(); break;
+            case 'supervisorRestart': await this.supervisorRestart(); break;
             case 'fetchLogs':      await this.fetchLogs(); break;
             case 'cacheInfo':      await this.fetchCacheInfo(); break;
             case 'autoSelect':     await this.autoSelectBestModel(); break;
@@ -124,7 +125,7 @@ class RuntimePanel {
             this._lastHealth = r.data;
         } catch (e) {
             runtimeError = e.code === 'ECONNREFUSED'
-                ? 'Runtime hors ligne (port 6000). Lancez start.bat.'
+                ? 'Runtime hors ligne (port 6000). Redemarrage superviseur en cours, sinon bouton Restart now.'
                 : `Erreur connexion runtime: ${e.message}`;
             console.warn('[RUNTIME] fetchStatus /health failed:', e.message);
         }
@@ -345,7 +346,25 @@ class RuntimePanel {
             vscode.window.showInformationMessage('🔄 Runtime en cours de redémarrage...');
             setTimeout(() => this.fetchStatus(), 2000);
         } catch (e) {
-            this.panel.webview.postMessage({ type: 'error', text: `Runtime non joignable sur port 6000: ${e.message}. Relancez start.bat.` });
+            this.panel.webview.postMessage({ type: 'error', text: `Runtime non joignable sur port 6000: ${e.message}. Attendez le redemarrage superviseur ou cliquez Restart now.` });
+        }
+    }
+
+    // P48(4): force an immediate supervised PROCESS restart. Unlike
+    // restartRuntime() (/reload, needs a live process), this works while
+    // the runtime is down: the backend supervisor kills leftovers and
+    // respawns runtime.exe, then re-triggers the model. Best effort.
+    async supervisorRestart() {
+        console.log('[RUNTIME] supervisorRestart');
+        try {
+            const r = await axios.post('http://localhost:5000/api/supervisor/runtime-restart', {}, { timeout: 15000 });
+            const d = (r && r.data) || {};
+            const detail = d.detail || d.action || 'demande envoyee';
+            this.panel.webview.postMessage({ type: 'info', text: 'Restart now: ' + detail });
+            vscode.window.showInformationMessage('Restart now: ' + (d.ok === false ? 'echec (' + detail + ')' : 'redemarrage superviseur demande'));
+            setTimeout(() => this.fetchStatus(), 3000);
+        } catch (e) {
+            this.panel.webview.postMessage({ type: 'error', text: 'Restart now impossible: ' + e.message });
         }
     }
 
@@ -376,7 +395,7 @@ class RuntimePanel {
         } catch (e) {
             this.panel.webview.postMessage({
                 type: 'logsData',
-                text: `Runtime non joignable (port 6000): ${e.message}\n\nVérifiez que start.bat a lancé runtime.exe.`
+                text: `Runtime non joignable (port 6000): ${e.message}\n\nLe superviseur relance runtime.exe automatiquement (bouton Restart now pour forcer).`
             });
         }
     }
@@ -536,6 +555,7 @@ ${guardSnippet({ nonce: nonce })}
         <button class="btn btn-primary" id="btnRefresh">🔄 Rafraîchir</button>
         <button class="btn btn-secondary" id="btnAutoSelect" title="Sélectionner automatiquement le meilleur modèle local">⚡ Auto-sélect</button>
         <button class="btn btn-secondary" id="btnRestart">↺ Restart</button>
+        <button class="btn btn-primary" id="btnRestartNow" style="display:none" title="Force an immediate supervised runtime restart">Restart now</button>
         <button class="btn btn-secondary" id="btnLogs">📋 Logs</button>
         <button class="btn btn-secondary" id="btnCache">💾 Cache Info</button>
     </div>
@@ -611,6 +631,16 @@ document.getElementById('btnRestart').addEventListener('click', function() {
     console.log('[RUNTIME] Restart requested');
 });
 
+// P48(4): visible only while the runtime is offline; forces an immediate
+// supervised process restart (POST /api/supervisor/runtime-restart).
+document.getElementById('btnRestartNow').addEventListener('click', function() {
+    this.disabled = true;
+    this.textContent = 'Restarting...';
+    vscPost({ type: 'supervisorRestart' });
+    setTimeout(() => { this.disabled = false; this.textContent = 'Restart now'; }, 15000);
+    console.log('[RUNTIME] Supervisor restart requested');
+});
+
 document.getElementById('btnLogs').addEventListener('click', function() {
     const logsBox = document.getElementById('logsBox');
     if (logsBox.classList.contains('show')) {
@@ -653,11 +683,15 @@ function updateRuntime(data) {
         badge.className = 'offline'; badge.textContent = '⚫ Hors ligne';
         modelName.textContent = 'Runtime non joignable (port 6000)';
         if (dlBar) dlBar.classList.remove('show');
-        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Runtime hors ligne. Lancez start.bat pour démarrer le runtime.'; }
+        if (mockWarn) { mockWarn.classList.add('show'); if(mockText) mockText.textContent = 'Runtime hors ligne. Redemarrage superviseur en cours (Restart now pour forcer).'; }
+        var rnBtn = document.getElementById('btnRestartNow');
+        if (rnBtn) rnBtn.style.display = '';
         return;
     }
 
     const m = data.model || {};
+    var rnBtnUp = document.getElementById('btnRestartNow');
+    if (rnBtnUp) rnBtnUp.style.display = 'none';
 
     // If we have active download progress from the 2s poll, use it
     if (_activeDownload && m.loading) {

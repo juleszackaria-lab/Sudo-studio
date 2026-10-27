@@ -97,10 +97,15 @@ if (-not (Test-Path (Join-Path $BuildDir $iconRel))) { Deny ('container icon not
 $extViews = @($ep.contributes.views.'sudo-studio').Count
 $extVer = $ep.version
 if ($ep.contributes.views.explorer) { Deny 'extension views still under explorer' }
-# P42(2): shipped title-bar defaults (verified on this build).
+# P48(2): shipped title-bar defaults (verified on this build).
 $cfgD = $pj.configurationDefaults
 if (-not $cfgD -or $cfgD.'window.commandCenter' -ne $false) { Deny 'product.json configurationDefaults window.commandCenter != false' }
-if ($cfgD.'window.title' -ne '${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}') { Deny 'product.json configurationDefaults window.title != classic template' }
+if ($cfgD.'window.title' -ne '${appName}${separator}${dirty}${activeEditorShort}${separator}${rootName}') { Deny 'product.json configurationDefaults window.title != app-first template' }
+# P48(1): the titlebar brand text (STEP 2d) must be in the shipped CSS.
+$cssBrand = Join-Path $BuildDir 'resources\app\out\vs\workbench\workbench.desktop.main.css'
+if (-not (Test-Path $cssBrand)) { Deny 'workbench CSS missing for titlebar brand gate' }
+$cssBrandRaw = [System.IO.File]::ReadAllText($cssBrand, [System.Text.Encoding]::UTF8)
+if ($cssBrandRaw -notmatch 'P48-TITLEBAR-BRAND') { Deny 'titlebar brand CSS (P48-TITLEBAR-BRAND) missing from shipped workbench CSS' }
 Write-Host ("[MANIFEST] brand: product.json OK, logo svg bytes match, robot container views={0}" -f $extViews)
 $exeCheck = Join-Path $scriptDir 'check-exe-icon.ps1'
 if (-not (Test-Path $exeCheck)) { Deny 'exe icon checker missing next to this script' }

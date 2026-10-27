@@ -222,9 +222,12 @@ class RuntimeSupervisor {
     }
   }
 
-  async maybeRestart(reason) {
+  async maybeRestart(reason, opts) {
+    // P48(4): an explicit "Restart now" (manual) bypasses the boot grace
+    // (the user asked); the 10-minute restart cap still applies (safety).
+    const manual = !!(opts && opts.manual);
     const nowTs = this.now();
-    if (nowTs - this.startedAt < this.graceMs) {
+    if (!manual && nowTs - this.startedAt < this.graceMs) {
       this.lastSuppressed = {
         atIso: new Date(nowTs).toISOString(), atHHMM: toHHMM(nowTs),
         reason: 'grace period (' + reason + ')',

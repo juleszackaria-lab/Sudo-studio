@@ -11,7 +11,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { probeProvider, streamChat, chatOnce } = require('./providers');
+const { probeProvider, streamChat, chatOnce, waitForRuntime } = require('./providers');
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
 const { loadProjectRules } = require('./permissions');
 const { diffSnapshot } = require('./checkpoints');
@@ -32,6 +32,25 @@ function homeOf(toolsCtx) {
   if (toolsCtx && toolsCtx.home) return String(toolsCtx.home);
   if (process.env.SUDO_STUDIO_HOME) return String(process.env.SUDO_STUDIO_HOME);
   try { return require('os').homedir(); } catch (_) { return process.cwd(); }
+}
+
+// P48(4): after a runtime_offline failure, wait for the supervised restart
+// (each round emits onEvent { type: 'runtime.wait', attempt, maxAttempts,
+// message }) and tell the caller whether a single retry is worthwhile.
+// ctx: { provider, onEvent, shouldAbort?, waitOpts? }. waitOpts overrides
+// { attempts, delayMs, probeTimeoutMs } (tests use short waits; production
+// uses the waitForRuntime defaults: 5 x 10s, always <= 60s).
+async function waitAndRetry(ctx) {
+  const w = await waitForRuntime(ctx.provider, {
+    attempts: ctx.waitOpts && ctx.waitOpts.attempts,
+    delayMs: ctx.waitOpts && ctx.waitOpts.delayMs,
+    probeTimeoutMs: ctx.waitOpts && ctx.waitOpts.probeTimeoutMs,
+    shouldAbort: ctx.shouldAbort,
+    onProgress: (n, max, message) => {
+      try { ctx.onEvent({ type: 'runtime.wait', attempt: n, maxAttempts: max, message }); } catch (_) {}
+    },
+  });
+  return { retry: !!(w.recovered && w.probe && w.probe.ok) };
 }
 
 async function runTurn(opts) {
@@ -60,10 +79,20 @@ async function runTurn(opts) {
   if (prompt.length > MAX_PROMPT) return fail('bad_request', 'prompt trop long.');
   if (runs.has(sessionId)) return fail('busy', 'un tour est deja en cours sur cette session.');
 
+  const runtimeWait = opts.runtimeWait || null;
   let probe = opts.preProbe && typeof opts.preProbe === 'object' ? opts.preProbe : null;
   if (!probe) {
     try { probe = await probeProvider(provider, { timeoutMs: probeTimeoutMs }); }
     catch (e) { probe = { ok: false, code: 'provider_error', error: 'fournisseur indisponible.' }; }
+    // P48(4): offline at turn start (direct runTurn callers): wait for the
+    // supervised restart, then probe once more before giving up.
+    if (!probe.ok && probe.code === 'runtime_offline') {
+      const w0 = await waitAndRetry({ provider, onEvent, waitOpts: runtimeWait });
+      if (w0.retry) {
+        try { probe = await probeProvider(provider, { timeoutMs: probeTimeoutMs }); }
+        catch (e) { probe = { ok: false, code: 'provider_error', error: 'fournisseur indisponible.' }; }
+      }
+    }
   }
   if (!probe.ok) return fail(probe.code || 'provider_error', probe.error || 'fournisseur indisponible.');
   const model = provider.model || (probe.models && probe.models[0]) || '';
@@ -73,7 +102,7 @@ async function runTurn(opts) {
   const sessionNow = store.get(sessionId) || session;
   const useTools = !!opts.toolsCtx && sessionNow.projectRoot && opts.tools !== false;
 
-  const base = { store, provider, sessionId, prompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify };
+  const base = { store, provider, sessionId, prompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait };
   if (useTools) return toolsTurn(base, sessionNow, opts.toolsCtx);
   return legacyTurn(base, sessionNow);
 }
@@ -92,16 +121,30 @@ async function legacyTurn(base) {
   try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
   if (log) { try { log.info('turn start', { session: sessionId, model, history: history.length, promptChars: prompt.length }, corr); } catch (_) {} }
   let full = '';
+  const streamOnce = () => streamChat(provider, history, {
+    model,
+    shouldAbort: () => run.aborted,
+    onRequest: (req) => { run.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
+    onToken: (delta, text) => {
+      full = text;
+      try { onEvent({ type: 'message.delta', text: delta }); } catch (_) {}
+    },
+  });
   try {
-    const res = await streamChat(provider, history, {
-      model,
-      shouldAbort: () => run.aborted,
-      onRequest: (req) => { run.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
-      onToken: (delta, text) => {
-        full = text;
-        try { onEvent({ type: 'message.delta', text: delta }); } catch (_) {}
-      },
-    });
+    let res = null;
+    try {
+      res = await streamOnce();
+    } catch (e0) {
+      // P48(4): runtime died (turn start or mid-stream): wait for the
+      // supervised restart, then retry the stream once. The failed
+      // stream produced no tool calls, so the retry is side-effect free.
+      if (!e0 || e0.code !== 'runtime_offline' || run.aborted) throw e0;
+      full = '';
+      const wL = await waitAndRetry({ provider, onEvent,
+        shouldAbort: () => run.aborted, waitOpts: base.runtimeWait });
+      if (!wL.retry || run.aborted) throw e0;
+      res = await streamOnce();
+    }
     full = res.text || '';
     store.append(sessionId, { role: 'assistant', content: full });
     try { onEvent({ type: 'message.done', text: full, aborted: false }); } catch (_) {}
@@ -179,13 +222,14 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
   journal('info', 'question envoyee', { tokens: profiles.estimateTokens(messages, 0), files: qctx.files.join(','), history: tail.length });
 
   let full = '';
+  const streamOnce = () => streamChat(provider, messages, {
+    model,
+    shouldAbort: () => runEntry.aborted,
+    onToken: (tok) => { try { onEvent({ type: 'message.delta', text: tok }); } catch (_) {} },
+    onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
+  });
   try {
-    const res = await streamChat(provider, messages, {
-      model,
-      shouldAbort: () => runEntry.aborted,
-      onToken: (tok) => { try { onEvent({ type: 'message.delta', text: tok }); } catch (_) {} },
-      onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
-    });
+    const res = await streamOnce();
     full = String((res && res.text) || '').trim();
   } catch (e) {
     if (e && e.code === 'aborted') {
@@ -197,8 +241,27 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
       if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
       return { status: 'aborted', model };
     }
-    journal('warn', 'question echouee', { code: (e && e.code) || 'provider_error' });
-    full = '';
+    // P48(4): runtime died: wait for the supervised restart and retry the
+    // single call once before falling back to the deterministic answer.
+    if (e && e.code === 'runtime_offline' && !runEntry.aborted) {
+      const wQ = await waitAndRetry({ provider, onEvent,
+        shouldAbort: () => runEntry.aborted, waitOpts: base.runtimeWait });
+      if (wQ.retry && !runEntry.aborted) {
+        try {
+          const res2 = await streamOnce();
+          full = String((res2 && res2.text) || '').trim();
+        } catch (e2) {
+          journal('warn', 'question echouee', { code: (e2 && e2.code) || 'provider_error' });
+          full = '';
+        }
+      } else {
+        journal('warn', 'question echouee', { code: 'runtime_offline' });
+        full = '';
+      }
+    } else {
+      journal('warn', 'question echouee', { code: (e && e.code) || 'provider_error' });
+      full = '';
+    }
   } finally {
     runEntry.destroy = null;
   }
@@ -292,6 +355,7 @@ function probeNctx(preProbe, model) {
 
 async function toolsTurn(base, session, toolsCtx) {
   const { store, provider, sessionId, corr, log, runs, onEvent, model } = base;
+  const runtimeWait = base.runtimeWait || null;
   const turnId = corr;
   const home = homeOf(toolsCtx);
   const cloud = provider.type === 'cloud';
@@ -570,9 +634,19 @@ async function toolsTurn(base, session, toolsCtx) {
         // Provider without tool support: fall back to ONE legacy streamed turn.
         if (e && e.status === 400 && iters === 0) {
           journal('warn', 'tools unsupported, legacy fallback');
-          return legacyTurn({ store, provider, sessionId, prompt: base.prompt, corr, log, runs, onEvent, model });
+          return legacyTurn({ store, provider, sessionId, prompt: base.prompt, corr, log, runs, onEvent, model, runtimeWait });
         }
-        throw e;
+        // P48(4): runtime died mid-turn: wait for the supervised restart,
+        // then retry this round once. The failed round produced no model
+        // response, so history is unchanged and the retry is safe.
+        if (!e || e.code !== 'runtime_offline' || runEntry.aborted) throw e;
+        const wT = await waitAndRetry({ provider, onEvent,
+          shouldAbort: () => runEntry.aborted, waitOpts: runtimeWait });
+        if (!wT.retry || runEntry.aborted) throw e;
+        reply = await chatOnce(provider, {
+          model, messages: modelMessages(), tools: schemas,
+          onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
+        });
       } finally {
         runEntry.destroy = null;
       }

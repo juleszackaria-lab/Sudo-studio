@@ -303,7 +303,7 @@ try {
         if (-not $pj.commit -or -not $pj.date) { throw 'product.json lacks commit/date (About dialog)' }
         $cfgV = $pj.configurationDefaults
         if (-not $cfgV -or $cfgV.'window.commandCenter' -ne $false) { throw 'configurationDefaults window.commandCenter != false' }
-        if ($cfgV.'window.title' -ne '${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}') { throw 'configurationDefaults window.title != classic template' }
+        if ($cfgV.'window.title' -ne '${appName}${separator}${dirty}${activeEditorShort}${separator}${rootName}') { throw 'configurationDefaults window.title != app-first template (P48)' }
         $parts += 'product.json'
         $ep5 = Get-Content (Join-Path $InstallDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json
         $bar = @($ep5.contributes.viewsContainers.activitybar)
@@ -321,6 +321,12 @@ try {
         if ($same) { for ($i = 0; $i -lt $a.Length; $i++) { if ($a[$i] -ne $b[$i]) { $same = $false; break } } }
         if (-not $same) { throw 'code-icon.svg differs from sudo-icon.svg' }
         $parts += 'titlebar-svg'
+        # P48(1): titlebar brand text must be in the installed workbench CSS.
+        $cssV = Join-Path $InstallDir 'resources\app\out\vs\workbench\workbench.desktop.main.css'
+        if (-not (Test-Path $cssV)) { throw 'installed workbench CSS missing (titlebar brand)' }
+        $cssVRaw = [System.IO.File]::ReadAllText($cssV, [System.Text.Encoding]::UTF8)
+        if ($cssVRaw -notmatch 'P48-TITLEBAR-BRAND') { throw 'titlebar brand CSS (P48-TITLEBAR-BRAND) missing from installed package' }
+        $parts += 'titlebar-text'
         $oldSvgHash = '88bb8eb6c643403be96d1d218a564c28a05f3b31368aad10c0db0bc1efbed75f'
         $oldSvg = @(Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Extension.ToLower() -eq '.svg' } |

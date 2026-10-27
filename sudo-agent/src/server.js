@@ -8,7 +8,7 @@ const crypto = require('crypto');
 const { createLogger, newCorr, corrFromReq, maskSecrets, gatherSessionInfo } = require('./journal');
 const { createStore } = require('./store');
 const { createRegistry } = require('./registry');
-const { normalizeConfig, probeProvider } = require('./providers');
+const { normalizeConfig, probeProvider, waitForRuntime } = require('./providers');
 const { runTurn, abortRun } = require('./loop');
 const toolMod = require('./tools');
 const permMod = require('./permissions');
@@ -193,12 +193,15 @@ function createApp(opts) {
         if (typeof prompt !== 'string' || !prompt.trim()) { sendJson(res, 400, { error: 'prompt vide.' }); done(400); return; }
         if (runs.has(id)) { sendJson(res, 409, { error: 'un tour est deja en cours sur cette session.' }); done(409); return; }
         if (!provider) { sendJson(res, 503, { code: 'bad_config', error: providerIssue || 'provider non configure.' }); done(503); return; }
-        // Fast pre-check BEFORE opening the stream: offline runtime or empty
-        // model list => immediate clear JSON error (<5s), never fake success.
+        // Pre-check BEFORE opening the stream: empty model list / bad
+        // config => immediate clear JSON error (<5s), never fake success.
+        // P48(4): an OFFLINE local runtime instead opens the stream and
+        // waits (<=60s, "Runtime restarting, attempt n/5" events) for the
+        // supervised restart, then resumes the turn transparently.
         let pre = null;
         try { pre = await probeProvider(provider, { timeoutMs: 4000 }); }
         catch (e) { pre = { ok: false, code: 'provider_error', error: String((e && e.message) || e) }; }
-        if (!pre.ok) { sendJson(res, 502, { code: pre.code, error: pre.error }); done(502); return; }
+        if (!pre.ok && pre.code !== 'runtime_offline') { sendJson(res, 502, { code: pre.code, error: pre.error }); done(502); return; }
         // Stream.
         res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Correlation-Id': corr });
         const emit = (type, obj) => {
@@ -208,6 +211,23 @@ function createApp(opts) {
         let finished = false;
         const finish = () => { if (!finished) { finished = true; try { res.end(); } catch (_) {} done(200); } };
         req.on('close', () => { abortRun(runs, id); finish(); });
+        if (!pre.ok) {
+          const w = await waitForRuntime(provider, {
+            shouldAbort: () => finished,
+            onProgress: (n, max, message) => emit('runtime.wait',
+              { type: 'runtime.wait', attempt: n, maxAttempts: max, message }),
+          });
+          if (finished) return;
+          if (!w.recovered || !w.probe || !w.probe.ok) {
+            const code = (w.probe && w.probe.code) || pre.code || 'runtime_offline';
+            const error = (w.probe && w.probe.error) || pre.error || 'Runtime local hors ligne.';
+            emit('turn.error', { type: 'turn.error', code, error });
+            if (log) { try { log.warn('turn error', { session: id, code }, corr); } catch (_) {} }
+            finish();
+            return;
+          }
+          pre = w.probe;
+        }
         try {
           await runTurn({
             store, provider, sessionId: id, prompt, corr, log, runs, preProbe: pre,

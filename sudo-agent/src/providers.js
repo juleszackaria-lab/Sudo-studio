@@ -159,6 +159,13 @@ function streamChat(cfg, messages, opts) {
         res.on('end', () => win({ text, usage }));
         res.on('error', (e) => {
           if (e && e.abortedByAgent) { const a = new Error('aborted'); a.code = 'aborted'; a.partial = text; if (!done) { done = true; reject(a); } }
+          // P48(4): the runtime dying MID-stream drops the socket (reset/
+          // broken pipe). On a local provider that is runtime_offline, not
+          // a provider error, so the turn waits for the supervised restart.
+          else if (cfg.type === 'local' && e && (e.code === 'ECONNRESET' || e.code === 'EPIPE' || e.code === 'ECONNREFUSED')) {
+            const a = new Error('Runtime local hors ligne: ' + cfg.baseUrl + ' injoignable (' + shortError(e) + ').');
+            a.code = 'runtime_offline'; a.partial = text; if (!done) { done = true; reject(a); }
+          }
           else fail('provider_error', 'Erreur du fournisseur: ' + shortError(e));
         });
       });
@@ -175,7 +182,7 @@ function streamChat(cfg, messages, opts) {
   });
 }
 
-module.exports = { normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl };
+module.exports = { normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime };
 
 // Non-streaming chat, optional tools (P25). opts: { model, messages, tools?,
 // timeoutMs, onRequest }. Resolves { text, toolCalls, usage } where toolCalls
@@ -229,4 +236,55 @@ function chatOnce(cfg, opts) {
     req.write(payload);
     req.end();
   });
+}
+
+// P48(4): wait for a supervised local-runtime restart. Called when a local
+// call just failed with runtime_offline. Probes up to `attempts` times,
+// `delayMs` apart (defaults 5 x 10s: 50s of sleep + fast probes, always
+// <= 60s total), reporting each round through onProgress BEFORE sleeping
+// so panels show "Runtime restarting, attempt n/5" for the whole wait.
+// Keeps waiting when the runtime answers but no model is loaded yet (the
+// supervisor re-triggers /reload after a restart: "up but loading" is
+// progress, not a verdict). Any other probe verdict (bad_config,
+// provider_error, ...) returns immediately: only a restart episode waits.
+// opts: { attempts, delayMs, probeTimeoutMs, probeFn, sleep, onProgress,
+// shouldAbort }. Resolves { recovered, probe, attemptsMade, aborted }.
+// Never waits for cloud configs.
+function waitForRuntime(cfg, opts) {
+  opts = opts || {};
+  const max = Number(opts.attempts) > 0 ? Math.floor(Number(opts.attempts)) : 5;
+  const delayMs = Number(opts.delayMs) >= 0 ? Number(opts.delayMs) : 10000;
+  const probeTimeoutMs = Number(opts.probeTimeoutMs) > 0 ? Number(opts.probeTimeoutMs) : 2000;
+  const probeFn = typeof opts.probeFn === 'function' ? opts.probeFn : probeProvider;
+  const sleep = typeof opts.sleep === 'function' ? opts.sleep : ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const shouldAbort = typeof opts.shouldAbort === 'function' ? opts.shouldAbort : null;
+  if (!cfg || cfg.type !== 'local') {
+    return Promise.resolve({ recovered: false, probe: null, attemptsMade: 0, aborted: false });
+  }
+  return (async () => {
+    let lastProbe = null;
+    for (let n = 1; n <= max; n++) {
+      if (shouldAbort && shouldAbort()) {
+        return { recovered: false, probe: lastProbe, attemptsMade: n - 1, aborted: true };
+      }
+      if (onProgress) {
+        try { onProgress(n, max, 'Runtime restarting, attempt ' + n + '/' + max); } catch (_) {}
+      }
+      await sleep(delayMs);
+      if (shouldAbort && shouldAbort()) {
+        return { recovered: false, probe: lastProbe, attemptsMade: n, aborted: true };
+      }
+      let p = null;
+      try { p = await probeFn(cfg, { timeoutMs: probeTimeoutMs }); }
+      catch (e) { p = { ok: false, code: 'provider_error', error: String((e && e.message) || e) }; }
+      lastProbe = p;
+      if (p && p.ok) return { recovered: true, probe: p, attemptsMade: n, aborted: false };
+      const code = (p && p.code) || 'provider_error';
+      if (code !== 'runtime_offline' && code !== 'no_model') {
+        return { recovered: false, probe: p, attemptsMade: n, aborted: false };
+      }
+    }
+    return { recovered: false, probe: lastProbe, attemptsMade: max, aborted: false };
+  })();
 }

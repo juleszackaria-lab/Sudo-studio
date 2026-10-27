@@ -104,11 +104,11 @@ check('C7: replacement logo SVG (branded, not the old art)',
     logo.indexOf('<svg') === 0 && logo.indexOf('viewBox') !== -1 &&
     logo.indexOf('ssRing') !== -1 && logo.indexOf('path6008') === -1 &&
     [...logo].every((c) => c.codePointAt(0) < 128));
-// P42(2): shipped title-bar defaults (verified on this build).
-check('C8: configurationDefaults (commandCenter off + classic title)',
+// P48(2): shipped title-bar defaults (verified on this build): app-first title.
+check('C8: configurationDefaults (commandCenter off + app-first title)',
     ps1.indexOf('configurationDefaults') !== -1 &&
     ps1.indexOf('"window.commandCenter" = $false') !== -1 &&
-    ps1.indexOf("'${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}'") !== -1);
+    ps1.indexOf("'${appName}${separator}${dirty}${activeEditorShort}${separator}${rootName}'") !== -1);
 
 // -- D: pattern-logic simulation (JS mirror of the PS table) ------------------------------
 const PATS = [
@@ -230,7 +230,7 @@ check('H1: pack-time gate requires a STRING container icon',
     mfPs1.indexOf('container icon not on disk') !== -1);
 check('H2: pack-time gate requires configurationDefaults title keys',
     mfPs1.indexOf("configurationDefaults window.commandCenter != false") !== -1 &&
-    mfPs1.indexOf('window.title') !== -1 && mfPs1.indexOf('classic template') !== -1);
+    mfPs1.indexOf('window.title') !== -1 && mfPs1.indexOf('app-first template') !== -1);
 check('H3: pack-time stamp of the shipped README (extension page build no)',
     mfPs1.indexOf('README stamped') !== -1 &&
     mfPs1.indexOf('extensions\\sudo-ai\\README.md') !== -1);

@@ -45,14 +45,16 @@ if (Test-Path $productJsonPath) {
         $json | Add-Member -NotePropertyName "win32MutexName"       -NotePropertyValue "sudostudio"        -Force
         $json | Add-Member -NotePropertyName "win32RegValueName"    -NotePropertyValue "SudoStudio"        -Force
         $json | Add-Member -NotePropertyName "darwinBundleIdentifier" -NotePropertyValue "com.sudostudio.app" -Force
-        # P42(2): shipped title-bar defaults (verified on this build): no
-        # command center, classic title template (${appName} <- nameLong).
+        # P48(2): shipped title-bar defaults (verified on this build): no
+        # command center, app-first title template (${appName} <-
+        # nameLong). The app name LEADS so the taskbar thumbnail shows
+        # "Sudo Studio" even when the rest is truncated.
         $cfgDefaults = [ordered]@{
             "window.commandCenter" = $false
-            "window.title"         = '${dirty}${activeEditorShort}${separator}${rootName}${separator}${appName}'
+            "window.title"         = '${appName}${separator}${dirty}${activeEditorShort}${separator}${rootName}'
         }
         $json | Add-Member -NotePropertyName "configurationDefaults" -NotePropertyValue $cfgDefaults -Force
-        Write-Host "[OK] product.json configurationDefaults (commandCenter off, classic title)"
+        Write-Host "[OK] product.json configurationDefaults (commandCenter off, app-first title)"
         # P35(e): About dialog shows OUR commit (was: upstream VSCodium sha).
         if ($SudoStudioCommit -and $SudoStudioCommit -match '^[0-9a-f]{7,40}$') {
             $json | Add-Member -NotePropertyName "commit" -NotePropertyValue $SudoStudioCommit -Force
@@ -286,6 +288,54 @@ if ($step2cSvgOld.Count -gt 0) {
 else {
     Write-Host "[OK] [2c] VERIFY: 0 SVG files match the old-logo fingerprint"
 }
+}
+
+# ============================================================
+# STEP 2d - TITLEBAR BRAND TEXT ("Sudo Studio" before the menu) [P48(1)]
+# The custom titlebar shows the app icon then the menu (File...). No
+# brand text exists between them. We append a small CSS block to the
+# shipped workbench stylesheet so the menu's ::before renders
+# "Sudo Studio" right after the icon, before File:
+#   .titlebar-left .menubar::before { content: "Sudo Studio"; ... }
+# Styling comes from THEME VARIABLES ONLY (activeForeground for the
+# color, the inherited/vscode font size), so light and dark themes
+# render natively with zero hard-coded color. A max-width media query
+# hides the text on narrow windows (the text disappears BEFORE the
+# menu, which is never touched). The menu itself gets no hard-coded
+# text. FAIL-CLOSED (P48 owner choice): a build whose CSS layout moved
+# (file/anchor missing) is refused instead of shipping unbranded.
+# Idempotent: re-running skips when the marker is already present.
+# ============================================================
+Write-Host "[STEP 2d] Titlebar brand text (Sudo Studio before menu)..."
+$step2dCss = Join-Path $resolvedDir "resources\app\out\vs\workbench\workbench.desktop.main.css"
+if (-not (Test-Path $step2dCss)) {
+    Write-Error "[2d] FAIL: workbench CSS not found at $step2dCss - refusing to ship without titlebar brand text"
+    exit 2
+}
+$step2dRaw = [System.IO.File]::ReadAllText($step2dCss, [System.Text.Encoding]::UTF8)
+if ($step2dRaw -notmatch '\.titlebar-left' -or $step2dRaw -notmatch '\.menubar') {
+    Write-Error "[2d] FAIL: CSS anchor missing (.titlebar-left/.menubar not found) - titlebar layout moved, refusing to guess"
+    exit 2
+}
+if ($step2dRaw.Contains('P48-TITLEBAR-BRAND')) {
+    Write-Host "[OK] [2d] Brand CSS already present (idempotent skip)"
+}
+else {
+    $step2dBlock = @'
+/* P48-TITLEBAR-BRAND: "Sudo Studio" between the app icon and the menu. */
+.monaco-workbench .part.titlebar .titlebar-container>.titlebar-left .menubar::before{content:"Sudo Studio";color:var(--vscode-titleBar-activeForeground);font-size:inherit;font-size:var(--vscode-font-size);align-self:center;padding:0 10px 0 2px;white-space:nowrap}
+@media (max-width:720px){.monaco-workbench .part.titlebar .titlebar-container>.titlebar-left .menubar::before{display:none}}
+'@
+    $step2dBytes = [System.IO.File]::ReadAllBytes($step2dCss)
+    $step2dBom = ($step2dBytes.Length -ge 3 -and $step2dBytes[0] -eq 0xEF -and $step2dBytes[1] -eq 0xBB -and $step2dBytes[2] -eq 0xBF)
+    $step2dEnc = if ($step2dBom) { [System.Text.Encoding]::UTF8 } else { New-Object System.Text.UTF8Encoding($false) }
+    [System.IO.File]::WriteAllText($step2dCss, $step2dRaw + "`n" + $step2dBlock, $step2dEnc)
+    $step2dCheck = [System.IO.File]::ReadAllText($step2dCss, [System.Text.Encoding]::UTF8)
+    if (-not $step2dCheck.Contains('P48-TITLEBAR-BRAND')) {
+        Write-Error "[2d] FAIL: brand CSS write did not stick - refusing to ship without titlebar brand text"
+        exit 2
+    }
+    Write-Host "[OK] [2d] Titlebar brand CSS appended (theme vars, narrow-window hide)"
 }
 
 # ============================================================
