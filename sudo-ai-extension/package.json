@@ -231,6 +231,12 @@
         "icon": "$(plug)"
       },
       {
+        "command": "sudoStudio.openMcpPanel",
+        "title": "Open MCP Servers Page",
+        "category": "Sudo Studio",
+        "icon": "$(tools)"
+      },
+      {
         "command": "sudoStudio.selectAIProvider",
         "title": "Select Active AI Provider",
         "category": "Sudo Studio",

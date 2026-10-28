@@ -15,6 +15,9 @@ const permMod = require('./permissions');
 const ckptMod = require('./checkpoints');
 const modesMod = require('./modes');
 const mcpMod = require('./mcp');
+const keyringMod = require('./keyring');
+const skillsMod = require('./skills');
+const execMod = require('./exec');
 
 const HOST = '127.0.0.1';
 const MAX_BODY = 1024 * 1024; // 1 MB
@@ -360,6 +363,132 @@ function createApp(opts) {
         if (log) { try { log.info('undo', { session: mUndo[1], scope, snapshot: target, restored: result.restored.length, deleted: result.deleted.length, verified, popped }, corr); } catch (_) {} }
         sendJson(res, 200, Object.assign({ scope, snapshot: target, verified, popped }, result)); done(200); return;
       }
+      // -- MCP servers + keyring (P50-1) ---------------------------------------
+      const mMcpSrv = p.match(/^\/mcp\/servers\/([A-Za-z0-9_-]{1,64})(\/test)?$/);
+      if (req.method === 'GET' && p === '/mcp/servers') {
+        const servers = mcpMod.loadConfig(home);
+        const policy = mcpMod.loadPolicy(home);
+        const list = Object.keys(servers).sort().map((n) => mcpMod.describeServer(n, servers[n] || {}, policy));
+        sendJson(res, 200, { servers: list }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/mcp/servers') {
+        const body = await readBody(req);
+        const verr = mcpMod.validateServerConfig(body.name, body);
+        if (verr) { sendJson(res, 400, { error: verr }); done(400); return; }
+        const transport = body.transport || (body.url ? 'http' : 'stdio');
+        const entry = transport === 'http'
+          ? { url: String(body.url), headers: body.headers || undefined, tokenTarget: body.tokenTarget || undefined, timeoutMs: body.timeoutMs || undefined }
+          : { command: String(body.command), args: body.args || undefined, cwd: body.cwd || undefined, env: body.env || undefined };
+        for (const k of Object.keys(entry)) { if (entry[k] === undefined) delete entry[k]; }
+        const servers = mcpMod.loadConfig(home);
+        servers[String(body.name)] = entry;
+        try { mcpMod.saveConfig(home, servers); }
+        catch (e) { sendJson(res, 500, { error: 'ecriture configuration impossible.' }); done(500); return; }
+        if (log) { try { log.info('mcp server add', { server: String(body.name), transport }, corr); } catch (_) {} }
+        sendJson(res, 201, { server: mcpMod.describeServer(String(body.name), entry, mcpMod.loadPolicy(home)) }); done(201); return;
+      }
+      if (mMcpSrv && !mMcpSrv[2] && req.method === 'DELETE') {
+        const servers = mcpMod.loadConfig(home);
+        if (!servers[mMcpSrv[1]]) { sendJson(res, 404, { error: 'serveur MCP inconnu.' }); done(404); return; }
+        delete servers[mMcpSrv[1]];
+        try { mcpMod.saveConfig(home, servers); }
+        catch (e) { sendJson(res, 500, { error: 'ecriture configuration impossible.' }); done(500); return; }
+        if (log) { try { log.info('mcp server delete', { server: mMcpSrv[1] }, corr); } catch (_) {} }
+        sendJson(res, 200, { removed: true }); done(200); return;
+      }
+      if (mMcpSrv && mMcpSrv[2] === '/test' && req.method === 'POST') {
+        const servers = mcpMod.loadConfig(home);
+        if (!servers[mMcpSrv[1]]) { sendJson(res, 404, { error: 'serveur MCP inconnu.' }); done(404); return; }
+        const j = (m) => { if (log) { try { log.info('mcp', { msg: String(m).slice(0, 300) }, corr); } catch (_) {} } };
+        try {
+          const r = await mcpMod.testServer(home, mMcpSrv[1], j);
+          sendJson(res, 200, r); done(200); return;
+        } catch (e) {
+          const code = (e && e.code) || 'mcp_error';
+          sendJson(res, 502, { ok: false, code, error: String((e && e.message) || e).slice(0, 300) }); done(502); return;
+        }
+      }
+      if (req.method === 'GET' && p === '/keyring/status') {
+        const a = keyringMod.available();
+        sendJson(res, 200, { available: !!a.ok, platform: process.platform, detail: a.ok ? undefined : String(a.error || '').slice(0, 200) }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/keyring/secret') {
+        const body = await readBody(req);
+        const r = await keyringMod.setSecret(body.target, body.secret);
+        if (!r.ok) { sendJson(res, 400, { error: r.error }); done(400); return; }
+        // Journal: target name only. The secret value is never logged.
+        if (log) { try { log.info('keyring set', { target: String(body.target).slice(0, 160) }, corr); } catch (_) {} }
+        sendJson(res, 200, { stored: true, target: String(body.target) }); done(200); return;
+      }
+      if (req.method === 'DELETE' && p === '/keyring/secret') {
+        const body = await readBody(req);
+        const r = await keyringMod.deleteSecret(body.target);
+        if (!r.ok) { sendJson(res, 400, { error: r.error }); done(400); return; }
+        if (log) { try { log.info('keyring delete', { target: String(body.target).slice(0, 160) }, corr); } catch (_) {} }
+        sendJson(res, 200, { removed: true }); done(200); return;
+      }
+      // -- skills (P50-2) ------------------------------------------------------
+      const mSkillDel = p.match(/^\/skills\/([A-Za-z0-9_-]{1,64})$/);
+      const mStageDel = p.match(/^\/skills\/staged\/([0-9a-f]{16})$/);
+      if (req.method === 'GET' && p === '/skills') {
+        const qRoot = url.searchParams.get('projectRoot');
+        let root = null;
+        if (qRoot) {
+          const tr = toolRoot(qRoot);
+          if (!tr.ok) { sendJson(res, 400, { code: 'bad_project', error: tr.error }); done(400); return; }
+          root = tr.root;
+        }
+        sendJson(res, 200, { skills: skillsMod.listSkills(home, root), staged: skillsMod.listStaged(home) }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/skills/preview') {
+        const body = await readBody(req);
+        const r = await skillsMod.previewImport(home, body.source);
+        if (!r.ok) { sendJson(res, 400, { code: r.code, error: r.error }); done(400); return; }
+        if (log) { try { log.info('skill preview', { name: r.name, files: r.files.length }, corr); } catch (_) {} }
+        sendJson(res, 200, r); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/skills/activate') {
+        const body = await readBody(req);
+        let root = null;
+        if (body.scope === 'project') {
+          const tr = toolRoot(body.projectRoot);
+          if (!tr.ok) { sendJson(res, 400, { code: 'bad_project', error: tr.error }); done(400); return; }
+          root = tr.root;
+        }
+        const r = skillsMod.activateStaged(home, root, body.stagingId, body.scope, body.name);
+        if (!r.ok) { sendJson(res, 400, { error: r.error }); done(400); return; }
+        if (log) { try { log.info('skill activate', { scope: r.scope, name: r.name }, corr); } catch (_) {} }
+        sendJson(res, 201, r); done(201); return;
+      }
+      if (mStageDel && req.method === 'DELETE') {
+        skillsMod.discardStaged(home, mStageDel[1]);
+        sendJson(res, 200, { removed: true }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/skills/active') {
+        const body = await readBody(req);
+        let root = null;
+        if (body.scope === 'project') {
+          const tr = toolRoot(body.projectRoot);
+          if (!tr.ok) { sendJson(res, 400, { code: 'bad_project', error: tr.error }); done(400); return; }
+          root = tr.root;
+        }
+        const r = skillsMod.setActive(home, root, body.scope, body.name, body.active !== false);
+        if (!r.ok) { sendJson(res, 400, { error: r.error }); done(400); return; }
+        sendJson(res, 200, r); done(200); return;
+      }
+      if (mSkillDel && req.method === 'DELETE') {
+        const body = await readBody(req);
+        let root = null;
+        if (body.scope === 'project') {
+          const tr = toolRoot(body.projectRoot);
+          if (!tr.ok) { sendJson(res, 400, { code: 'bad_project', error: tr.error }); done(400); return; }
+          root = tr.root;
+        }
+        const r = skillsMod.deleteSkill(home, root, body.scope, mSkillDel[1]);
+        if (!r.ok) { sendJson(res, 400, { error: r.error }); done(400); return; }
+        if (log) { try { log.info('skill delete', { scope: body.scope, name: mSkillDel[1] }, corr); } catch (_) {} }
+        sendJson(res, 200, r); done(200); return;
+      }
       sendJson(res, 404, { error: 'route inconnue.' }); done(404);
     };
 
@@ -423,6 +552,7 @@ function startFromEnv() {
   const shutdown = (sig) => {
     try { log.info('shutdown', { signal: sig }); } catch (_) {}
     try { mcpMod.disconnectAll((m) => { try { log.info('mcp', { msg: m }); } catch (_) {} }); } catch (_) {}
+    try { execMod.stopAll(); } catch (_) {}
     try { app.server.close(() => process.exit(0)); } catch (_) { process.exit(0); }
     setTimeout(() => process.exit(0), 3000).unref();
   };

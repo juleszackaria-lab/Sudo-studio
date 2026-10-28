@@ -35,6 +35,7 @@ const { DuplicationPanel }     = require('./src/panels/DuplicationPanel');
 const { CentralMgmtPanel }     = require('./src/panels/CentralMgmtPanel');
 const { LicensePanel }         = require('./src/panels/LicensePanel');
 const { LogsPanel }            = require('./src/panels/LogsPanel'); // P21: logs viewer
+const { MCPServersPanel }      = require('./src/panels/MCPServersPanel'); // P50-1: MCP servers page
 
 // Agent Mode (Mission 2 — autonomous programming agent)
 const { AgentPanel }           = require('./src/agent/AgentPanel');
@@ -322,6 +323,7 @@ function registerCommands() {
         ['sudoStudio.openLicensePanel',      openLicensePanel],
         ['sudoStudio.openSdkInstallPanel',   openSdkInstallPanel],
         ['sudoStudio.openProvidersPanel',    openProvidersPanel],
+        ['sudoStudio.openMcpPanel',         openMcpPanel],
         ['sudoStudio.selectAIProvider',      selectAIProvider],
         ['sudoStudio.runSecurityAudit',      openSecurityPanel],
         ['sudoStudio.cloneEnterprise',       openDuplicationPanel],
@@ -1668,6 +1670,10 @@ function openRuntimePanel() {
 
 function openProvidersPanel() {
     ProvidersPanel.createOrShow(context.extensionUri);
+}
+
+function openMcpPanel() {
+    MCPServersPanel.createOrShow(context.extensionUri);
 }
 
 async function selectAIProvider() {

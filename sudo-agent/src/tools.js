@@ -19,6 +19,9 @@ const pmap = require('./projectmap');
 const profiles = require('./profiles');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
+const execMod = require('./exec');
+const genMod = require('./gen');
+const bizMod = require('./biz');
 
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_READ_LINES = 2000;
@@ -534,6 +537,214 @@ async function hBash(ctx, args, resolved) {
   });
 }
 
+// P50-3: long-running processes (live output via exec_poll, exec_stop).
+async function hExecStart(ctx, args, resolved) {
+  const command = args.command;
+  if (typeof command !== 'string' || !command.trim()) return { ok: false, code: 'bad_args', error: 'exec_start: command requise.' };
+  if (command.length > 8000) return { ok: false, code: 'too_big', error: 'exec_start: commande trop longue.' };
+  const r = resolved;
+  if (!r.ok) return { ok: false, code: r.code, error: 'exec_start refuse (dossier) : ' + r.reason };
+  let st = null;
+  try { st = fs.statSync(r.abs); } catch (_) { return { ok: false, code: 'not_found', error: 'exec_start: dossier introuvable.' }; }
+  if (!st.isDirectory()) return { ok: false, code: 'not_dir', error: 'exec_start: pas un dossier.' };
+  const started = execMod.startProc({ command, cwd: r.abs, timeoutMs: args.timeoutMs, label: args.label });
+  if (!started.ok) return { ok: false, code: started.code, error: 'exec_start: ' + started.error };
+  if (ctx.log) {
+    try { ctx.log.info('exec start', { id: started.id, pid: started.pid, cmd: maskSecrets(command).slice(0, 200) }, ctx.corr); } catch (_) {}
+  }
+  return { ok: true, data: { id: started.id, pid: started.pid }, summary: 'processus demarre (' + started.id + ').' };
+}
+
+async function hExecPoll(ctx, args) {
+  const id = args.id;
+  if (!execMod.validId(id)) return { ok: false, code: 'bad_args', error: 'exec_poll: id requis.' };
+  const p = execMod.pollProc(id);
+  if (!p.ok && (p.code === 'bad_args' || p.code === 'unknown_proc')) return { ok: false, code: p.code, error: 'exec_poll: ' + p.error };
+  const fresh = (p.out || '') + (p.err ? '\n[stderr]\n' + p.err : '');
+  const data = { id, running: p.running, out: p.out || '', err: p.err || '', outBytes: p.outBytes, errBytes: p.errBytes,
+    truncated: p.truncated, ms: p.ms, exitCode: p.exitCode, signal: p.signal, timedOut: p.timedOut, killed: p.killed };
+  if (p.ok && p.running) return { ok: true, data, summary: 'en cours (' + p.ms + ' ms, +' + fresh.length + ' octets).' };
+  if (p.ok && !p.running) {
+    try { execMod.reapProcs(); } catch (_) {}
+    return { ok: true, data, summary: p.stopped ? 'arrete.' : 'termine (code 0).' };
+  }
+  // Finished non-zero / timeout: failure WITH diagnostics (feeds the
+  // bounded fix loop like a one-shot bash failure).
+  const diag = execMod.extractErrors((p.out || '') + '\n' + (p.err || ''));
+  data.diagnostics = diag.text;
+  try { execMod.reapProcs(); } catch (_) {}
+  return { ok: false, code: p.code, error: 'exec_poll: ' + p.error + (diag.text ? '\n' + diag.text.slice(0, 2000) : ''),
+    summary: p.code + '.', data };
+}
+
+async function hExecStop(ctx, args) {
+  const id = args.id;
+  if (!execMod.validId(id)) return { ok: false, code: 'bad_args', error: 'exec_stop: id requis.' };
+  const s = execMod.stopProc(id);
+  if (!s.ok) return { ok: false, code: s.code, error: 'exec_stop: ' + s.error };
+  if (ctx.log) {
+    try { ctx.log.info('exec stop', { id, stopped: !!s.stopped }, ctx.corr); } catch (_) {}
+  }
+  return { ok: true, data: { id, stopped: !!s.stopped, already: !!s.already }, summary: s.stopped ? 'processus arrete.' : 'deja termine.' };
+}
+
+// P50-4: whole-project generation runs (phases + checks + restore points).
+function genRootOf(resolved, tool) {
+  if (!resolved.ok) return { ok: false, code: resolved.code, error: tool + ' refuse (dossier) : ' + resolved.reason };
+  let st = null;
+  try { st = fs.statSync(resolved.abs); } catch (_) { return { ok: false, code: 'not_found', error: tool + ': dossier introuvable.' }; }
+  if (!st.isDirectory()) return { ok: false, code: 'not_dir', error: tool + ': pas un dossier.' };
+  return { ok: true, root: resolved.abs };
+}
+
+async function hGenStart(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'gen_start');
+  if (!g0.ok) return g0;
+  const g = genMod.startRun(g0.root, args.goal, args.stack);
+  if (!g.ok) return { ok: false, code: 'bad_args', error: 'gen_start: ' + g.error };
+  if (ctx.log) { try { ctx.log.info('gen start', { id: g.id }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: { id: g.id, phases: genMod.PHASES.slice() }, summary: 'generation demarree (' + g.id + ').' };
+}
+
+async function hGenPhase(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'gen_phase');
+  if (!g0.ok) return g0;
+  const g = genMod.markPhase(g0.root, args.run, args.phase, args.note);
+  if (!g.ok) {
+    const code = /^(phase invalide|identifiant|generation)/.test(g.error) ? 'bad_args' : 'gen_failed';
+    return { ok: false, code, error: 'gen_phase: ' + g.error };
+  }
+  if (ctx.log) { try { ctx.log.info('gen phase', { id: args.run, phase: args.phase }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: { id: args.run, phase: g.phase, warning: g.warning || null, backup: g.backup },
+    summary: 'phase ' + g.phase + ' marquee.' + (g.warning ? ' (' + g.warning + ')' : '') };
+}
+
+async function hGenCheck(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'gen_check');
+  if (!g0.ok) return g0;
+  const phase = args.phase;
+  if (['deps', 'build', 'tests'].indexOf(phase) === -1) return { ok: false, code: 'bad_args', error: 'gen_check: phase deps|build|tests requise.' };
+  const command = args.command;
+  if (typeof command !== 'string' || !command.trim()) return { ok: false, code: 'bad_args', error: 'gen_check: command requise.' };
+  if (command.length > 8000) return { ok: false, code: 'too_big', error: 'gen_check: commande trop longue.' };
+  const rr = genMod.buildReport(g0.root, args.run);
+  if (!rr.ok) return { ok: false, code: 'bad_args', error: 'gen_check: ' + rr.error };
+  const timeoutMs = Math.min(600000, Math.max(5000, parseInt(args.timeoutMs, 10) || 120000));
+  const started = execMod.startProc({ command, cwd: g0.root, timeoutMs, label: 'gen:' + String(args.run || '').slice(0, 8) });
+  if (!started.ok) return { ok: false, code: started.code, error: 'gen_check: ' + started.error };
+  if (ctx.run) ctx.run.killFns.push(() => { try { execMod.stopProc(started.id); } catch (_) {} });
+  if (ctx.sessionKill) ctx.sessionKill.push(() => { try { execMod.stopProc(started.id); } catch (_) {} });
+  const t0 = Date.now();
+  let full = '';
+  let p = null;
+  for (;;) {
+    p = execMod.pollProc(started.id);
+    full += (p.out || '') + (p.err || '');
+    if (full.length > 262144) full = full.slice(-262144);
+    if (!p.running) break;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  try { execMod.reapProcs(); } catch (_) {}
+  const tail = full.slice(-4000);
+  genMod.recordCheck(g0.root, args.run, { phase, command, code: p.exitCode, signal: p.signal, timedOut: p.timedOut, ms: Date.now() - t0, tail });
+  if (ctx.log) { try { ctx.log.info('gen check', { id: args.run, phase, code: p.exitCode, ms: Date.now() - t0 }, ctx.corr); } catch (_) {} }
+  if (p.ok && p.exitCode === 0) {
+    return { ok: true, data: { id: args.run, phase, code: 0, ms: Date.now() - t0, tail }, summary: 'check ' + phase + ' reussi.' };
+  }
+  const diag = execMod.extractErrors(full);
+  const code = p.timedOut ? 'timeout' : ('exit_' + p.exitCode);
+  return { ok: false, code, error: 'gen_check ' + phase + ': ' + code + '.\n' + (diag.text ? diag.text.slice(0, 2000) : tail),
+    summary: 'check ' + phase + ' echoue (' + code + ').', data: { id: args.run, phase, code: p.exitCode, tail } };
+}
+
+async function hGenReport(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'gen_report');
+  if (!g0.ok) return g0;
+  const g = genMod.buildReport(g0.root, args.run);
+  if (!g.ok) return { ok: false, code: 'bad_args', error: 'gen_report: ' + g.error };
+  return { ok: true, data: g.report, summary: 'rapport : ' + g.report.verdict.status + '.' };
+}
+
+async function hGenRestore(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'gen_restore');
+  if (!g0.ok) return g0;
+  const g = genMod.restorePhase(g0.root, args.run, args.phase, { partial: args.partial === true });
+  if (!g.ok) {
+    const code = /^(phase invalide|identifiant|generation)/.test(g.error) ? 'bad_args' : 'gen_failed';
+    return { ok: false, code, error: 'gen_restore: ' + g.error };
+  }
+  if (ctx.log) { try { ctx.log.info('gen restore', { id: args.run, phase: g.phase, restored: g.restored, deleted: g.deleted }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: g, summary: 'restaure a ' + g.phase + ' (' + g.restored + ' fichiers, ' + g.deleted + ' supprimes).' };
+}
+
+// P50-5: IDE business tools (analyze, secaudit, mkignore, ci, doctor, sdk).
+async function hAnalyze(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'analyze');
+  if (!g0.ok) return g0;
+  const r = bizMod.analyze(g0.root);
+  if (ctx.log) { try { ctx.log.info('biz analyze', { files: r.files, langs: Object.keys(r.byLang).length, ms: r.ms }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: r, summary: 'analyse : ' + r.files + ' fichiers, ' + Object.keys(r.byLang).length + ' langages.' };
+}
+
+async function hSecaudit(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'secaudit');
+  if (!g0.ok) return g0;
+  const r = bizMod.secaudit(g0.root);
+  // Journal: counts + CVE ids only. NEVER finding hints (secret-shaped).
+  if (ctx.log) {
+    try { ctx.log.info('biz secaudit', { secrets: r.secrets.length, advisories: r.advisories.map((a) => a.cve).slice(0, 20), files: r.secretFiles }, ctx.corr); } catch (_) {}
+  }
+  return { ok: true, data: r, summary: 'audit : ' + r.secrets.length + ' secret(s), ' + r.advisories.length + ' avis.' };
+}
+
+async function hMkignore(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'mkignore');
+  if (!g0.ok) return g0;
+  const r = bizMod.mkignore(g0.root, args.stack);
+  if (!r.ok) return { ok: false, code: 'bad_args', error: 'mkignore: ' + r.error };
+  if (ctx.log) { try { ctx.log.info('biz mkignore', { added: r.added.length, stacks: r.stacks }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: r, summary: '.gitignore : ' + r.added.length + ' entree(s) ajoutee(s).' };
+}
+
+async function hCi(ctx, args, resolved) {
+  const g0 = genRootOf(resolved, 'ci');
+  if (!g0.ok) return g0;
+  const r = bizMod.ci(g0.root, args.provider);
+  if (!r.ok) return { ok: false, code: 'bad_args', error: 'ci: ' + r.error };
+  if (ctx.log) { try { ctx.log.info('biz ci', { path: r.path, stacks: r.stacks }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: r, summary: 'workflow ecrit : ' + r.path };
+}
+
+async function hDoctor(ctx, args) {
+  const r = await bizMod.doctor();
+  const ok = r.checks.filter((c) => c.status === 'ok').length;
+  const err = r.checks.filter((c) => c.status === 'error').length;
+  if (ctx.log) { try { ctx.log.info('biz doctor', { ok, err }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: r, summary: 'doctor : ' + ok + ' ok, ' + err + ' erreur(s).' };
+}
+
+async function hSdk(ctx, args) {
+  const op = args.op;
+  if (op !== 'status' && op !== 'install') return { ok: false, code: 'bad_args', error: 'sdk: op status|install requise.' };
+  if (op === 'status') {
+    const r = await bizMod.sdkStatus(args.id);
+    if (!r.ok) return { ok: false, code: 'bad_args', error: 'sdk: ' + r.error };
+    const n = r.sdks.filter((s) => s.installed).length;
+    if (ctx.log) { try { ctx.log.info('biz sdk status', { installed: n, of: r.sdks.length }, ctx.corr); } catch (_) {} }
+    return { ok: true, data: r, summary: 'sdk : ' + n + '/' + r.sdks.length + ' installes.' };
+  }
+  if (!args.id) return { ok: false, code: 'bad_args', error: 'sdk install: id requis.' };
+  const r = await bizMod.sdkInstall(args.id, { dry: args.dry === true, timeoutMs: args.timeoutMs });
+  if (!r.ok) return { ok: false, code: 'sdk_failed', error: 'sdk install: ' + r.error };
+  if (ctx.log) { try { ctx.log.info('biz sdk install', { id: args.id, dry: !!r.dry }, ctx.corr); } catch (_) {} }
+  return { ok: true, data: r, summary: r.dry ? 'commande : ' + r.command : 'sdk ' + args.id + ' installe.' };
+}
+
+// P50-6: direct calls cannot spawn (no turn context); the loop intercepts.
+async function hSubagentDirect(ctx, args) {
+  return { ok: false, code: 'loop_only', error: 'subagent : appel direct impossible (boucle agent uniquement).' };
+}
+
 async function hTodo(ctx, args) {
   const op = args.op;
   if (['add', 'list', 'done', 'clear'].indexOf(op) === -1) return { ok: false, code: 'bad_args', error: 'todo: op add|list|done|clear requis.' };
@@ -631,6 +842,21 @@ const TOOLS = {
   edit: { description: 'Remplace une chaine exacte unique (echec clair si absente ou ambigue).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hEdit },
   patch: { description: 'Applique un diff unifie strict (multi-fichiers, creation, suppression).', danger: 'write', mutating: true, pathArg: null, defDir: null, handler: hPatch },
   bash: { description: 'Execute une commande (fenetre masquee, delai, sortie tronquee, annulable, sandbox P8 L1).', danger: 'execute', mutating: true, pathArg: 'cwd', defDir: '.', handler: hBash },
+  exec_start: { description: 'Demarre un processus long (live: exec_poll, stop: exec_stop, delai).', danger: 'execute', mutating: true, pathArg: 'cwd', defDir: '.', handler: hExecStart },
+  exec_poll: { description: 'Sortie nouvelle d un processus (non-zero => echec + diagnostics).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hExecPoll },
+  exec_stop: { description: 'Arrete un processus exec_start.', danger: 'execute', mutating: true, pathArg: null, defDir: null, handler: hExecStop },
+  gen_start: { description: 'Demarre une generation projet (plan->fichiers->deps->build->tests, points retour).', danger: 'execute', mutating: true, pathArg: 'cwd', defDir: '.', handler: hGenStart },
+  gen_phase: { description: 'Marque une phase generation (ordre impose, instantane).', danger: 'write', mutating: true, pathArg: 'cwd', defDir: '.', handler: hGenPhase },
+  gen_check: { description: 'Execute un check generation (deps|build|tests) et enregistre le code reel.', danger: 'execute', mutating: true, pathArg: 'cwd', defDir: '.', handler: hGenCheck },
+  gen_report: { description: 'Rapport generation honnete (TERMINE seulement si verifie).', danger: 'read', mutating: false, pathArg: 'cwd', defDir: '.', handler: hGenReport },
+  gen_restore: { description: 'Restaure le projet a une phase generation (point retour).', danger: 'write', mutating: true, pathArg: 'cwd', defDir: '.', handler: hGenRestore },
+  analyze: { description: 'Analyse la structure du projet (langages, manifestes, tests, TODO).', danger: 'read', mutating: false, pathArg: 'cwd', defDir: '.', handler: hAnalyze },
+  secaudit: { description: 'Audit securite : secrets exposes + dependances vulnerees (base embarquee).', danger: 'read', mutating: false, pathArg: 'cwd', defDir: '.', handler: hSecaudit },
+  mkignore: { description: 'Genere/fusionne .gitignore selon la stack (jamais de suppression).', danger: 'write', mutating: true, pathArg: 'cwd', defDir: '.', handler: hMkignore },
+  ci: { description: 'Genere un workflow CI selon la stack (refuse d ecraser).', danger: 'write', mutating: true, pathArg: 'cwd', defDir: '.', handler: hCi },
+  doctor: { description: 'Controle l environnement (outils, backend, runtime, systeme).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hDoctor },
+  sdk: { description: 'SDK : status (sondes) ou install (Windows/winget, dry possible).', danger: 'execute', mutating: true, pathArg: null, defDir: null, handler: hSdk },
+  subagent: { description: 'Deleque a un/des sous-agent(s) : task (1 enfant) ou tasks[] (parallele x3).', danger: 'execute', mutating: false, pathArg: null, defDir: null, handler: hSubagentDirect },
   todo: { description: 'Liste de taches de session (add/list/done/clear).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hTodo },
   delete: { description: 'Supprime un fichier du projet (lecture prealable requise, confirmation operateur, annulable via instantane).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hDelete },
   rename: { description: 'Renomme/deplace un fichier (lecture prealable requise, cible neuve, confirmation, annulable).', danger: 'write', mutating: true, pathArg: 'from', defDir: null, handler: hRename },
@@ -653,13 +879,28 @@ function toOpenAISchema(profile) {
     edit: { file: str('Project-relative file path.'), old: str('Exact unique string to replace.'), new: str('Replacement.') },
     patch: { patch: str('Unified diff text.') },
     bash: { command: str('Shell command.'), cwd: str('Working directory.'), timeoutMs: { type: 'integer' } },
+    exec_start: { command: str('Shell command.'), cwd: str('Working directory.'), timeoutMs: { type: 'integer' }, label: str('Label.') },
+    exec_poll: { id: str('Process id.') },
+    exec_stop: { id: str('Process id.') },
+    gen_start: { goal: str('Project goal.'), stack: str('Stack, e.g. node.'), cwd: str('Working directory.') },
+    gen_phase: { run: str('Generation id.'), phase: str('plan|files|deps|build|tests.'), note: str('Note.'), cwd: str('Working directory.') },
+    gen_check: { run: str('Generation id.'), phase: str('deps|build|tests.'), command: str('Shell command.'), timeoutMs: { type: 'integer' }, cwd: str('Working directory.') },
+    gen_report: { run: str('Generation id.'), cwd: str('Working directory.') },
+    gen_restore: { run: str('Generation id.'), phase: str('start|plan|files|deps|build|tests.'), partial: { type: 'boolean' }, cwd: str('Working directory.') },
+    analyze: { cwd: str('Working directory.') },
+    secaudit: { cwd: str('Working directory.') },
+    mkignore: { stack: str('node|python|java|go|rust|dotnet|dart (default: detect).'), cwd: str('Working directory.') },
+    ci: { provider: str('github|gitlab (default github).'), cwd: str('Working directory.') },
+    doctor: {},
+    sdk: { op: str('status|install.'), id: str('Sdk id.'), dry: { type: 'boolean' }, timeoutMs: { type: 'integer' } },
+    subagent: { task: str('Task for one child.'), focus: str('Context for the child.'), readonly: { type: 'boolean' }, maxRounds: { type: 'integer' }, tasks: { type: 'array' } },
     todo: { op: str('add|list|done|clear.'), text: str('Task text (add).'), id: str('Task id (done).') },
     delete: { file: str('Project-relative file path to delete (must have been read).') },
     rename: { from: str('Project-relative source path (must have been read).'), to: str('New project-relative path (must not exist).') },
     reply: { text: str('Final answer text (ends the turn).') },
     done: { summary: str('Short summary of what changed (optional, ends the turn).') },
   };
-  const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], reply: ['text'] };
+  const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], exec_start: ['command'], exec_poll: ['id'], exec_stop: ['id'], gen_start: ['goal'], gen_phase: ['run', 'phase'], gen_check: ['run', 'phase', 'command'], gen_report: ['run'], gen_restore: ['run', 'phase'], sdk: ['op'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], reply: ['text'] };
   return names.map((n) => ({ type: 'function', function: { name: n, description: (small && profiles.TERSE[n]) || TOOLS[n].description, parameters: { type: 'object', properties: schemas[n], required: required[n] || [] } } }));
 }
 

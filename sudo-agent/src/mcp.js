@@ -8,7 +8,10 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const http = require('http');
+const https = require('https');
 const childProcess = require('child_process');
+const keyring = require('./keyring');
 
 let spawnFn = null; // test seam: setMcpSpawn(fn) overrides childProcess.spawn
 function setMcpSpawn(fn) { spawnFn = fn; }
@@ -24,10 +27,98 @@ function readJsonFile(p) {
   catch (_) { return null; }
 }
 
-// Global config: { servers: { name: { command, args?, env?, cwd? } } }
+// Global config: { servers: { name: stdio | http } }.
+// stdio: { command, args?, env?, cwd? }; http: { url, headers?, tokenTarget?, timeoutMs? }.
+// Secrets NEVER live here: tokenTarget names a keyring entry holding the
+// bearer token (P50-1). The file holds names, never values.
 function loadConfig(home) {
   const d = readJsonFile(path.join(agentDir(home), 'mcp.json'));
   return d && typeof d.servers === 'object' && d.servers ? d.servers : {};
+}
+
+// P50-1: validate + persist server entries (used by the HTTP endpoints and
+// the "MCP Servers" page). Returns null when valid, else a French error.
+const NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const TARGET_RE_SRC = '^[A-Za-z0-9_][A-Za-z0-9_.\\/-]{0,127}$';
+
+function isLocalhostUrl(u) {
+  try {
+    const h = new URL(u).hostname.toLowerCase();
+    return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+  } catch (_) { return false; }
+}
+
+function validateServerConfig(name, cfg) {
+  if (!NAME_RE.test(String(name || ''))) return 'nom de serveur invalide (lettres, chiffres, - _).';
+  if (!cfg || typeof cfg !== 'object') return 'configuration manquante.';
+  const transport = cfg.transport || (cfg.url ? 'http' : 'stdio');
+  if (transport === 'http') {
+    if (typeof cfg.url !== 'string' || !/^https?:\/\//.test(cfg.url)) return 'url http(s) requise.';
+    if (cfg.url.length > 500) return 'url trop longue.';
+    if (/^http:\/\//.test(cfg.url) && !isLocalhostUrl(cfg.url)) return 'http distant refuse: https requis hors localhost.';
+    if (cfg.headers !== undefined) {
+      if (!cfg.headers || typeof cfg.headers !== 'object' || Array.isArray(cfg.headers)) return 'headers invalides.';
+      for (const k of Object.keys(cfg.headers)) {
+        if (String(k).toLowerCase() === 'authorization') return 'en-tete Authorization interdit: utilisez tokenTarget (trousseau).';
+        if (typeof cfg.headers[k] !== 'string' || cfg.headers[k].length > 2000) return 'valeur header invalide.';
+      }
+    }
+    if (cfg.tokenTarget !== undefined && cfg.tokenTarget !== null && cfg.tokenTarget !== '') {
+      if (typeof cfg.tokenTarget !== 'string' || !(new RegExp(TARGET_RE_SRC)).test(cfg.tokenTarget)) return 'tokenTarget invalide.';
+    }
+    if (cfg.timeoutMs !== undefined && (!Number.isFinite(cfg.timeoutMs) || cfg.timeoutMs < 1000 || cfg.timeoutMs > 120000)) return 'timeoutMs invalide (1000..120000).';
+    return null;
+  }
+  if (transport === 'stdio') {
+    if (typeof cfg.command !== 'string' || !cfg.command.trim() || cfg.command.length > 500) return 'commande requise.';
+    if (cfg.args !== undefined && (!Array.isArray(cfg.args) || cfg.args.some((a) => typeof a !== 'string' || a.length > 2000))) return 'args invalides.';
+    if (cfg.cwd !== undefined && (typeof cfg.cwd !== 'string' || cfg.cwd.length > 500)) return 'cwd invalide.';
+    // NOTE: env may hold secrets in clear; documented. Prefer tokenTarget
+    // (keyring) for tokens; env is for non-secret variables.
+    if (cfg.env !== undefined && (!cfg.env || typeof cfg.env !== 'object' || Array.isArray(cfg.env))) return 'env invalide.';
+    return null;
+  }
+  return 'transport invalide (stdio|http).';
+}
+
+function saveConfig(home, servers) {
+  const dir = agentDir(home);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  const p = path.join(dir, 'mcp.json');
+  fs.writeFileSync(p, JSON.stringify({ servers }, null, 2) + '\n', 'utf8');
+  return p;
+}
+
+// Redacted public view of one server entry (names only, never values).
+function describeServer(name, cfg, policy) {
+  const httpCfg = isHttpCfg(cfg);
+  const allow = policy ? policy[name] : undefined;
+  return {
+    name,
+    transport: httpCfg ? 'http' : 'stdio',
+    command: httpCfg ? undefined : String(cfg.command || ''),
+    url: httpCfg ? safeUrl(cfg.url) : undefined,
+    hasTokenTarget: !!(cfg.tokenTarget),
+    allowlist: allow === '*' ? '*' : (Array.isArray(allow) ? allow.slice(0, 100) : []),
+  };
+}
+
+// P50-1: test a server: connect + tools/list, then disconnect. Throws coded
+// errors (mcp_unreachable, mcp_auth_failed, ...). Never returns secrets.
+async function testServer(home, name, journal, timeoutMs) {
+  const t0 = Date.now();
+  const tools = await listTools(home, name, journal);
+  try { disconnectOne(name, journal); } catch (_) {}
+  const cfg = loadConfig(home)[name] || {};
+  return { ok: true, transport: isHttpCfg(cfg) ? 'http' : 'stdio', tools: tools.map((t) => String(t.name || '')).filter(Boolean).slice(0, 200), ms: Date.now() - t0 };
+}
+
+function isHttpCfg(cfg) {
+  return !!cfg && typeof cfg.url === 'string' && /^https?:\/\//.test(cfg.url);
+}
+
+function safeUrl(u) {
+  return String(u || '').split('?')[0].slice(0, 200);
 }
 
 // Admin allowlist: { allowed: { server: ['tool', ...] | '*' } }. Fail-closed.
@@ -98,6 +189,94 @@ function onData(client, chunk, journal) {
 const clients = new Map();
 const IDLE_MS = 10 * 60 * 1000;
 
+// P50-1: Streamable HTTP transport (remote MCP servers). Single-shot
+// POST per JSON-RPC request; the Mcp-Session-Id is reused when the
+// server provides one. Responses are plain JSON or SSE event streams.
+
+// Pure: last JSON-RPC message carried by an SSE stream (or null).
+function parseSseResponses(text, reqId) {
+  let fallback = null;
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim();
+    if (line.indexOf('data:') !== 0) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    let msg = null;
+    try { msg = JSON.parse(payload); } catch (_) { continue; }
+    if (!msg || typeof msg !== 'object') continue;
+    if (reqId !== undefined && msg.id === reqId) return msg;
+    fallback = msg;
+  }
+  return fallback;
+}
+
+function httpPost(url, bodyObj, headers, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let u = null;
+    try { u = new URL(url); } catch (_) { reject(new Error('URL MCP invalide.')); return; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') { reject(new Error('URL MCP invalide.')); return; }
+    const payload = JSON.stringify(bodyObj);
+    const mod = u.protocol === 'https:' ? https : http;
+    const req = mod.request({
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + (u.search || ''),
+      method: 'POST',
+      timeout: timeoutMs || 15000,
+      headers: Object.assign({
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'Content-Length': Buffer.byteLength(payload),
+      }, headers || {}),
+    }, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += String(c || ''); if (data.length > 1048576) { try { req.destroy(); } catch (_) {} } });
+      res.on('end', () => {
+        const sessionId = res.headers && res.headers['mcp-session-id'];
+        resolve({ status: res.statusCode || 0, ctype: String((res.headers && res.headers['content-type']) || ''), data, sessionId: sessionId ? String(sessionId) : null });
+      });
+    });
+    req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch (_) {} });
+    req.on('error', (e) => reject(e));
+    try { req.write(payload); req.end(); } catch (e) { reject(e); }
+  });
+}
+
+async function httpRpc(client, method, params, id, timeoutMs) {
+  const cfg = client.httpCfg;
+  const headers = {};
+  if (cfg.headers && typeof cfg.headers === 'object') {
+    for (const k of Object.keys(cfg.headers)) headers[String(k)] = String(cfg.headers[k]).slice(0, 500);
+  }
+  if (client.sessionId) headers['Mcp-Session-Id'] = client.sessionId;
+  if (cfg.tokenTarget) {
+    const tk = await keyring.getSecret(cfg.tokenTarget);
+    if (!tk.ok) {
+      throw Object.assign(new Error('jeton MCP manquant pour ' + client.name + ' (' + cfg.tokenTarget + ').'), { code: 'mcp_no_token' });
+    }
+    headers['Authorization'] = 'Bearer ' + tk.secret;
+  }
+  let r = null;
+  try {
+    r = await httpPost(cfg.url, { jsonrpc: '2.0', id, method, params: params || {} }, headers, timeoutMs || cfg.timeoutMs);
+  } catch (e) {
+    throw Object.assign(new Error('MCP ' + client.name + ' injoignable (' + safeUrl(cfg.url) + ').'), { code: 'mcp_unreachable' });
+  }
+  if (r.sessionId) client.sessionId = r.sessionId;
+  if (r.status === 401 || r.status === 403) {
+    throw Object.assign(new Error('MCP ' + client.name + ' refuse (auth).'), { code: 'mcp_auth' });
+  }
+  if (r.status < 200 || r.status >= 300) {
+    throw Object.assign(new Error('MCP ' + client.name + ' HTTP ' + r.status + '.'), { code: 'mcp_http' });
+  }
+  let msg = null;
+  if (r.ctype.indexOf('text/event-stream') !== -1) msg = parseSseResponses(r.data, id);
+  else { try { msg = JSON.parse(r.data); } catch (_) { msg = null; } }
+  if (!msg || typeof msg !== 'object') throw Object.assign(new Error('MCP ' + client.name + ' reponse illisible.'), { code: 'mcp_bad_response' });
+  if (msg.error) throw new Error('MCP ' + (msg.error.message || 'rpc error'));
+  return msg.result;
+}
+
 function disconnectOne(name, journal, clientsMap) {
   const map = clientsMap || clients;
   const c = map.get(name);
@@ -117,13 +296,33 @@ function reapIdle(journal) {
   }
 }
 
+async function connectHttp(home, serverName, cfg, journal) {
+  const client = { name: serverName, http: true, httpCfg: cfg, sessionId: null, seq: 0, lastUsed: Date.now(), tools: null };
+  clients.set(serverName, client);
+  if (journal) journal('mcp connecte (http): ' + serverName + ' ' + safeUrl(cfg.url));
+  const initId = 1;
+  await httpRpc(client, 'initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'sudo-agent', version: '0.1.0' },
+  }, initId, cfg.timeoutMs);
+  client.seq = initId;
+  const listed = await httpRpc(client, 'tools/list', {}, 2, cfg.timeoutMs);
+  client.seq = 2;
+  client.tools = Array.isArray(listed && listed.tools) ? listed.tools : [];
+  return client;
+}
+
 async function connect(home, serverName, journal) {
   reapIdle(journal);
   const hit = clients.get(serverName);
+  if (hit && hit.http) { hit.lastUsed = Date.now(); return hit; }
   if (hit && hit.child && !hit.child.killed) { hit.lastUsed = Date.now(); return hit; }
   if (hit) clients.delete(serverName);
   const cfg = loadConfig(home)[serverName];
-  if (!cfg || !cfg.command) throw new Error('serveur MCP inconnu: ' + serverName);
+  if (!cfg) throw new Error('serveur MCP inconnu: ' + serverName);
+  if (isHttpCfg(cfg)) return connectHttp(home, serverName, cfg, journal);
+  if (!cfg.command) throw new Error('serveur MCP inconnu: ' + serverName);
   const child = spawner()(String(cfg.command), (cfg.args || []).map(String), {
     cwd: cfg.cwd || process.cwd(),
     env: filteredEnv(cfg.env),
@@ -179,7 +378,13 @@ async function callTool(home, serverName, toolName, args, opts, journal) {
   const t0 = Date.now();
   const c = await connect(home, serverName, journal);
   c.lastUsed = Date.now();
-  const res = await sendReq(c, 'tools/call', { name: toolName, arguments: args || {} }, opts.timeoutMs);
+  let res = null;
+  if (c.http) {
+    c.seq += 1;
+    res = await httpRpc(c, 'tools/call', { name: toolName, arguments: args || {} }, c.seq, opts.timeoutMs);
+  } else {
+    res = await sendReq(c, 'tools/call', { name: toolName, arguments: args || {} }, opts.timeoutMs);
+  }
   const ms = Date.now() - t0;
   if (journal) journal('mcp appel ' + serverName + '/' + toolName + ' ok ' + ms + 'ms');
   return { ok: !(res && res.isError), text: textOf(res), ms };
@@ -190,7 +395,9 @@ function disconnectAll(journal) {
 }
 
 module.exports = {
-  agentDir, loadConfig, policyFile, loadPolicy, isAllowed,
+  agentDir, loadConfig, saveConfig, policyFile, loadPolicy, isAllowed,
+  validateServerConfig, describeServer, testServer,
   connect, listTools, callTool, disconnectAll, textOf,
   setMcpSpawn, _clients: clients,
+  isHttpCfg, parseSseResponses, safeUrl,
 };

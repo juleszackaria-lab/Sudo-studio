@@ -110,6 +110,7 @@ const INTERNAL_COMMANDS = {
     'sudoStudio.selectModel': 'dialog',
     'sudoStudio.selectAIProvider': 'dialog',
     'sudoStudio.installSDK': 'dialog',
+    'sudoStudio.openMcpPanel': 'popup', // P50-1: MCP servers page
     // editor-context actions
     'sudoStudio.explainCode': 'ctx',
     'sudoStudio.fixCode': 'ctx',

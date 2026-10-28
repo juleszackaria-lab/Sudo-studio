@@ -328,7 +328,7 @@ t('A3', 'profiles: size detection, ctx resolution, budget', () => {
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'local' }) === 'small', 'unknown local small');
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'cloud' }) === 'full', 'unknown cloud full');
   assert(p.selectProfile({ modelId: 'llama-8b', providerType: 'local', override: 'small' }) === 'small', 'override wins');
-  assert(p.profileTools('small').length === 11 && p.profileTools('full').length === 13, 'tool counts');
+  assert(p.profileTools('small').length === 11 && p.profileTools('full').length === 28, 'tool counts (P50: +exec_* +gen_* +biz +subagent full-only)');
   assert(p.profileTools('small').indexOf('patch') === -1, 'small drops patch');
   assert(p.profileTools('small').indexOf('todo') !== -1, 'P49: small keeps todo');
   assert(p.profileTools('small').indexOf('reply') !== -1 && p.profileTools('small').indexOf('done') !== -1, 'P49: small exits');
@@ -524,13 +524,15 @@ t('E1', 'small profile: 11 terse tools for 1.5B', async () => {
 
 t('E2', 'full profile: 13 tools for 8B', async () => {
   const proj = fixtureProject();
-  const mock = await mockProvider({ responses: [{ content: 'done' }] });
+  // P50: 16 tools need est0 headroom; a real 8B runtime reports n_ctx>=4K
+  // (the tight-ctx edge stays covered by E3 with its own explicit mock).
+  const mock = await mockProvider({ models: [{ id: 'llama-8b', n_ctx: 4096 }], responses: [{ content: 'done' }] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: 'llama-8b' });
   try {
     const sid = await newSession(port, token, proj);
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const names = (mock.chats[0].tools || []).map((x) => x.function.name);
-    assert(names.length === 13 && names.indexOf('patch') !== -1, 'thirteen tools, got ' + names.length);
+    assert(names.length === 28 && names.indexOf('patch') !== -1 && names.indexOf('exec_poll') !== -1 && names.indexOf('gen_report') !== -1 && names.indexOf('subagent') !== -1, 'twenty-eight tools, got ' + names.length);
     await pollFile(path.join(a.logsDir, 'agent.log'), /profile=full/, 3000);
   } finally { killChild(a.child); await mock.close(); }
 });

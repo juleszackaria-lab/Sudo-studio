@@ -83,8 +83,8 @@ const extraInternal = [...internal].filter((c) => contributed.indexOf(c) === -1)
 check('C4: every non-internal command has >= 1 entry; internal list exact',
     missing.length === 0 && extraInternal.length === 0,
     'missing=' + JSON.stringify(missing) + ' extraInternal=' + JSON.stringify(extraInternal));
-check('C5: tree/internal partition covers all 58 commands exactly once',
-    contributed.length === 58 && covered.size + internal.size === 58 &&
+check('C5: tree/internal partition covers all 59 commands exactly once',
+    contributed.length === 59 && covered.size + internal.size === 59 &&
     [...covered].every((c) => !internal.has(c)),
     'covered=' + covered.size + ' internal=' + internal.size);
 // P48: tree labels are the EXACT English set (no emoji); panel webview
@@ -163,7 +163,7 @@ check('D3: resetLayout collapses the single view only',
 check('D4: reveal-once per version kept (containerShownFor)',
     extSrc.indexOf('workbench.view.extension.sudo-studio') !== -1 &&
     extSrc.indexOf('sudoStudio.containerShownFor') !== -1);
-check('D5: all 58 commands still registered',
+check('D5: all 59 commands still registered',
     contributed.every((c) => regBlock.indexOf("'" + c + "'") !== -1),
     'count=' + contributed.length);
 

@@ -12,9 +12,9 @@ const path = require('path');
 const crypto = require('crypto');
 
 // Read-only tools run without asking (boundary still enforced by the tools).
-const READONLY_AUTO = ['read', 'list', 'glob', 'grep', 'todo', 'reply', 'done'];
+const READONLY_AUTO = ['read', 'list', 'glob', 'grep', 'todo', 'reply', 'done', 'exec_poll', 'gen_report', 'analyze', 'secaudit', 'doctor', 'subagent'];
 // Mutating tools ask unless a session/project rule matches.
-const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp', 'delete', 'rename'];
+const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp', 'delete', 'rename', 'exec_start', 'exec_stop', 'gen_start', 'gen_check', 'gen_phase', 'gen_restore', 'mkignore', 'ci', 'sdk'];
 const KNOWN_TOOLS = READONLY_AUTO.concat(MUTATING_ASK);
 
 // ---------------------------------------------------------------------------
@@ -85,7 +85,17 @@ function patternOf(tool, args, resolved) {
   if (tool === 'grep') {
     return { kind: 'pattern', text: (String(args.pattern || '') + ' @ ' + String(args.path || args.dir || '.')).slice(0, 500) };
   }
-  if (tool === 'bash') return { kind: 'command', text: normCommand(args.command) };
+  if (tool === 'bash' || tool === 'exec_start') return { kind: 'command', text: normCommand(args.command) };
+  if (tool === 'gen_check') return { kind: 'command', text: normCommand(args.command) };
+  if (tool === 'gen_start') return { kind: 'scope', text: 'gen' };
+  if (tool === 'gen_phase') return { kind: 'scope', text: 'gen:' + String(args.phase || '') };
+  if (tool === 'gen_restore') return { kind: 'scope', text: 'gen-restore:' + String(args.phase || '') };
+  if (tool === 'gen_report') return { kind: 'scope', text: 'gen-report' };
+  if (tool === 'mkignore') return { kind: 'file', text: '.gitignore' };
+  if (tool === 'ci') return { kind: 'file', text: args.provider === 'gitlab' ? '.gitlab-ci.yml' : '.github/workflows/ci.yml' };
+  if (tool === 'sdk') return { kind: 'scope', text: 'sdk:' + String(args.op || '') + ':' + String(args.id || 'all') };
+  if (tool === 'analyze' || tool === 'secaudit' || tool === 'doctor') return { kind: 'scope', text: tool };
+  if (tool === 'subagent') return { kind: 'scope', text: 'subagent' };
   if (tool === 'todo') return { kind: 'scope', text: 'session-todos' };
   if (tool === 'reply' || tool === 'done') return { kind: 'scope', text: 'final-answer' };
   if (tool === 'undo') return { kind: 'scope', text: String(args.scope || 'last') };

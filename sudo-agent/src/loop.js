@@ -22,11 +22,20 @@ const profiles = require('./profiles');
 const compressMod = require('./compress');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
+const skillsMod = require('./skills');
 const pmap = require('./projectmap');
 
 const MAX_HISTORY = 50;
 const MAX_PROMPT = 200000;
 const MAX_TOOL_ITERS = 8; // legacy default; P26 uses per-profile limits
+// P50-6: sub-agents. Spawn allowed only at depth 0, 3 spawns max per
+// turn, fan-out max 3, child rounds capped (default 4, max 6).
+const MAX_SUB_SPAWNS = 3;
+const MAX_SUB_PARALLEL = 3;
+// P50-3: bounded build-fix loop. Consecutive EXECUTED failures on these
+// tools (any success resets) stop the turn honestly at MAX_BUILD_FIX.
+const BUILD_FIX_TOOLS = ['bash', 'exec_start', 'exec_poll', 'write', 'edit', 'patch', 'gen_check', 'mkignore', 'ci', 'sdk'];
+const MAX_BUILD_FIX = 6;
 const MAX_AGENTS_MD = 32 * 1024;
 
 function homeOf(toolsCtx) {
@@ -103,7 +112,7 @@ async function runTurn(opts) {
   const sessionNow = store.get(sessionId) || session;
   const useTools = !!opts.toolsCtx && sessionNow.projectRoot && opts.tools !== false;
 
-  const base = { store, provider, sessionId, prompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait };
+  const base = { store, provider, sessionId, prompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, maxIt: opts.maxIt, subDepth: opts.subDepth };
   if (useTools) return toolsTurn(base, sessionNow, opts.toolsCtx);
   return legacyTurn(base, sessionNow);
 }
@@ -488,7 +497,13 @@ async function toolsTurn(base, session, toolsCtx) {
   // P26-a/b: mode, size profile, context budget.
   const mode = modes.getMode(session);
   const profile = profiles.selectProfile({ modelId: model, providerType: provider.type, override: provider.profile || process.env.SUDO_AGENT_PROFILE });
-  const maxIt = profiles.maxIters(profile);
+  // P50-6: sub-turns cap their rounds via base.maxIt (1..10).
+  let maxIt = profiles.maxIters(profile);
+  if (base.maxIt !== undefined && base.maxIt !== null) {
+    const m = parseInt(base.maxIt, 10);
+    if (Number.isFinite(m)) maxIt = Math.min(10, Math.max(1, m));
+  }
+  const subDepth = base.subDepth || 0; // P50-6: spawn allowed only at depth 0
   const ctxTokens = profiles.resolveCtxTokens({ override: process.env.SUDO_AGENT_CTX_TOKENS, probeNctx: probeNctx(base.preProbe, model), providerType: provider.type });
 
   const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
@@ -497,6 +512,17 @@ async function toolsTurn(base, session, toolsCtx) {
   try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
 
   const agentsMd = readAgentsMd(root);
+  // P50-2: active skills (global + project) injected as system context.
+  // Failures never break a turn; they are journaled instead.
+  let skillsText = '';
+  try {
+    const sk = skillsMod.activeSkillsText(home, root);
+    skillsText = sk.text || '';
+    for (const s of sk.skipped) journal('warn', 'skill ignore', { skill: s.name, error: String(s.error).slice(0, 80) });
+    if (sk.used.length) journal('info', 'skills actifs', { skills: sk.used });
+  } catch (e) {
+    journal('warn', 'skills illisibles', { error: String((e && e.message) || e).slice(0, 120) });
+  }
 
   const sessionRulesMap = (toolsCtx && toolsCtx.sessionRules) || new Map();
   if (!sessionRulesMap.has(sessionId)) sessionRulesMap.set(sessionId, new Set());
@@ -546,6 +572,8 @@ async function toolsTurn(base, session, toolsCtx) {
     // counted by the context estimate, P39-e).
     if (preloadText) out.splice(1, 0, { role: 'system', content: preloadText });
     if (mapText) out.splice(1, 0, { role: 'system', content: mapText });
+    // P50-2: skills after map/preload (counted by the context estimate).
+    if (skillsText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0), 0, { role: 'system', content: filter(skillsText) });
     return out;
   };
   // Field named `ctx` (not ctxTokens): the journal masks *token* substrings.
@@ -569,7 +597,7 @@ async function toolsTurn(base, session, toolsCtx) {
       mmChars += c;
       if (m && m.role === 'tool') resChars += c;
     }
-    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0);
+    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0) + (skillsText ? skillsText.length : 0);
     const mapChars = mapText.length + preloadText.length;
     const budget = profiles.tokenBudget({ system: sysChars, tools: schemaChars, map: mapChars,
       history: Math.max(0, mmChars - sysChars - mapChars - resChars), results: resChars });
@@ -666,7 +694,10 @@ async function toolsTurn(base, session, toolsCtx) {
 
   const callKey = (c) => {
     const a = (c && c.args) || {};
-    const t = a.file || a.dir || a.path || a.cwd || a.pattern || a.command || a.op || a.scope || '';
+    // P50-6: subagent tasks discriminate the key (distinct sequential
+    // spawns are legal; byte-identical repeats still trip the guard).
+    const sub = a.task || (Array.isArray(a.tasks) ? a.tasks.map((x) => (x && x.task) || '').join(';') : '') || '';
+    const t = a.file || a.dir || a.path || a.cwd || a.pattern || a.command || a.op || a.scope || sub || '';
     return String(c.name || '?') + '|' + String(t).slice(0, 200);
   };
 
@@ -739,6 +770,10 @@ async function toolsTurn(base, session, toolsCtx) {
   let declared = false;
   let finalText = '';
   let iters = 0;
+  let subSpawns = 0;
+  let childSeq = 0;
+  let buildFixFails = 0;
+  let buildFixStop = false;
   let lastKey = '';
   let sameCount = 0;
   let attempt = 0;
@@ -899,6 +934,114 @@ async function toolsTurn(base, session, toolsCtx) {
         finalText = argText;
         break;
       }
+      // P50-6: sub-agents (one task or parallel fan-out). Spawn is free
+      // (no privilege escalation: same root, same rules, depth<=1, all
+      // capped) but journaled. Children run real turns on child sessions.
+      if (first.name === 'subagent') {
+        const callIdS = first.id || ('call-' + run.calls.length);
+        const closeExtrasS = () => {
+          for (const extra of calls.slice(1)) {
+            const xid = extra.id || ('call-' + run.calls.length);
+            run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'ignore : une seule action par pas.' });
+            store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
+            try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
+          }
+        };
+        const finishSub = (ok, code, body, summary) => {
+          run.calls.push({ tool: 'subagent', target: '', ok, code, ms: 0, at: new Date().toISOString(), summary: String(summary).slice(0, 300) });
+          store.append(sessionId, { role: 'tool', tool_call_id: callIdS, name: 'subagent', content: filter(JSON.stringify(body)).slice(0, 8000) });
+          try { onEvent({ type: 'tool.result', callId: callIdS, tool: 'subagent', ok, code, ms: 0, summary: String(summary).slice(0, 300) }); } catch (_) {}
+        };
+        const refuseSub = (text) => {
+          finishSub(false, 'bad_args', { ok: false, code: 'bad_args', error: text, detail: text }, text);
+          closeExtrasS();
+        };
+        if (first.parseError) { refuseSub('arguments illisibles : ' + first.parseError); continue; }
+        if (subDepth >= 1) { refuseSub('sous-agent imbrique refuse (profondeur max 1).'); continue; }
+        if (subSpawns >= MAX_SUB_SPAWNS) { refuseSub('trop de sous-agents (3 max par tour).'); continue; }
+        if (runEntry.aborted) { refuseSub('tour abandonne.'); continue; }
+        const sa = (first.args && typeof first.args === 'object') ? first.args : {};
+        let jobs = null;
+        if (Array.isArray(sa.tasks) && sa.tasks.length) {
+          if (sa.task) { refuseSub('task XOR tasks (pas les deux).'); continue; }
+          if (sa.tasks.length > MAX_SUB_PARALLEL) { refuseSub('fan-out max 3 sous-agents.'); continue; }
+          jobs = sa.tasks;
+        } else if (typeof sa.task === 'string' && sa.task.trim()) {
+          jobs = [{ task: sa.task, focus: sa.focus, readonly: sa.readonly, maxRounds: sa.maxRounds }];
+        } else { refuseSub('subagent: task (ou tasks[]) requis.'); continue; }
+        let jobsOk = true;
+        for (const j of jobs) {
+          if (!j || typeof j.task !== 'string' || !j.task.trim() || j.task.length > 2000) { refuseSub('tache invalide (texte requis, <=2000).'); jobsOk = false; break; }
+        }
+        if (!jobsOk) continue;
+        subSpawns += 1;
+        try { onEvent({ type: 'tool.start', callId: callIdS, tool: 'subagent' }); } catch (_) {}
+        const runChild = async (job) => {
+          childSeq += 1;
+          const n = childSeq;
+          const child = store.create({ title: 'sub: ' + String(job.task).slice(0, 60), projectRoot: session.projectRoot });
+          const childMode = job.readonly === true ? 'plan' : mode;
+          try { store.update(child.id, (x) => { x.meta.mode = childMode; x.meta.parent = sessionId; }); } catch (_) {}
+          let mr = parseInt(job.maxRounds, 10);
+          if (!Number.isFinite(mr)) mr = 4;
+          mr = Math.min(6, Math.max(1, mr));
+          const cprompt = 'Execute cette sous-tache agent (enfant ' + n + '). Tache : ' + String(job.task).slice(0, 2000)
+            + (job.focus ? '\nContexte : ' + String(job.focus).slice(0, 1000) : '')
+            + '\nTermine par done avec un RESUME compact (faits + fichiers touches).'
+            + (job.readonly === true ? ' Lecture seule (mode PLAN).' : '');
+          journal('info', 'sous-agent demarre', { child: child.id, mode: childMode, maxRounds: mr });
+          try { onEvent({ type: 'subagent.start', callId: callIdS, child: child.id }); } catch (_) {}
+          let cres = null;
+          try {
+            cres = await runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.s' + n,
+              provider, toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map() },
+              runs, log, onEvent: () => {}, subDepth: subDepth + 1, maxIt: mr, runtimeWait });
+          } catch (e) {
+            journal('warn', 'sous-agent erreur', { child: child.id, error: String((e && e.message) || e).slice(0, 160) });
+            return { ok: false, child: child.id, error: String((e && e.message) || e).slice(0, 300) };
+          }
+          const cs = store.get(child.id);
+          const cmsgs = (cs && cs.messages) || [];
+          // Summary = the done/reply ARGUMENT (last message is just the
+          // accept receipt). Fallback: last assistant text (rescue path).
+          let summary = '';
+          for (let mi = cmsgs.length - 1; mi >= 0 && !summary; mi--) {
+            const tcs = (cmsgs[mi] && cmsgs[mi].tool_calls) || [];
+            for (const tc of tcs) {
+              if (tc.name === 'done' || tc.name === 'reply') {
+                try { const a = JSON.parse(tc.argsText || '{}'); summary = String(a.summary || a.text || ''); } catch (_) {}
+                break;
+              }
+            }
+          }
+          if (!summary) {
+            for (let mi = cmsgs.length - 1; mi >= 0; mi--) {
+              if (cmsgs[mi] && cmsgs[mi].role === 'assistant' && cmsgs[mi].content) { summary = String(cmsgs[mi].content); break; }
+            }
+          }
+          summary = summary.slice(0, 2000);
+          const cmeta = (cs && cs.meta && cs.meta.lastRun) || {};
+          try { onEvent({ type: 'subagent.done', callId: callIdS, child: child.id, status: cmeta.status || (cres && cres.status) }); } catch (_) {}
+          return { ok: !cres || cres.status !== 'error', child: child.id, status: cmeta.status || (cres && cres.status),
+            summary, files: cmeta.filesModified || [], toolCalls: (cmeta.calls || []).length };
+        };
+        const t0s = Date.now();
+        let results = null;
+        try {
+          results = jobs.length === 1 ? [await runChild(jobs[0])] : await Promise.all(jobs.map((j) => runChild(j)));
+        } catch (e) {
+          finishSub(false, 'subagent_failed', { ok: false, code: 'subagent_failed', error: String((e && e.message) || e).slice(0, 300) }, 'sous-agent echoue.');
+          closeExtrasS(); continue;
+        }
+        const okAll = results.every((x) => x.ok);
+        const body = jobs.length === 1
+          ? { ok: results[0].ok, summary: results[0].summary, result: results[0], detail: String(results[0].summary || '').slice(0, 500) }
+          : { ok: okAll, summary: results.map((x, i) => '[enfant ' + (i + 1) + ' ' + (x.ok ? 'ok' : 'ECHEC') + '] ' + (x.summary || x.error || '')).join('\n').slice(0, 4000), result: results, detail: results.length + ' enfants.' };
+        journal('info', 'sous-agents termines', { n: results.length, ok: okAll, ms: Date.now() - t0s });
+        finishSub(okAll, okAll ? 'ok' : 'subagent_failed', body, jobs.length + ' enfant(s), ' + (okAll ? 'tous ok.' : 'echecs.') + ' (' + (Date.now() - t0s) + ' ms).');
+        closeExtrasS();
+        continue;
+      }
       const callId = first.id || ('call-' + run.calls.length);
       try { onEvent({ type: 'tool.start', callId, tool: first.name }); } catch (_) {}
       let content = '';
@@ -930,12 +1073,25 @@ async function toolsTurn(base, session, toolsCtx) {
       store.append(sessionId, { role: 'tool', tool_call_id: callId, name: first.name, content });
       const last = run.calls[run.calls.length - 1] || {};
       try { onEvent({ type: 'tool.result', callId, tool: first.name, ok: !!last.ok, code: last.code || 'ok', ms: last.ms || 0, summary: (last.summary || '').slice(0, 300) }); } catch (_) {}
+      // P50-3: bounded build-fix loop (see consts above). need_approval
+      // and skipped never count: the tool did not run.
+      if (last.ok) buildFixFails = 0;
+      else if (BUILD_FIX_TOOLS.indexOf(first.name) !== -1 && last.code !== 'need_approval' && last.code !== 'skipped') {
+        buildFixFails += 1;
+        if (buildFixFails >= MAX_BUILD_FIX) {
+          stopReason = 'build_fix';
+          stopDetail = 'boucle de correction bornee : ' + buildFixFails + ' echecs consecutifs (' + first.name + ', dernier : ' + String(last.code || 'echec').slice(0, 80) + ').';
+          journal('warn', 'build-fix borne atteinte', { fails: buildFixFails, tool: first.name });
+          buildFixStop = true;
+        }
+      }
       for (const extra of calls.slice(1)) {
         const xid = extra.id || ('call-' + run.calls.length);
         run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'ignore : une seule action par pas.' });
-        store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
+          store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
         try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
       }
+      if (buildFixStop) break; // P50-3: extras closed above, transcript valid.
     }
     // P49-2: the model claimed done with no verified files: constrained
     // re-attempt (bounded by MAX_ATTEMPTS); otherwise the verdict below
@@ -1029,7 +1185,7 @@ async function toolsTurn(base, session, toolsCtx) {
       const totalCalls = run.calls.filter((c) => c.code !== 'skipped').length;
       let raison = '';
       if (mode === 'plan') raison = 'mode PLAN : les modifications sont refusees (basculez en BUILD pour modifier).';
-      else if (stopReason === 'no_tool') raison = stopDetail;
+      else if (stopReason === 'no_tool' || stopReason === 'build_fix') raison = stopDetail;
       else if (!totalCalls) raison = 'aucun appel d\'outil emis.';
       else if (!okCalls) {
         const errs = run.calls.filter((c) => !c.ok).slice(0, 3).map((c) => c.tool + '/' + (c.code || 'error'));

@@ -557,15 +557,16 @@ t('F2', 'empty model list: clear no-model 502', async () => {
 
 // G: registry + permissions -------------------------------------------------------------------
 t('G1', 'tools registered (P25), permissions ask-mutating', async () => {
-  // Since P25 the registry is populated (P49: 13 tools) and permissions
-  // are ask-mutating (read-only auto, mutating ask, hard deny list).
+  // Since P25 the registry is populated (P49: 13 tools, P50: 28 tools)
+  // and permissions are ask-mutating (read-only auto, mutating ask,
+  // hard deny list).
   const a = spawnAgent({});
   try {
     const hs = await waitHandshake(a.child);
     const tl = await httpJson(hs.port, a.token, 'GET', '/tools');
     assert(tl.status === 200 && Array.isArray(tl.body.tools), 'tools list');
     const names = tl.body.tools.map((x) => x.name).sort();
-    assert(JSON.stringify(names) === JSON.stringify(['bash', 'delete', 'done', 'edit', 'glob', 'grep', 'list', 'patch', 'read', 'rename', 'reply', 'todo', 'write']), 'tool names: ' + names.join(','));
+    assert(JSON.stringify(names) === JSON.stringify(['analyze', 'bash', 'ci', 'delete', 'doctor', 'done', 'edit', 'exec_poll', 'exec_start', 'exec_stop', 'gen_check', 'gen_phase', 'gen_report', 'gen_restore', 'gen_start', 'glob', 'grep', 'list', 'mkignore', 'patch', 'read', 'rename', 'reply', 'sdk', 'secaudit', 'subagent', 'todo', 'write']), 'tool names: ' + names.join(','));
     for (const x of tl.body.tools) assert(!('handler' in x), 'handler leaked');
     const pm = await httpJson(hs.port, a.token, 'GET', '/permissions');
     assert(pm.status === 200 && pm.body.mode === 'ask-mutating', 'permissions mode');

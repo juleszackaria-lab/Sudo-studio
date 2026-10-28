@@ -5,8 +5,11 @@
 'use strict';
 
 // Full set order (stable); small subset keeps the most useful six.
+// P50-3: exec_*. P50-4: gen_*. P50-5: biz. P50-6: subagent (full only).
 const FULL_TOOLS = ['read', 'list', 'glob', 'grep', 'write', 'edit', 'patch', 'bash', 'todo',
-  'delete', 'rename', 'reply', 'done'];
+  'delete', 'rename', 'reply', 'done', 'exec_start', 'exec_poll', 'exec_stop',
+  'gen_start', 'gen_phase', 'gen_check', 'gen_report', 'gen_restore',
+  'analyze', 'secaudit', 'mkignore', 'ci', 'doctor', 'sdk', 'subagent'];
 // P49: small models also get delete/rename (supprime/renomme must work on
 // 1.5B), todo (forced decomposition) and reply/done (the ONLY way to end
 // a turn: the local runtime grammar-forces a tool call every round).

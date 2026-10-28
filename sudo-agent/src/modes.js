@@ -8,7 +8,7 @@ const MODES = ['build', 'plan'];
 // Mutating tools, refused in plan mode (clear message, no status poison).
 // P49: delete/rename join them; reply/done stay allowed (a plan turn must
 // still terminate through the forced-call runtime).
-const PLAN_REFUSED = ['write', 'edit', 'patch', 'bash', 'undo', 'delete', 'rename'];
+const PLAN_REFUSED = ['write', 'edit', 'patch', 'bash', 'undo', 'delete', 'rename', 'exec_start', 'exec_stop', 'gen_start', 'gen_check', 'gen_phase', 'gen_restore', 'mkignore', 'ci', 'sdk'];
 
 function buildSystem() {
   return [
