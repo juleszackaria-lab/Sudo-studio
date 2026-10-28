@@ -6,7 +6,7 @@
     P36(d) base (manifest hashes, structure, branding, probes) extended with
     the P46 delivery-gate lines: backend --selftest (L1), agent handshake
     from the installed path (L2), editor exthost/renderer log scan (L3, -Full),
-    15 panels render + console (L4, -Full), branding incl. old-logo zero (L5),
+    16 panels render + console (L4, -Full), branding incl. old-logo zero (L5),
     runtime journal header + real-vs-requested n_ctx (L6), manifest vs files +
     runtime freshness (L7), uninstall line (L8, always SKIP here: destructive,
     CI gate only), result integrity incl. no-secret scan (L9).
@@ -256,7 +256,7 @@ try {
 
     # == P46-L4: every panel renders (no blank, no console error) ===============
     if (-not $Full) {
-        Add-Check 'P46-4' 'panels' 'SKIP' 'needs -Full (renders 15 panels)'
+        Add-Check 'P46-4' 'panels' 'SKIP' 'needs -Full (renders 16 panels)'
     } else {
         try {
             $ps = $PanelScript
