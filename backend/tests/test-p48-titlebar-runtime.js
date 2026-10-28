@@ -264,7 +264,7 @@ check('G1: server pre-check waits on runtime_offline with progress events',
     srvSrc.indexOf("emit('runtime.wait'") !== -1);
 const loopSrc = read('sudo-agent/src/loop.js');
 check('G2: loop waits at turn start + all 3 turn bodies',
-    (loopSrc.match(/waitAndRetry\(\{/g) || []).length === 4);
+    (loopSrc.match(/waitAndRetry\(\{/g) || []).length === 5); // P49: +1 repair site (same P48 rule)
 const engSrc = read('sudo-ai-extension/src/agent/AgentEngine.js');
 check('G3: engine maps runtime.wait to a step',
     engSrc.indexOf("type === 'runtime.wait'") !== -1 &&

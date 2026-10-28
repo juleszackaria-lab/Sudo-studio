@@ -5,8 +5,13 @@
 'use strict';
 
 // Full set order (stable); small subset keeps the most useful six.
-const FULL_TOOLS = ['read', 'list', 'glob', 'grep', 'write', 'edit', 'patch', 'bash', 'todo'];
-const SMALL_TOOLS = ['read', 'list', 'grep', 'write', 'edit', 'bash'];
+const FULL_TOOLS = ['read', 'list', 'glob', 'grep', 'write', 'edit', 'patch', 'bash', 'todo',
+  'delete', 'rename', 'reply', 'done'];
+// P49: small models also get delete/rename (supprime/renomme must work on
+// 1.5B), todo (forced decomposition) and reply/done (the ONLY way to end
+// a turn: the local runtime grammar-forces a tool call every round).
+const SMALL_TOOLS = ['read', 'list', 'grep', 'write', 'edit', 'delete', 'rename',
+  'bash', 'todo', 'reply', 'done'];
 
 const TERSE = {
   read: 'Read a project file.',
@@ -14,7 +19,12 @@ const TERSE = {
   grep: 'Search text (regex).',
   write: 'Create/replace a file (replace needs prior read).',
   edit: 'Replace one exact unique string.',
+  delete: 'Delete a file (needs prior read).',
+  rename: 'Rename a file (needs prior read; target must be new).',
   bash: 'Run a shell command (timeout, truncated).',
+  todo: 'Task list: add/list/done/clear.',
+  reply: 'FINAL answer text (ends the turn).',
+  done: 'Task finished (ends the turn).',
 };
 
 function parseParamsB(modelId) {

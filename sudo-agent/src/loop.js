@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const { probeProvider, streamChat, chatOnce, waitForRuntime } = require('./providers');
+const { classifyAction } = require('./intent');
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
 const { loadProjectRules } = require('./permissions');
 const { diffSnapshot } = require('./checkpoints');
@@ -146,6 +147,18 @@ async function legacyTurn(base) {
       res = await streamOnce();
     }
     full = res.text || '';
+    // P49-4: a stuck small model repeats itself: one guided retry (bounded,
+    // keeps the first text if the retry fails).
+    if (full && detectRepetition(full)) {
+      if (log) { try { log.warn('repetition detectee', { session: sessionId, chars: full.length }, corr); } catch (_) {} }
+      history.push({ role: 'user', content: 'Tu te repetes : reponds brievement, sans repeter deux fois la meme phrase.' });
+      try {
+        const res2 = await streamOnce();
+        const t2 = (res2 && res2.text) || '';
+        if (t2) full = t2;
+      } catch (_) {}
+      run.destroy = null;
+    }
     store.append(sessionId, { role: 'assistant', content: full });
     try { onEvent({ type: 'message.done', text: full, aborted: false }); } catch (_) {}
     const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
@@ -265,6 +278,18 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
   } finally {
     runEntry.destroy = null;
   }
+  // P49-4: a stuck small model repeats itself: one guided retry (bounded,
+  // keeps the first text if the retry fails).
+  if (full && !runEntry.aborted && detectRepetition(full)) {
+    journal('warn', 'repetition detectee', { chars: full.length });
+    messages.push({ role: 'user', content: 'Tu te repetes : reponds brievement, sans repeter deux fois la meme phrase.' });
+    try {
+      const resR = await streamOnce();
+      const tR = String((resR && resR.text) || '').trim();
+      if (tR) full = tR;
+    } catch (_) {}
+    runEntry.destroy = null;
+  }
   let runStatus = 'TERMINE';
   let reason = '';
   if (!full && !runEntry.aborted) {
@@ -318,11 +343,36 @@ function toProviderMessages(stored, cloud) {
 
 // Unresolved = error entries (except clean policy denials, plan refusals and
 // skipped extra calls) with no later success on the same tool+target.
+// P49: file-mutating tools gated by the recon rule on improvement intents
+// (bash stays available: it is also the execute/verify vehicle).
+const FILE_MUTATING = ['write', 'edit', 'patch', 'delete', 'rename'];
+
+// P49: driver-side guidance codes are not failures: a rejected reply/done
+// (open todos, no plan, recon missing, verify still running) teaches the
+// model the rules.
+const GUIDANCE_CODES = ['todos_open', 'no_plan', 'recon_required', 'verify'];
+
+// P49-4: same sentence 3+ times in one reply = a stuck small model.
+// Pure (unit-tested): returns { repeated, count } or null.
+function detectRepetition(text) {
+  const parts = String(text || '').split(/[.!?\u2026\n;]+/)
+    .map((s) => s.toLowerCase().replace(/\s+/g, ' ').trim())
+    .filter((s) => s.length >= 20);
+  const seen = new Map();
+  for (const p of parts) {
+    const n = (seen.get(p) || 0) + 1;
+    seen.set(p, n);
+    if (n >= 3) return { repeated: p.slice(0, 160), count: n };
+  }
+  return null;
+}
+
 function unresolvedErrors(calls) {
   const bad = [];
   for (let i = 0; i < calls.length; i++) {
     const c = calls[i];
-    if (c.ok || c.code === 'denied' || c.code === 'asked' || c.code === 'plan_mode' || c.code === 'skipped') continue;
+    if (c.ok || c.code === 'denied' || c.code === 'asked' || c.code === 'plan_mode' || c.code === 'skipped' ||
+        GUIDANCE_CODES.indexOf(c.code) !== -1) continue;
     let fixed = false;
     for (let j = i + 1; j < calls.length; j++) {
       // P26-b: a parse error is recovered by ANY later successful action
@@ -422,10 +472,16 @@ async function toolsTurn(base, session, toolsCtx) {
     journal('warn', 'precharge impossible', { error: String((e && e.message) || e).slice(0, 120) });
   }
 
+  // P49-1: ACTION/QUESTION router (classification is journaled proof).
+  // ACTION turns take the strict tool loop below (tool call forced, honest
+  // verdict). QUESTION keeps the single-call path. AMBIGUOUS keeps the
+  // legacy loop behavior (free text may still declare).
+  const intent = classifyAction(base.prompt);
+  journal('info', 'intention classee', { kind: intent.kind, verbs: intent.verbs.join(','), expectsChange: intent.expectsChange, collective: intent.collective, improvement: intent.improvement, taskItems: intent.taskItems.length });
   // P43-2: QUESTIONS take the single-call path (no free tool exploration).
   // The map + preload above are shared, so the journal keeps the same
   // proof lines ('carte projet injectee', 'contexte general precharge').
-  if (pmap.isGeneralQuestion(base.prompt)) {
+  if (intent.kind === 'QUESTION') {
     return questionTurn(base, session, toolsCtx, root, mapText, mapInfo, preloadText);
   }
 
@@ -614,22 +670,95 @@ async function toolsTurn(base, session, toolsCtx) {
     return String(c.name || '?') + '|' + String(t).slice(0, 200);
   };
 
+  // P49-1: strict ACTION regime. QUESTION/AMBIGUOUS keep their historical
+  // behavior bit for bit (chatOpts empty => byte-identical payloads).
+  const strictAction = intent.kind === 'ACTION';
+  const runOnly = strictAction && !intent.expectsChange;
+  const chatOpts = strictAction
+    ? { toolChoice: 'required', sampling: { temperature: 0.15, topP: 0.9, topK: 40, repeatPenalty: 1.12, maxTokens: 1200 } }
+    : {};
+  const roundOnce = () => chatOnce(provider, Object.assign({ model, messages: modelMessages(), tools: schemas,
+    onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; } },
+  chatOpts));
+  // P49-1: constrained repair: free text is never a valid ACTION output.
+  // Up to 2 driver retries with an explicit order, then an honest stop.
+  const actionRepair = async (why) => {
+    for (let a = 0; a < 2; a++) {
+      if (runEntry.aborted) return null;
+      journal('warn', 'reparation contrainte', { attempt: a + 1, why: String(why).slice(0, 120) });
+      store.append(sessionId, { role: 'user', content: 'RAPPEL STRICT : ' + why + ' Tu DOIS emettre exactement UN appel d\'outil maintenant (aucun texte libre). Si la tache est vraiment finie, appelle done ou reply ; sinon agis avec read/list/grep/write/edit.' });
+      let r2 = null;
+      try {
+        r2 = await roundOnce();
+      } catch (e) {
+        // Same P48 rule as the main site: wait for the supervised restart.
+        if (!e || e.code !== 'runtime_offline' || runEntry.aborted) throw e;
+        const wR = await waitAndRetry({ provider, onEvent,
+          shouldAbort: () => runEntry.aborted, waitOpts: runtimeWait });
+        if (!wR.retry || runEntry.aborted) throw e;
+        r2 = await roundOnce();
+      } finally {
+        runEntry.destroy = null;
+      }
+      const c2 = Array.isArray(r2.toolCalls) ? r2.toolCalls : [];
+      if (c2.length) return r2;
+    }
+    return null;
+  };
+  // P49-2: constrained re-attempt prompt (whole-turn retry, history kept).
+  const constrainedPrompt = (n) => 'RELANCE CONTRAINTE ' + n + '/2 : ta precedente tentative s\'est terminee sans AUCUNE modification verifiee. Recommence : constate (list/grep/read), agis (UN appel d\'outil a la fois), puis termine via done/reply. Le texte libre ne termine rien.';
+  // P49-3: fresh todo reads (the store is file-backed: always re-read).
+  const readTodos = () => {
+    try {
+      const cur = store.get(sessionId);
+      if (cur && cur.meta && Array.isArray(cur.meta.todos)) return cur.meta.todos;
+    } catch (_) {}
+    return [];
+  };
+  // P49-1: reply/done acceptance gate. Returns null when allowed.
+  const replyBlockedReason = () => {
+    const todos = readTodos();
+    const open = todos.filter((t) => !t.done);
+    if (open.length) {
+      return { code: 'todos_open', error: 'finis d\'abord les ' + open.length + ' todos ouverts (' + open.slice(0, 3).map((t) => t.id + ': ' + String(t.text).slice(0, 60)).join(' ; ') + ') : appelle todo/done pour chacun, puis reply/done.' };
+    }
+    if (strictAction && intent.collective && !todos.length && !run.calls.some((c) => c.ok)) {
+      return { code: 'no_plan', error: 'demande collective : decoupe d\'abord le travail en todos (todo/add, un par etape), puis execute-les une par une.' };
+    }
+    return null;
+  };
+  let reconDone = false;
+  // P49-3: a pasted task list seeds session todos driver-side (bounded).
+  if (strictAction && intent.hasTaskList) {
+    for (const item of intent.taskItems.slice(0, 20)) {
+      try { await executeTool(tctx, 'todo', { op: 'add', text: item }, {}); } catch (_) {}
+    }
+    journal('info', 'todos ensemences', { count: Math.min(intent.taskItems.length, 20) });
+  }
+
   let declared = false;
   let finalText = '';
   let iters = 0;
   let lastKey = '';
   let sameCount = 0;
+  let attempt = 0;
+  const MAX_ATTEMPTS = (strictAction && mode === 'build') ? 3 : 1;
   try {
+    for (attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        // P49-2: constrained re-attempt: strong order, fresh round budget.
+        store.append(sessionId, { role: 'user', content: constrainedPrompt(attempt) });
+        declared = false; finalText = ''; lastKey = ''; sameCount = 0;
+        stopReason = ''; stopDetail = '';
+        journal('warn', 'relance contrainte', { attempt: attempt + 1, max: MAX_ATTEMPTS });
+      }
     for (iters = 0; iters < maxIt; iters++) {
       if (runEntry.aborted) break;
       const cmp = await maybeCompress();
       if (!cmp.ok) { stopReason = 'context'; stopDetail = cmp.reason; break; }
       let reply = null;
       try {
-        reply = await chatOnce(provider, {
-          model, messages: modelMessages(), tools: schemas,
-          onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
-        });
+        reply = await roundOnce();
       } catch (e) {
         // Provider without tool support: fall back to ONE legacy streamed turn.
         if (e && e.status === 400 && iters === 0) {
@@ -643,14 +772,18 @@ async function toolsTurn(base, session, toolsCtx) {
         const wT = await waitAndRetry({ provider, onEvent,
           shouldAbort: () => runEntry.aborted, waitOpts: runtimeWait });
         if (!wT.retry || runEntry.aborted) throw e;
-        reply = await chatOnce(provider, {
-          model, messages: modelMessages(), tools: schemas,
-          onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
-        });
+        reply = await roundOnce();
       } finally {
         runEntry.destroy = null;
       }
-      const calls = Array.isArray(reply.toolCalls) ? reply.toolCalls : [];
+      let calls = Array.isArray(reply.toolCalls) ? reply.toolCalls : [];
+      // P49-1: free text NEVER ends an ACTION turn: constrained repair
+      // (2 driver retries), then an honest no_tool stop.
+      if (!calls.length && strictAction && !runEntry.aborted) {
+        const fix = await actionRepair('reponse sans appel d\'outil (texte libre interdit pour une ACTION)');
+        if (fix) { reply = fix; calls = Array.isArray(fix.toolCalls) ? fix.toolCalls : []; }
+        else { stopReason = 'no_tool'; stopDetail = 'le modele n\'emet aucun appel d\'outil (reparations contraintes epuisees).'; break; }
+      }
       if (!calls.length) {
         const v = await maybeVerify();
         if (v === 'continue') continue;
@@ -709,6 +842,63 @@ async function toolsTurn(base, session, toolsCtx) {
         }
         break;
       }
+      // P49-1: reply/done terminate the turn (the ONLY no-modification
+      // exits). Gates teach the rules; extras are closed so the transcript
+      // stays valid for the next round.
+      if (first.name === 'reply' || first.name === 'done') {
+        const callIdF = first.id || ('call-' + run.calls.length);
+        const closeExtrasF = () => {
+          for (const extra of calls.slice(1)) {
+            const xid = extra.id || ('call-' + run.calls.length);
+            run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'ignore : une seule action par pas.' });
+            store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
+            try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
+          }
+        };
+        const finishIntercept = (ok, code, text) => {
+          run.calls.push({ tool: first.name, target: String(text || '').slice(0, 200), ok, code, ms: 0, at: new Date().toISOString(), summary: ok ? 'fin declaree (' + first.name + ').' : String(text).slice(0, 300) });
+          const body = ok
+            ? { ok: true, summary: 'fin de tour acceptee.', result: null, detail: 'fin de tour acceptee.' }
+            : { ok: false, code, error: text, detail: text };
+          store.append(sessionId, { role: 'tool', tool_call_id: callIdF, name: first.name, content: filter(JSON.stringify(body)).slice(0, 8000) });
+          try { onEvent({ type: 'tool.result', callId: callIdF, tool: first.name, ok, code, ms: 0, summary: String(text || '').slice(0, 300) }); } catch (_) {}
+        };
+        const block = replyBlockedReason();
+        const argText = first.name === 'reply'
+          ? String((first.args && first.args.text) || '').trim()
+          : String((first.args && first.args.summary) || '').trim();
+        if (first.parseError) {
+          finishIntercept(false, 'bad_args', 'arguments d\'outil illisibles : ' + first.parseError + ' Reponds avec UN appel JSON strict.');
+          closeExtrasF();
+          continue;
+        }
+        if (first.name === 'reply' && !argText) {
+          finishIntercept(false, 'bad_args', 'reply: text requis (ta reponse finale).');
+          closeExtrasF();
+          continue;
+        }
+        if (block) {
+          finishIntercept(false, block.code, block.error);
+          closeExtrasF();
+          continue;
+        }
+        if (argText && detectRepetition(argText)) {
+          finishIntercept(false, 'bad_args', 'ta reponse se repete : reformule-la brievement, sans repeter deux fois la meme phrase, via reply/done.');
+          closeExtrasF();
+          continue;
+        }
+        const vF = await maybeVerify();
+        if (vF === 'continue' || vF === 'stop') {
+          finishIntercept(false, 'verify', 'verifications en cours : poursuis le travail (des checks ont ete modifies).');
+          closeExtrasF();
+          if (vF === 'stop') break; else continue;
+        }
+        finishIntercept(true, 'final', argText || 'fin.');
+        closeExtrasF();
+        declared = true;
+        finalText = argText;
+        break;
+      }
       const callId = first.id || ('call-' + run.calls.length);
       try { onEvent({ type: 'tool.start', callId, tool: first.name }); } catch (_) {}
       let content = '';
@@ -716,18 +906,24 @@ async function toolsTurn(base, session, toolsCtx) {
         const entry = { tool: first.name || '?', target: '', ok: false, code: 'bad_args', ms: 0, at: new Date().toISOString(), summary: first.parseError };
         run.calls.push(entry);
         // P26-b: constraining hint on top of the runtime grammar + retry.
-        content = JSON.stringify({ ok: false, error: 'arguments d\'outil illisibles : ' + first.parseError + ' Reponds avec UN appel JSON strict.' });
+        content = JSON.stringify({ ok: false, error: 'arguments d\'outil illisibles : ' + first.parseError + ' Reponds avec UN appel JSON strict.', detail: 'arguments d\'outil illisibles.' });
+      } else if (strictAction && intent.improvement && !reconDone && FILE_MUTATING.indexOf(first.name) !== -1) {
+        // P49-3: improvement without recon is forbidden: look first.
+        run.calls.push({ tool: first.name, target: '', ok: false, code: 'recon_required', ms: 0, at: new Date().toISOString(), summary: 'bloque : constat requis avant ecriture.' });
+        content = JSON.stringify({ ok: false, code: 'recon_required', error: 'constate d\'abord : list/grep/read le projet avant d\'ecrire (amelioration pilotee par constats reels, pas de conseils generiques).', detail: 'constate d\'abord : list/grep/read avant write/edit.' });
       } else {
         const r = await executeTool(tctx, first.name, first.args, {});
         if (r.status === 'done') {
-          content = JSON.stringify({ ok: true, summary: r.call.summary, result: r.call.result, diff: r.call.diff ? r.call.diff.slice(0, 4000) : undefined });
+          // P49-3: any successful look unlocks file mutations for the turn.
+          if (r.call.ok && ['read', 'list', 'glob', 'grep'].indexOf(first.name) !== -1) reconDone = true;
+          content = JSON.stringify({ ok: true, summary: r.call.summary, result: r.call.result, diff: r.call.diff ? r.call.diff.slice(0, 4000) : undefined, detail: r.call.summary });
         } else if (r.status === 'need-approval') {
           try { toolsCtx.pending.set(r.request.id, { request: r.request, sessionId, fullArgs: first.args }); } catch (_) {}
           const entry = { tool: first.name, target: String((r.request.pattern && r.request.pattern.text) || ''), ok: false, code: 'need_approval', ms: 0, at: new Date().toISOString(), summary: 'approbation requise (' + r.request.id + ')' };
           run.calls.push(entry);
-          content = JSON.stringify({ ok: false, code: 'need_approval', requestId: r.request.id, summary: r.request.summary, hint: 'appel NON execute : approbation operateur requise.' });
+          content = JSON.stringify({ ok: false, code: 'need_approval', requestId: r.request.id, summary: r.request.summary, hint: 'appel NON execute : approbation operateur requise.', detail: r.request.summary });
         } else {
-          content = JSON.stringify({ ok: false, code: r.code || 'error', error: r.reason || 'echec.' });
+          content = JSON.stringify({ ok: false, code: r.code || 'error', error: r.reason || 'echec.', detail: r.reason || 'echec.' });
         }
       }
       content = filter(content).slice(0, 8000);
@@ -737,9 +933,21 @@ async function toolsTurn(base, session, toolsCtx) {
       for (const extra of calls.slice(1)) {
         const xid = extra.id || ('call-' + run.calls.length);
         run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'ignore : une seule action par pas.' });
-        store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.' }) });
+        store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
         try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
       }
+    }
+    // P49-2: the model claimed done with no verified files: constrained
+    // re-attempt (bounded by MAX_ATTEMPTS); otherwise the verdict below
+    // stands. A run-only ACTION with successful calls counts as done.
+    // Only false-TERMINE retries: a loud ECHEC (standing tool errors,
+    // mid-turn approval need) stops immediately, never retried.
+    if (!runEntry.aborted && strictAction && declared && mode === 'build' &&
+        !currentFilesModified().length && !(runOnly && run.calls.some((c) => c.ok)) &&
+        computeRunStatus(declared, run.calls).status === 'TERMINE') {
+      continue;
+    }
+    break;
     }
   } catch (e) {
     if (e && e.code === 'aborted') {
@@ -791,12 +999,58 @@ async function toolsTurn(base, session, toolsCtx) {
   if (!declared && stopReason && stopReason !== 'verify_failed') {
     verdict = { status: 'PARTIEL', reason: stopDetail || 'arret.', unresolved: verdict.unresolved };
   }
+  // P49-2: honest ACTION verdict, model-independent: verified files win
+  // over claims. TERMINE only with evidence; else AUCUNE MODIFICATION
+  // with a reason and a proposal. The files appendix is global (declared
+  // turns that really changed files say so).
+  if (declared && filesModified.length > 0) {
+    const app = 'Modifications verifiees (' + filesModified.length + ') : ' + filesModified.join(', ');
+    finalText = (finalText.trim() ? finalText.trim() + '\n\n' : '') + app;
+  }
+  if (strictAction && !runEntry.aborted) {
+    const okCalls = run.calls.filter((c) => c.ok && c.code !== 'skipped').length;
+    if (declared && filesModified.length > 0) {
+      // Errors may still stand (unresolved): then ECHEC is kept, with the
+      // files listed above. TERMINE only when nothing stands unresolved.
+      if (!verdict.unresolved.length) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      if (!finalText.trim()) finalText = 'Tache terminee.';
+      store.append(sessionId, { role: 'assistant', content: finalText });
+    } else if (declared && runOnly && okCalls > 0) {
+      verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      finalText = (finalText.trim() || 'Execution verifiee.') + '\n\nAucun fichier modifie (execution seule, verifiee : ' + okCalls + ' appels aboutis).';
+      store.append(sessionId, { role: 'assistant', content: finalText });
+    } else if (!declared && (filesModified.length > 0 || finalText.trim())) {
+      // Undeclared but real: modified files without a declaration, or an
+      // answer already produced (context/loop rescue): keep the verdict.
+    } else if (!declared || verdict.status === 'TERMINE') {
+      // P49-2 target: false TERMINE (declared, no evidence) and answerless
+      // stops (no_tool). A declared ECHEC (mid-turn approval need, standing
+      // tool errors) is loud already: it stands, never downgraded.
+      const totalCalls = run.calls.filter((c) => c.code !== 'skipped').length;
+      let raison = '';
+      if (mode === 'plan') raison = 'mode PLAN : les modifications sont refusees (basculez en BUILD pour modifier).';
+      else if (stopReason === 'no_tool') raison = stopDetail;
+      else if (!totalCalls) raison = 'aucun appel d\'outil emis.';
+      else if (!okCalls) {
+        const errs = run.calls.filter((c) => !c.ok).slice(0, 3).map((c) => c.tool + '/' + (c.code || 'error'));
+        raison = 'tous les appels ont echoue (' + errs.join(', ') + ').';
+      } else raison = 'appels lecture seule uniquement, aucun fichier touche.';
+      finalText = 'AUCUNE MODIFICATION : ' + raison + '\n\nProposition : reformulez en UNE action precise (ex : "cree le fichier X qui ..."), ' +
+        (mode === 'plan' ? 'basculez en BUILD pour modifier.' : 'verifiez les chemins (list/glob) puis relancez.');
+      verdict = { status: 'PARTIEL', reason: 'AUCUNE MODIFICATION : ' + raison, unresolved: verdict.unresolved };
+      // The honest text above must be the stored answer too (next-turn
+      // history and panels read the store, not just message.done).
+      store.append(sessionId, { role: 'assistant', content: finalText });
+    }
+  }
   const stopOut = stopReason || (declared ? 'declared' : 'max_iters');
+  // P49-2: the combined tool diffs ride along (bounded) for honest review.
+  const runDiff = run.calls.filter((c) => c.diff).map((c) => '[' + c.tool + ' ' + String(c.target || '').slice(0, 120) + ']\n' + String(c.diff)).join('\n').slice(0, 8000);
   saveRunSidecar(tctx);
   try {
     store.update(sessionId, (s) => {
       if (!s.meta) s.meta = {};
-      s.meta.lastRun = { at: new Date().toISOString(), status: verdict.status, reason: verdict.reason, filesModified, stopReason: stopOut, mode, profile,
+      s.meta.lastRun = { at: new Date().toISOString(), status: verdict.status, reason: verdict.reason, filesModified, stopReason: stopOut, mode, profile, diff: runDiff || null,
         calls: run.calls.map((c) => ({ tool: c.tool, target: c.target, ok: c.ok, code: c.code })) };
     });
   } catch (_) {}
@@ -831,4 +1085,4 @@ function abortRun(runs, sessionId) {
   return true;
 }
 
-module.exports = { runTurn, abortRun, computeRunStatus, unresolvedErrors, MAX_TOOL_ITERS };
+module.exports = { runTurn, abortRun, computeRunStatus, unresolvedErrors, detectRepetition, MAX_TOOL_ITERS };

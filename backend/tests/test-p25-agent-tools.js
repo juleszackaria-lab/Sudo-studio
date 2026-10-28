@@ -961,7 +961,7 @@ t('F6', 'TERMINE lists really-modified files', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'built.txt', content: 'v1\n' } }] },
-    { content: 'built.' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
@@ -979,7 +979,7 @@ t('F7', 'mid-turn approval need -> ECHEC + pending listed', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'w.txt', content: 'x\n' } }] },
-    { content: 'done?' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {

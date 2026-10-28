@@ -44,6 +44,33 @@ function headersFor(cfg) {
   return h;
 }
 
+// P49-4: optional sampling overrides, validated then merged into the
+// /v1/chat/completions payload. opts: { temperature, topP, topK,
+// repeatPenalty, maxTokens, stop }. Anything invalid is OMITTED (the
+// runtime defaults apply: temp 0.1, top_p 0.9, repeat 1.1, max 512).
+function samplingPayload(opts) {
+  const out = {};
+  // Flat ({ temperature, topP, ... }) or nested ({ sampling: {...} }).
+  const o = (opts && typeof opts === 'object' && opts.sampling && typeof opts.sampling === 'object') ? opts.sampling : (opts || {});
+  const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+  const t = num(o.temperature);
+  if (t !== null && t >= 0 && t <= 2) out.temperature = t;
+  const tp = num(o.topP);
+  if (tp !== null && tp > 0 && tp <= 1) out.top_p = tp;
+  const tk = num(o.topK);
+  if (tk !== null && tk >= 1 && tk <= 500) out.top_k = Math.floor(tk);
+  const rp = num(o.repeatPenalty);
+  if (rp !== null && rp >= 1 && rp <= 2) out.repeat_penalty = rp;
+  const mt = num(o.maxTokens);
+  if (mt !== null && mt >= 1 && mt <= 8192) out.max_tokens = Math.floor(mt);
+  if (typeof o.stop === 'string' && o.stop) out.stop = [o.stop];
+  else if (Array.isArray(o.stop) && o.stop.length) {
+    out.stop = o.stop.filter((s) => typeof s === 'string' && s).slice(0, 8);
+    if (!out.stop.length) delete out.stop;
+  }
+  return out;
+}
+
 function shortError(err) {
   const code = err && err.code ? String(err.code) : '';
   if (code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENETUNREACH') return 'connexion refusee';
@@ -116,7 +143,7 @@ function streamChat(cfg, messages, opts) {
     const win = (r) => { if (!done) { done = true; resolve(r); } };
     let url = null;
     try { url = new URL(joinUrl(cfg.baseUrl, '/v1/chat/completions')); } catch (_) { fail('bad_config', 'provider invalide (baseUrl).'); return; }
-    const payload = JSON.stringify({ model, messages, stream: true });
+    const payload = JSON.stringify(Object.assign({ model, messages, stream: true }, samplingPayload(opts)));
     const lib = pickLib(url);
     let req = null;
     try {
@@ -182,11 +209,13 @@ function streamChat(cfg, messages, opts) {
   });
 }
 
-module.exports = { normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime };
+module.exports = { normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime, samplingPayload };
 
 // Non-streaming chat, optional tools (P25). opts: { model, messages, tools?,
-// timeoutMs, onRequest }. Resolves { text, toolCalls, usage } where toolCalls
-// is [{ id, name, argsText, args, parseError }]. Rejects { code, message }.
+// toolChoice?, temperature?, topP?, topK?, repeatPenalty?, maxTokens?,
+// stop?, timeoutMs, onRequest }. Resolves { text, toolCalls, usage } where
+// toolCalls is [{ id, name, argsText, args, parseError }]. Rejects
+// { code, message }.
 function chatOnce(cfg, opts) {
   opts = opts || {};
   const model = opts.model;
@@ -196,7 +225,14 @@ function chatOnce(cfg, opts) {
     const fail = (code, message, status) => { if (!done) { done = true; const e = new Error(message); e.code = code; if (status) e.status = status; reject(e); } };
     let url = null;
     try { url = new URL(joinUrl(cfg.baseUrl, '/v1/chat/completions')); } catch (_) { fail('bad_config', 'provider invalide (baseUrl).'); return; }
-    const payload = JSON.stringify({ model, messages: opts.messages || [], stream: false, tools: opts.tools || undefined });
+    // P49-1: tool_choice 'required' forces a tool call on providers that
+    // honor it (cloud); the local runtime already grammar-forces JSON.
+    const onceBody = Object.assign({ model, messages: opts.messages || [], stream: false,
+      tools: opts.tools || undefined }, samplingPayload(opts));
+    if (opts.toolChoice === 'required' || opts.toolChoice === 'auto' || opts.toolChoice === 'none') {
+      onceBody.tool_choice = opts.toolChoice;
+    }
+    const payload = JSON.stringify(onceBody);
     const lib = pickLib(url);
     let req = null;
     try {

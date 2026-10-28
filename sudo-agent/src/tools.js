@@ -561,6 +561,64 @@ async function hTodo(ctx, args) {
   return { ok: true, data: { id }, summary: 'tache terminee (' + id + ').' };
 }
 
+// P49-5: delete a file. Guards mirror write: boundary (via resolved),
+// read-this-session (no blind deletes), file-only. The series checkpoint
+// (taken by executeTool before the first mutating call) is the way back.
+async function hDelete(ctx, args, resolved) {
+  const r = resolved;
+  if (!r.ok) return { ok: false, code: r.code, error: 'delete refuse: ' + r.reason };
+  let st = null;
+  try { st = fs.statSync(r.abs); } catch (_) { return richNotFound('delete', ctx, r, '.'); }
+  if (!st.isFile()) return { ok: false, code: 'not_file', error: 'delete refuse : ' + r.rel + ' n\'est pas un fichier (dossiers non pris en charge).' };
+  const readFiles = (ctx.session && ctx.session.meta && Array.isArray(ctx.session.meta.readFiles)) ? ctx.session.meta.readFiles : [];
+  if (readFiles.indexOf(r.rel) === -1) {
+    return { ok: false, code: 'not_read', error: 'delete refuse : ' + r.rel + ' n\'a pas ete lu pendant la session. Lisez-le d\'abord (protection contre les suppressions aveugles).' };
+  }
+  let lines = 0;
+  try { lines = fs.readFileSync(r.abs, 'utf8').split('\n').length; } catch (_) { lines = 0; }
+  try { fs.unlinkSync(r.abs); }
+  catch (e) { return { ok: false, code: 'io', error: 'delete: ' + String((e && e.message) || e).slice(0, 150) }; }
+  return { ok: true, data: { rel: r.rel, lines }, summary: 'supprime ' + r.rel + ' (' + lines + ' lignes).' };
+}
+
+// P49-5: rename/move a file. Source: exists + file + read this session.
+// Target: resolved in-root, must NOT exist (anti-overwrite), parents made.
+// The target counts as created (honest undo removes it on restore).
+async function hRename(ctx, args, resolved) {
+  const r = resolved;
+  if (!r.ok) return { ok: false, code: r.code, error: 'rename refuse (source) : ' + r.reason };
+  if (typeof args.to !== 'string' || !args.to.trim()) return { ok: false, code: 'bad_args', error: 'rename: to (nouveau chemin) requis.' };
+  let st = null;
+  try { st = fs.statSync(r.abs); } catch (_) { return richNotFound('rename', ctx, r, '.'); }
+  if (!st.isFile()) return { ok: false, code: 'not_file', error: 'rename refuse : ' + r.rel + ' n\'est pas un fichier.' };
+  const readFiles = (ctx.session && ctx.session.meta && Array.isArray(ctx.session.meta.readFiles)) ? ctx.session.meta.readFiles : [];
+  if (readFiles.indexOf(r.rel) === -1) {
+    return { ok: false, code: 'not_read', error: 'rename refuse : ' + r.rel + ' n\'a pas ete lu pendant la session. Lisez-le d\'abord.' };
+  }
+  const rt = resolveInRoot(ctx.root, args.to);
+  if (!rt.ok) return { ok: false, code: rt.code, error: 'rename refuse (cible) : ' + rt.reason };
+  let targetExists = false;
+  try { targetExists = fs.statSync(rt.abs).isFile() || fs.statSync(rt.abs).isDirectory(); } catch (_) { targetExists = false; }
+  if (targetExists) return { ok: false, code: 'exists', error: 'rename refuse : la cible existe deja : ' + rt.rel + '.' };
+  try {
+    fs.mkdirSync(path.dirname(rt.abs), { recursive: true });
+    fs.renameSync(r.abs, rt.abs);
+  } catch (e) { return { ok: false, code: 'io', error: 'rename: ' + String((e && e.message) || e).slice(0, 150) }; }
+  return { ok: true, data: { from: r.rel, to: rt.rel }, summary: 'renomme ' + r.rel + ' -> ' + rt.rel + '.', created: [rt.rel], markRead: [rt.rel] };
+}
+
+// P49-1: final-answer tools. The turn loop intercepts them (termination);
+// these handlers are backstops for direct calls (same shape, no effect).
+async function hReply(ctx, args) {
+  if (typeof args.text !== 'string' || !args.text.trim()) return { ok: false, code: 'bad_args', error: 'reply: text requis.' };
+  return { ok: true, data: { chars: args.text.length }, summary: 'reponse finale (' + args.text.length + ' caracteres).' };
+}
+
+async function hDone(ctx, args) {
+  const s = typeof args.summary === 'string' ? args.summary.trim().slice(0, 2000) : '';
+  return { ok: true, data: { chars: s.length }, summary: s || 'tache terminee.' };
+}
+
 // ---------------------------------------------------------------------------
 // Tool table: metadata + arg path (for boundary) + handler.
 // ---------------------------------------------------------------------------
@@ -574,6 +632,10 @@ const TOOLS = {
   patch: { description: 'Applique un diff unifie strict (multi-fichiers, creation, suppression).', danger: 'write', mutating: true, pathArg: null, defDir: null, handler: hPatch },
   bash: { description: 'Execute une commande (fenetre masquee, delai, sortie tronquee, annulable, sandbox P8 L1).', danger: 'execute', mutating: true, pathArg: 'cwd', defDir: '.', handler: hBash },
   todo: { description: 'Liste de taches de session (add/list/done/clear).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hTodo },
+  delete: { description: 'Supprime un fichier du projet (lecture prealable requise, confirmation operateur, annulable via instantane).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hDelete },
+  rename: { description: 'Renomme/deplace un fichier (lecture prealable requise, cible neuve, confirmation, annulable).', danger: 'write', mutating: true, pathArg: 'from', defDir: null, handler: hRename },
+  reply: { description: 'Reponse finale (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hReply },
+  done: { description: 'Tache terminee (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hDone },
 };
 
 function toolNames() { return Object.keys(TOOLS); }
@@ -592,8 +654,12 @@ function toOpenAISchema(profile) {
     patch: { patch: str('Unified diff text.') },
     bash: { command: str('Shell command.'), cwd: str('Working directory.'), timeoutMs: { type: 'integer' } },
     todo: { op: str('add|list|done|clear.'), text: str('Task text (add).'), id: str('Task id (done).') },
+    delete: { file: str('Project-relative file path to delete (must have been read).') },
+    rename: { from: str('Project-relative source path (must have been read).'), to: str('New project-relative path (must not exist).') },
+    reply: { text: str('Final answer text (ends the turn).') },
+    done: { summary: str('Short summary of what changed (optional, ends the turn).') },
   };
-  const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], todo: ['op'] };
+  const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], reply: ['text'] };
   return names.map((n) => ({ type: 'function', function: { name: n, description: (small && profiles.TERSE[n]) || TOOLS[n].description, parameters: { type: 'object', properties: schemas[n], required: required[n] || [] } } }));
 }
 
@@ -608,6 +674,13 @@ function markReadFiles(ctx, rels) {
       }
       while (s.meta.readFiles.length > 500) s.meta.readFiles.shift();
     });
+  } catch (_) {}
+  // P49: the store is file-backed, so ctx.session would stay stale for the
+  // rest of the turn and a same-turn write after read would be refused
+  // (not_read). Refresh the in-memory snapshot (proven by probe + test).
+  try {
+    const fresh = ctx.store.get(ctx.sessionId);
+    if (fresh) ctx.session = fresh;
   } catch (_) {}
 }
 
@@ -781,6 +854,16 @@ async function executeTool(ctx, toolName, args, opts) {
       } catch (_) { request.diff = toolName === 'write' ? '(nouveau fichier)' : null; }
     }
     if (toolName === 'patch' && typeof args.patch === 'string') request.diff = args.patch.slice(0, 20000);
+    // P49-5: delete/rename previews: the operator sees WHAT disappears.
+    if (toolName === 'delete' && resolved.ok) {
+      try {
+        const head = fs.readFileSync(resolved.abs, 'utf8').split('\n').slice(0, 40).join('\n');
+        request.diff = ('(suppression de ' + (resolved.rel || '?') + ')\n' + head).slice(0, 20000);
+      } catch (_) { request.diff = '(suppression de ' + (resolved.rel || '?') + ')'; }
+    }
+    if (toolName === 'rename') {
+      request.diff = '(renomme ' + String(args.from || '?').slice(0, 200) + ' -> ' + String(args.to || '?').slice(0, 200) + ')';
+    }
     if (toolName === 'bash') request.l2 = l2status();
     return { status: 'need-approval', request };
   }
@@ -823,7 +906,8 @@ function recordCall(ctx, toolName, args, ok, code, ms, summary) {
 
 function toolTarget(toolName, args) {
   args = args || {};
-  const v = args.file || args.dir || args.path || args.cwd || args.pattern || args.command || args.op || args.scope || '';
+  if (toolName === 'rename' && (args.from || args.to)) return String(args.from || '') + ' -> ' + String(args.to || '').slice(0, 200);
+  const v = args.file || args.from || args.dir || args.path || args.cwd || args.pattern || args.command || args.op || args.scope || args.text || '';
   return String(v).slice(0, 200);
 }
 

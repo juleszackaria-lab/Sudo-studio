@@ -328,8 +328,10 @@ t('A3', 'profiles: size detection, ctx resolution, budget', () => {
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'local' }) === 'small', 'unknown local small');
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'cloud' }) === 'full', 'unknown cloud full');
   assert(p.selectProfile({ modelId: 'llama-8b', providerType: 'local', override: 'small' }) === 'small', 'override wins');
-  assert(p.profileTools('small').length === 6 && p.profileTools('full').length === 9, 'tool counts');
+  assert(p.profileTools('small').length === 11 && p.profileTools('full').length === 13, 'tool counts');
   assert(p.profileTools('small').indexOf('patch') === -1, 'small drops patch');
+  assert(p.profileTools('small').indexOf('todo') !== -1, 'P49: small keeps todo');
+  assert(p.profileTools('small').indexOf('reply') !== -1 && p.profileTools('small').indexOf('done') !== -1, 'P49: small exits');
   assert(p.resolveCtxTokens({ override: '999', probeNctx: 111, providerType: 'local' }) === 999, 'override first');
   assert(p.resolveCtxTokens({ probeNctx: 1234, providerType: 'local' }) === 1234, 'probe second');
   assert(p.resolveCtxTokens({ providerType: 'local' }) === 2048, 'local default');
@@ -385,11 +387,11 @@ t('A6', 'mcp: allowlist fail-closed units', () => {
 });
 
 // B: modes -------------------------------------------------------------------
-t('B1', 'plan mode: write refused (plan_mode), no poison, file untouched', async () => {
+t('B1', 'plan mode: write refused (plan_mode), honest PARTIEL, file untouched', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'plan.txt', content: 'x' } }] },
-    { content: 'noted, plan only' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
@@ -400,7 +402,11 @@ t('B1', 'plan mode: write refused (plan_mode), no poison, file untouched', async
     const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'write it' }, (ev, o) => {
       if (ev === 'tool.result') codes.push(o.code);
     });
-    assert(done.status === 'TERMINE', 'TERMINE not poisoned, got ' + done.status);
+    // P49-2: a plan-mode ACTION with no changes is honestly PARTIEL
+    // (AUCUNE MODIFICATION), never TERMINE; the refusal itself is not an
+    // error (no ECHEC poison).
+    assert(done.status === 'PARTIEL', 'PARTIEL honest, got ' + done.status);
+    assert(String(done.reason || '').indexOf('AUCUNE MODIFICATION : mode PLAN') === 0, 'plan reason: ' + done.reason);
     assert(codes.indexOf('plan_mode') !== -1, 'plan_mode refusal seen');
     assert(!fs.existsSync(path.join(proj, 'plan.txt')), 'file untouched');
     const g = await httpJson(port, token, 'GET', '/sessions/' + sid);
@@ -429,7 +435,7 @@ t('B3', 'default mode is build: write asks (not plan-refused)', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'n.txt', content: 'x' } }] },
-    { content: 'waiting' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
@@ -499,7 +505,7 @@ t('D1', 'same tool+target 3x -> PARTIEL loop', async () => {
 });
 
 // E: profiles -----------------------------------------------------------------
-t('E1', 'small profile: 6 terse tools for 1.5B', async () => {
+t('E1', 'small profile: 11 terse tools for 1.5B', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [{ content: 'done' }] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: 'qwen-1.5b' });
@@ -508,14 +514,15 @@ t('E1', 'small profile: 6 terse tools for 1.5B', async () => {
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const tools = mock.chats[0].tools || [];
     const names = tools.map((x) => x.function.name);
-    assert(names.length === 6, 'six tools, got ' + names.length);
-    assert(names.indexOf('patch') === -1 && names.indexOf('todo') === -1, 'no patch/todo');
+    assert(names.length === 11, 'eleven tools, got ' + names.length);
+    assert(names.indexOf('patch') === -1 && names.indexOf('glob') === -1, 'no patch/glob');
+    assert(names.indexOf('todo') !== -1 && names.indexOf('reply') !== -1 && names.indexOf('done') !== -1, 'P49: todo+exits');
     for (const x of tools) assert(x.function.description.length < 60, 'terse: ' + x.function.name);
     await pollFile(path.join(a.logsDir, 'agent.log'), /profile=small/, 3000);
   } finally { killChild(a.child); await mock.close(); }
 });
 
-t('E2', 'full profile: 9 tools for 8B', async () => {
+t('E2', 'full profile: 13 tools for 8B', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [{ content: 'done' }] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: 'llama-8b' });
@@ -523,14 +530,14 @@ t('E2', 'full profile: 9 tools for 8B', async () => {
     const sid = await newSession(port, token, proj);
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const names = (mock.chats[0].tools || []).map((x) => x.function.name);
-    assert(names.length === 9 && names.indexOf('patch') !== -1, 'nine tools, got ' + names.length);
+    assert(names.length === 13 && names.indexOf('patch') !== -1, 'thirteen tools, got ' + names.length);
     await pollFile(path.join(a.logsDir, 'agent.log'), /profile=full/, 3000);
   } finally { killChild(a.child); await mock.close(); }
 });
 
 t('E3', 'probe n_ctx drives budget: compression at >75%', async () => {
   const proj = fixtureProject();
-  // Fixed overhead ~630 tokens (small schemas + mode system). n_ctx=2000:
+  // Fixed overhead ~1016 tokens (small schemas + mode system). n_ctx=2000:
   // seeds stay under 1500, the final prompt crosses it, post-compress fits.
   const mock = await mockProvider({
     models: [{ id: 'm', n_ctx: 2000 }],
@@ -543,11 +550,11 @@ t('E3', 'probe n_ctx drives budget: compression at >75%', async () => {
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
     const sid = await newSession(port, token, proj);
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S1 ' + 'y'.repeat(697) }, () => {});
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S2 ' + 'y'.repeat(697) }, () => {});
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S3 ' + 'y'.repeat(697) }, () => {});
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S4 ' + 'y'.repeat(697) }, () => {});
-    const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'BIG ' + 'x'.repeat(1196) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S1 ' + 'y'.repeat(300) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S2 ' + 'y'.repeat(300) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S3 ' + 'y'.repeat(300) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S4 ' + 'y'.repeat(300) }, () => {});
+    const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'BIG ' + 'x'.repeat(400) }, () => {});
     assert(done.status === 'TERMINE', 'TERMINE after compress, got ' + done.status + ' ' + done.reason);
     assert(mock.chats.length === 6, 'summarizer + final chats, got ' + mock.chats.length);
     const sum = mock.chats[4];
@@ -580,7 +587,7 @@ t('F1', 'verify loop: real npm test runs and passes after edit', async () => {
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'read', args: { file: 'notes.txt' } }] },
     { content: '', toolCalls: [{ name: 'edit', args: { file: 'notes.txt', old: 'alpha\nbeta', new: 'alpha\nBETA' } }] },
-    { content: 'edited' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
@@ -607,9 +614,9 @@ t('F2', 'scenario: fix the failing test via verify feedback', async () => {
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'read', args: { file: 'flag.txt' } }] },
     { content: '', toolCalls: [{ name: 'write', args: { file: 'flag.txt', content: 'yes\n' } }] },
-    { content: 'fixed?' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
     { content: '', toolCalls: [{ name: 'write', args: { file: 'flag.txt', content: 'ok\n' } }] },
-    { content: 'fixed' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
@@ -637,7 +644,7 @@ t('F3', 'verify without approval -> PARTIEL verify_approval + pending', async ()
   const proj = fixtureProject({ '.sudo-verify': 'node -e "process.exit(0)"\n' });
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'v.txt', content: 'v' } }] },
-    { content: 'written' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
@@ -656,7 +663,7 @@ t('F4', 'no check detected -> TERMINE + journal', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'w.txt', content: 'w' } }] },
-    { content: 'written' },
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {

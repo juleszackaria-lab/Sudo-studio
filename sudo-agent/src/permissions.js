@@ -12,9 +12,9 @@ const path = require('path');
 const crypto = require('crypto');
 
 // Read-only tools run without asking (boundary still enforced by the tools).
-const READONLY_AUTO = ['read', 'list', 'glob', 'grep', 'todo'];
+const READONLY_AUTO = ['read', 'list', 'glob', 'grep', 'todo', 'reply', 'done'];
 // Mutating tools ask unless a session/project rule matches.
-const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp'];
+const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp', 'delete', 'rename'];
 const KNOWN_TOOLS = READONLY_AUTO.concat(MUTATING_ASK);
 
 // ---------------------------------------------------------------------------
@@ -76,8 +76,9 @@ function normCommand(cmd) {
 // target: { kind:'file', rel } | { kind:'command', text } | { kind:'pattern', text } | { kind:'scope', text }.
 function patternOf(tool, args, resolved) {
   args = args || {};
-  if (tool === 'read' || tool === 'list' || tool === 'write' || tool === 'edit' || tool === 'patch') {
-    const rel = resolved && typeof resolved.rel === 'string' ? resolved.rel : String(args.file || args.dir || args.path || '');
+  if (tool === 'read' || tool === 'list' || tool === 'write' || tool === 'edit' || tool === 'patch' ||
+      tool === 'delete' || tool === 'rename') {
+    const rel = resolved && typeof resolved.rel === 'string' ? resolved.rel : String(args.file || args.from || args.dir || args.path || '');
     return { kind: 'file', text: rel.slice(0, 500) };
   }
   if (tool === 'glob') return { kind: 'pattern', text: String(args.pattern || '').slice(0, 300) };
@@ -86,6 +87,7 @@ function patternOf(tool, args, resolved) {
   }
   if (tool === 'bash') return { kind: 'command', text: normCommand(args.command) };
   if (tool === 'todo') return { kind: 'scope', text: 'session-todos' };
+  if (tool === 'reply' || tool === 'done') return { kind: 'scope', text: 'final-answer' };
   if (tool === 'undo') return { kind: 'scope', text: String(args.scope || 'last') };
   return { kind: 'scope', text: '?' };
 }

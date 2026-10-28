@@ -191,10 +191,18 @@ async function tQuestionDeterministic() {
 async function tTaskKeepsLoop() {
   const dir = fixtureProject();
   const r = await driveTurn(dir, 'corrige le bug login', [{ content: 'ok-task' }]);
-  assert(r.out.runStatus === 'TERMINE', 'task TERMINE');
+  // P49-1/2: a task takes the loop path, but free text is no longer a valid
+  // ACTION output: the scripted model never calls a tool, so the verdict is
+  // honestly PARTIEL (no_tool), never TERMINE.
+  assert(r.out.runStatus === 'PARTIEL', 'task without tool calls => PARTIEL, got ' + JSON.stringify(r.out));
+  const doneEv = r.events.filter((e) => e && e.type === 'turn.done').pop() || {};
+  assert(String(doneEv.reason || '').indexOf('AUCUNE MODIFICATION') === 0, 'honest reason, got: ' + doneEv.reason);
+  assert(r.last.role === 'assistant' && r.last.content.indexOf('AUCUNE MODIFICATION') === 0, 'honest text stored');
+  assert(r.last.content.indexOf('Proposition :') !== -1, 'proposal stored');
   assert(Array.isArray(r.chats[0].tools) && r.chats[0].tools.length >= 6, 'loop call has tool schemas');
   assert(r.journal.indexOf('budget parties') !== -1, 'loop journals its budget');
   assert(r.journal.indexOf('question envoyee') === -1, 'no question path for tasks');
+  assert(r.journal.indexOf('intention classee') !== -1, 'classification journaled');
 }
 
 async function tQuestionProviderDown() {

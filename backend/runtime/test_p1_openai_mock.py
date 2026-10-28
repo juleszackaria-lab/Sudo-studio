@@ -70,10 +70,13 @@ class FakeLlama:
         self.n_chat = 0
 
     def create_chat_completion(self, messages, temperature=0.1, max_tokens=512,
-                               stop=None, stream=False, response_format=None):
+                               stop=None, stream=False, response_format=None,
+                               top_p=None, top_k=None, repeat_penalty=None):
         self.calls.append({"messages": messages, "temperature": temperature,
                            "max_tokens": max_tokens, "stop": stop,
-                           "stream": stream, "response_format": response_format})
+                           "stream": stream, "response_format": response_format,
+                           "top_p": top_p, "top_k": top_k,
+                           "repeat_penalty": repeat_penalty})
         if stream:
             return self._gen_stream()
         self.n_chat += 1
@@ -95,9 +98,11 @@ class FakeLlama:
                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
 
     def create_completion(self, prompt, temperature=0.1, max_tokens=512,
-                          stop=None, stream=False, grammar=None):
+                          stop=None, stream=False, grammar=None,
+                          top_p=None, top_k=None, repeat_penalty=None):
         self.calls.append({"prompt": prompt, "stream": stream,
-                           "grammar": bool(grammar)})
+                           "grammar": bool(grammar), "top_p": top_p,
+                           "top_k": top_k, "repeat_penalty": repeat_penalty})
         if stream:
             def _g():
                 for tok in ["A", "B"]:
@@ -289,6 +294,44 @@ p, e = oc.parse_toolcall_json('{"name": "nope", "arguments": {}}', TOOLS)
 check("parse unknown tool rejected", p is None and "unknown tool" in e, (p, e))
 p, e = oc.parse_toolcall_json('pas json', TOOLS)
 check("parse garbage rejected", p is None and "invalid JSON" in e, (p, e))
+
+# 14. P49-4: sampling overrides forwarded to llama, invalid dropped
+sk = oc.sampling_kwargs({"top_p": 0.9, "top_k": 40, "repeat_penalty": 1.12})
+check("sampling pure valid", sk == {"top_p": 0.9, "top_k": 40, "repeat_penalty": 1.12}, sk)
+sk = oc.sampling_kwargs({"top_p": 99, "top_k": -1, "repeat_penalty": "x", "top_q": 1})
+check("sampling pure invalid dropped", sk == {}, sk)
+state.model = FakeLlama(script=["ok"])
+r = call("/v1/chat/completions", ["POST"],
+         {"messages": [{"role": "user", "content": "hi"}],
+          "temperature": 0.15, "top_p": 0.9, "top_k": 40,
+          "repeat_penalty": 1.12, "max_tokens": 1200})
+c = state.model.calls[-1]
+check("sampling forwarded", c["top_p"] == 0.9 and c["top_k"] == 40
+      and c["repeat_penalty"] == 1.12 and c["temperature"] == 0.15
+      and c["max_tokens"] == 1200, c)
+state.model = FakeLlama(script=["ok"])
+r = call("/v1/chat/completions", ["POST"],
+         {"messages": [{"role": "user", "content": "hi"}], "top_p": 99})
+c = state.model.calls[-1]
+check("sampling invalid dropped (call)", c["top_p"] is None, c)
+
+# 15. P49-1: tool_choice honored
+check("tools pure required", oc.tools_for_request({"tools": TOOLS, "tool_choice": "required"}) == TOOLS)
+check("tools pure none", oc.tools_for_request({"tools": TOOLS, "tool_choice": "none"}) is None)
+check("tools pure absent", oc.tools_for_request({"tools": TOOLS}) == TOOLS)
+state.model = FakeLlama(script=['{"name": "get_weather", "arguments": {"city": "Nice"}}'])
+r = call("/v1/chat/completions", ["POST"],
+         {"messages": [{"role": "user", "content": "meteo ?"}],
+          "tools": TOOLS, "tool_choice": "required"})
+check("tool_choice required forces call",
+      r["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "get_weather", r)
+state.model = FakeLlama(script=["plain answer"])
+r = call("/v1/chat/completions", ["POST"],
+         {"messages": [{"role": "user", "content": "meteo ?"}],
+          "tools": TOOLS, "tool_choice": "none"})
+check("tool_choice none disables tools",
+      "tool_calls" not in r["choices"][0]["message"]
+      and r["choices"][0]["message"]["content"] == "plain answer", r)
 
 print("\n== %d PASS, %d FAIL ==" % (len(PASS), len(FAIL)))
 sys.exit(1 if FAIL else 0)

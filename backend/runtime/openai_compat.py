@@ -7,7 +7,8 @@ without Flask/llama_cpp installed.
 Exposed endpoints (registered on the runtime Flask app):
   GET  /v1/models
   POST /v1/chat/completions   (messages, stream SSE, tools/tool_calls,
-                               temperature, max_tokens, stop)
+                               temperature, max_tokens, stop, top_p, top_k,
+                               repeat_penalty, tool_choice)
 
 Rules enforced here:
   - The loaded model's own chat template is used (native
@@ -243,6 +244,49 @@ def normalize_messages(messages):
     return norm, None
 
 
+def sampling_kwargs(data):
+    """Validated sampling overrides for llama calls (P49-4). Pure.
+
+    Only finite, in-range values pass through; anything else is dropped
+    (the runtime defaults apply). Unknown keys are ignored.
+    """
+    out = {}
+    try:
+        tp = float(data.get("top_p"))
+        if 0.0 < tp <= 1.0:
+            out["top_p"] = tp
+    except (TypeError, ValueError):
+        pass
+    try:
+        tk = int(data.get("top_k"))
+        if 0 <= tk <= 1000:
+            out["top_k"] = tk
+    except (TypeError, ValueError):
+        pass
+    try:
+        rp = float(data.get("repeat_penalty"))
+        if 1.0 <= rp <= 2.0:
+            out["repeat_penalty"] = rp
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def tools_for_request(data):
+    """Tool list honoring tool_choice (P49-1). Pure.
+
+    tool_choice 'none' disables tools (plain chat). Absent/'auto'/
+    'required' keep the constrained tool path: the runtime grammar-forces
+    exactly one JSON call whenever tools are present.
+    """
+    tools = data.get("tools")
+    if not isinstance(tools, list) or not tools:
+        return None
+    if data.get("tool_choice") == "none":
+        return None
+    return tools
+
+
 # ---------------------------------------------------------------------------
 # Flask route registration
 # ---------------------------------------------------------------------------
@@ -318,28 +362,29 @@ def register_openai_routes(app, ctx):
         if not isinstance(stop, list):
             stop = None
         stream = bool(data.get("stream", False))
-        tools = data.get("tools")
-        if not isinstance(tools, list) or not tools:
-            tools = None
+        tools = tools_for_request(data)
+        sampling = sampling_kwargs(data)
 
         llm = state.model
-        dlog("[OPENAI] chat: msgs=%d stream=%s tools=%s temp=%s max_tok=%d" % (
-            len(messages), stream, bool(tools), temperature, max_tokens))
+        dlog("[OPENAI] chat: msgs=%d stream=%s tools=%s temp=%s max_tok=%d extra=%s" % (
+            len(messages), stream, bool(tools), temperature, max_tokens,
+            ",".join(sorted(sampling)) if sampling else "-"))
 
         if tools:
             return _chat_with_tools(llm, messages, tools, temperature,
-                                    max_tokens, stop, stream)
+                                    max_tokens, stop, stream, sampling)
         if hasattr(llm, "create_chat_completion"):
             if stream:
                 return Response(
-                    _stream_native(llm, messages, temperature, max_tokens, stop),
+                    _stream_native(llm, messages, temperature, max_tokens,
+                                   stop, sampling),
                     mimetype="text/event-stream",
                     headers={"Cache-Control": "no-cache",
                              "X-Accel-Buffering": "no"})
             try:
                 out = llm.create_chat_completion(
                     messages=messages, temperature=temperature,
-                    max_tokens=max_tokens, stop=stop)
+                    max_tokens=max_tokens, stop=stop, **sampling)
             except Exception as e:
                 return _openai_500("inference failed: %s: %s" % (
                     type(e).__name__, e))
@@ -352,14 +397,15 @@ def register_openai_routes(app, ctx):
         prompt = chatml_from_messages(messages)
         if stream:
             return Response(
-                _stream_fallback(llm, prompt, temperature, max_tokens, stop),
+                _stream_fallback(llm, prompt, temperature, max_tokens, stop,
+                                 sampling),
                 mimetype="text/event-stream",
                 headers={"Cache-Control": "no-cache",
                          "X-Accel-Buffering": "no"})
         try:
             out = llm.create_completion(
                 prompt=prompt, temperature=temperature,
-                max_tokens=max_tokens, stop=stop)
+                max_tokens=max_tokens, stop=stop, **sampling)
         except Exception as e:
             return _openai_500("inference failed: %s: %s" % (
                 type(e).__name__, e))
@@ -377,13 +423,13 @@ def register_openai_routes(app, ctx):
         })
 
     # -- helpers (closures over state/dlog/logger) ---------------------------
-    def _stream_native(llm, messages, temperature, max_tokens, stop):
+    def _stream_native(llm, messages, temperature, max_tokens, stop, sampling):
         req_id = "chatcmpl-" + uuid.uuid4().hex[:12]
         created = int(time.time())
         try:
             chunks = llm.create_chat_completion(
                 messages=messages, temperature=temperature,
-                max_tokens=max_tokens, stop=stop, stream=True)
+                max_tokens=max_tokens, stop=stop, stream=True, **sampling)
             for ch in chunks:
                 if not isinstance(ch, dict):
                     continue
@@ -400,14 +446,14 @@ def register_openai_routes(app, ctx):
                 ensure_ascii=True) + "\n\n")
         yield "data: [DONE]\n\n"
 
-    def _stream_fallback(llm, prompt, temperature, max_tokens, stop):
+    def _stream_fallback(llm, prompt, temperature, max_tokens, stop, sampling):
         req_id = "chatcmpl-" + uuid.uuid4().hex[:12]
         created = int(time.time())
         first = True
         try:
             chunks = llm.create_completion(
                 prompt=prompt, temperature=temperature,
-                max_tokens=max_tokens, stop=stop, stream=True)
+                max_tokens=max_tokens, stop=stop, stream=True, **sampling)
             for ch in chunks:
                 txt = ""
                 if isinstance(ch, dict):
@@ -436,7 +482,7 @@ def register_openai_routes(app, ctx):
         yield "data: [DONE]\n\n"
 
     def _chat_with_tools(llm, messages, tools, temperature, max_tokens,
-                         stop, stream):
+                         stop, stream, sampling):
         """Tool path: JSON grammar (GBNF) + ONE retry on invalid JSON."""
         sys_note = ("You can call functions. Reply with EXACTLY ONE JSON "
                     "object and nothing else: "
@@ -448,14 +494,14 @@ def register_openai_routes(app, ctx):
             try:
                 return llm.create_chat_completion(
                     messages=msgs, temperature=temperature,
-                    max_tokens=max_tokens, stop=stop,
+                    max_tokens=max_tokens, stop=stop, **sampling,
                     response_format={"type": "json_object"})
             except TypeError:
                 # Old llama without response_format: unconstrained attempt.
                 dlog("[OPENAI] response_format unsupported, plain attempt")
                 return llm.create_chat_completion(
                     messages=msgs, temperature=temperature,
-                    max_tokens=max_tokens, stop=stop)
+                    max_tokens=max_tokens, stop=stop, **sampling)
 
         def _text_of(out):
             try:

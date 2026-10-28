@@ -36,6 +36,47 @@ $BROKEN_JS = "function add(a b) { return a + b; }`nmodule.exports = { add };`n"
 $SAFE_BASH = @('npm', 'npx', 'node', 'yarn', 'pnpm', 'pytest', 'python -m pytest', 'python -m unittest',
     'go test', 'dotnet test', 'flutter test', 'dart test', 'cargo test')
 
+# -- P49: 20 act-demands (self-seeding fixtures, ASCII prompts) -----------------
+# Run: -Tasks P49 -TrialsPerCell 1  (20 demands x N projects, raw rate).
+$P49_KEYS = @('A1-create', 'A2-fix', 'A3-delete', 'A4-rename', 'A5-append',
+    'A6-suppress', 'A7-improve', 'A8-collective', 'A9-create-code', 'A10-verify',
+    'A11-move', 'A12-en', 'A13-run', 'A14-check', 'A15-inventory',
+    'A16-explain', 'A17-purpose', 'A18-summary', 'A19-hello', 'A20-read')
+$TASKS['A1-create'] = 'Cree un fichier P49_NOTE.md a la racine du projet contenant exactement : P49-OK'
+$TASKS['A2-fix'] = 'Corrige la fonction add dans p49_calc.js (node --check doit passer).'
+$TASKS['A3-delete'] = 'Supprime le fichier p49_trash.txt'
+$TASKS['A4-rename'] = 'Renomme p49_old.txt en p49_new.txt'
+$TASKS['A5-append'] = 'Ajoute la ligne BETA a la fin de p49_list.txt (garde alpha)'
+$TASKS['A6-suppress'] = 'Retire le bloc [BLOC-A-SUPPRIMER] de p49_doc.txt (garde haut et bas)'
+$TASKS['A7-improve'] = 'Ameliore p49_readme.md : ajoute une section Usage qui explique comment lancer le projet'
+$TASKS['A8-collective'] = 'Applique ces 2 ameliorations a p49_app.js : 1. ajouter ''use strict'' en premiere ligne 2. exporter x via module.exports'
+$TASKS['A9-create-code'] = 'Cree p49_sum.js : une fonction add(a, b) exportee via module.exports'
+$TASKS['A10-verify'] = 'Fais passer p49_check.js (node p49_check.js doit afficher P49-CHECK-OK)'
+$TASKS['A11-move'] = 'Deplace sub/p49_a.txt vers p49_b.txt a la racine'
+$TASKS['A12-en'] = 'Create a file P49_HELLO.txt at the project root with exactly: hello'
+$TASKS['A13-run'] = 'Lance la commande node -e ''console.log(''''P49-RUN-OK'''')'''
+$TASKS['A14-check'] = 'Verifie la syntaxe de p49_calc.js avec node --check (rapporte le resultat)'
+$TASKS['A15-inventory'] = 'Liste les fichiers .md du projet'
+$TASKS['A16-explain'] = 'Explique a quoi sert le fichier P49_SEED.md'
+$TASKS['A17-purpose'] = 'A quoi sert p49_calc.js ?'
+$TASKS['A18-summary'] = 'Resume ce projet en une phrase.'
+$TASKS['A19-hello'] = 'Bonjour'
+$TASKS['A20-read'] = 'lis P49_SEED.md'
+$P49_SEEDS = @{
+    'P49_SEED.md'  = "# P49 Seed`nProjet de test. Mot-cle de verification : TOURNESOL.`n"
+    'p49_calc.js'  = "function add(a b) { return a + b; }`nmodule.exports = { add };`n"
+    'p49_trash.txt' = "a jeter`n"
+    'p49_old.txt'  = "contenu garde`n"
+    'p49_list.txt' = "alpha`n"
+    'p49_doc.txt'  = "haut`n[BLOC-A-SUPPRIMER]`nbas`n"
+    'p49_readme.md' = "# Demo`nStub.`n"
+    'p49_app.js'   = "// app`nconst x = 1;`n"
+    'p49_flag.txt' = "ko`n"
+    'p49_check.js' = "const fs = require('fs');`nconst v = fs.readFileSync('p49_flag.txt', 'utf8').trim();`nif (v !== 'ok') { console.error('P49-CHECK-KO'); process.exit(1); }`nconsole.log('P49-CHECK-OK');`n"
+    'sub/p49_a.txt' = "deplace-moi`n"
+}
+if ($Tasks.Count -eq 1 -and $Tasks[0] -eq 'P49') { $Tasks = $P49_KEYS }
+
 if ($Fast) { $TrialsPerCell = 1 }
 foreach ($t in $Tasks) { if (-not $TASKS.ContainsKey($t)) { throw "tache inconnue : $t" } }
 if ($Fast -and $Projects.Count -gt 1) { $Projects = @($Projects[0]) } # fast = 5 trials total
@@ -175,7 +216,7 @@ function Approve-All($sessionId) {
     foreach ($r in $pend.pending) {
         $tool = [string]$r.tool
         $decision = 'deny'
-        if (@('read', 'list', 'glob', 'grep', 'todo', 'write', 'edit') -contains $tool) { $decision = 'session' }
+        if (@('read', 'list', 'glob', 'grep', 'todo', 'write', 'edit', 'delete', 'rename', 'patch') -contains $tool) { $decision = 'session' } # P49: copies are disposable
         elseif ($tool -eq 'bash') {
             $cmd = [string]$r.summary
             foreach ($s in $SAFE_BASH) { if ($cmd.StartsWith($s)) { $decision = 'session'; break } }
@@ -183,6 +224,16 @@ function Approve-All($sessionId) {
         try { Api 'POST' "/sessions/$sessionId/approvals" @{ requestId = $r.id; decision = $decision } | Out-Null; $n++ } catch {}
     }
     return $n
+}
+
+# Tools/commands the model requested (asked or executed). P49 run trials
+# score on this: the approve-after flow executes writes AFTER turn 1, so
+# the attempt itself (not the text) proves the model acted.
+function Get-PendingTools($sessionId) {
+    $out = @()
+    try { $pend = Api 'GET' "/sessions/$sessionId/approvals" $null } catch { return $out }
+    foreach ($r in $pend.pending) { $out += ([string]$r.tool + '|' + [string]$r.summary) }
+    return $out
 }
 
 # -- project fingerprints (expected answers, computed by the bench) ------------
@@ -246,6 +297,14 @@ function Run-Trial($projPath, $projIdx, $task, $trial) {
     if ($task -eq 'T4-fix') {
         Set-Content (Join-Path $copy 'calc_p43.js') $BROKEN_JS -Encoding UTF8
     }
+    if ($task.StartsWith('A')) {
+        foreach ($k in $P49_SEEDS.Keys) {
+            $dst = Join-Path $copy $k
+            $par = Split-Path $dst -Parent
+            if (-not (Test-Path $par)) { New-Item -ItemType Directory -Force -Path $par | Out-Null }
+            Set-Content $dst $P49_SEEDS[$k] -Encoding UTF8 -NoNewline
+        }
+    }
     $stack = Get-Stack $copy
     $deps = Get-Deps $copy
     $checks = @{}
@@ -257,11 +316,13 @@ function Run-Trial($projPath, $projIdx, $task, $trial) {
         $s = Api 'POST' '/sessions' @{ title = "bench-$key"; projectRoot = $copy }
         $sid = $s.id
         $r = Do-Turn $sid $TASKS[$task]
+        $requested = Get-PendingTools $sid
         $nAppr = Approve-All $sid
         if ($nAppr -gt 0) {
             Start-Sleep -Seconds 1
             $r2 = Do-Turn $sid 'confirme.'
             if ($r2.ok) { $r = $r2 }
+            foreach ($q in (Get-PendingTools $sid)) { $requested += $q }
         }
         $turn = $r.turn
         $text = [string]$r.text
@@ -270,6 +331,7 @@ function Run-Trial($projPath, $projIdx, $task, $trial) {
         $low = $text.ToLower()
         $clean = ($text -notmatch 'generee sans IA') -and ($text -notmatch 'rien a resumer') `
             -and ($text -notmatch 'Contexte sature')
+        $clean49 = $clean -and ($text -notmatch 'AUCUNE MODIFICATION')
         $hasStack = $false
         foreach ($k in $stack) { if ($low.Contains($k.ToLower())) { $hasStack = $true; break } }
         switch ($task) {
@@ -302,6 +364,135 @@ function Run-Trial($projPath, $projIdx, $task, $trial) {
                     stack = $hasStack; clean = $clean }
                 $pass = $turnOk -and ($status -eq 'TERMINE') -and ($text.Length -ge 30) `
                     -and ($text.Length -le 500) -and $hasStack -and $clean
+            }
+            # -- P49: file checks are status-agnostic (approve-after flow
+            # executes writes between turn 1 and turn 2); run trials score
+            # on the requested command; questions score on the answer.
+            'A1-create' {
+                $f = Join-Path $copy 'P49_NOTE.md'
+                $exact = (Test-Path $f) -and ((Get-Content $f -Raw).Trim() -eq 'P49-OK')
+                $checks = @{ fileExact = $exact }
+                $pass = $exact
+            }
+            'A2-fix' {
+                $f = Join-Path $copy 'p49_calc.js'
+                $fixed = (Test-Path $f) -and ((Get-Content $f -Raw) -match 'function add\(a, b\)')
+                $checks = @{ fixed = $fixed }
+                $pass = $fixed
+            }
+            'A3-delete' {
+                $gone = -not (Test-Path (Join-Path $copy 'p49_trash.txt'))
+                $checks = @{ gone = $gone }
+                $pass = $gone
+            }
+            'A4-rename' {
+                $dst = Join-Path $copy 'p49_new.txt'
+                $moved = (-not (Test-Path (Join-Path $copy 'p49_old.txt'))) -and (Test-Path $dst) `
+                    -and ((Get-Content $dst -Raw) -match 'contenu garde')
+                $checks = @{ moved = $moved }
+                $pass = $moved
+            }
+            'A5-append' {
+                $f = Join-Path $copy 'p49_list.txt'
+                $ok = (Test-Path $f) -and ((Get-Content $f -Raw) -match 'alpha') -and ((Get-Content $f -Raw) -match 'BETA')
+                $checks = @{ appended = $ok }
+                $pass = $ok
+            }
+            'A6-suppress' {
+                $f = Join-Path $copy 'p49_doc.txt'
+                $c = if (Test-Path $f) { Get-Content $f -Raw } else { '' }
+                $ok = ($c -notmatch 'BLOC-A-SUPPRIMER') -and ($c -match 'haut') -and ($c -match 'bas')
+                $checks = @{ removed = $ok }
+                $pass = $ok
+            }
+            'A7-improve' {
+                $f = Join-Path $copy 'p49_readme.md'
+                $ok = (Test-Path $f) -and ((Get-Content $f -Raw) -match 'Usage')
+                $checks = @{ usageSection = $ok }
+                $pass = $ok
+            }
+            'A8-collective' {
+                $f = Join-Path $copy 'p49_app.js'
+                $c = if (Test-Path $f) { Get-Content $f -Raw } else { '' }
+                $ok = ($c -match 'use strict') -and ($c -match 'module.exports')
+                $checks = @{ bothMarkers = $ok }
+                $pass = $ok
+            }
+            'A9-create-code' {
+                $f = Join-Path $copy 'p49_sum.js'
+                $c = if (Test-Path $f) { Get-Content $f -Raw } else { '' }
+                $ok = ($c -match 'function add') -and ($c -match 'module.exports')
+                $checks = @{ codeMarkers = $ok }
+                $pass = $ok
+            }
+            'A10-verify' {
+                $ok = $false
+                try {
+                    $o = & node (Join-Path $copy 'p49_check.js') 2>&1
+                    $ok = ($LASTEXITCODE -eq 0) -and ($o -match 'P49-CHECK-OK')
+                } catch { $ok = $false }
+                if (-not $ok) {
+                    $fl = Join-Path $copy 'p49_flag.txt'
+                    $ok = (Test-Path $fl) -and ((Get-Content $fl -Raw).Trim() -eq 'ok')
+                }
+                $checks = @{ checkPasses = $ok }
+                $pass = $ok
+            }
+            'A11-move' {
+                $dst = Join-Path $copy 'p49_b.txt'
+                $moved = (-not (Test-Path (Join-Path $copy 'sub/p49_a.txt'))) -and (Test-Path $dst) `
+                    -and ((Get-Content $dst -Raw) -match 'deplace-moi')
+                $checks = @{ moved = $moved }
+                $pass = $moved
+            }
+            'A12-en' {
+                $f = Join-Path $copy 'P49_HELLO.txt'
+                $exact = (Test-Path $f) -and ((Get-Content $f -Raw).Trim() -eq 'hello')
+                $checks = @{ fileExact = $exact }
+                $pass = $exact
+            }
+            'A13-run' {
+                $asked = ($requested -match 'P49-RUN-OK').Count -gt 0
+                $checks = @{ turnOk = $turnOk; bashAsked = $asked }
+                $pass = $turnOk -and $asked
+            }
+            'A14-check' {
+                $asked = ($requested -match '--check').Count -gt 0
+                $checks = @{ turnOk = $turnOk; checkAsked = $asked }
+                $pass = $turnOk -and $asked
+            }
+            'A15-inventory' {
+                $found = $text -match 'P49_SEED'
+                $checks = @{ turnOk = $turnOk; seedFound = [bool]$found; clean = $clean49 }
+                $pass = $turnOk -and $found -and $clean49
+            }
+            'A16-explain' {
+                $ok = $turnOk -and ($status -eq 'TERMINE') -and ($text.Length -ge 50) `
+                    -and ($text -match 'TOURNESOL') -and $clean49
+                $checks = @{ turnOk = $turnOk; termine = ($status -eq 'TERMINE'); keyword = [bool]($text -match 'TOURNESOL'); clean = $clean49 }
+                $pass = $ok
+            }
+            'A17-purpose' {
+                $ok = $turnOk -and ($status -eq 'TERMINE') -and ($text.Length -ge 50) `
+                    -and ($text -match 'add') -and $clean49
+                $checks = @{ turnOk = $turnOk; termine = ($status -eq 'TERMINE'); clean = $clean49 }
+                $pass = $ok
+            }
+            'A18-summary' {
+                $ok = $turnOk -and ($status -eq 'TERMINE') -and ($text.Length -ge 30) `
+                    -and ($text.Length -le 500) -and $clean49
+                $checks = @{ turnOk = $turnOk; termine = ($status -eq 'TERMINE'); clean = $clean49 }
+                $pass = $ok
+            }
+            'A19-hello' {
+                $ok = $turnOk -and ($text.Length -ge 2)
+                $checks = @{ turnOk = $turnOk; answered = ($text.Length -ge 2) }
+                $pass = $ok
+            }
+            'A20-read' {
+                $ok = $turnOk -and ($text -match 'TOURNESOL') -and $clean49
+                $checks = @{ turnOk = $turnOk; keyword = [bool]($text -match 'TOURNESOL'); clean = $clean49 }
+                $pass = $ok
             }
         }
     } catch {

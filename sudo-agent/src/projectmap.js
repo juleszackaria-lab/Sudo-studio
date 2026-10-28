@@ -202,7 +202,7 @@ function buildProjectMap(root, opts) {
 const GENERAL_RES = [
   /explique/, /explain/, /describe/, /decris/, /presente/, /overview/,
   /resume/, /summary/, /summar/,
-  /que propose/, /quoi.*\b(sert|fait|consiste)\b/, /c ?est quoi/,
+  /que propose/, /quoi.*\b(sert|fait|consiste)\b/, /c'? ?est quoi/,
   /\brole\b.*\b(app|projet|project|application)\b/,
   /a quoi .*sert/, /how does .*work/, /what does .*do/,
 ];
