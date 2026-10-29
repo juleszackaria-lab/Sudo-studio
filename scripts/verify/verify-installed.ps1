@@ -242,7 +242,11 @@ try {
                     # WARNING ("View container ... does not exist"), so warn
                     # context counts for that pattern; icon stays error-only.
                     if ($ln -match '(?i)\berror\b|\bexception\b|\bfailed\b|\bwarning\b|\bwarn\b|\bERR\b') {
-                        if ($ln -match 'does not exist') { $hits += ('does-not-exist: ' + (Short $ln 180)) }
+                        # P46-cycle2: scope to OUR surface (proven P42 signature
+                        # "View container ... does not exist", or sudo-ai lines).
+                        # VSCode builtins (ms-vscode.* API proposals) warn with
+                        # the same words and must not fail the gate.
+                        if (($ln -match 'does not exist') -and ($ln -match '(?i)sudo|view container|viewsContainer')) { $hits += ('does-not-exist: ' + (Short $ln 180)) }
                     }
                     if (($ln -match '(?i)\berror\b|\bexception\b|\bfailed\b|\bERR\b') -and ($ln -match '(?i)\bicon\b')) { $hits += ('icon: ' + (Short $ln 180)) }
                     if ($hits.Count -ge 5) { break }
