@@ -205,7 +205,8 @@ async function modeE2e(o) {
   const script = [
     { content: '', tool_calls: [{ id: 'call-1', type: 'function',
       function: { name: 'write', arguments: JSON.stringify({ file: 'hello.txt', content: 'bonjour e2e\n' }) } }] },
-    { content: 'fichier demande.', tool_calls: [] },
+    { content: '', tool_calls: [{ id: 'call-2', type: 'function',
+      function: { name: 'done', arguments: JSON.stringify({ summary: 'hello.txt demande, approbation requise' }) } }] },
     { content: 'termine.', tool_calls: [] },
   ];
   const stub = stubProvider(script);

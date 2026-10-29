@@ -1,20 +1,20 @@
 name: 03 - Package Sudo Studio
 
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 # Builds the distributable Sudo Studio package:
 #   1. Download VSCodium pre-compiled zip (windows-x64)
 #   2. Extract & patch product.json (text branding)
-#   3. Convert PNG → ICO (multi-resolution: 256/128/64/48/32/16px) via ImageMagick
+#   3. Convert PNG -> ICO (multi-resolution: 256/128/64/48/32/16px) via ImageMagick
 #   4. Patch VSCodium.exe binary resources with rcedit (icon + product strings)
 #   5. Replace internal VSCodium icon files with Sudo Studio logo
 #   6. Patch all visible "VSCodium" text in app/out JS bundles
-#   7. Rename VSCodium.exe → SudoStudio.exe
+#   7. Rename VSCodium.exe -> SudoStudio.exe
 #   7c. Build advisory DB from OSV dumps into the extension (P23)
 #   8. Copy runtime.exe + backend.exe artifacts into build dir
 #   8b. (removed P27: former third-party agent binary step deleted)
 #   9. Run Inno Setup to produce SudoStudio-Setup-x.y.z.exe
 #  10. Upload final installer as artifact
-# ──────────────────────────────────────────────────────────────────────────────
+# ------------------------------------------------------------------------------
 
 on:
   workflow_dispatch:
@@ -40,13 +40,39 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Step 1: Download runtime.exe artifact ────────────────────────────
+      # -- Step 0: Resolve cross-run artifact run IDs (inputs or latest green on main)
+      - name: Resolve artifact run IDs
+        id: resolve
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $hdr = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json" }
+          $repo = "${{ github.repository }}"
+          function Latest-Green($wf) {
+            $u = "https://api.github.com/repos/$repo/actions/workflows/$wf/runs?status=completed&conclusion=success&branch=main&per_page=1"
+            $r = Invoke-RestMethod -Uri $u -Headers $hdr
+            if ($r.workflow_runs.Count -eq 0) { return "" }
+            return [string]$r.workflow_runs[0].id
+          }
+          $rt = "${{ github.event.inputs.runtime_run_id }}"
+          if ([string]::IsNullOrEmpty($rt)) { $rt = Latest-Green "02-runtime-build.yml" }
+          if ([string]::IsNullOrEmpty($rt)) { Write-Error "[FAIL] no runtime run ID (input empty, no green 02 on main)"; exit 1 }
+          $be = "${{ github.event.inputs.backend_run_id }}"
+          if ([string]::IsNullOrEmpty($be)) { $be = Latest-Green "01-backend-build.yml" }
+          if ([string]::IsNullOrEmpty($be)) { Write-Error "[FAIL] no backend run ID (input empty, no green 01 on main)"; exit 1 }
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "runtime_run_id=$rt" -Encoding UTF8
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "backend_run_id=$be" -Encoding UTF8
+          Write-Host "[OK] runtime run=$rt backend run=$be"
+
+      # -- Step 1: Download runtime.exe artifact ----------------------------
       - name: Download runtime artifact
         uses: actions/download-artifact@v4
         with:
           name: runtime-exe
           path: artifacts/runtime
-        continue-on-error: true
+          run-id: ${{ steps.resolve.outputs.runtime_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Verify runtime artifact
         shell: powershell
@@ -55,16 +81,18 @@ jobs:
             $mb = [math]::Round((Get-Item "artifacts\runtime\server.exe").Length / 1MB, 1)
             Write-Host "[OK] runtime server.exe: $mb MB"
           } else {
-            Write-Warning "[WARN] runtime server.exe not found in artifacts — ensure workflow 02 ran first"
+            Write-Error "[FAIL] runtime server.exe not found in artifacts (run ${{ steps.resolve.outputs.runtime_run_id }})"
+            exit 1
           }
 
-      # ── Step 2: Download backend.exe artifact ────────────────────────────
+      # -- Step 2: Download backend.exe artifact ----------------------------
       - name: Download backend artifact
         uses: actions/download-artifact@v4
         with:
           name: backend-exe
           path: artifacts/backend
-        continue-on-error: true
+          run-id: ${{ steps.resolve.outputs.backend_run_id }}
+          github-token: ${{ github.token }}
 
       - name: Verify backend artifact
         shell: powershell
@@ -73,10 +101,11 @@ jobs:
             $mb = [math]::Round((Get-Item "artifacts\backend\backend.exe").Length / 1MB, 1)
             Write-Host "[OK] backend.exe: $mb MB"
           } else {
-            Write-Warning "[WARN] backend.exe not found in artifacts — ensure workflow 01 ran first"
+            Write-Error "[FAIL] backend.exe not found in artifacts (run ${{ steps.resolve.outputs.backend_run_id }})"
+            exit 1
           }
 
-      # ── Step 3: Download & extract VSCodium ──────────────────────────────
+      # -- Step 3: Download & extract VSCodium ------------------------------
       - name: Download VSCodium zip
         shell: powershell
         run: |
@@ -99,20 +128,20 @@ jobs:
           # Show top-level contents
           Get-ChildItem "build\SudoStudio" | Select-Object Name,Length | Format-Table
 
-      # ── Step 4: Patch product.json + all visible VSCodium text ───────────
+      # -- Step 4: Patch product.json + all visible VSCodium text -----------
       - name: Customize VSCodium branding (product.json + app/out text)
         shell: powershell
         run: |
           .\scripts\customize-vscodium.ps1 -VSCodiumDir "build\SudoStudio"
 
-      # ── Step 4b: Verify product.json branding AFTER customize script ──────
+      # -- Step 4b: Verify product.json branding AFTER customize script ------
       # This step is the definitive proof that branding was applied correctly.
       # If nameShort/nameLong are not "Sudo Studio", the build fails immediately
       # rather than silently shipping a misbranded product.
       - name: Verify product.json branding (hard fail if not patched)
         shell: powershell
         run: |
-          # Locate product.json — it may be at different depths depending on VSCodium version
+          # Locate product.json - it may be at different depths depending on VSCodium version
           $candidates = @(
             "build\SudoStudio\resources\app\product.json",
             "build\SudoStudio\product.json"
@@ -127,7 +156,7 @@ jobs:
               Select-Object -First 1 -ExpandProperty FullName
           }
           if (-not $pjPath) {
-            Write-Error "[FAIL] product.json not found anywhere under build\SudoStudio — branding check aborted"
+            Write-Error "[FAIL] product.json not found anywhere under build\SudoStudio - branding check aborted"
             exit 1
           }
           Write-Host "[VERIFY] product.json found at: $pjPath"
@@ -139,11 +168,11 @@ jobs:
 
           $ok = $true
           if ($pj.nameShort -ne "Sudo Studio") {
-            Write-Error "[FAIL] product.json nameShort = '$($pj.nameShort)' — expected 'Sudo Studio'"
+            Write-Error "[FAIL] product.json nameShort = '$($pj.nameShort)' - expected 'Sudo Studio'"
             $ok = $false
           }
           if ($pj.nameLong -ne "Sudo Studio") {
-            Write-Error "[FAIL] product.json nameLong = '$($pj.nameLong)' — expected 'Sudo Studio'"
+            Write-Error "[FAIL] product.json nameLong = '$($pj.nameLong)' - expected 'Sudo Studio'"
             $ok = $false
           }
           if (-not $ok) {
@@ -154,7 +183,7 @@ jobs:
           }
           Write-Host "[OK] product.json branding verified: nameShort='Sudo Studio', nameLong='Sudo Studio'"
 
-      # ── Step 4c: Artifact branding audit — grep for residual "VSCodium" text ─
+      # -- Step 4c: Artifact branding audit - grep for residual "VSCodium" text -
       # This step searches the BUILT ARTIFACT (not source) for any remaining
       # "VSCodium" or "Get Started with VSCodium" strings.
       # It reports findings but does NOT fail the build (informational only)
@@ -166,7 +195,7 @@ jobs:
           Write-Host "[AUDIT] Scanning built artifact for residual 'VSCodium' text..."
           $artifactDir = "build\SudoStudio\resources\app"
           if (-not (Test-Path $artifactDir)) {
-            Write-Warning "[AUDIT] Artifact dir not found: $artifactDir — skipping audit"
+            Write-Warning "[AUDIT] Artifact dir not found: $artifactDir - skipping audit"
             exit 0
           }
 
@@ -184,7 +213,7 @@ jobs:
                 if ($matches.Count -gt 0) {
                   $rel = $_.FullName.Replace((Resolve-Path "build\SudoStudio").Path, '')
                   $found += "$rel ($($matches.Count) occurrence(s))"
-                  Write-Host "[AUDIT-FOUND] $rel — $($matches.Count) occurrence(s)"
+                  Write-Host "[AUDIT-FOUND] $rel - $($matches.Count) occurrence(s)"
                 }
               } catch {}
             }
@@ -210,19 +239,19 @@ jobs:
           }
 
           if ($found.Count -eq 0) {
-            Write-Host "[AUDIT] ✅ No residual 'VSCodium' text found in JS/JSON/NLS files."
+            Write-Host "[AUDIT] OK: No residual 'VSCodium' text found in JS/JSON/NLS files."
           } else {
-            Write-Host "[AUDIT] ⚠️ $($found.Count) file(s) with 'VSCodium' remain (may be URLs/internal refs — not UI-visible):"
+            Write-Host "[AUDIT] WARN: $($found.Count) file(s) with 'VSCodium' remain (may be URLs/internal refs - not UI-visible):"
             $found | ForEach-Object { Write-Host "  $_" }
             Write-Host "[AUDIT] These are non-critical residuals. product.json branding is verified above."
           }
           Write-Host "[AUDIT] Done."
 
-      # ── Step 5: Convert PNG → ICO (multi-resolution) ─────────────────────
+      # -- Step 5: Convert PNG -> ICO (multi-resolution) ---------------------
       # ImageMagick is pre-installed on windows-latest GitHub Actions runners.
       # Produces a proper multi-size ICO (256/128/64/48/32/16px) from resources\icon.png.
       # FIX for: installer.iss / start.bat previously used resources\logo.ico which was
-      # a renamed PNG — invalid ICO format, wrong size, not embedded in EXE.
+      # a renamed PNG - invalid ICO format, wrong size, not embedded in EXE.
       - name: Convert PNG to ICO (multi-resolution)
         shell: powershell
         run: |
@@ -236,13 +265,13 @@ jobs:
             $sz = [math]::Round((Get-Item "build\SudoStudio\logo.ico").Length / 1KB, 1)
             Write-Host "[OK] logo.ico created: $sz KB (multi-resolution 256/128/64/48/32/16px)"
           } else {
-            Write-Warning "[WARN] ImageMagick not found — trying fallback: copy icon.ico as logo.ico"
+            Write-Warning "[WARN] ImageMagick not found - trying fallback: copy icon.ico as logo.ico"
             # Fallback: use pre-existing resources\icon.ico (should be valid)
             if (Test-Path "resources\icon.ico") {
               Copy-Item "resources\icon.ico" "build\SudoStudio\logo.ico" -Force
               Write-Host "[OK] Copied resources\icon.ico as fallback logo.ico"
             } else {
-              Write-Warning "[WARN] No icon source found — logo.ico will be missing"
+              Write-Warning "[WARN] No icon source found - logo.ico will be missing"
             }
           }
 
@@ -250,12 +279,12 @@ jobs:
           # A renamed PNG here would silently ship the wrong taskbar/window icon.
           $logoIco = "build\SudoStudio\logo.ico"
           if (-not (Test-Path $logoIco)) {
-            Write-Error "[FAIL] logo.ico missing at $logoIco — cannot brand the executable icon"
+            Write-Error "[FAIL] logo.ico missing at $logoIco - cannot brand the executable icon"
             exit 1
           }
           $magic = [System.IO.File]::ReadAllBytes($logoIco)[0..3]
           if (!($magic[0] -eq 0x00 -and $magic[1] -eq 0x00 -and $magic[2] -eq 0x01 -and $magic[3] -eq 0x00)) {
-            Write-Error "[FAIL] $logoIco is NOT a valid ICO file (bad magic bytes) — refusing to continue"
+            Write-Error "[FAIL] $logoIco is NOT a valid ICO file (bad magic bytes) - refusing to continue"
             exit 1
           }
           $icoSz = [math]::Round((Get-Item $logoIco).Length / 1KB, 1)
@@ -267,7 +296,7 @@ jobs:
             Write-Host "[OK] resources\logo.ico updated"
           }
 
-      # ── Step 6: Patch VSCodium.exe binary with rcedit ────────────────────
+      # -- Step 6: Patch VSCodium.exe binary with rcedit --------------------
       # rcedit edits Windows PE resource sections (icon + version strings)
       # without recompiling. Used internally by Electron/VSCode.
       # Fixes: taskbar icon, Alt+Tab icon, window titlebar icon, EXE properties.
@@ -302,7 +331,7 @@ jobs:
           }
 
           if (-not $exe) {
-            Write-Error "[FAIL] VSCodium.exe / Code.exe not found in build\SudoStudio — cannot brand executable icon"
+            Write-Error "[FAIL] VSCodium.exe / Code.exe not found in build\SudoStudio - cannot brand executable icon"
             Get-ChildItem "build\SudoStudio" -Filter "*.exe" | ForEach-Object { Write-Host "  Found EXE: $($_.Name)" }
             exit 1
           }
@@ -316,7 +345,7 @@ jobs:
 
           $ico = "build\SudoStudio\logo.ico"
           if (-not (Test-Path $ico)) {
-            Write-Error "[FAIL] logo.ico not found at $ico — cannot patch executable icon"
+            Write-Error "[FAIL] logo.ico not found at $ico - cannot patch executable icon"
             exit 1
           }
           & $rcExe $exe --set-icon $ico
@@ -336,8 +365,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Error "[FAIL] rcedit InternalName failed (exit $LASTEXITCODE)"; exit 1 }
           Write-Host "[OK] rcedit: version strings patched (ProductName, FileDescription, CompanyName, InternalName)"
 
-      # ── Step 7: Rename VSCodium.exe → SudoStudio.exe ─────────────────────
-      # After rcedit the binary has Sudo Studio identity — rename the file itself
+      # -- Step 7: Rename VSCodium.exe -> SudoStudio.exe ---------------------
+      # After rcedit the binary has Sudo Studio identity - rename the file itself
       # so the taskbar, Alt+Tab, and start.bat all show "SudoStudio".
       - name: Rename VSCodium.exe to SudoStudio.exe
         shell: powershell
@@ -350,7 +379,7 @@ jobs:
           foreach ($c in $candidates) {
             if (Test-Path $c.From) {
               Move-Item $c.From $c.To -Force
-              Write-Host "[OK] Renamed: $($c.From) → $($c.To)"
+              Write-Host "[OK] Renamed: $($c.From) -> $($c.To)"
               $renamed = $true
               break
             }
@@ -359,16 +388,16 @@ jobs:
             Write-Warning "[WARN] No VSCodium.exe or Code.exe found to rename"
           }
 
-      # ── Step 7b: Verify exe branding stuck (hard fail otherwise) ─────────
+      # -- Step 7b: Verify exe branding stuck (hard fail otherwise) ---------
       # Reads back the PE version resources AFTER rcedit + rename.
       # If rcedit silently failed, the taskbar/window/file icon would still be
-      # VSCodium's — this gate fails the build instead of shipping it.
+      # VSCodium's - this gate fails the build instead of shipping it.
       - name: Verify SudoStudio.exe branding (hard fail if rcedit did not stick)
         shell: powershell
         run: |
           $exe = "build\SudoStudio\SudoStudio.exe"
           if (-not (Test-Path $exe)) {
-            Write-Error "[FAIL] $exe not found after rename — packaging cannot continue"
+            Write-Error "[FAIL] $exe not found after rename - packaging cannot continue"
             exit 1
           }
           $vi = (Get-Item $exe).VersionInfo
@@ -381,7 +410,7 @@ jobs:
           if ($vi.FileDescription -ne "Sudo Studio") { Write-Error "[FAIL] FileDescription = '$($vi.FileDescription)' (expected 'Sudo Studio')"; $ok = $false }
           if ($vi.CompanyName -ne "Sudo Studio")     { Write-Error "[FAIL] CompanyName = '$($vi.CompanyName)' (expected 'Sudo Studio')"; $ok = $false }
           if (-not $ok) {
-            Write-Error "[FAIL] rcedit branding did NOT stick on SudoStudio.exe — refusing to ship a misbranded binary"
+            Write-Error "[FAIL] rcedit branding did NOT stick on SudoStudio.exe - refusing to ship a misbranded binary"
             exit 1
           }
           Write-Host "[OK] SudoStudio.exe branding verified (icon + version strings applied by rcedit)"
@@ -391,7 +420,7 @@ jobs:
         with:
           node-version: 18
 
-      # ── Step 7c (P23): build the offline advisory DB from OSV dumps ─────
+      # -- Step 7c (P23): build the offline advisory DB from OSV dumps -----
       # Runs BEFORE step 8 copies the extension, so the packaged product
       # embeds a fresh base (the repo stub stays a fallback only). The
       # builder prints per-ecosystem counts + size (kept in the run log).
@@ -405,16 +434,16 @@ jobs:
           node -e "const db=require('./sudo-ai-extension/src/data/advisories.json');if(!Array.isArray(db.advisories)||!db.generatedAt){console.error('bad DB shape');process.exit(1)}console.log('[OK] advisory DB verified: '+db.advisories.length+' entries, dated '+db.generatedAt)"
           if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] advisory DB verification failed"; exit 1 }
 
-      # ── Step 8: Copy runtime.exe + backend.exe + extension ───────────────
+      # -- Step 8: Copy runtime.exe + backend.exe + extension ---------------
       - name: Copy runtime and backend executables
         shell: powershell
         run: |
-          # runtime.exe → runtime.exe in build dir
+          # runtime.exe -> runtime.exe in build dir
           if (Test-Path "artifacts\runtime\server.exe") {
             Copy-Item "artifacts\runtime\server.exe" "build\SudoStudio\runtime.exe" -Force
             Write-Host "[OK] runtime.exe copied"
           } else {
-            Write-Warning "[WARN] runtime.exe not available — package will be incomplete"
+            Write-Warning "[WARN] runtime.exe not available - package will be incomplete"
           }
 
           # backend.exe
@@ -422,7 +451,7 @@ jobs:
             Copy-Item "artifacts\backend\backend.exe" "build\SudoStudio\backend.exe" -Force
             Write-Host "[OK] backend.exe copied"
           } else {
-            Write-Warning "[WARN] backend.exe not available — package will be incomplete"
+            Write-Warning "[WARN] backend.exe not available - package will be incomplete"
           }
 
           # Copy start.bat, installer config, data, logs skeleton, resources
@@ -462,8 +491,8 @@ jobs:
       # (see sudo-agent/, copied in step 8). Runtime is the product .exe itself
       # in Electron-as-Node mode (MINI node): no PC Node.js required.
 
-      # ── Step 9: Update start.bat to reference SudoStudio.exe ─────────────
-      # start.bat still references VSCodium.exe — update it to SudoStudio.exe
+      # -- Step 9: Update start.bat to reference SudoStudio.exe -------------
+      # start.bat still references VSCodium.exe - update it to SudoStudio.exe
       # (In-place patch of the copy in build dir, does NOT modify repo source)
       - name: Update start.bat references for SudoStudio.exe
         shell: powershell
@@ -476,12 +505,12 @@ jobs:
               -replace 'VSCodium\.exe', 'SudoStudio.exe' `
               -replace 'findstr /I "VSCodium"', 'findstr /I "SudoStudio"'
             Set-Content $bat $patched -Encoding UTF8
-            Write-Host "[OK] start.bat updated: VSCodium.exe → SudoStudio.exe"
+            Write-Host "[OK] start.bat updated: VSCodium.exe -> SudoStudio.exe"
           } else {
             Write-Warning "[WARN] start.bat not found at $bat"
           }
 
-      # ── Step 10: Install Inno Setup + build installer ─────────────────────
+      # -- Step 10: Install Inno Setup + build installer ---------------------
       - name: Install Inno Setup
         shell: powershell
         run: |
@@ -507,15 +536,15 @@ jobs:
             $isccCode = $LASTEXITCODE
             Pop-Location
             if ($isccCode -ne 0) {
-              Write-Error "[FAIL] Inno Setup (ISCC) failed with exit code $isccCode — no installer produced"
+              Write-Error "[FAIL] Inno Setup (ISCC) failed with exit code $isccCode - no installer produced"
               exit 1
             }
             Write-Host "[OK] Inno Setup installer built successfully"
           } else {
-            Write-Warning "[WARN] Inno Setup ISCC.exe not found — skipping installer build"
+            Write-Warning "[WARN] Inno Setup ISCC.exe not found - skipping installer build"
           }
 
-      # ── Step 11: Upload artifacts ─────────────────────────────────────────
+      # -- Step 11: Upload artifacts -----------------------------------------
       - name: Upload packaged build (without installer)
         uses: actions/upload-artifact@v4
         with:
