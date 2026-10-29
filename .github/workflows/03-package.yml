@@ -514,10 +514,13 @@ jobs:
       - name: Install Inno Setup
         shell: powershell
         run: |
-          $url = "https://jrsoftware.org/download.php/is.exe"
-          Invoke-WebRequest -Uri $url -OutFile "$env:TEMP\innosetup.exe" -UseBasicParsing
-          Start-Process "$env:TEMP\innosetup.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART" -Wait
-          Write-Host "[OK] Inno Setup installed"
+          # jrsoftware.org direct download is unreliable from CI (corrupt payload);
+          # use Chocolatey (preinstalled on windows-latest), same as packager 03.
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { Write-Error "[FAIL] choco install innosetup failed"; exit 1 }
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { Write-Error "[FAIL] ISCC.exe not found after choco install"; exit 1 }
+          Write-Host "[OK] Inno Setup installed: $iscc"
 
       - name: Build Inno Setup installer
         shell: powershell
