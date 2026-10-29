@@ -86,3 +86,23 @@ node + script CI presents, telechargement modele ~1 Go pour n_ctx).
 VERDICT
 -------
 SUCCESS ssi preuves A + B + C collees et conformes. Sinon PARTIEL.
+
+NOTE CYCLE2 (28/10/2026, execute) - preuve B par injection 17b
+---------------------------------------------------------------
+Le vecteur conteneur du protocole ci-dessus est inexcutable tel quel :
+le sabotage par ref checkout meurt AVANT la porte (P32-P1 refuse le
+conteneur casse ; le manifeste §2 refuse pins != checkout). Constate
+sur runs 40798754513 (P32-P1) et 40799881778 (manifeste §2).
+Variante executee (gate 19b inchange, main intouche) : branche
+packager temporaire sab-p46c avec une seule etape ajoutee AVANT la
+construction Inno (apres toutes les validations), qui vide le HTML
+de DoctorPanel (node --check OK). Run 40800973710 : GATE RESULT
+FAIL (1 failed) isole sur P46-4 (doctor : wrapper-only, no guard
+markup), autres lignes PASS, artefact "diagnostic" seul, Installer
+et Portable absents, jobs aval skipped. Intentions de la preuve B
+satisfaites (echec volontaire -> rouge A LA PORTE -> publication
+bloquee). Branches temporaires supprimees apres.
+Preuve A : run 40794788139, GATE RESULT SUCCESS (22 checks,
+3 skipped), 16/16 panneaux, Installer + Portable presents, pas de
+diagnostic. Preuve C : les 9 lignes P46-1..9 du run vert (8 PASS +
+P46-8 SKIP by-design, resultat ecrit sans secret).
