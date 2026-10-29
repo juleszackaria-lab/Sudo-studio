@@ -455,8 +455,16 @@ jobs:
           }
 
           # Copy start.bat, installer config, data, logs skeleton, resources
+          # NOTE: "resources\*" (contents) NOT "resources" (dir): the VSCodium tree
+          # already HAS resources\, so copying the dir would nest it (resources\resources)
+          # and ISCC would miss installer-banner.bmp.
           Copy-Item "start.bat"     "build\SudoStudio\start.bat"       -Force
-          Copy-Item "resources"     "build\SudoStudio\resources"        -Recurse -Force
+          Copy-Item "resources\*"   "build\SudoStudio\resources"        -Recurse -Force
+          foreach ($f in @("icon.ico","wizard-small.bmp","installer-banner.bmp")) {
+            if (-not (Test-Path "build\SudoStudio\resources\$f")) {
+              Write-Error "[FAIL] build\SudoStudio\resources\$f missing after copy"; exit 1
+            }
+          }
           if (Test-Path "data")        { Copy-Item "data"    "build\SudoStudio\data"    -Recurse -Force }
           if (Test-Path "logs")        { Copy-Item "logs"    "build\SudoStudio\logs"    -Recurse -Force }
           if (Test-Path "installer.iss") { Copy-Item "installer.iss" "build\SudoStudio\installer.iss" -Force }
