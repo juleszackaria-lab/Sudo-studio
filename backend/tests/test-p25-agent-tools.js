@@ -466,28 +466,28 @@ t('C1', 'write new: ask then once -> created, hash ok', async () => {
   } finally { killChild(a.child); }
 });
 
-t('C2', 'overwrite without prior read: refused, file intact', async () => {
+t('C2', 'overwrite refused (P52 create-only), file intact', async () => {
   const proj = fixtureProject();
   const before = sha(fs.readFileSync(path.join(proj, 'notes.txt'), 'utf8'));
   const { a, port, token } = await boot({ type: 'local', baseUrl: 'http://' + HOST + ':9', model: '' });
   try {
     const sid = await newSession(port, token, proj);
     const r = await callTool(port, token, sid, 'write', { file: 'notes.txt', content: 'PWNED\n' });
-    // Read gate runs before permission: direct error, not even a question.
-    assert(r.body.status === 'error' && r.body.code === 'not_read', 'verdict: ' + JSON.stringify(r.body));
-    assert(/pas ete lu/.test(r.body.reason), 'message: ' + r.body.reason);
+    // P52: write creates only (edit/append modify): direct error, no question.
+    assert(r.body.status === 'error' && r.body.code === 'exists', 'verdict: ' + JSON.stringify(r.body));
+    assert(/existe deja/.test(r.body.reason), 'message: ' + r.body.reason);
     assert(sha(fs.readFileSync(path.join(proj, 'notes.txt'), 'utf8')) === before, 'file changed!');
   } finally { killChild(a.child); }
 });
 
-t('C3', 'read then overwrite: diff shown, approve, replaced', async () => {
+t('C3', 'read then edit: diff shown, approve, replaced', async () => {
   const proj = fixtureProject();
   const { a, port, token } = await boot({ type: 'local', baseUrl: 'http://' + HOST + ':9', model: '' });
   try {
     const sid = await newSession(port, token, proj);
     await callTool(port, token, sid, 'read', { file: 'notes.txt' });
-    const content = 'alpha\nBETA\n';
-    const r = await callTool(port, token, sid, 'write', { file: 'notes.txt', content });
+    const content = 'alpha\nBETA\nalpha beta\n';
+    const r = await callTool(port, token, sid, 'edit', { file: 'notes.txt', old: '\nbeta\n', new: '\nBETA\n' });
     assert(r.body.status === 'need-approval', 'must ask');
     assert(r.body.request.diff && r.body.request.diff.indexOf('- beta') !== -1 && r.body.request.diff.indexOf('+ BETA') !== -1,
       'diff missing in request: ' + JSON.stringify(r.body.request.diff).slice(0, 200));
@@ -503,11 +503,11 @@ t('C4', 'session rule: same action auto, other file still asks', async () => {
   try {
     const sid = await newSession(port, token, proj);
     await callTool(port, token, sid, 'read', { file: 'notes.txt' });
-    const r = await callTool(port, token, sid, 'write', { file: 'notes.txt', content: 'v2\n' });
+    const r = await callTool(port, token, sid, 'edit', { file: 'notes.txt', old: '\nbeta\n', new: '\nv2\n' });
     assert(r.body.status === 'need-approval', 'first must ask');
     const ap = await approve(port, token, sid, r.body.request.id, 'session');
     assert(ap.body.status === 'executed', 'session approve');
-    const r2 = await callTool(port, token, sid, 'write', { file: 'notes.txt', content: 'v3\n' });
+    const r2 = await callTool(port, token, sid, 'edit', { file: 'notes.txt', old: '\nv2\n', new: '\nv3\n' });
     assert(r2.body.status === 'done' && r2.body.call.ok, 'same action must auto-run: ' + JSON.stringify(r2.body).slice(0, 200));
     assert(r2.body.call.diff && r2.body.call.diff.indexOf('+ v3') !== -1, 'diff in auto result');
     const r3 = await callTool(port, token, sid, 'write', { file: 'other.txt', content: 'x\n' });
@@ -520,7 +520,11 @@ t('C5', 'project rule persists outside project, applies to new session', async (
   const { a, port, token } = await boot({ type: 'local', baseUrl: 'http://' + HOST + ':9', model: '' });
   try {
     const sid = await newSession(port, token, proj);
-    const r = await callTool(port, token, sid, 'write', { file: 'p.txt', content: '1\n' });
+    const c = await callTool(port, token, sid, 'write', { file: 'p.txt', content: '1\n' });
+    const ca = await approve(port, token, sid, c.body.request.id, 'once');
+    assert(ca.body.status === 'executed', 'create approve');
+    await callTool(port, token, sid, 'read', { file: 'p.txt' });
+    const r = await callTool(port, token, sid, 'edit', { file: 'p.txt', old: '1\n', new: '1b\n' });
     const ap = await approve(port, token, sid, r.body.request.id, 'project');
     assert(ap.body.status === 'executed', 'project approve');
     const rulesDir = path.join(a.home, '.sudo_studio', 'agent', 'rules');
@@ -532,7 +536,7 @@ t('C5', 'project rule persists outside project, applies to new session', async (
     assert(gs.split('\n').every((l) => l === '' || l.indexOf('rules') === -1), 'rule leaked in project: ' + gs);
     const sid2 = await newSession(port, token, proj);
     await callTool(port, token, sid2, 'read', { file: 'p.txt' }); // read gate is per session
-    const r2 = await callTool(port, token, sid2, 'write', { file: 'p.txt', content: '2\n' });
+    const r2 = await callTool(port, token, sid2, 'edit', { file: 'p.txt', old: '1b\n', new: '2\n' });
     assert(r2.body.status === 'done', 'new session must auto-run: ' + JSON.stringify(r2.body).slice(0, 200));
   } finally { killChild(a.child); }
 });
@@ -654,6 +658,13 @@ t('C13', 'approvals: unknown id 404, bad decision 400', async () => {
 });
 
 // D: checkpoints + undo ------------------------------------------------------------
+async function approvedEdit(port, token, sid, file, old, nw, decision) {
+  const r = await callTool(port, token, sid, 'edit', { file, old, new: nw });
+  assert(r.body.status === 'need-approval', 'edit must ask: ' + JSON.stringify(r.body).slice(0, 200));
+  const ap = await approve(port, token, sid, r.body.request.id, decision || 'once');
+  assert(ap.body.status === 'executed' && ap.body.call.ok, 'edit approve: ' + JSON.stringify(ap.body).slice(0, 300));
+}
+
 async function approvedWrite(port, token, sid, file, content, decision) {
   const r = await callTool(port, token, sid, 'write', { file, content });
   assert(r.body.status === 'need-approval', 'write must ask: ' + JSON.stringify(r.body).slice(0, 200));
@@ -670,7 +681,7 @@ t('D1', 'create+modify+patch then undo last: hashes restored, verified', async (
     const sid = await newSession(port, token, proj);
     await approvedWrite(port, token, sid, 'created.txt', 'hello\n');
     await callTool(port, token, sid, 'read', { file: 'notes.txt' });
-    await approvedWrite(port, token, sid, 'notes.txt', 'changed\n');
+    await approvedEdit(port, token, sid, 'notes.txt', '\nbeta\n', '\nchanged\n');
     const patchText = '--- a/src/app.js\n+++ b/src/app.js\n@@ -1,2 +1,2 @@\n-const x = 1;\n+const x = 7;\n console.log(x);\n';
     const pr = await callTool(port, token, sid, 'patch', { patch: patchText });
     const pa = await approve(port, token, sid, pr.body.request.id, 'once');
@@ -695,8 +706,8 @@ t('D2', 'undo session reverts every series', async () => {
   try {
     const sid = await newSession(port, token, proj);
     await callTool(port, token, sid, 'read', { file: 'notes.txt' });
-    await approvedWrite(port, token, sid, 'notes.txt', 'series1\n');
-    await approvedWrite(port, token, sid, 'notes.txt', 'series2\n');
+    await approvedEdit(port, token, sid, 'notes.txt', 'beta\nalpha beta\n', 'series1\n');
+    await approvedEdit(port, token, sid, 'notes.txt', 'series1\n', 'series2\n');
     const u = await httpJson(port, token, 'POST', '/sessions/' + sid + '/undo', { scope: 'session' });
     assert(u.status === 200 && u.body.verified === true, 'undo session: ' + JSON.stringify(u.body).slice(0, 300));
     assert(sha(fs.readFileSync(path.join(proj, 'notes.txt'), 'utf8')) === h0, 'restored to pre-session');
@@ -975,7 +986,17 @@ t('F6', 'TERMINE lists really-modified files', async () => {
   } finally { killChild(a.child); await mock.close(); }
 });
 
-t('F7', 'mid-turn approval need -> ECHEC + pending listed', async () => {
+async function waitPending(port, token, sid, timeoutMs) {
+  const t0 = Date.now();
+  for (;;) {
+    const p = await httpJson(port, token, 'GET', '/sessions/' + sid + '/approvals');
+    if (p.body.pending && p.body.pending.length) return p.body.pending[0];
+    if (Date.now() - t0 > (timeoutMs || 10000)) throw new Error('no pending approval');
+    await sleep(50);
+  }
+}
+
+t('F7', 'mid-turn approval pauses, approve resumes (P52)', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'w.txt', content: 'x\n' } }] },
@@ -984,11 +1005,19 @@ t('F7', 'mid-turn approval need -> ECHEC + pending listed', async () => {
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
     const sid = await newSession(port, token, proj);
-    const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'write it' }, () => {});
-    assert(done.status === 'ECHEC', 'unapproved call must fail the run: ' + JSON.stringify(done).slice(0, 300));
+    let paused = 0;
+    const doneP = ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'write it' }, (ev) => {
+      if (ev === 'turn.paused') paused += 1;
+    });
+    const pend = await waitPending(port, token, sid, 10000);
+    assert(pend.tool === 'write', 'pending listed');
     assert(!fs.existsSync(path.join(proj, 'w.txt')), 'executed without approval!');
-    const p = await httpJson(port, token, 'GET', '/sessions/' + sid + '/approvals');
-    assert(p.body.pending.length === 1 && p.body.pending[0].tool === 'write', 'pending listed');
+    assert(paused === 1, 'turn paused');
+    const ap = await approve(port, token, sid, pend.id, 'session');
+    assert(ap.body.status === 'accepted', 'pause accepted: ' + JSON.stringify(ap.body).slice(0, 120));
+    const done = await doneP;
+    assert(done.status === 'TERMINE', 'resumed: ' + JSON.stringify(done).slice(0, 300));
+    assert(fs.readFileSync(path.join(proj, 'w.txt'), 'utf8') === 'x\n', 'executed after approve');
   } finally { killChild(a.child); await mock.close(); }
 });
 

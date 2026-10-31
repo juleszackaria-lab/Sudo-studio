@@ -14,7 +14,7 @@ const crypto = require('crypto');
 // Read-only tools run without asking (boundary still enforced by the tools).
 const READONLY_AUTO = ['read', 'list', 'glob', 'grep', 'todo', 'reply', 'done', 'exec_poll', 'gen_report', 'analyze', 'secaudit', 'doctor', 'subagent'];
 // Mutating tools ask unless a session/project rule matches.
-const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp', 'delete', 'rename', 'exec_start', 'exec_stop', 'gen_start', 'gen_check', 'gen_phase', 'gen_restore', 'mkignore', 'ci', 'sdk'];
+const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp', 'delete', 'rename', 'append', 'mkdir', 'exec_start', 'exec_stop', 'gen_start', 'gen_check', 'gen_phase', 'gen_restore', 'mkignore', 'ci', 'sdk'];
 const KNOWN_TOOLS = READONLY_AUTO.concat(MUTATING_ASK);
 
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ function normCommand(cmd) {
 function patternOf(tool, args, resolved) {
   args = args || {};
   if (tool === 'read' || tool === 'list' || tool === 'write' || tool === 'edit' || tool === 'patch' ||
-      tool === 'delete' || tool === 'rename') {
+      tool === 'delete' || tool === 'rename' || tool === 'append' || tool === 'mkdir') {
     const rel = resolved && typeof resolved.rel === 'string' ? resolved.rel : String(args.file || args.from || args.dir || args.path || '');
     return { kind: 'file', text: rel.slice(0, 500) };
   }

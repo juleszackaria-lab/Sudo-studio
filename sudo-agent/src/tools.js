@@ -1,9 +1,10 @@
 // Sudo Agent tools (P25-a). read, list, glob, grep, write, edit, patch,
-// bash, todo. Every file path is boundary-contained (boundary.js), every
-// shell command goes through the P8 sandbox module when present (L1 restricted
-// mode + verdicts) plus the P25 default deny list, mutating tools ask unless a
-// session/project rule matches, and write refuses to overwrite a file that was
-// not read during the session. Stdlib only. ASCII only.
+// bash, delete, rename, append, mkdir (+ registry-only todo/reply/done).
+// Every file path is boundary-contained (boundary.js), every shell command
+// goes through the P8 sandbox module when present (L1 restricted mode +
+// verdicts) plus the P25 default deny list, mutating tools ask unless a
+// session/project rule matches, and write is CREATE-ONLY (existing files
+// go through edit/append). Stdlib only. ASCII only.
 'use strict';
 
 const fs = require('fs');
@@ -339,6 +340,50 @@ async function hGrep(ctx, args, resolved) {
   return { ok: true, data: { pattern, matches, filesScanned, truncated: matches.length >= limit }, summary: matches.length + ' occurrences.' };
 }
 
+async function hAppend(ctx, args, resolved) {
+  if (typeof args.content !== 'string' || !args.content) return { ok: false, code: 'bad_args', error: 'append: content (string non vide) requis.' };
+  if (args.content.length > 2 * 1024 * 1024) return { ok: false, code: 'too_big', error: 'append: contenu trop volumineux.' };
+  const r = resolved;
+  if (!r.ok) return { ok: false, code: r.code, error: 'append refuse: ' + r.reason };
+  let oldText = '';
+  let existed = false;
+  try {
+    const st = fs.statSync(r.abs);
+    if (!st.isFile()) return { ok: false, code: 'is_dir', error: 'append refuse : ' + r.rel + ' est un dossier.' };
+    existed = true;
+    oldText = fs.readFileSync(r.abs, 'utf8');
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') return { ok: false, code: 'io', error: 'append: lecture impossible.' };
+  }
+  const next = oldText + (oldText && oldText[oldText.length - 1] !== '\n' ? '\n' : '') + args.content;
+  const diff = diffLines(oldText, next);
+  try {
+    fs.mkdirSync(path.dirname(r.abs), { recursive: true });
+    const tmp = r.abs + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, next, 'utf8');
+    fs.renameSync(tmp, r.abs);
+  } catch (e) { return { ok: false, code: 'io', error: 'append: ' + String((e && e.message) || e).slice(0, 150) }; }
+  return { ok: true, data: { rel: r.rel, appended: args.content.length, bytes: next.length },
+    summary: existed ? 'ajoute ' + args.content.length + ' octets a ' + r.rel + '.' : 'cree ' + r.rel + ' (' + args.content.length + ' octets).',
+    diff, created: existed ? [] : [r.rel], markRead: [r.rel] };
+}
+
+async function hMkdir(ctx, args, resolved) {
+  const r = resolved;
+  if (!r.ok) return { ok: false, code: r.code, error: 'mkdir refuse: ' + r.reason };
+  try {
+    const st = fs.statSync(r.abs);
+    if (!st.isDirectory()) return { ok: false, code: 'is_file', error: 'mkdir refuse : ' + r.rel + ' est un fichier.' };
+    return { ok: true, data: { rel: r.rel, existed: true }, summary: 'dossier ' + r.rel + ' (existait deja).' };
+  } catch (e) {
+    if (e && e.code !== 'ENOENT') return { ok: false, code: 'io', error: 'mkdir: ' + String((e && e.message) || e).slice(0, 150) };
+  }
+  try {
+    fs.mkdirSync(r.abs, { recursive: true });
+  } catch (e) { return { ok: false, code: 'io', error: 'mkdir: ' + String((e && e.message) || e).slice(0, 150) }; }
+  return { ok: true, data: { rel: r.rel, existed: false }, summary: 'cree dossier ' + r.rel + '.' };
+}
+
 async function hWrite(ctx, args, resolved) {
   if (typeof args.content !== 'string') return { ok: false, code: 'bad_args', error: 'write: content (string) requis.' };
   if (args.content.length > 2 * 1024 * 1024) return { ok: false, code: 'too_big', error: 'write: contenu trop volumineux.' };
@@ -347,20 +392,9 @@ async function hWrite(ctx, args, resolved) {
   let exists = false;
   try { exists = fs.statSync(r.abs).isFile(); } catch (_) { exists = false; }
   if (exists) {
-    // P25-c: overwrite only a file READ during this session, with a shown diff.
-    const readFiles = (ctx.session && ctx.session.meta && Array.isArray(ctx.session.meta.readFiles)) ? ctx.session.meta.readFiles : [];
-    if (readFiles.indexOf(r.rel) === -1) {
-      return { ok: false, code: 'not_read', error: 'write refuse : ' + r.rel + ' existe et n\'a pas ete lu pendant la session. Lisez-le d\'abord (protection contre l\'ecrasement).' };
-    }
-    let oldText = '';
-    try { oldText = fs.readFileSync(r.abs, 'utf8'); } catch (e) { return { ok: false, code: 'io', error: 'write: relecture impossible.' }; }
-    const diff = diffLines(oldText, args.content);
-    try {
-      const tmp = r.abs + '.tmp-' + process.pid;
-      fs.writeFileSync(tmp, args.content, 'utf8');
-      fs.renameSync(tmp, r.abs);
-    } catch (e) { return { ok: false, code: 'io', error: 'write: ' + String((e && e.message) || e).slice(0, 150) }; }
-    return { ok: true, data: { rel: r.rel, overwritten: true, bytes: args.content.length }, summary: 'remplace ' + r.rel + ' (apres lecture + diff).', diff, markRead: [r.rel] };
+    // P52: write is CREATE-ONLY (the gate above normally catches this;
+    // defense in depth for direct handler callers).
+    return { ok: false, code: 'exists', error: 'write cree uniquement : ' + r.rel + ' existe deja. Utilise edit (remplacer un bloc exact) ou append (ajouter a la fin).' };
   }
   try {
     fs.mkdirSync(path.dirname(r.abs), { recursive: true });
@@ -838,7 +872,7 @@ const TOOLS = {
   list: { description: 'Liste un dossier du projet (borne).', danger: 'read', mutating: false, pathArg: 'dir', defDir: '.', handler: hList },
   glob: { description: 'Recherche de fichiers par motif (*, ?, **).', danger: 'read', mutating: false, pathArg: 'dir', defDir: '.', handler: hGlob },
   grep: { description: 'Recherche textuelle (regex) dans le projet, bornee.', danger: 'read', mutating: false, pathArg: 'path', defDir: '.', handler: hGrep },
-  write: { description: 'Cree ou remplace un fichier. Remplacement refuse si non lu pendant la session (diff affiche).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hWrite },
+  write: { description: 'Cree un fichier (REFUSE si existant : passe par edit/append).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hWrite },
   edit: { description: 'Remplace une chaine exacte unique (echec clair si absente ou ambigue).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hEdit },
   patch: { description: 'Applique un diff unifie strict (multi-fichiers, creation, suppression).', danger: 'write', mutating: true, pathArg: null, defDir: null, handler: hPatch },
   bash: { description: 'Execute une commande (fenetre masquee, delai, sortie tronquee, annulable, sandbox P8 L1).', danger: 'execute', mutating: true, pathArg: 'cwd', defDir: '.', handler: hBash },
@@ -860,6 +894,8 @@ const TOOLS = {
   todo: { description: 'Liste de taches de session (add/list/done/clear).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hTodo },
   delete: { description: 'Supprime un fichier du projet (lecture prealable requise, confirmation operateur, annulable via instantane).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hDelete },
   rename: { description: 'Renomme/deplace un fichier (lecture prealable requise, cible neuve, confirmation, annulable).', danger: 'write', mutating: true, pathArg: 'from', defDir: null, handler: hRename },
+  append: { description: 'Ajoute du texte a la fin d\'un fichier (cree le fichier si absent).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hAppend },
+  mkdir: { description: 'Cree un dossier (parents inclus, idempotent).', danger: 'write', mutating: true, pathArg: 'dir', defDir: null, handler: hMkdir },
   reply: { description: 'Reponse finale (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hReply },
   done: { description: 'Tache terminee (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hDone },
 };
@@ -869,7 +905,7 @@ function toolNames() { return Object.keys(TOOLS); }
 function toOpenAISchema(profile) {
   const str = (d) => ({ type: 'string', description: d });
   const small = profile === 'small';
-  const names = small ? profiles.profileTools('small') : toolNames();
+  const names = small ? profiles.profileTools('small') : toolNames().filter((n) => n !== 'todo'); // P52: the model never manages todos (registry-only tool).
   const schemas = {
     read: { file: str('Project-relative file path.'), offset: { type: 'integer' }, limit: { type: 'integer' } },
     list: { dir: str('Project-relative directory (default root).'), recursive: { type: 'boolean' }, limit: { type: 'integer' } },
@@ -897,10 +933,12 @@ function toOpenAISchema(profile) {
     todo: { op: str('add|list|done|clear.'), text: str('Task text (add).'), id: str('Task id (done).') },
     delete: { file: str('Project-relative file path to delete (must have been read).') },
     rename: { from: str('Project-relative source path (must have been read).'), to: str('New project-relative path (must not exist).') },
+    append: { file: str('Project-relative file path.'), content: str('Text to add at the end.') },
+    mkdir: { dir: str('Project-relative directory to create.') },
     reply: { text: str('Final answer text (ends the turn).') },
     done: { summary: str('Short summary of what changed (optional, ends the turn).') },
   };
-  const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], exec_start: ['command'], exec_poll: ['id'], exec_stop: ['id'], gen_start: ['goal'], gen_phase: ['run', 'phase'], gen_check: ['run', 'phase', 'command'], gen_report: ['run'], gen_restore: ['run', 'phase'], sdk: ['op'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], reply: ['text'] };
+  const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], exec_start: ['command'], exec_poll: ['id'], exec_stop: ['id'], gen_start: ['goal'], gen_phase: ['run', 'phase'], gen_check: ['run', 'phase', 'command'], gen_report: ['run'], gen_restore: ['run', 'phase'], sdk: ['op'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], append: ['file', 'content'], mkdir: ['dir'], reply: ['text'] };
   return names.map((n) => ({ type: 'function', function: { name: n, description: (small && profiles.TERSE[n]) || TOOLS[n].description, parameters: { type: 'object', properties: schemas[n], required: required[n] || [] } } }));
 }
 
@@ -1022,20 +1060,17 @@ async function executeTool(ctx, toolName, args, opts) {
     }
   }
 
-  // 2. Anti-overwrite gate (P25-c): an existing file can only be replaced by
-  // `write` after being read during the session. Runs BEFORE permissions:
-  // even an allow rule cannot bypass it.
+  // 2. Create-only gate (P52): `write` creates, never overwrites (use
+  // edit/append on existing files). Runs BEFORE permissions: even an
+  // allow rule cannot bypass it.
   if (toolName === 'write' && resolved.ok) {
     let exists = false;
     try { exists = fs.statSync(resolved.abs).isFile(); } catch (_) { exists = false; }
     if (exists) {
-      const readFiles = (ctx.session && ctx.session.meta && Array.isArray(ctx.session.meta.readFiles)) ? ctx.session.meta.readFiles : [];
-      if (readFiles.indexOf(resolved.rel) === -1) {
-        const reason = 'write refuse : ' + resolved.rel + ' existe et n\'a pas ete lu pendant la session. Lisez-le d\'abord (protection contre l\'ecrasement).';
-        const call = recordCall(ctx, toolName, args, false, 'not_read', Date.now() - t0, reason);
-        call.error = reason;
-        return { status: 'error', reason, code: 'not_read', call };
-      }
+      const reason = 'write cree uniquement : ' + resolved.rel + ' existe deja. Utilise edit (remplacer un bloc exact) ou append (ajouter a la fin).';
+      const call = recordCall(ctx, toolName, args, false, 'exists', Date.now() - t0, reason);
+      call.error = reason;
+      return { status: 'error', reason, code: 'exists', call };
     }
   }
 
@@ -1045,7 +1080,7 @@ async function executeTool(ctx, toolName, args, opts) {
   try {
     if (mod) {
       if (toolName === 'bash') p8verdict = mod.evaluateBash(args.command, { projectRoot: ctx.root });
-      else if (toolName === 'write' || toolName === 'edit' || toolName === 'patch') {
+      else if (toolName === 'write' || toolName === 'edit' || toolName === 'patch' || toolName === 'append') {
         const ps = toolName === 'patch' ? [] : [resolved.abs];
         p8verdict = mod.evaluateEdit(ps, { projectRoot: ctx.root });
       }
@@ -1104,6 +1139,12 @@ async function executeTool(ctx, toolName, args, opts) {
     }
     if (toolName === 'rename') {
       request.diff = '(renomme ' + String(args.from || '?').slice(0, 200) + ' -> ' + String(args.to || '?').slice(0, 200) + ')';
+    }
+    if (toolName === 'append' && resolved.ok) {
+      request.diff = ('(ajout : +' + String((args.content || '').length) + ' octets a la fin de ' + (resolved.rel || '?') + ')\n' + String(args.content || '')).slice(0, 20000);
+    }
+    if (toolName === 'mkdir') {
+      request.diff = '(creation du dossier ' + String(args.dir || '?').slice(0, 200) + ')';
     }
     if (toolName === 'bash') request.l2 = l2status();
     return { status: 'need-approval', request };

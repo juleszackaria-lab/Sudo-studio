@@ -7,6 +7,8 @@
 // only if the agent declared done, no tool error stands unresolved, and the
 // really-modified file list is provided. Stdlib only, ASCII only (status
 // words use unaccented capitals on purpose).
+// P52: approvals pause (resumable), engine-owned todos, adapted tools,
+// orchestrated long tasks, summarized results.
 'use strict';
 
 const fs = require('fs');
@@ -17,6 +19,8 @@ const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = 
 const { loadProjectRules } = require('./permissions');
 const { diffSnapshot } = require('./checkpoints');
 const { maskSecrets } = require('./journal');
+const plan = require('./plan');
+const orch = require('./orch');
 const modes = require('./modes');
 const profiles = require('./profiles');
 const compressMod = require('./compress');
@@ -34,7 +38,7 @@ const MAX_SUB_SPAWNS = 3;
 const MAX_SUB_PARALLEL = 3;
 // P50-3: bounded build-fix loop. Consecutive EXECUTED failures on these
 // tools (any success resets) stop the turn honestly at MAX_BUILD_FIX.
-const BUILD_FIX_TOOLS = ['bash', 'exec_start', 'exec_poll', 'write', 'edit', 'patch', 'gen_check', 'mkignore', 'ci', 'sdk'];
+const BUILD_FIX_TOOLS = ['bash', 'exec_start', 'exec_poll', 'write', 'edit', 'patch', 'append', 'mkdir', 'gen_check', 'mkignore', 'ci', 'sdk'];
 const MAX_BUILD_FIX = 6;
 const MAX_AGENTS_MD = 32 * 1024;
 
@@ -61,6 +65,74 @@ async function waitAndRetry(ctx) {
     },
   });
   return { retry: !!(w.recovered && w.probe && w.probe.ok) };
+}
+
+// P52 item 1: an approval PAUSES the turn (resumable). Registers the
+// pending request (operator-facing session id for orchestrated steps),
+// emits turn.paused, and waits for resolveTurnApproval (operator) or an
+// abort. Without a waiter registry (sub-turns) the caller keeps the
+// legacy need_approval behavior. Resolves { legacy } | { aborted } |
+// { decision } ('once'|'session'|'project'|'deny').
+async function pauseForApproval(ctx) {
+  const toolsCtx = ctx.toolsCtx;
+  const waiters = (toolsCtx && toolsCtx.waiters) || null;
+  const parentSession = (toolsCtx && toolsCtx.parentSessionId) || ctx.sessionId;
+  try { (toolsCtx.pending || new Map()).set(ctx.request.id, { request: ctx.request, sessionId: parentSession, fullArgs: ctx.fullArgs }); } catch (_) {}
+  if (!waiters) return { legacy: true };
+  try { ctx.onEvent({ type: 'turn.paused', turnId: ctx.turnId, session: parentSession, requestId: ctx.request.id, tool: ctx.request.tool, summary: ctx.request.summary, pattern: ctx.request.pattern }); } catch (_) {}
+  if (ctx.journal) { try { ctx.journal('info', 'tour en pause', { request: ctx.request.id, tool: ctx.request.tool }); } catch (_) {} }
+  const verdict = await new Promise((resolve) => {
+    const done = (v) => {
+      try { clearInterval(iv); } catch (_) {}
+      try { waiters.delete(ctx.request.id); } catch (_) {}
+      resolve(v);
+    };
+    waiters.set(ctx.request.id, { resolve: done, sessionId: parentSession });
+    const iv = setInterval(() => { if (ctx.runEntry.aborted) done({ decision: 'abort' }); }, 250);
+    if (iv.unref) { try { iv.unref(); } catch (_) {} }
+  });
+  if (!verdict || verdict.decision === 'abort') return { aborted: true };
+  if (ctx.journal) { try { ctx.journal('info', 'pause resolue', { request: ctx.request.id, decision: verdict.decision }); } catch (_) {} }
+  return { decision: verdict.decision };
+}
+
+// Operator/test side of pauseForApproval. Returns false when no paused
+// turn waits for this request (legacy direct-tool approvals).
+function resolveTurnApproval(toolsCtx, requestId, decision) {
+  try {
+    const w = toolsCtx && toolsCtx.waiters ? toolsCtx.waiters.get(requestId) : null;
+    if (!w || typeof w.resolve !== 'function') return false;
+    try { if (toolsCtx.pending) toolsCtx.pending.delete(requestId); } catch (_) {}
+    w.resolve({ decision });
+    return true;
+  } catch (_) { return false; }
+}
+
+// P52 item 10: tool results fed to the model are summarized past TOOLCAP
+// (default 2000 chars): every long string becomes head + marker + tail.
+// Short results pass through BYTE-IDENTICAL (legacy behavior kept).
+function summarizeResult(text) {
+  const cap = plan.intEnv('SUDO_AGENT_TOOLCAP', 2000);
+  const s = String(text || '');
+  const cut = (v) => {
+    if (typeof v !== 'string' || v.length <= cap) return v;
+    const head = Math.floor(cap * 0.6);
+    return v.slice(0, head) + '\n...[resume : ' + v.length + ' caracteres]...\n' + v.slice(v.length - (cap - head));
+  };
+  try {
+    const o = JSON.parse(s);
+    let changed = false;
+    const walk = (v) => {
+      if (typeof v === 'string') { const c = cut(v); if (c !== v) changed = true; return c; }
+      if (Array.isArray(v)) return v.map(walk);
+      if (v && typeof v === 'object') { const o2 = {}; for (const k of Object.keys(v)) o2[k] = walk(v[k]); return o2; }
+      return v;
+    };
+    const out = walk(o);
+    return changed ? JSON.stringify(out) : s;
+  } catch (_) {
+    return cut(s);
+  }
 }
 
 async function runTurn(opts) {
@@ -354,12 +426,21 @@ function toProviderMessages(stored, cloud) {
 // skipped extra calls) with no later success on the same tool+target.
 // P49: file-mutating tools gated by the recon rule on improvement intents
 // (bash stays available: it is also the execute/verify vehicle).
-const FILE_MUTATING = ['write', 'edit', 'patch', 'delete', 'rename'];
+const FILE_MUTATING = ['write', 'edit', 'patch', 'delete', 'rename', 'append', 'mkdir'];
+// P52: loop guard v2 counts COMPLETED calls only (executed, done or error)
+// on state-changing tools (mcp__* included via prefix). Reads, approvals,
+// denials, guidance and skips never feed the guard.
+const GUARD_TOOLS = ['write', 'edit', 'patch', 'append', 'mkdir', 'delete', 'rename', 'bash', 'exec_start', 'exec_poll', 'exec_stop', 'gen_start', 'gen_check', 'gen_phase', 'gen_restore', 'mkignore', 'ci', 'sdk', 'subagent'];
+const GUARD_SKIP_CODES = ['need_approval', 'asked', 'denied', 'deploy_policy', 'no_project', 'unknown_tool', 'skipped', 'plan_mode', 'bad_args', 'corrective', 'exists'];
 
 // P49: driver-side guidance codes are not failures: a rejected reply/done
 // (open todos, no plan, recon missing, verify still running) teaches the
 // model the rules.
-const GUIDANCE_CODES = ['todos_open', 'no_plan', 'recon_required', 'verify'];
+// P52: engine_todos (model-side todo refused), corrective (loop-guard
+// restriction) and exists (write is create-only: use edit/append) join
+// them; todos_open/no_plan stay listed so old transcripts never poison
+// new verdicts.
+const GUIDANCE_CODES = ['todos_open', 'no_plan', 'engine_todos', 'recon_required', 'verify', 'corrective'];
 
 // P49-4: same sentence 3+ times in one reply = a stuck small model.
 // Pure (unit-tested): returns { repeated, count } or null.
@@ -386,7 +467,12 @@ function unresolvedErrors(calls) {
     for (let j = i + 1; j < calls.length; j++) {
       // P26-b: a parse error is recovered by ANY later successful action
       // (the retry worked); other errors need the same tool+target fixed.
-      if (calls[j].ok && (c.code === 'bad_args' || (calls[j].tool === c.tool && calls[j].target === c.target))) { fixed = true; break; }
+      // P52: an 'exists' refusal is recovered by ANY later success on the
+      // same target (write -> edit recovery); unrecovered it stands (ECHEC).
+      if (!calls[j].ok) continue;
+      if (c.code === 'bad_args') { fixed = true; break; }
+      if (c.code === 'exists' && c.target && calls[j].target === c.target) { fixed = true; break; }
+      if (calls[j].tool === c.tool && calls[j].target === c.target) { fixed = true; break; }
     }
     if (!fixed) bad.push(c);
   }
@@ -485,6 +571,19 @@ async function toolsTurn(base, session, toolsCtx) {
   // ACTION turns take the strict tool loop below (tool call forced, honest
   // verdict). QUESTION keeps the single-call path. AMBIGUOUS keeps the
   // legacy loop behavior (free text may still declare).
+  // P52 item 4: resolve a pending Reprendre/Abandonner choice FIRST (the
+  // effective prompt may be the STORED one). QUESTIONs never block: an
+  // unrelated message implicitly abandons stale todos (journaled) and
+  // runs as a new demand.
+  const abandonMs = plan.intEnv('SUDO_AGENT_ABANDON_MS', 1800000);
+  const pendResolve = plan.resolvePendingChoice(store, sessionId, turnId, base.prompt, abandonMs);
+  if (pendResolve) {
+    journal('info', 'choix precedent resolu', { action: pendResolve.action });
+    if (pendResolve.effective !== base.prompt) {
+      store.append(sessionId, { role: 'user', content: pendResolve.note + '\nDemande : ' + pendResolve.effective });
+      base.prompt = pendResolve.effective;
+    }
+  }
   const intent = classifyAction(base.prompt);
   journal('info', 'intention classee', { kind: intent.kind, verbs: intent.verbs.join(','), expectsChange: intent.expectsChange, collective: intent.collective, improvement: intent.improvement, taskItems: intent.taskItems.length });
   // P43-2: QUESTIONS take the single-call path (no free tool exploration).
@@ -492,6 +591,31 @@ async function toolsTurn(base, session, toolsCtx) {
   // proof lines ('carte projet injectee', 'contexte general precharge').
   if (intent.kind === 'QUESTION') {
     return questionTurn(base, session, toolsCtx, root, mapText, mapInfo, preloadText);
+  }
+  // P52 item 4: ACTION turns with stale engine todos (open, from a
+  // previous turn) do not start blind: over-delay ones auto-abandon,
+  // the rest ask Reprendre/Abandonner (a completed turn; the reply
+  // resolves it). QUESTION never blocks (returned above).
+  if (intent.kind !== 'QUESTION') {
+    const stale = plan.openStale(store, sessionId, turnId);
+    if (stale.length) {
+      const split = plan.splitStaleByAge(store, sessionId, stale, abandonMs);
+      if (split.auto.length) journal('info', 'todos auto-abandonnes', { count: split.auto.length });
+      if (split.fresh.length) {
+        plan.setPendingChoice(store, sessionId, split.fresh.map((t) => t.id), base.prompt);
+        const choiceEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
+        runs.set(sessionId, choiceEntry);
+        try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
+        const choiceText = plan.choiceMessage(split.fresh, base.prompt);
+        store.append(sessionId, { role: 'assistant', content: choiceText });
+        try { onEvent({ type: 'message.done', text: choiceText, aborted: false }); } catch (_) {}
+        const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
+        try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: false, status: 'PARTIEL', reason: 'await_choice', filesModified: [], stopReason: 'await_choice', declaredDone: true, toolCalls: 0, unresolvedErrors: [] }); } catch (_) {}
+        journal('info', 'choix demande', { stale: split.fresh.length });
+        if (runs.get(sessionId) === choiceEntry) runs.delete(sessionId);
+        return { status: 'done', model, messageCount, runStatus: 'PARTIEL' };
+      }
+    }
   }
 
   // P26-a/b: mode, size profile, context budget.
@@ -660,10 +784,25 @@ async function toolsTurn(base, session, toolsCtx) {
       try { r = await executeTool(tctx, 'bash', { command: c.command }, {}); }
       catch (e) { r = { status: 'error', reason: String((e && e.message) || e).slice(0, 300) }; }
       if (r.status === 'need-approval') {
-        try { toolsCtx.pending.set(r.request.id, { request: r.request, sessionId, fullArgs: { command: c.command } }); } catch (_) {}
-        stopReason = 'verify_approval';
-        stopDetail = 'verification en attente d\'approbation (' + r.request.id + ' : ' + c.command.slice(0, 120) + ').';
-        return 'stop';
+        // P52: verify approvals pause like any other (no waiter: legacy stop).
+        const paused = await pauseForApproval({ toolsCtx, sessionId, runEntry, onEvent, turnId, journal, request: r.request, fullArgs: { command: c.command } });
+        if (paused.aborted) return 'stop';
+        if (paused.legacy) {
+          stopReason = 'verify_approval';
+          stopDetail = 'verification en attente d\'approbation (' + r.request.id + ' : ' + c.command.slice(0, 120) + ').';
+          return 'stop';
+        }
+        if (paused.decision === 'deny') {
+          r = { status: 'denied', reason: 'verification refusee par l\'operateur.' };
+        } else {
+          try { r = await executeTool(tctx, 'bash', { command: c.command }, { preApproved: true }); }
+          catch (e) { r = { status: 'error', reason: String((e && e.message) || e).slice(0, 300) }; }
+          if (r.status === 'need-approval') {
+            stopReason = 'verify_approval';
+            stopDetail = 'verification en attente d\'approbation (' + r.request.id + ' : ' + c.command.slice(0, 120) + ').';
+            return 'stop';
+          }
+        }
       }
       if (r.status === 'denied') {
         stopReason = 'verify_denied';
@@ -690,15 +829,6 @@ async function toolsTurn(base, session, toolsCtx) {
     store.append(sessionId, { role: 'user', content: 'VERIFICATION ECHOUEE (essai ' + verifyRounds + '/2) :\n' + body + '\nCorrige le probleme puis reponds.' });
     journal('warn', 'verify fail, retry', { round: verifyRounds, checks: failures.map((f) => f.check.name).join(', ') });
     return 'continue';
-  };
-
-  const callKey = (c) => {
-    const a = (c && c.args) || {};
-    // P50-6: subagent tasks discriminate the key (distinct sequential
-    // spawns are legal; byte-identical repeats still trip the guard).
-    const sub = a.task || (Array.isArray(a.tasks) ? a.tasks.map((x) => (x && x.task) || '').join(';') : '') || '';
-    const t = a.file || a.dir || a.path || a.cwd || a.pattern || a.command || a.op || a.scope || sub || '';
-    return String(c.name || '?') + '|' + String(t).slice(0, 200);
   };
 
   // P49-1: strict ACTION regime. QUESTION/AMBIGUOUS keep their historical
@@ -738,35 +868,52 @@ async function toolsTurn(base, session, toolsCtx) {
   };
   // P49-2: constrained re-attempt prompt (whole-turn retry, history kept).
   const constrainedPrompt = (n) => 'RELANCE CONTRAINTE ' + n + '/2 : ta precedente tentative s\'est terminee sans AUCUNE modification verifiee. Recommence : constate (list/grep/read), agis (UN appel d\'outil a la fois), puis termine via done/reply. Le texte libre ne termine rien.';
-  // P49-3: fresh todo reads (the store is file-backed: always re-read).
-  const readTodos = () => {
-    try {
-      const cur = store.get(sessionId);
-      if (cur && cur.meta && Array.isArray(cur.meta.todos)) return cur.meta.todos;
-    } catch (_) {}
-    return [];
-  };
-  // P49-1: reply/done acceptance gate. Returns null when allowed.
-  const replyBlockedReason = () => {
-    const todos = readTodos();
-    const open = todos.filter((t) => !t.done);
-    if (open.length) {
-      return { code: 'todos_open', error: 'finis d\'abord les ' + open.length + ' todos ouverts (' + open.slice(0, 3).map((t) => t.id + ': ' + String(t.text).slice(0, 60)).join(' ; ') + ') : appelle todo/done pour chacun, puis reply/done.' };
-    }
-    if (strictAction && intent.collective && !todos.length && !run.calls.some((c) => c.ok)) {
-      return { code: 'no_plan', error: 'demande collective : decoupe d\'abord le travail en todos (todo/add, un par etape), puis execute-les une par une.' };
-    }
-    return null;
-  };
+  // P52: NO finish gate over todos (item 3): a reply/done is never
+  // refused for open or missing todos. The engine verifies each step on
+  // disk; the appendix reports the plan honestly.
   let reconDone = false;
-  // P49-3: a pasted task list seeds session todos driver-side (bounded).
-  if (strictAction && intent.hasTaskList) {
-    for (const item of intent.taskItems.slice(0, 20)) {
-      try { await executeTool(tctx, 'todo', { op: 'add', text: item }, {}); } catch (_) {}
-    }
-    journal('info', 'todos ensemences', { count: Math.min(intent.taskItems.length, 20) });
+  // P52: the ENGINE owns the plan (the model never manages todos).
+  // Pasted lists, collective actions and semicolon-numbered prompts seed
+  // session todos driver-side; each step carries its disk verifier.
+  // Long plans (>= LONG_STEPS) run orchestrated instead (disjoint path).
+  // noOrchPlan (orchestrated step children): execute ONE step, never
+  // re-plan (the prev summary looks like a task list) nor re-orchestrate
+  // (anti-recursion). Verification happens at the orch level.
+  const noOrchPlan = !!(toolsCtx && toolsCtx.noOrchPlan);
+  const seedTexts = noOrchPlan ? [] : plan.parseSteps(base.prompt, intent.taskItems || []);
+  const wantPlan = !noOrchPlan && mode === 'build' && (strictAction || (intent.kind === 'AMBIGUOUS' && (intent.hasTaskList || seedTexts.length >= 2)));
+  const orchTexts = (wantPlan && seedTexts.length >= orch.longSteps()) ? seedTexts : [];
+  // P52-7: explicit resume words revive the most recent unfinished
+  // orchestrated plan (crash/stop/close recovery). Anything else starts
+  // a fresh plan (never hijacks an old one implicitly).
+  let orchResumeId = null;
+  // noResume (orch/subagent children): executors never trigger a resume.
+  // Backstop: a turn never resumes its own orch plan (anti-recursion).
+  const ownOrchPlan = (session.meta && session.meta.orchPlan) || '';
+  if (mode === 'build' && intent.kind !== 'QUESTION' && !(toolsCtx && toolsCtx.noResume) && /reprend|resume|continu/i.test(base.prompt)) {
+    try {
+      const dir = path.join(root, '.sudo-agent');
+      const files = fs.readdirSync(dir).filter((f) => f.indexOf('orch-') === 0 && f.slice(-5) === '.json').sort();
+      for (let i = files.length - 1; i >= 0; i--) {
+        const pid = files[i].slice(5, -5);
+        if (pid === ownOrchPlan) continue;
+        const st = orch.loadState(root, pid);
+        if (st && st.steps.some((x) => x && (x.status === 'pending' || x.status === 'failed'))) { orchResumeId = pid; break; }
+      }
+    } catch (_) {}
+    journal('info', orchResumeId ? 'reprise plan orchestre' : 'reprise sans plan', { plan: orchResumeId || '' });
   }
-
+  let enginePlan = [];
+  if (wantPlan && !orchTexts.length && !orchResumeId && seedTexts.length) {
+    try {
+      const seeded = plan.seedPlan(store, sessionId, turnId, plan.buildPlan(seedTexts), root);
+      enginePlan = seeded.todos;
+      journal('info', 'plan moteur ensemence', { steps: enginePlan.length });
+      store.append(sessionId, { role: 'user', content: plan.planNote(enginePlan) });
+    } catch (e) {
+      journal('warn', 'plan moteur impossible', { error: String((e && e.message) || e).slice(0, 120) });
+    }
+  }
   let declared = false;
   let finalText = '';
   let iters = 0;
@@ -774,16 +921,45 @@ async function toolsTurn(base, session, toolsCtx) {
   let childSeq = 0;
   let buildFixFails = 0;
   let buildFixStop = false;
-  let lastKey = '';
-  let sameCount = 0;
+  const guard = plan.createLoopGuard();
+  let loopStop = false;
+  let pauseAborted = false;
+  let orchVerdict = null;
   let attempt = 0;
   const MAX_ATTEMPTS = (strictAction && mode === 'build') ? 3 : 1;
   try {
-    for (attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  // P52 loop guard v2: a loop stop NEVER ends without an answer. Last
+  // round WITHOUT tools (answer from what is collected), else a labelled
+  // deterministic fallback. Status stays PARTIEL (loop happened).
+  const rescueAnswer = async (what) => {
+    if (runEntry.aborted) return;
+    try {
+      const rescue = await chatOnce(provider, { model,
+        messages: modelMessages().concat([{ role: 'user',
+          content: 'STOP OUTILS : tu as repete le meme appel malgre la strategie corrective (' + String(what || '?') +
+            '). SANS appeler d\'outils, reponds avec ce qui est deja collecte. ' +
+            'Si vraiment impossible, dis-le brievement.' }]),
+      });
+      const rt = String((rescue && rescue.text) || '').trim();
+      if (rt) {
+        finalText = rt;
+        store.append(sessionId, { role: 'assistant', content: finalText });
+        journal('info', 'reponse secours IA', { chars: rt.length });
+      }
+    } catch (e) {
+      journal('warn', 'reponse secours IA echouee', { error: String((e && e.message) || e).slice(0, 160) });
+    }
+    if (!finalText) {
+      finalText = pmap.deterministicFallback({ root, map: mapInfo, calls: run.calls, loopKey: String(what || '?'), prompt: base.prompt });
+      store.append(sessionId, { role: 'assistant', content: finalText });
+      journal('warn', 'reponse secours deterministe', { chars: finalText.length });
+    }
+  };
+    for (attempt = 0; attempt < ((orchTexts.length || orchResumeId) ? 0 : MAX_ATTEMPTS); attempt++) {
       if (attempt > 0) {
         // P49-2: constrained re-attempt: strong order, fresh round budget.
         store.append(sessionId, { role: 'user', content: constrainedPrompt(attempt) });
-        declared = false; finalText = ''; lastKey = ''; sameCount = 0;
+        declared = false; finalText = ''; loopStop = false; pauseAborted = false; guard.reset();
         stopReason = ''; stopDetail = '';
         journal('warn', 'relance contrainte', { attempt: attempt + 1, max: MAX_ATTEMPTS });
       }
@@ -820,6 +996,11 @@ async function toolsTurn(base, session, toolsCtx) {
         else { stopReason = 'no_tool'; stopDetail = 'le modele n\'emet aucun appel d\'outil (reparations contraintes epuisees).'; break; }
       }
       if (!calls.length) {
+        // P52: same catch-up sweep on the free-text declare path.
+        try {
+          const swept = plan.sweepVerify(store, sessionId, root, true);
+          if (swept.length) journal('info', 'plan verifie (solde)', { steps: swept.length });
+        } catch (_) {}
         const v = await maybeVerify();
         if (v === 'continue') continue;
         if (v === 'stop') break;
@@ -832,50 +1013,39 @@ async function toolsTurn(base, session, toolsCtx) {
       // (with their own tool message so the transcript stays valid).
       store.append(sessionId, { role: 'assistant', content: reply.text || '', tool_calls: calls.map((c) => ({ id: c.id, name: c.name, argsText: c.argsText })) });
       const first = calls[0];
-      const key = first.parseError ? '' : callKey(first);
-      if (key && key === lastKey) {
-        sameCount += 1;
-      } else {
-        lastKey = key;
-        sameCount = key ? 1 : 0;
-      }
-      if (key && sameCount >= 3) {
-        stopReason = 'loop';
-        stopDetail = 'boucle repetitive detectee : ' + key.slice(0, 160) + ' (3 appels identiques, arret).';
-        journal('warn', 'repeat loop', { key: key.slice(0, 160) });
-        // Close the dangling 3rd call so the transcript stays valid.
-        const loopCallId = first.id || ('call-' + run.calls.length);
-        run.calls.push({ tool: first.name || '?', target: '', ok: false, code: 'skipped', ms: 0,
-          at: new Date().toISOString(), summary: 'non execute : boucle repetitive detectee.' });
-        store.append(sessionId, { role: 'tool', tool_call_id: loopCallId, name: first.name,
-          content: JSON.stringify({ ok: false, code: 'skipped', error: 'non execute : boucle repetitive (3 appels identiques).' }) });
-        // P39-d: a loop stop NEVER ends without an answer. Last round
-        // WITHOUT tools (answer from what is collected), else a labelled
-        // deterministic fallback. Status stays PARTIEL (loop happened).
-        if (!runEntry.aborted) {
-          try {
-            const rescue = await chatOnce(provider, { model,
-              messages: modelMessages().concat([{ role: 'user',
-                content: 'STOP OUTILS : tu as repete 3 fois le meme appel (' + key.slice(0, 160) +
-                  '). SANS appeler d\'outils, reponds avec ce qui est deja collecte. ' +
-                  'Si vraiment impossible, dis-le brievement.' }]),
-            });
-            const rt = String((rescue && rescue.text) || '').trim();
-            if (rt) {
-              finalText = rt;
-              store.append(sessionId, { role: 'assistant', content: finalText });
-              journal('info', 'reponse secours IA', { chars: rt.length });
-            }
-          } catch (e) {
-            journal('warn', 'reponse secours IA echouee', { error: String((e && e.message) || e).slice(0, 160) });
+      // P52 loop guard v2: while corrective, the IDENTICAL call (same tool
+      // + same args) is refused with guidance; the 2nd identical repeat
+      // stops the turn (with a rescue answer). A different tool or
+      // different args runs (adaptation resets the guard).
+      if (!first.parseError && guard.forbiddenArgs && plan.argSig(first.name, first.args) === guard.forbiddenArgs) {
+        guard.correctiveRefusals += 1;
+        const callIdG = first.id || ('call-' + run.calls.length);
+        const closeExtrasG = () => {
+          for (const extra of calls.slice(1)) {
+            const xid = extra.id || ('call-' + run.calls.length);
+            run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'ignore : une seule action par pas.' });
+            store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
+            try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
           }
-          if (!finalText) {
-            finalText = pmap.deterministicFallback({ root, map: mapInfo, calls: run.calls, loopKey: key, prompt: base.prompt });
-            store.append(sessionId, { role: 'assistant', content: finalText });
-            journal('warn', 'reponse secours deterministe', { chars: finalText.length });
-          }
+        };
+        if (guard.correctiveRefusals >= 2) {
+          stopReason = 'loop';
+          stopDetail = 'boucle repetitive : ' + String(first.name || '?') + ' (meme appel malgre la strategie corrective, arret).';
+          journal('warn', 'repeat loop', { tool: first.name });
+          run.calls.push({ tool: first.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'non execute : arret boucle.' });
+          store.append(sessionId, { role: 'tool', tool_call_id: callIdG, name: first.name,
+            content: JSON.stringify({ ok: false, code: 'skipped', error: 'non execute : meme appel malgre la strategie corrective (arret).' }) });
+          try { onEvent({ type: 'tool.result', callId: callIdG, tool: first.name, ok: false, code: 'skipped', ms: 0, summary: 'arret boucle.' }); } catch (_) {}
+          closeExtrasG();
+          await rescueAnswer(first.name);
+          break;
         }
-        break;
+        run.calls.push({ tool: first.name || '?', target: '', ok: false, code: 'corrective', ms: 0, at: new Date().toISOString(), summary: 'refuse : strategie corrective, change d\'appel.' });
+        store.append(sessionId, { role: 'tool', tool_call_id: callIdG, name: first.name,
+          content: JSON.stringify({ ok: false, code: 'corrective', error: 'STRATEGIE CORRECTIVE : tu as repete 3 fois le meme appel (meme outil, memes arguments, meme resultat). Change de strategie : constate autrement (list/grep/read), choisis un autre outil ou d\'autres arguments, ou termine via reply/done. Ne re-emets PAS cet appel (une repetition identique = arret du tour).', detail: 'change de strategie.' }) });
+        try { onEvent({ type: 'tool.result', callId: callIdG, tool: first.name, ok: false, code: 'corrective', ms: 0, summary: 'strategie corrective.' }); } catch (_) {}
+        closeExtrasG();
+        continue;
       }
       // P49-1: reply/done terminate the turn (the ONLY no-modification
       // exits). Gates teach the rules; extras are closed so the transcript
@@ -898,7 +1068,6 @@ async function toolsTurn(base, session, toolsCtx) {
           store.append(sessionId, { role: 'tool', tool_call_id: callIdF, name: first.name, content: filter(JSON.stringify(body)).slice(0, 8000) });
           try { onEvent({ type: 'tool.result', callId: callIdF, tool: first.name, ok, code, ms: 0, summary: String(text || '').slice(0, 300) }); } catch (_) {}
         };
-        const block = replyBlockedReason();
         const argText = first.name === 'reply'
           ? String((first.args && first.args.text) || '').trim()
           : String((first.args && first.args.summary) || '').trim();
@@ -912,16 +1081,18 @@ async function toolsTurn(base, session, toolsCtx) {
           closeExtrasF();
           continue;
         }
-        if (block) {
-          finishIntercept(false, block.code, block.error);
-          closeExtrasF();
-          continue;
-        }
         if (argText && detectRepetition(argText)) {
           finishIntercept(false, 'bad_args', 'ta reponse se repete : reformule-la brievement, sans repeter deux fois la meme phrase, via reply/done.');
           closeExtrasF();
           continue;
         }
+        // P52: catch-up sweep (steps finished without per-call verification
+        // are verified now). NEVER blocks: open steps stay open (honest
+        // appendix below), the finish is always accepted.
+        try {
+          const swept = plan.sweepVerify(store, sessionId, root, true);
+          if (swept.length) journal('info', 'plan verifie (solde)', { steps: swept.length });
+        } catch (_) {}
         const vF = await maybeVerify();
         if (vF === 'continue' || vF === 'stop') {
           finishIntercept(false, 'verify', 'verifications en cours : poursuis le travail (des checks ont ete modifies).');
@@ -994,7 +1165,7 @@ async function toolsTurn(base, session, toolsCtx) {
           let cres = null;
           try {
             cres = await runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.s' + n,
-              provider, toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map() },
+              provider, toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map(), noResume: true },
               runs, log, onEvent: () => {}, subDepth: subDepth + 1, maxIt: mr, runtimeWait });
           } catch (e) {
             journal('warn', 'sous-agent erreur', { child: child.id, error: String((e && e.message) || e).slice(0, 160) });
@@ -1054,25 +1225,92 @@ async function toolsTurn(base, session, toolsCtx) {
         // P49-3: improvement without recon is forbidden: look first.
         run.calls.push({ tool: first.name, target: '', ok: false, code: 'recon_required', ms: 0, at: new Date().toISOString(), summary: 'bloque : constat requis avant ecriture.' });
         content = JSON.stringify({ ok: false, code: 'recon_required', error: 'constate d\'abord : list/grep/read le projet avant d\'ecrire (amelioration pilotee par constats reels, pas de conseils generiques).', detail: 'constate d\'abord : list/grep/read avant write/edit.' });
+      } else if (first.name === 'todo') {
+        // P52: the model never manages todos (the engine owns the plan).
+        run.calls.push({ tool: 'todo', target: '', ok: false, code: 'engine_todos', ms: 0, at: new Date().toISOString(), summary: 'refuse : todos geres par le moteur.' });
+        content = JSON.stringify({ ok: false, code: 'engine_todos', error: 'les todos sont geres par le moteur (PLAN MOTEUR affiche) : poursuis l\'etape en cours, ne gere pas de liste.', detail: 'todos geres par le moteur.' });
       } else {
+        const doneContent = (rr) => {
+          // P49-3: any successful look unlocks file mutations for the turn.
+          if (rr.call.ok && ['read', 'list', 'glob', 'grep'].indexOf(first.name) !== -1) reconDone = true;
+          return JSON.stringify({ ok: true, summary: rr.call.summary, result: rr.call.result, diff: rr.call.diff ? rr.call.diff.slice(0, 4000) : undefined, detail: rr.call.summary });
+        };
+        const errContent = (rr) => JSON.stringify({ ok: false, code: rr.code || 'error', error: rr.reason || 'echec.', detail: rr.reason || 'echec.' });
+        const legacyNeedApproval = (rr) => {
+          const entry = { tool: first.name, target: String((rr.request.pattern && rr.request.pattern.text) || ''), ok: false, code: 'need_approval', ms: 0, at: new Date().toISOString(), summary: 'approbation requise (' + rr.request.id + ')' };
+          run.calls.push(entry);
+          return JSON.stringify({ ok: false, code: 'need_approval', requestId: rr.request.id, summary: rr.request.summary, hint: 'appel NON execute : approbation operateur requise.', detail: rr.request.summary });
+        };
         const r = await executeTool(tctx, first.name, first.args, {});
         if (r.status === 'done') {
-          // P49-3: any successful look unlocks file mutations for the turn.
-          if (r.call.ok && ['read', 'list', 'glob', 'grep'].indexOf(first.name) !== -1) reconDone = true;
-          content = JSON.stringify({ ok: true, summary: r.call.summary, result: r.call.result, diff: r.call.diff ? r.call.diff.slice(0, 4000) : undefined, detail: r.call.summary });
+          content = doneContent(r);
         } else if (r.status === 'need-approval') {
-          try { toolsCtx.pending.set(r.request.id, { request: r.request, sessionId, fullArgs: first.args }); } catch (_) {}
-          const entry = { tool: first.name, target: String((r.request.pattern && r.request.pattern.text) || ''), ok: false, code: 'need_approval', ms: 0, at: new Date().toISOString(), summary: 'approbation requise (' + r.request.id + ')' };
-          run.calls.push(entry);
-          content = JSON.stringify({ ok: false, code: 'need_approval', requestId: r.request.id, summary: r.request.summary, hint: 'appel NON execute : approbation operateur requise.', detail: r.request.summary });
+          // P52 item 1: approvals PAUSE the turn (resumable), they no
+          // longer fail it. No waiter (sub-turns) keeps legacy behavior.
+          const paused = await pauseForApproval({ toolsCtx, sessionId, runEntry, onEvent, turnId, journal, request: r.request, fullArgs: first.args });
+          if (paused.aborted) {
+            run.calls.push({ tool: first.name, target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'abandonne pendant la pause.' });
+            content = JSON.stringify({ ok: false, code: 'skipped', error: 'tour abandonne pendant l\'attente d\'approbation.' });
+            pauseAborted = true;
+          } else if (paused.legacy) {
+            content = legacyNeedApproval(r);
+          } else if (paused.decision === 'deny') {
+            run.calls.push({ tool: first.name, target: String((r.request.pattern && r.request.pattern.text) || ''), ok: false, code: 'denied', ms: 0, at: new Date().toISOString(), summary: 'refuse par l\'operateur.' });
+            content = JSON.stringify({ ok: false, code: 'denied', error: 'refuse par l\'operateur. Adapte (autre outil, autre chemin) ou termine via reply/done.', detail: 'refuse par l\'operateur.' });
+          } else {
+            // Approved (once/session/project): re-execute, THIS turn continues.
+            const r2 = await executeTool(tctx, first.name, first.args, { preApproved: true });
+            if (r2.status === 'done') content = doneContent(r2);
+            else if (r2.status === 'need-approval') content = legacyNeedApproval(r2); // state changed mid-pause: honest stop, no re-pause loop.
+            else content = errContent(r2);
+          }
         } else {
-          content = JSON.stringify({ ok: false, code: r.code || 'error', error: r.reason || 'echec.', detail: r.reason || 'echec.' });
+          content = errContent(r);
         }
       }
-      content = filter(content).slice(0, 8000);
+      content = filter(summarizeResult(content)).slice(0, 8000);
+
+      // P52: the engine verifies the current plan step on disk after
+      // each executed call and marks it done ONLY when verified (never
+      // blocks: failures just leave the step open).
+      try {
+        const lastCall = run.calls[run.calls.length - 1] || {};
+        if (lastCall.ok) {
+          const marked = plan.verifyCurrent(store, sessionId, root);
+          if (marked) {
+            journal('info', 'etape verifiee', { step: marked.id, detail: String(marked.detail || '').slice(0, 160) });
+            try {
+              const o = JSON.parse(content);
+              o.planProgress = 'etape ' + marked.id + ' VERIFIEE (' + String(marked.detail || '').slice(0, 200) + ').';
+              content = JSON.stringify(o);
+            } catch (_) {}
+          }
+        }
+      } catch (_) {}
       store.append(sessionId, { role: 'tool', tool_call_id: callId, name: first.name, content });
       const last = run.calls[run.calls.length - 1] || {};
       try { onEvent({ type: 'tool.result', callId, tool: first.name, ok: !!last.ok, code: last.code || 'ok', ms: last.ms || 0, summary: (last.summary || '').slice(0, 300) }); } catch (_) {}
+      // P52 loop guard v2: same tool + same args + same result on
+      // COMPLETED calls only. The 3rd identical triggers the corrective
+      // strategy; identical again stops (with a rescue answer, P39-d).
+      // Reads, approvals, denials, guidance and skips never count.
+      if (!first.parseError && (GUARD_TOOLS.indexOf(first.name) !== -1 || (first.name && first.name.indexOf('mcp__') === 0)) &&
+          GUARD_SKIP_CODES.indexOf(last.code || 'ok') === -1 && GUIDANCE_CODES.indexOf(last.code || 'ok') === -1) {
+        const gv = guard.note(plan.callSig(first.name, first.args, !!last.ok, last.code));
+        if (gv === 'correct') {
+          journal('warn', 'boucle corrective', { tool: first.name });
+          guard.forbiddenArgs = plan.argSig(first.name, first.args);
+          store.append(sessionId, { role: 'user', content: 'STRATEGIE CORRECTIVE : tu as repete 3 fois le meme appel ' + String(first.name || '?') + ' (memes arguments, meme resultat). Change de strategie : constate autrement (list/grep/read), choisis un autre outil ou d\'autres arguments, ou termine via reply/done. Ne re-emets PAS cet appel (une repetition identique = arret du tour).' });
+        } else if (gv === 'stop') {
+          // Defensive only (the pre-exec restriction normally prevents
+          // re-executing the identical call while corrective).
+          stopReason = 'loop';
+          stopDetail = 'boucle repetitive : ' + String(first.name || '?') + ' (meme outil, memes arguments, meme resultat malgre la strategie corrective, arret).';
+          journal('warn', 'repeat loop', { tool: first.name });
+          await rescueAnswer(first.name);
+          loopStop = true;
+        }
+      }
       // P50-3: bounded build-fix loop (see consts above). need_approval
       // and skipped never count: the tool did not run.
       if (last.ok) buildFixFails = 0;
@@ -1091,7 +1329,7 @@ async function toolsTurn(base, session, toolsCtx) {
           store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
         try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
       }
-      if (buildFixStop) break; // P50-3: extras closed above, transcript valid.
+      if (pauseAborted || loopStop || buildFixStop) break; // P50-3 + P52: extras closed above, transcript valid.
     }
     // P49-2: the model claimed done with no verified files: constrained
     // re-attempt (bounded by MAX_ATTEMPTS); otherwise the verdict below
@@ -1123,6 +1361,82 @@ async function toolsTurn(base, session, toolsCtx) {
     return finishAborted();
   }
 
+  // P52 item 7: orchestrated long tasks. Each step runs in a FRESH
+  // minimal child context (step text + short summary of previous steps);
+  // plan/state/hashes/journal persist on disk (crash/stop/close resume
+  // via explicit resume words). The parent makes no model calls itself.
+  if ((orchResumeId || orchTexts.length) && !runEntry.aborted) {
+    const orchPlanId = orchResumeId || turnId;
+    journal('info', 'tour orchestre', { plan: orchPlanId, steps: orchTexts.length || 'reprise', resume: !!orchResumeId });
+    try { await ensureSeriesCheckpoint(tctx); } catch (e) {
+      journal('warn', 'instantane orchestre impossible', { error: String((e && e.message) || e).slice(0, 120) });
+    }
+    const waiters = (toolsCtx && toolsCtx.waiters) || null;
+    const stepRunner = async (step, ctx) => {
+      if (runEntry.aborted) return { calls: 0, aborted: true, error: 'tour abandonne.' };
+      const child = store.create({ title: 'orch ' + ctx.n + '/' + ctx.N + ': ' + step.text.slice(0, 50), projectRoot: session.projectRoot });
+      try { store.update(child.id, (x) => { x.meta.orchParent = sessionId; x.meta.orchPlan = orchPlanId; }); } catch (_) {}
+      // Share the parent session rules (operator approvals apply to steps).
+      try { sessionRulesMap.set(child.id, sessionRulesMap.get(sessionId)); } catch (_) {}
+      const cprompt = 'Execute l\'etape ' + ctx.n + '/' + ctx.N + ' du plan : ' + step.text +
+        (ctx.prev ? '\nEtapes precedentes accomplies :\n' + ctx.prev : '') +
+        '\nUNE seule action par pas. Termine par done avec un court resume.';
+      const t0 = Date.now();
+      let cres = null;
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; try { abortRun(runs, child.id); } catch (_) {} }, ctx.msBudget);
+      if (timer.unref) { try { timer.unref(); } catch (_) {} }
+      // A parent abort also aborts the step child (else a paused child
+      // would hang the turn forever).
+      const pabort = setInterval(() => { if (runEntry.aborted) { try { abortRun(runs, child.id); } catch (_) {} } }, 250);
+      if (pabort.unref) { try { pabort.unref(); } catch (_) {} }
+      try {
+        cres = await runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.o' + ctx.n,
+          provider, toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map(), waiters, parentSessionId: sessionId, noResume: true, noOrchPlan: true },
+          runs, log, onEvent: (e) => {
+            try {
+              if (e && (e.type === 'turn.paused' || (typeof e.type === 'string' && e.type.indexOf('tool.') === 0) || e.type === 'runtime.wait')) onEvent(e);
+            } catch (_) {}
+          }, maxIt: ctx.callBudget, runtimeWait });
+      } catch (e) {
+        journal('warn', 'etape orchestre erreur', { n: ctx.n, error: String((e && e.message) || e).slice(0, 160) });
+      } finally {
+        try { clearTimeout(timer); } catch (_) {}
+        try { clearInterval(pabort); } catch (_) {}
+      }
+      const cs = store.get(child.id);
+      const calls = (cs && cs.meta && cs.meta.lastRun && Array.isArray(cs.meta.lastRun.calls)) ? cs.meta.lastRun.calls : [];
+      const childDeclared = !!(cs && cs.meta && cs.meta.lastRun && cs.meta.lastRun.stopReason === 'declared');
+      if (runEntry.aborted) return { calls: calls.length, aborted: true, error: 'tour abandonne.' };
+      if (timedOut) return { calls: calls.length, ok: false, error: 'delai etape depasse (' + Math.round((Date.now() - t0) / 1000) + 's).' };
+      return { calls: calls.length, ok: !cres || cres.status !== 'error', declared: childDeclared, error: (cres && cres.status === 'error') ? String(cres.error || 'erreur enfant').slice(0, 200) : '' };
+    };
+    let orchAborted = false;
+    try {
+      const res = await orch.runOrchestrated({ root, planId: orchPlanId, stepTexts: orchTexts,
+        runStep: async (step, ctx) => {
+          const r = await stepRunner(step, ctx);
+          if (r.aborted) orchAborted = true;
+          run.calls.push({ tool: 'orch', target: 'etape ' + ctx.n + '/' + ctx.N, ok: !r.aborted && r.ok !== false, code: r.aborted ? 'skipped' : (r.ok === false ? 'step_failed' : 'ok'), ms: 0, at: new Date().toISOString(), summary: ('etape ' + ctx.n + '/' + ctx.N + ' : ' + (r.aborted ? 'interrompue' : (r.error || 'executee'))).slice(0, 300) });
+          return r;
+        },
+        emit: (t, o) => { try { onEvent(Object.assign({ type: t }, o)); } catch (_) {} } });
+      finalText = res.report;
+      declared = true;
+      const total = res.done + res.failed + res.skipped;
+      if (orchAborted) orchVerdict = { status: 'PARTIEL', reason: 'interrompu (reprise : repondez "reprendre le plan").', unresolved: [] };
+      else if (res.failed > 0) orchVerdict = { status: 'ECHEC', reason: res.failed + ' etape(s) echouee(s) sur ' + total + '.', unresolved: [] };
+      else if (res.skipped > 0) orchVerdict = { status: 'PARTIEL', reason: res.skipped + ' etape(s) non tentee(s) (budget).', unresolved: [] };
+      else orchVerdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      journal('info', 'orchestre termine', { done: res.done, failed: res.failed, skipped: res.skipped });
+    } catch (e) {
+      finalText = 'Plan orchestre interrompu : ' + String((e && e.message) || e).slice(0, 300);
+      declared = true;
+      orchVerdict = { status: 'ECHEC', reason: 'orchestration interrompue.', unresolved: [] };
+      journal('warn', 'orchestre interrompu', { error: String((e && e.message) || e).slice(0, 160) });
+    }
+  }
+
   // P43-3: a context stop NEVER abandons. Minimal second round: terse
   // system + map + the raw prompt, NO tools, NO history. If it fails too,
   // the labelled deterministic fallback (why='context'). Status stays
@@ -1152,6 +1466,7 @@ async function toolsTurn(base, session, toolsCtx) {
   // Honest status (P25-g + P26 stops).
   const filesModified = currentFilesModified();
   let verdict = computeRunStatus(declared, run.calls);
+  if (orchVerdict) verdict = orchVerdict; // P52: the orchestrated verdict wins (honest per-step report).
   if (!declared && stopReason && stopReason !== 'verify_failed') {
     verdict = { status: 'PARTIEL', reason: stopDetail || 'arret.', unresolved: verdict.unresolved };
   }
@@ -1163,12 +1478,19 @@ async function toolsTurn(base, session, toolsCtx) {
     const app = 'Modifications verifiees (' + filesModified.length + ') : ' + filesModified.join(', ');
     finalText = (finalText.trim() ? finalText.trim() + '\n\n' : '') + app;
   }
+  // P52: engine-plan honesty appendix (verified X/Y + remaining steps).
+  if (declared) {
+    try {
+      const papp = plan.planAppendix(store, sessionId);
+      if (papp) finalText = (finalText.trim() ? finalText.trim() + '\n\n' : '') + papp;
+    } catch (_) {}
+  }
   if (strictAction && !runEntry.aborted) {
     const okCalls = run.calls.filter((c) => c.ok && c.code !== 'skipped').length;
     if (declared && filesModified.length > 0) {
       // Errors may still stand (unresolved): then ECHEC is kept, with the
       // files listed above. TERMINE only when nothing stands unresolved.
-      if (!verdict.unresolved.length) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      if (!verdict.unresolved.length && !orchVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
       if (!finalText.trim()) finalText = 'Tache terminee.';
       store.append(sessionId, { role: 'assistant', content: finalText });
     } else if (declared && runOnly && okCalls > 0) {
@@ -1178,7 +1500,7 @@ async function toolsTurn(base, session, toolsCtx) {
     } else if (!declared && (filesModified.length > 0 || finalText.trim())) {
       // Undeclared but real: modified files without a declaration, or an
       // answer already produced (context/loop rescue): keep the verdict.
-    } else if (!declared || verdict.status === 'TERMINE') {
+    } else if ((!declared || verdict.status === 'TERMINE') && !orchVerdict) {
       // P49-2 target: false TERMINE (declared, no evidence) and answerless
       // stops (no_tool). A declared ECHEC (mid-turn approval need, standing
       // tool errors) is loud already: it stands, never downgraded.
@@ -1190,7 +1512,10 @@ async function toolsTurn(base, session, toolsCtx) {
       else if (!okCalls) {
         const errs = run.calls.filter((c) => !c.ok).slice(0, 3).map((c) => c.tool + '/' + (c.code || 'error'));
         raison = 'tous les appels ont echoue (' + errs.join(', ') + ').';
-      } else raison = 'appels lecture seule uniquement, aucun fichier touche.';
+      } else {
+        const denies = run.calls.filter((c) => !c.ok && c.code === 'denied').map((c) => c.tool);
+        raison = denies.length ? 'action refusee par l\'operateur (' + denies.join(', ') + ').' : 'appels lecture seule uniquement, aucun fichier touche.';
+      }
       finalText = 'AUCUNE MODIFICATION : ' + raison + '\n\nProposition : reformulez en UNE action precise (ex : "cree le fichier X qui ..."), ' +
         (mode === 'plan' ? 'basculez en BUILD pour modifier.' : 'verifiez les chemins (list/glob) puis relancez.');
       verdict = { status: 'PARTIEL', reason: 'AUCUNE MODIFICATION : ' + raison, unresolved: verdict.unresolved };
@@ -1198,6 +1523,16 @@ async function toolsTurn(base, session, toolsCtx) {
       // history and panels read the store, not just message.done).
       store.append(sessionId, { role: 'assistant', content: finalText });
     }
+  }
+  // P52: orchestrated turns always store the report (even file-less or
+  // interrupted ones: the store is the transcript of record).
+  if (orchVerdict && declared) {
+    try {
+      const msgs = (store.get(sessionId) || { messages: [] }).messages;
+      if (!msgs.length || msgs[msgs.length - 1].role !== 'assistant' || msgs[msgs.length - 1].content !== finalText) {
+        store.append(sessionId, { role: 'assistant', content: finalText });
+      }
+    } catch (_) {}
   }
   const stopOut = stopReason || (declared ? 'declared' : 'max_iters');
   // P49-2: the combined tool diffs ride along (bounded) for honest review.
@@ -1241,4 +1576,4 @@ function abortRun(runs, sessionId) {
   return true;
 }
 
-module.exports = { runTurn, abortRun, computeRunStatus, unresolvedErrors, detectRepetition, MAX_TOOL_ITERS };
+module.exports = { runTurn, abortRun, computeRunStatus, unresolvedErrors, detectRepetition, MAX_TOOL_ITERS, resolveTurnApproval, summarizeResult };

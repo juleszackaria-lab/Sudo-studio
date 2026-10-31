@@ -157,7 +157,8 @@ async function main() {
   const script = [
     { content: '', tool_calls: [{ id: 'call-1', type: 'function',
       function: { name: 'write', arguments: JSON.stringify({ file: 'hello.txt', content: 'bonjour e2e\n' }) } }] },
-    { content: 'fichier demande.', tool_calls: [] },
+    { content: '', tool_calls: [{ id: 'call-2', type: 'function',
+      function: { name: 'done', arguments: JSON.stringify({}) } }] },
     { content: 'termine.', tool_calls: [] },
   ];
   let chatCalls = 0;
@@ -220,21 +221,32 @@ async function main() {
     const s = await api('POST', '/sessions', { title: 'p31', projectRoot: proj });
     assert.strictEqual(s.status, 201, JSON.stringify(s.body));
     const sid = s.body.id;
-    const t1 = await srv.stream('/sessions/' + sid + '/messages', { prompt: 'cree hello.txt' }, () => {}, { timeoutMs: 60000 });
-    assert.strictEqual(t1.status, 'ECHEC', 'honest: not executed, got ' + t1.status);
-    assert.ok(/need_approval/.test(t1.reason || ''), 'reason names it: ' + t1.reason);
+    // P52: approvals PAUSE the turn (resumable) instead of failing it.
+    let paused = 0;
+    const t1p = srv.stream('/sessions/' + sid + '/messages', { prompt: 'cree hello.txt' }, (ev) => {
+      if (ev === 'turn.paused') paused += 1;
+    }, { timeoutMs: 60000 });
+    let reqId = null;
+    for (let i = 0; i < 200 && !reqId; i++) {
+      const q = await api('GET', '/sessions/' + sid + '/approvals');
+      if (q.status === 200 && q.body.pending.length) reqId = q.body.pending[0].id;
+      else await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(reqId, 'approval requested while paused');
     assert.ok(!fs.existsSync(path.join(proj, 'hello.txt')), 'nothing written before approval');
-    n++; console.log('ok - D3: turn 1 honestly ECHEC (need_approval), nothing written');
+    assert.strictEqual(paused, 1, 'turn paused once');
+    n++; console.log('ok - D3: turn 1 pauses on approval, nothing written');
     const pend = await api('GET', '/sessions/' + sid + '/approvals');
     assert.strictEqual(pend.status, 200);
     assert.strictEqual(pend.body.pending.length, 1, JSON.stringify(pend.body));
-    const reqId = pend.body.pending[0].id;
     n++; console.log('ok - D4: exactly one pending approval (' + reqId + ')');
     const dec = await api('POST', '/sessions/' + sid + '/approvals', { requestId: reqId, decision: 'once' });
     assert.strictEqual(dec.status, 200);
-    assert.strictEqual(dec.body.status, 'executed', JSON.stringify(dec.body));
+    assert.strictEqual(dec.body.status, 'accepted', JSON.stringify(dec.body));
+    const t1 = await t1p;
+    assert.strictEqual(t1.status, 'TERMINE', 'resumed in-turn, got ' + t1.status + ' ' + t1.reason);
     assert.strictEqual(fs.readFileSync(path.join(proj, 'hello.txt'), 'utf8'), 'bonjour e2e\n');
-    n++; console.log('ok - D5: approval executes the write with scripted content');
+    n++; console.log('ok - D5: approval resumes, write executes, turn 1 TERMINE');
     const t2 = await srv.stream('/sessions/' + sid + '/messages', { prompt: 'confirme.' }, () => {}, { timeoutMs: 60000 });
     assert.strictEqual(t2.status, 'TERMINE', 'got ' + t2.status + ' ' + t2.reason);
     n++; console.log('ok - D6: turn 2 TERMINE, honest');

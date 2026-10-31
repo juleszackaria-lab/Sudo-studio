@@ -83,6 +83,7 @@ function createApp(opts) {
   const bootAt = Date.now();
   const runs = new Map();
   const pending = new Map(); // approvalId -> { request, sessionId }
+  const waiters = new Map(); // P52: approvalId -> { resolve, sessionId } (paused turns)
   const sessionRules = new Map(); // sessionId -> Set(ruleKey)
   const home = process.env.SUDO_STUDIO_HOME || (function () { try { return require('os').homedir(); } catch (_) { return process.cwd(); } })();
   // P25: populate the tool registry (handlers wired to the real pipeline).
@@ -234,7 +235,7 @@ function createApp(opts) {
         try {
           await runTurn({
             store, provider, sessionId: id, prompt, corr, log, runs, preProbe: pre,
-            tools: body.tools, verify: body.verify, toolsCtx: { home, pending, sessionRules },
+            tools: body.tools, verify: body.verify, toolsCtx: { home, pending, sessionRules, waiters },
             onEvent: (evt) => emit(evt.type, evt),
           });
         } catch (e) {
@@ -299,7 +300,12 @@ function createApp(opts) {
           deployNote = 'deploiement : approbation unique imposee (aucune regle memorisee).';
         }
         if (log) { try { log.info('approval decision', { session: mAppr[1], request: body.requestId, decision, effDecision, tool: pend.request.tool }, corr); } catch (_) {} }
-        if (decision === 'deny') { sendJson(res, 200, { status: 'denied', reason: 'refuse par l\'operateur.' }); done(200); return; }
+        if (decision === 'deny') {
+          // P52: a paused turn owns this request: hand the refusal over.
+          const waiterD = waiters.get(body.requestId);
+          if (waiterD) { try { waiterD.resolve({ decision: 'deny' }); } catch (_) {} try { waiters.delete(body.requestId); } catch (_) {} }
+          sendJson(res, 200, { status: 'denied', reason: 'refuse par l\'operateur.' }); done(200); return;
+        }
         const r = toolRoot(s.projectRoot);
         if (!r.ok) { sendJson(res, 400, { code: 'bad_project', error: r.error }); done(400); return; }
         const rr = rulesFor(mAppr[1], r.root);
@@ -310,6 +316,15 @@ function createApp(opts) {
             sendJson(res, 500, { error: 'regle de projet non enregistree.' }); done(500); return;
           }
           rr.project.add(key);
+        }
+        // P52: a paused turn owns this request: the TURN re-executes
+        // (single execution, streamed). Rules above still apply next.
+        // No waiter = legacy direct-tool approval (executed here).
+        const waiter = waiters.get(body.requestId);
+        if (waiter) {
+          try { waiter.resolve({ decision: effDecision }); } catch (_) {}
+          try { waiters.delete(body.requestId); } catch (_) {}
+          sendJson(res, 200, { status: 'accepted', note: deployNote }); done(200); return;
         }
         const run = { id: corr, sessionId: mAppr[1], checkpointed: false, checkpointName: null, snapshot: null, calls: [], created: [], killFns: [], direct: true };
         const tctx = { root: r.root, sessionId: mAppr[1], session: s, store, log, corr, run, home,

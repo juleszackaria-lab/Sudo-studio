@@ -229,9 +229,9 @@ t('B4 lecture+ecriture meme tour (regression stale ctx)', async () => {
   const proj = fixtureProject();
   const r = await driveTurn(proj, 'modifie notes.txt (BETA)',
     [call('read', { file: 'notes.txt' }),
-     call('write', { file: 'notes.txt', content: 'alpha\nBETA\n' }),
+     call('edit', { file: 'notes.txt', old: 'beta\n', new: 'BETA\n' }),
      call('done', {})],
-    { rules: ['write|file|notes.txt'] });
+    { rules: ['edit|file|notes.txt'] });
   assert(r.out.runStatus === 'TERMINE', 'runStatus: ' + JSON.stringify(r.out));
   assert(fs.readFileSync(path.join(proj, 'notes.txt'), 'utf8') === 'alpha\nBETA\n', 'contenu change');
   const lr = r.end.meta.lastRun;
@@ -277,16 +277,25 @@ t('B8 renommage vers cible existante -> refuse, intact, ECHEC conserve', async (
   assert(doneEvent(r).reason.indexOf('rename') !== -1, 'raison: ' + doneEvent(r).reason);
 }),
 t('B9 amelioration sans constat -> verrou recon puis TERMINE', async () => {
+  // Realistic ctx: this 4-round turn (recon + read + edit-with-diff) plus
+  // the P52 plan trace exceeds the 2048-token micro-fallback.
+  const prevCtx = process.env.SUDO_AGENT_CTX_TOKENS;
+  process.env.SUDO_AGENT_CTX_TOKENS = '32768';
+  try {
   const proj = fixtureProject();
   const r = await driveTurn(proj, 'ameliore le README',
     [call('write', { file: 'README.md', content: 'conseils generiques\n' }),
      call('read', { file: 'README.md' }),
-     call('write', { file: 'README.md', content: '# P49\nProjet preuve.\n\n## Usage\nConstats reels.\n' }),
+     call('edit', { file: 'README.md', old: 'Projet preuve.\n', new: 'Projet preuve.\n\n## Usage\nConstats reels.\n' }),
      call('done', {})],
-    { rules: ['write|file|README.md'] });
+    { rules: ['edit|file|README.md'] });
   assert(toolTexts(r.chats[1]).indexOf('recon_required') !== -1, 'verrou: ' + toolTexts(r.chats[1]).slice(0, 100));
   assert(r.out.runStatus === 'TERMINE', 'runStatus: ' + JSON.stringify(r.out));
   assert(fs.readFileSync(path.join(proj, 'README.md'), 'utf8').indexOf('Constats reels') !== -1, 'contenu');
+  } finally {
+    if (prevCtx === undefined) delete process.env.SUDO_AGENT_CTX_TOKENS;
+    else process.env.SUDO_AGENT_CTX_TOKENS = prevCtx;
+  }
 }),
 t('B10 run-only execute -> TERMINE execution verifiee', async () => {
   const proj = fixtureProject();
@@ -296,27 +305,25 @@ t('B10 run-only execute -> TERMINE execution verifiee', async () => {
   assert(r.out.runStatus === 'TERMINE', 'runStatus: ' + JSON.stringify(r.out));
   assert(r.last.content.indexOf('execution seule, verifiee') !== -1, 'mention: ' + r.last.content.slice(-140));
 }),
-t('B11 liste collee -> todos ensemences + verrou todos ouverts', async () => {
+t('B11 liste collee -> plan ensemence + fin jamais bloquee (P52)', async () => {
   const proj = fixtureProject();
   const r = await driveTurn(proj, 'applique ces ameliorations :\n1. ajouter un titre\n2. corriger une faute',
-    [call('done', {}),
-     call('todo', { op: 'done', id: 't1' }), call('todo', { op: 'done', id: 't2' }),
-     call('read', { file: 'README.md' }),
+    [call('read', { file: 'README.md' }),
      call('write', { file: 'titre.txt', content: 'titre\n' }), call('done', {})],
     { rules: ['write|file|titre.txt'] });
-  assert(toolTexts(r.chats[1]).indexOf('todos_open') !== -1, 'verrou: ' + toolTexts(r.chats[1]).slice(0, 100));
-  assert(r.journal.indexOf('todos ensemences') !== -1, 'ensemencement journalise');
+  assert(r.journal.indexOf('plan moteur ensemence') !== -1, 'ensemencement journalise');
   assert(r.out.runStatus === 'TERMINE', 'runStatus: ' + JSON.stringify(r.out));
   assert(fs.existsSync(path.join(proj, 'titre.txt')), 'fichier cree');
 }),
-t('B12 collectif sans plan -> no_plan puis TERMINE', async () => {
+t('B12 collectif sans plan -> plan ensemence + fin acceptee (P52)', async () => {
   const proj = fixtureProject();
   const r = await driveTurn(proj, 'applique ces ameliorations au readme',
-    [call('done', {}), call('read', { file: 'README.md' }),
+    [call('read', { file: 'README.md' }),
      call('write', { file: 'plus.txt', content: 'plus\n' }), call('done', {})],
     { rules: ['write|file|plus.txt'] });
-  assert(toolTexts(r.chats[1]).indexOf('collective') !== -1, 'no_plan: ' + toolTexts(r.chats[1]).slice(0, 140));
+  assert(r.journal.indexOf('plan moteur ensemence') !== -1, 'ensemencement journalise');
   assert(r.out.runStatus === 'TERMINE', 'runStatus: ' + JSON.stringify(r.out));
+  assert(fs.existsSync(path.join(proj, 'plus.txt')), 'fichier cree');
 }),
 t('B13 approbation en attente -> ECHEC (bloque), fichier intact', async () => {
   const proj = fixtureProject();
