@@ -246,6 +246,18 @@ async function setMode(port, token, sid, mode) {
   return httpJson(port, token, 'POST', '/sessions/' + sid + '/mode', { mode });
 }
 
+// P52: approvals pause the turn (resumable). The SSE stays open; the test
+// approves mid-turn through the REST endpoint, then the turn continues.
+async function waitPending(port, token, sid, timeoutMs) {
+  const t0 = Date.now();
+  for (;;) {
+    const pend = await httpJson(port, token, 'GET', '/sessions/' + sid + '/approvals');
+    if (pend.body.pending && pend.body.pending.length) return pend.body.pending[0].id;
+    if (Date.now() - t0 > (timeoutMs || 10000)) throw new Error('no pending approval');
+    await sleep(50);
+  }
+}
+
 async function pollFile(file, re, timeoutMs) {
   const t0 = Date.now();
   for (;;) {
@@ -328,9 +340,9 @@ t('A3', 'profiles: size detection, ctx resolution, budget', () => {
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'local' }) === 'small', 'unknown local small');
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'cloud' }) === 'full', 'unknown cloud full');
   assert(p.selectProfile({ modelId: 'llama-8b', providerType: 'local', override: 'small' }) === 'small', 'override wins');
-  assert(p.profileTools('small').length === 11 && p.profileTools('full').length === 28, 'tool counts (P50: +exec_* +gen_* +biz +subagent full-only)');
+  assert(p.profileTools('small').length === 12 && p.profileTools('full').length === 29, 'tool counts (P52: -todo engine-owned, +append +mkdir)');
   assert(p.profileTools('small').indexOf('patch') === -1, 'small drops patch');
-  assert(p.profileTools('small').indexOf('todo') !== -1, 'P49: small keeps todo');
+  assert(p.profileTools('small').indexOf('todo') === -1, 'P52: engine owns todos');
   assert(p.profileTools('small').indexOf('reply') !== -1 && p.profileTools('small').indexOf('done') !== -1, 'P49: small exits');
   assert(p.resolveCtxTokens({ override: '999', probeNctx: 111, providerType: 'local' }) === 999, 'override first');
   assert(p.resolveCtxTokens({ probeNctx: 1234, providerType: 'local' }) === 1234, 'probe second');
@@ -431,7 +443,7 @@ t('B2', 'mode endpoint: switch, invalid, unknown', async () => {
   } finally { killChild(a.child); await mock.close(); }
 });
 
-t('B3', 'default mode is build: write asks (not plan-refused)', async () => {
+t('B3', 'default mode is build: write pauses, approve resumes (P52)', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'n.txt', content: 'x' } }] },
@@ -440,12 +452,19 @@ t('B3', 'default mode is build: write asks (not plan-refused)', async () => {
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
     const sid = await newSession(port, token, proj);
-    const codes = [];
-    const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'write it' }, (ev, o) => {
-      if (ev === 'tool.result') codes.push(o.code);
+    let paused = 0;
+    const doneP = ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'write it' }, (ev) => {
+      if (ev === 'turn.paused') paused += 1;
     });
-    assert(codes.indexOf('need_approval') !== -1, 'write asked, got ' + JSON.stringify(codes));
-    assert(done.status === 'ECHEC', 'approval need mid-turn -> ECHEC, got ' + done.status);
+    const reqId = await waitPending(port, token, sid, 10000);
+    const ap = await approve(port, token, sid, reqId, 'session');
+    assert(ap.body.status === 'accepted', 'pause accepted, got ' + JSON.stringify(ap.body).slice(0, 120));
+    const done = await doneP;
+    assert(paused === 1, 'turn paused once, got ' + paused);
+    assert(done.status === 'TERMINE', 'resumed -> TERMINE, got ' + done.status + ' ' + done.reason);
+    assert(fs.readFileSync(path.join(proj, 'n.txt'), 'utf8') === 'x', 'executed after approve');
+    const pend = await httpJson(port, token, 'GET', '/sessions/' + sid + '/approvals');
+    assert(pend.body.pending.length === 0, 'request consumed');
   } finally { killChild(a.child); await mock.close(); }
 });
 
@@ -475,37 +494,33 @@ t('C1', 'two calls in one step: first runs, second skipped, transcript valid', a
 });
 
 // D: repeat-loop detection ------------------------------------------------------
-t('D1', 'same tool+target 3x -> PARTIEL loop', async () => {
+t('D1', 'guard v2: 3 identical -> corrective strategy first (P52)', async () => {
   const proj = fixtureProject();
-  const mock = await mockProvider({ responses: [
-    { content: '', toolCalls: [{ name: 'read', args: { file: 'notes.txt' } }] },
-    { content: '', toolCalls: [{ name: 'read', args: { file: 'notes.txt' } }] },
-    { content: '', toolCalls: [{ name: 'read', args: { file: 'notes.txt' } }] },
-    { content: 'rescue answer' },
+  const bash3 = { content: '', toolCalls: [{ name: 'bash', args: { command: 'exit 3' } }] };
+  const mock = await mockProvider({ responses: [bash3, bash3, bash3,
+    { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
     const sid = await newSession(port, token, proj);
+    await preApprove(port, token, sid, 'bash', { command: 'exit 3' });
     let starts = 0;
     const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'loop' }, (ev) => {
       if (ev === 'tool.start') starts += 1;
     });
-    assert(done.status === 'PARTIEL', 'PARTIEL, got ' + done.status);
-    assert(done.stopReason === 'loop', 'stopReason loop, got ' + done.stopReason);
-    assert(done.reason.indexOf('boucle repetitive') !== -1, 'loop reason');
-    assert(starts === 2, 'third call never executed, got ' + starts);
-    // P39 evolution: a 4th no-tools rescue round answers from collected
-    // context, so a loop never ends without a reply.
-    assert(mock.chats.length === 4, 'three steps + rescue, got ' + mock.chats.length);
-    assert(!('tools' in mock.chats[3]) || mock.chats[3].tools === undefined, 'rescue has no tools');
-    const g = await httpJson(port, token, 'GET', '/sessions/' + sid);
-    const msgs = g.body.messages;
-    assert(msgs[msgs.length - 1].content === 'rescue answer', 'rescue reply stored');
+    // No stop at 3: the corrective strategy fires, the turn continues.
+    assert(starts === 3, 'three executions, got ' + starts);
+    assert(mock.chats.length === 4, 'three steps + done, got ' + mock.chats.length);
+    assert(JSON.stringify(mock.chats[3].messages || []).indexOf('STRATEGIE CORRECTIVE') !== -1, 'strategy seen');
+    await pollFile(path.join(a.logsDir, 'agent.log'), /boucle corrective/, 5000);
+    // Standing tool errors + declared finish = honest ECHEC (P49 kept).
+    assert(done.status === 'ECHEC', 'ECHEC, got ' + done.status);
+    assert(done.reason.indexOf('bash') !== -1, 'reason names bash: ' + done.reason);
   } finally { killChild(a.child); await mock.close(); }
 });
 
 // E: profiles -----------------------------------------------------------------
-t('E1', 'small profile: 11 terse tools for 1.5B', async () => {
+t('E1', 'small profile: 12 terse tools for 1.5B', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [{ content: 'done' }] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: 'qwen-1.5b' });
@@ -514,9 +529,10 @@ t('E1', 'small profile: 11 terse tools for 1.5B', async () => {
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const tools = mock.chats[0].tools || [];
     const names = tools.map((x) => x.function.name);
-    assert(names.length === 11, 'eleven tools, got ' + names.length);
+    assert(names.length === 12, 'twelve tools, got ' + names.length);
     assert(names.indexOf('patch') === -1 && names.indexOf('glob') === -1, 'no patch/glob');
-    assert(names.indexOf('todo') !== -1 && names.indexOf('reply') !== -1 && names.indexOf('done') !== -1, 'P49: todo+exits');
+    assert(names.indexOf('todo') === -1 && names.indexOf('reply') !== -1 && names.indexOf('done') !== -1, 'P52: no todo, exits kept');
+    assert(names.indexOf('append') !== -1 && names.indexOf('mkdir') !== -1, 'P52: append+mkdir');
     for (const x of tools) assert(x.function.description.length < 60, 'terse: ' + x.function.name);
     await pollFile(path.join(a.logsDir, 'agent.log'), /profile=small/, 3000);
   } finally { killChild(a.child); await mock.close(); }
@@ -532,14 +548,14 @@ t('E2', 'full profile: 13 tools for 8B', async () => {
     const sid = await newSession(port, token, proj);
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const names = (mock.chats[0].tools || []).map((x) => x.function.name);
-    assert(names.length === 28 && names.indexOf('patch') !== -1 && names.indexOf('exec_poll') !== -1 && names.indexOf('gen_report') !== -1 && names.indexOf('subagent') !== -1, 'twenty-eight tools, got ' + names.length);
+    assert(names.length === 29 && names.indexOf('patch') !== -1 && names.indexOf('exec_poll') !== -1 && names.indexOf('gen_report') !== -1 && names.indexOf('subagent') !== -1 && names.indexOf('append') !== -1, 'twenty-nine tools, got ' + names.length);
     await pollFile(path.join(a.logsDir, 'agent.log'), /profile=full/, 3000);
   } finally { killChild(a.child); await mock.close(); }
 });
 
 t('E3', 'probe n_ctx drives budget: compression at >75%', async () => {
   const proj = fixtureProject();
-  // Fixed overhead ~1016 tokens (small schemas + mode system). n_ctx=2000:
+  // Fixed overhead ~1107 tokens (P52 small schemas + mode system). n_ctx=2000:
   // seeds stay under 1500, the final prompt crosses it, post-compress fits.
   const mock = await mockProvider({
     models: [{ id: 'm', n_ctx: 2000 }],
@@ -552,10 +568,10 @@ t('E3', 'probe n_ctx drives budget: compression at >75%', async () => {
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
     const sid = await newSession(port, token, proj);
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S1 ' + 'y'.repeat(300) }, () => {});
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S2 ' + 'y'.repeat(300) }, () => {});
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S3 ' + 'y'.repeat(300) }, () => {});
-    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S4 ' + 'y'.repeat(300) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S1 ' + 'y'.repeat(240) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S2 ' + 'y'.repeat(240) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S3 ' + 'y'.repeat(240) }, () => {});
+    await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'S4 ' + 'y'.repeat(240) }, () => {});
     const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'BIG ' + 'x'.repeat(400) }, () => {});
     assert(done.status === 'TERMINE', 'TERMINE after compress, got ' + done.status + ' ' + done.reason);
     assert(mock.chats.length === 6, 'summarizer + final chats, got ' + mock.chats.length);
@@ -613,11 +629,11 @@ t('F2', 'scenario: fix the failing test via verify feedback', async () => {
   });
   // First attempt writes the wrong value; the verify loop catches it and the
   // model corrects after the failure feedback.
-  const mock = await mockProvider({ responses: [
+  const mock = await mockProvider({ models: [{ id: 'm', n_ctx: 8192 }], responses: [
     { content: '', toolCalls: [{ name: 'read', args: { file: 'flag.txt' } }] },
-    { content: '', toolCalls: [{ name: 'write', args: { file: 'flag.txt', content: 'yes\n' } }] },
+    { content: '', toolCalls: [{ name: 'edit', args: { file: 'flag.txt', old: 'ko\n', new: 'yes\n' } }] },
     { content: '', toolCalls: [{ name: 'done', args: {} }] },
-    { content: '', toolCalls: [{ name: 'write', args: { file: 'flag.txt', content: 'ok\n' } }] },
+    { content: '', toolCalls: [{ name: 'edit', args: { file: 'flag.txt', old: 'yes\n', new: 'ok\n' } }] },
     { content: '', toolCalls: [{ name: 'done', args: {} }] },
   ] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
@@ -626,7 +642,7 @@ t('F2', 'scenario: fix the failing test via verify feedback', async () => {
     // Session rules first (direct calls), then restore the failing state.
     // Read-before-write: the anti-overwrite gate requires a prior read.
     await callTool(port, token, sid, 'read', { file: 'flag.txt' });
-    await preApprove(port, token, sid, 'write', { file: 'flag.txt', content: 'ok\n' });
+    await preApprove(port, token, sid, 'edit', { file: 'flag.txt', old: 'ko\n', new: 'ok\n' });
     await preApprove(port, token, sid, 'bash', { command: 'npm test' });
     fs.writeFileSync(path.join(proj, 'flag.txt'), 'ko\n', 'utf8');
     const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'make the checks pass' }, () => {});
@@ -642,7 +658,7 @@ t('F2', 'scenario: fix the failing test via verify feedback', async () => {
   } finally { killChild(a.child); await mock.close(); }
 });
 
-t('F3', 'verify without approval -> PARTIEL verify_approval + pending', async () => {
+t('F3', 'verify approval pauses then resumes (P52)', async () => {
   const proj = fixtureProject({ '.sudo-verify': 'node -e "process.exit(0)"\n' });
   const mock = await mockProvider({ responses: [
     { content: '', toolCalls: [{ name: 'write', args: { file: 'v.txt', content: 'v' } }] },
@@ -653,11 +669,18 @@ t('F3', 'verify without approval -> PARTIEL verify_approval + pending', async ()
     const sid = await newSession(port, token, proj);
     await preApprove(port, token, sid, 'write', { file: 'v.txt', content: 'v' });
     fs.unlinkSync(path.join(proj, 'v.txt'));
-    const done = await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'write v' }, () => {});
-    assert(done.status === 'PARTIEL', 'PARTIEL, got ' + done.status);
-    assert(done.stopReason === 'verify_approval', 'stopReason, got ' + done.stopReason);
+    let paused = 0;
+    const doneP = ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'write v' }, (ev) => {
+      if (ev === 'turn.paused') paused += 1;
+    });
+    const reqId = await waitPending(port, token, sid, 10000);
+    const ap = await approve(port, token, sid, reqId, 'session');
+    assert(ap.body.status === 'accepted', 'pause accepted, got ' + JSON.stringify(ap.body).slice(0, 120));
+    const done = await doneP;
+    assert(paused === 1, 'verify paused once, got ' + paused);
+    assert(done.status === 'TERMINE', 'resumed -> TERMINE, got ' + done.status + ' ' + done.reason);
     const pend = await httpJson(port, token, 'GET', '/sessions/' + sid + '/approvals');
-    assert(pend.body.pending.length === 1, 'verify request pending');
+    assert(pend.body.pending.length === 0, 'request consumed');
   } finally { killChild(a.child); await mock.close(); }
 });
 

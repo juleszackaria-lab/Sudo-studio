@@ -178,12 +178,14 @@ async function driveTurn(proj, prompt, responses, opts) {
   const log = createLogger({ logsDir, component: 'agent' });
   const store = new SessionStore({ dir: path.join(home, 'store') });
   const s = store.create({ title: 't', projectRoot: proj });
+  const rules = new Map();
+  if (opts.rules) rules.set(s.id, new Set(opts.rules));
   const mock = await mockProvider({ responses });
   try {
     const out = await runTurn({
       store, sessionId: s.id, prompt, corr: 'p39',
       provider: { type: 'local', baseUrl: 'http://' + HOST + ':' + mock.port, model: 'mock-model' },
-      toolsCtx: { home, sessionRules: new Map(), pending: new Map() },
+      toolsCtx: { home, sessionRules: rules, pending: new Map() },
       runs: new Map(), log,
     });
     const end = store.get(s.id);
@@ -197,28 +199,48 @@ async function driveTurn(proj, prompt, responses, opts) {
 }
 
 async function tLoopRescue() {
+  // P52 guard v2: reads never count; 3 identical completed calls trigger the
+  // corrective strategy first, the 2nd identical repeat stops the turn.
+  // Realistic ctx: 5 tool rounds + strategy exceed the 2048 micro-fallback.
+  const prevCtx = process.env.SUDO_AGENT_CTX_TOKENS;
+  process.env.SUDO_AGENT_CTX_TOKENS = '32768';
+  try {
   const dir = fixtureProject('node');
-  const same = { toolCalls: [{ name: 'read', args: { file: 'readme.md' } }] };
-  const r = await driveTurn(dir, 'lis readme.md', [same, same, same, { content: 'REPONSE-SECOURS-OK' }]);
+  const same = { toolCalls: [{ name: 'bash', args: { command: 'exit 3' } }] };
+  const r = await driveTurn(dir, 'repete exit 3', [same, same, same, same, same, { content: 'REPONSE-SECOURS-OK' }],
+    { rules: ['bash|command|exit 3'] });
   assert(r.out.status === 'done' && r.out.runStatus === 'PARTIEL', 'loop => PARTIEL, got ' + JSON.stringify(r.out));
   assert(r.last.role === 'assistant' && r.last.content === 'REPONSE-SECOURS-OK', 'rescue answer stored');
-  assert(r.chats.length === 4, '3 tool rounds + rescue, got ' + r.chats.length);
-  assert(!('tools' in r.chats[3]) || r.chats[3].tools === undefined, 'rescue has no tools');
-  assert(toolTexts(r.chats[1]).indexOf('fichiers proches') !== -1, 'model saw enriched error');
+  assert(r.chats.length === 6, '5 tool rounds + rescue, got ' + r.chats.length);
+  assert(!('tools' in r.chats[5]) || r.chats[5].tools === undefined, 'rescue has no tools');
+  assert(r.journal.indexOf('boucle corrective') !== -1, 'corrective first');
+  assert(JSON.stringify(r.chats[3].messages || []).indexOf('STRATEGIE CORRECTIVE') !== -1, 'model saw strategy');
   assert(r.journal.indexOf('repeat loop') !== -1, 'journal loop');
   assert(r.journal.indexOf('reponse secours IA') !== -1, 'journal rescue');
   assert(sysTexts(r.chats[0]).indexOf('[carte du projet]') !== -1, 'map injected');
   assert(sysTexts(r.chats[0]).indexOf('README.md') !== -1, 'map lists README');
+  } finally {
+    if (prevCtx === undefined) delete process.env.SUDO_AGENT_CTX_TOKENS;
+    else process.env.SUDO_AGENT_CTX_TOKENS = prevCtx;
+  }
 }
 
 async function tLoopFallback() {
+  const prevCtx = process.env.SUDO_AGENT_CTX_TOKENS;
+  process.env.SUDO_AGENT_CTX_TOKENS = '32768';
+  try {
   const dir = fixtureProject('node');
-  const same = { toolCalls: [{ name: 'read', args: { file: 'readme.md' } }] };
-  const r = await driveTurn(dir, 'lis readme.md', [same, same, same, { content: '' }]);
+  const same = { toolCalls: [{ name: 'bash', args: { command: 'exit 3' } }] };
+  const r = await driveTurn(dir, 'repete exit 3', [same, same, same, same, same, { content: '' }],
+    { rules: ['bash|command|exit 3'] });
   assert(r.out.runStatus === 'PARTIEL', 'fallback => PARTIEL');
   assert(r.last.role === 'assistant' && r.last.content.indexOf('generee sans IA') !== -1, 'deterministic label');
-  assert(r.last.content.indexOf('read|readme.md') !== -1, 'loop key explained');
+  assert(r.last.content.indexOf('\"bash\"') !== -1, 'loop key explained');
   assert(r.journal.indexOf('reponse secours deterministe') !== -1, 'journal fallback');
+  } finally {
+    if (prevCtx === undefined) delete process.env.SUDO_AGENT_CTX_TOKENS;
+    else process.env.SUDO_AGENT_CTX_TOKENS = prevCtx;
+  }
 }
 
 async function tPreload() {

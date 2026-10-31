@@ -7,8 +7,8 @@
  *             exact 'server.js introuvable a <path>' (P31-b), spawn never
  *             attempted; the file is restored byte-identical (sha256).
  *   e2e     : real installed server (product .exe, ELECTRON_RUN_AS_NODE) +
- *             scripted stub provider: handshake, /health, turn 1 ECHEC
- *             (need_approval, nothing written), approval executes the write,
+ *             scripted stub provider: handshake, /health, turn 1 PAUSES
+ *             (approval, nothing written), approval resumes in-turn (TERMINE),
  *             turn 2 TERMINE, project copy holds ONLY the requested file.
  * Stdlib only, ASCII only. Exit 0 = all PASS, 1 = any FAIL.
  * Usage:
@@ -302,23 +302,30 @@ async function modeE2e(o) {
     if (s.status !== 201) { fail('e2e-session', JSON.stringify(s.body)); return; }
     const sid = s.body.id;
     rec('e2e-session', true, sid);
-    const t1 = await sse('/sessions/' + sid + '/messages', { prompt: 'cree hello.txt' });
-    if (t1.status !== 'ECHEC' || !/need_approval/.test(t1.reason || '')) {
-      fail('e2e-turn1', 'want honest ECHEC/need_approval, got ' + t1.status + ' ' + (t1.reason || '')); return;
+    // P52: approvals PAUSE the turn (resumable): the stream stays open.
+    const t1p = sse('/sessions/' + sid + '/messages', { prompt: 'cree hello.txt' });
+    let reqId = null;
+    for (let i = 0; i < 200 && !reqId; i++) {
+      const q = await api('GET', '/sessions/' + sid + '/approvals');
+      if (q.status === 200 && q.body && q.body.pending.length) reqId = q.body.pending[0].id;
+      else await new Promise((r) => setTimeout(r, 50));
     }
+    if (!reqId) { fail('e2e-turn1', 'no approval requested while paused'); return; }
     if (fs.existsSync(path.join(proj, 'hello.txt'))) { fail('e2e-turn1', 'written before approval'); return; }
-    rec('e2e-turn1', true, 'honest ECHEC, nothing written');
+    rec('e2e-turn1', true, 'paused, nothing written');
     const pend = await api('GET', '/sessions/' + sid + '/approvals');
     if (pend.status !== 200 || !pend.body || pend.body.pending.length !== 1) {
       fail('e2e-approval-pending', JSON.stringify(pend.body)); return;
     }
-    const dec = await api('POST', '/sessions/' + sid + '/approvals', { requestId: pend.body.pending[0].id, decision: 'once' });
-    if (dec.status !== 200 || dec.body.status !== 'executed') { fail('e2e-approve', JSON.stringify(dec.body)); return; }
+    const dec = await api('POST', '/sessions/' + sid + '/approvals', { requestId: reqId, decision: 'once' });
+    if (dec.status !== 200 || dec.body.status !== 'accepted') { fail('e2e-approve', JSON.stringify(dec.body)); return; }
+    const t1 = await t1p;
+    if (t1.status !== 'TERMINE') { fail('e2e-approve', 'want resumed TERMINE, got ' + t1.status); return; }
     if (!fs.existsSync(path.join(proj, 'hello.txt')) ||
         fs.readFileSync(path.join(proj, 'hello.txt'), 'utf8') !== 'bonjour e2e\n') {
       fail('e2e-approve', 'bad content'); return;
     }
-    rec('e2e-approve', true, 'executed, scripted content');
+    rec('e2e-approve', true, 'resumed, scripted content');
     const t2 = await sse('/sessions/' + sid + '/messages', { prompt: 'confirme.' });
     if (t2.status !== 'TERMINE') { fail('e2e-turn2', 'got ' + t2.status + ' ' + (t2.reason || '')); return; }
     rec('e2e-turn2', true, 'TERMINE');

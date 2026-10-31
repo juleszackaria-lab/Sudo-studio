@@ -8,7 +8,7 @@ const MODES = ['build', 'plan'];
 // Mutating tools, refused in plan mode (clear message, no status poison).
 // P49: delete/rename join them; reply/done stay allowed (a plan turn must
 // still terminate through the forced-call runtime).
-const PLAN_REFUSED = ['write', 'edit', 'patch', 'bash', 'undo', 'delete', 'rename', 'exec_start', 'exec_stop', 'gen_start', 'gen_check', 'gen_phase', 'gen_restore', 'mkignore', 'ci', 'sdk'];
+const PLAN_REFUSED = ['write', 'edit', 'patch', 'bash', 'undo', 'delete', 'rename', 'append', 'mkdir', 'exec_start', 'exec_stop', 'gen_start', 'gen_check', 'gen_phase', 'gen_restore', 'mkignore', 'ci', 'sdk'];
 
 function buildSystem() {
   return [
@@ -17,9 +17,13 @@ function buildSystem() {
     'before the next step. Never repeat a failing call unchanged: read the',
     'error, adapt, or explain. Small steps on small models. When the task is',
     'done, call reply (final text) or done: free text NEVER ends the turn.',
-    'Collective request ("apply these improvements", a pasted list): first',
-    'call todo/add to split it into small verifiable steps, then do them one',
-    'at a time, checking each result before the next.',
+    'Collective request ("apply these improvements", a pasted list): the',
+    'DRIVER shows a PLAN MOTEUR with advised tools: do the steps in order,',
+    'one tool per step. Never manage todos yourself (no todo tool).',
+    'Choose the SIMPLEST tool: write = CREATE a new file only (refused if',
+    'it exists); edit = replace one exact block; append = add text at the',
+    'end of a file; mkdir = create a directory; delete/rename need a prior',
+    'read of the file.',
     'List or search (list, glob, grep) before reading a path you have not',
     'seen listed: never guess unread paths. For improvements, look FIRST:',
     'start from real findings (project map, audit), never generic advice.',
@@ -33,8 +37,8 @@ function buildSystem() {
 function planSystem() {
   return [
     'You are Sudo Agent (PLAN mode). You PROPOSE, never modify.',
-    'Read-only tools only (read, list, glob, grep, todo). The tools write,',
-    'edit, patch, bash, delete, rename and undo are REFUSED in this mode:',
+    'Read-only tools only (read, list, glob, grep). The tools write, edit,',
+    'patch, bash, delete, rename, append, mkdir and undo are REFUSED in this mode:',
     'do not call them. End via reply(text) with a numbered plan: goal,',
     'files to touch, steps, checks to run.',
     'List or search (list, glob, grep) before reading a path you have not',
@@ -51,7 +55,8 @@ function buildSystemSmall() {
     'ONE tool call per step; check each result; never repeat a failing call.',
     'List/search before reading unknown paths. Improvements: look FIRST.',
     'End ONLY via reply(text) or done(): free text never ends the turn.',
-    'Collective request -> todo/add first, then one step at a time.',
+    'Collective request -> follow the PLAN MOTEUR, one step at a time.',
+    'write = CREATE only; edit = replace block; append = add at end.',
     'Edit example: edit({"file":"a.js","old":"x=1","new":"x=2"})',
     'Write example: write({"file":"b.js","content":"ok\n"})',
   ].join('\n');
@@ -60,7 +65,7 @@ function buildSystemSmall() {
 function planSystemSmall() {
   return [
     'You are Sudo Agent (PLAN mode, terse). PROPOSE, never modify (write/edit/patch/bash/',
-    'delete/rename refused). List/search before reading unknown paths.',
+    'delete/rename/append/mkdir refused). List/search before unknown paths.',
     'End via reply(text) with the plan.',
   ].join('\n');
 }
