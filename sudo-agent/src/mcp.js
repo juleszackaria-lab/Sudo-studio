@@ -139,7 +139,9 @@ const PRESETS = [
     needsToken: true,
     note: 'necessite Internet et un jeton',
     transport: 'http',
-    url: 'https://api.githubcopilot.com/mcp/',
+    // The endpoint is filled by the user from the provider documentation:
+    // no third-party service hostname is ever bundled in the product.
+    url: '',
     tokenTarget: 'mcp/github/token',
     allowedHint: ['search_repositories', 'get_file_contents', 'list_issues', 'create_issue'],
     tokens: 'jeton GitHub PAT (scopes repo)',

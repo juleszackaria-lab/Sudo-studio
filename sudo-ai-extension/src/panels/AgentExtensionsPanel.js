@@ -433,7 +433,7 @@ ${guardSnippet()}
       <label>Transport</label><select id="srvTransport"><option value="stdio">local (commande)</option><option value="http">distant (URL)</option></select>
       <label>Commande</label><input id="srvCommand" placeholder="npx" />
       <label>Arguments</label><input id="srvArgs" placeholder="-y @scope/serveur ." />
-      <label>URL</label><input id="srvUrl" placeholder="https://..." />
+      <label>URL</label><input id="srvUrl" placeholder="URL du serveur MCP distant (documentation du fournisseur)" />
       <label>Cible du jeton</label><input id="srvTokenTarget" placeholder="mcp/github/token" />
       <label>Jeton (trousseau)</label><input id="srvToken" type="password" autocomplete="off" placeholder="coll\u00e9 puis ajout\u00e9 au trousseau" />
     </div>
