@@ -24,6 +24,7 @@ const GROUPS = [
         entries: [
             { label: 'Sudo Agent', command: 'sudoStudio.openAgentPanel', icon: 'robot' },
             { label: 'Sudo Chat', command: 'sudoStudio.openChat', icon: 'comment-discussion' },
+            { label: 'Agent Extensions', command: 'sudoStudio.openAgentExtensions', icon: 'extensions' },
             { label: 'Agent Logs', command: 'sudoStudio.openLogsViewer', icon: 'file-text' },
         ],
     },
@@ -110,7 +111,6 @@ const INTERNAL_COMMANDS = {
     'sudoStudio.selectModel': 'dialog',
     'sudoStudio.selectAIProvider': 'dialog',
     'sudoStudio.installSDK': 'dialog',
-    'sudoStudio.openMcpPanel': 'popup', // P50-1: MCP servers page
     // editor-context actions
     'sudoStudio.explainCode': 'ctx',
     'sudoStudio.fixCode': 'ctx',

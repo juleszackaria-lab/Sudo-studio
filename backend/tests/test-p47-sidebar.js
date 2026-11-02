@@ -92,6 +92,7 @@ check('C5: tree/internal partition covers all 59 commands exactly once',
 const EXPECTED_LABELS = {
     'sudoStudio.openAgentPanel': ['Sudo Agent'],
     'sudoStudio.openChat': ['Sudo Chat'],
+    'sudoStudio.openAgentExtensions': ['Agent Extensions'],
     'sudoStudio.openLogsViewer': ['Agent Logs'],
     'sudoStudio.openRuntimePanel': ['Runtime & Models'],
     'sudoStudio.openProvidersPanel': ['AI Providers'],

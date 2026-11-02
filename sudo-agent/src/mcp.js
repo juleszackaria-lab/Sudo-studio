@@ -121,6 +121,200 @@ function safeUrl(u) {
   return String(u || '').split('?')[0].slice(0, 200);
 }
 
+// ---------------------------------------------------------------------------
+// P54-1: Agent Extensions additions.
+// - enabled flag (a server is INERT until switched on: no spawn, no tools);
+// - per-tool decision (ask | allow | deny) for the permission system;
+// - exposed tools (which tools are shown to the MODEL: none by default,
+//   so small models keep a small schema and a small context);
+// - ready-to-fill presets, import/export of the current "mcpServers" format.
+// Decisions live in mcp_tools.json: { servers: { name: { tool: 'ask'|'allow'|'deny' } } }.
+// Tokens NEVER live in any of these files (keyring only, tokenTarget).
+// ---------------------------------------------------------------------------
+const PRESETS = [
+  {
+    id: 'github',
+    label: 'GitHub (depots, fichiers, issues)',
+    needsInternet: true,
+    needsToken: true,
+    note: 'necessite Internet et un jeton',
+    transport: 'http',
+    // The endpoint is filled by the user from the provider documentation:
+    // no third-party service hostname is ever bundled in the product.
+    url: '',
+    tokenTarget: 'mcp/github/token',
+    allowedHint: ['search_repositories', 'get_file_contents', 'list_issues', 'create_issue'],
+    tokens: 'jeton GitHub PAT (scopes repo)',
+  },
+  {
+    id: 'filesystem',
+    label: 'Systeme de fichiers (local)',
+    needsInternet: false,
+    needsToken: false,
+    note: 'local, sans Internet',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-filesystem', '.'],
+    tokens: '',
+  },
+  {
+    id: 'fetch',
+    label: 'Recuperation web (URL -> texte)',
+    needsInternet: true,
+    needsToken: false,
+    note: 'necessite Internet',
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', '@modelcontextprotocol/server-fetch'],
+    tokens: '',
+  },
+];
+
+function presets() {
+  return PRESETS.map((p) => ({
+    id: p.id, label: p.label, note: p.note,
+    needsInternet: p.needsInternet === true, needsToken: p.needsToken === true,
+    transport: p.transport, url: p.url || '', command: p.command || '',
+    args: Array.isArray(p.args) ? p.args.slice() : [],
+    tokenTarget: p.tokenTarget || '', tokens: p.tokens || '',
+    allowedHint: Array.isArray(p.allowedHint) ? p.allowedHint.slice() : [],
+  }));
+}
+
+function toolsStateFile(home) { return path.join(agentDir(home), 'mcp_tools.json'); }
+
+function readToolsState(home) {
+  const d = readJsonFile(toolsStateFile(home));
+  const servers = d && typeof d.servers === 'object' && d.servers ? d.servers : {};
+  return { servers };
+}
+
+function writeToolsState(home, state) {
+  const dir = agentDir(home);
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  fs.writeFileSync(toolsStateFile(home), JSON.stringify({ servers: (state && state.servers) || {} }, null, 2) + '\n', 'utf8');
+}
+
+// Server enabled? Absent flag = ENABLED (backward compatible with P26/P50
+// configs written before the page existed).
+function isEnabled(cfg) {
+  return !(cfg && cfg.enabled === false);
+}
+
+function setEnabled(home, name, enabled) {
+  const servers = loadConfig(home);
+  const cfg = servers[name];
+  if (!cfg) return { ok: false, error: 'serveur MCP inconnu: ' + String(name || '').slice(0, 40) };
+  cfg.enabled = enabled !== false;
+  saveConfig(home, servers);
+  if (!cfg.enabled) { try { disconnectOne(name); } catch (_) {} }
+  return { ok: true, enabled: cfg.enabled };
+}
+
+// Per-tool decision. Default is 'ask' (the permission system prompts); a deny
+// rule refuses the call before anything runs.
+const TOOL_DECISIONS = ['ask', 'allow', 'deny'];
+
+function setToolDecision(home, server, tool, decision) {
+  if (TOOL_DECISIONS.indexOf(decision) === -1) return { ok: false, error: 'decision invalide (ask|allow|deny).' };
+  const st = readToolsState(home);
+  if (!st.servers[server] || typeof st.servers[server] !== 'object') st.servers[server] = {};
+  if (decision === 'ask') delete st.servers[server][tool];
+  else st.servers[server][tool] = decision;
+  writeToolsState(home, st);
+  return { ok: true };
+}
+
+function toolDecision(home, server, tool) {
+  const st = readToolsState(home);
+  const row = st.servers[server];
+  const d = row && row[tool];
+  return TOOL_DECISIONS.indexOf(d) === -1 ? 'ask' : d;
+}
+
+// Which tools may be SHOWN to the model. Empty unless the user selected some
+// (P54: "aucun par defaut tant que non active"), still bounded by the admin
+// allowlist (fail-closed) and by the per-tool deny decision.
+function exposedTools(home, server) {
+  const cfg = loadConfig(home)[server];
+  if (!cfg || !isEnabled(cfg)) return [];
+  const list = Array.isArray(cfg.expose) ? cfg.expose.filter((t) => typeof t === 'string') : [];
+  const out = [];
+  for (const t of list) {
+    if (!isAllowed(home, server, t)) continue;      // admin allowlist first
+    if (toolDecision(home, server, t) === 'deny') continue;
+    out.push(t);
+  }
+  return out.slice(0, 40);
+}
+
+function setExposed(home, server, tools) {
+  const servers = loadConfig(home);
+  const cfg = servers[server];
+  if (!cfg) return { ok: false, error: 'serveur MCP inconnu: ' + String(server || '').slice(0, 40) };
+  if (!Array.isArray(tools)) return { ok: false, error: 'liste d\'outils requise.' };
+  const clean = tools.filter((t) => typeof t === 'string' && /^[A-Za-z0-9_.:-]{1,120}$/.test(t)).slice(0, 40);
+  const refused = clean.filter((t) => !isAllowed(home, server, t));
+  if (refused.length) {
+    return { ok: false, error: 'outils hors liste d\'autorisation administrateur : ' + refused.slice(0, 5).join(', ') };
+  }
+  cfg.expose = clean;
+  saveConfig(home, servers);
+  return { ok: true, expose: clean };
+}
+
+// ---- import / export (the current "mcpServers" JSON format) ----------------
+function toMcpServersJson(home) {
+  const servers = loadConfig(home);
+  const out = {};
+  for (const name of Object.keys(servers)) {
+    const cfg = servers[name];
+    if (isHttpCfg(cfg)) {
+      out[name] = { url: cfg.url };
+      if (cfg.tokenTarget) out[name].tokenTarget = cfg.tokenTarget;
+      if (cfg.headers && typeof cfg.headers === 'object') out[name].headers = cfg.headers;
+    } else {
+      out[name] = { command: cfg.command };
+      if (Array.isArray(cfg.args) && cfg.args.length) out[name].args = cfg.args.slice();
+      if (cfg.env && typeof cfg.env === 'object') out[name].env = cfg.env;
+      if (cfg.cwd) out[name].cwd = cfg.cwd;
+    }
+    if (cfg.enabled === false) out[name].enabled = false;
+    if (Array.isArray(cfg.expose) && cfg.expose.length) out[name].expose = cfg.expose.slice();
+  }
+  return { mcpServers: out };
+}
+
+// Merge an imported bundle. Invalid entries are REPORTED, never half-written.
+function importMcpServersJson(home, doc) {
+  const src = doc && typeof doc === 'object' && doc.mcpServers && typeof doc.mcpServers === 'object'
+    ? doc.mcpServers : null;
+  if (!src) return { ok: false, error: 'format invalide : objet "mcpServers" attendu.' };
+  const servers = loadConfig(home);
+  const added = [];
+  const refused = [];
+  for (const name of Object.keys(src)) {
+    const raw = src[name];
+    const cfg = { transport: raw && raw.url ? 'http' : 'stdio' };
+    if (raw && raw.url) cfg.url = raw.url;
+    if (raw && raw.command) cfg.command = raw.command;
+    if (raw && Array.isArray(raw.args)) cfg.args = raw.args.slice(0, 40);
+    if (raw && raw.env && typeof raw.env === 'object') cfg.env = raw.env;
+    if (raw && raw.cwd) cfg.cwd = raw.cwd;
+    if (raw && raw.tokenTarget) cfg.tokenTarget = raw.tokenTarget;
+    if (raw && raw.headers && typeof raw.headers === 'object') cfg.headers = raw.headers;
+    if (raw && raw.enabled === false) cfg.enabled = false;
+    if (raw && Array.isArray(raw.expose)) cfg.expose = raw.expose.slice(0, 40);
+    const err = validateServerConfig(name, cfg);
+    if (err) { refused.push({ name, error: err }); continue; }
+    servers[name] = cfg;
+    added.push(name);
+  }
+  if (!added.length) return { ok: false, error: 'aucun serveur importable.', refused };
+  saveConfig(home, servers);
+  return { ok: true, added, refused };
+}
+
 // Admin allowlist: { allowed: { server: ['tool', ...] | '*' } }. Fail-closed.
 function policyFile(home) {
   if (process.env.SUDO_AGENT_MCP_POLICY) return String(process.env.SUDO_AGENT_MCP_POLICY);
@@ -277,10 +471,11 @@ async function httpRpc(client, method, params, id, timeoutMs) {
   return msg.result;
 }
 
-function disconnectOne(name, journal, clientsMap) {
+function disconnectOne(name, journal, clientsMap, onlyIf) {
   const map = clientsMap || clients;
   const c = map.get(name);
   if (!c) return;
+  if (onlyIf && c !== onlyIf) return;   // a replaced client never kills its successor
   map.delete(name);
   for (const id of Object.keys(c.pending || {})) {
     try { clearTimeout(c.pending[id].timer); c.pending[id].reject(new Error('client MCP ferme')); } catch (_) {}
@@ -297,28 +492,40 @@ function reapIdle(journal) {
 }
 
 async function connectHttp(home, serverName, cfg, journal) {
-  const client = { name: serverName, http: true, httpCfg: cfg, sessionId: null, seq: 0, lastUsed: Date.now(), tools: null };
+  const client = { name: serverName, home: String(home || ''), http: true, httpCfg: cfg,
+    sessionId: null, seq: 0, lastUsed: Date.now(), tools: null };
+  if (journal) journal('mcp connexion (http): ' + serverName + ' ' + safeUrl(cfg.url));
+  try {
+    const initId = 1;
+    await httpRpc(client, 'initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'sudo-agent', version: '0.1.0' },
+    }, initId, cfg.timeoutMs);
+    client.seq = initId;
+    const listed = await httpRpc(client, 'tools/list', {}, 2, cfg.timeoutMs);
+    client.seq = 2;
+    client.tools = Array.isArray(listed && listed.tools) ? listed.tools : [];
+  } catch (e) {
+    // Never cache a half-open connection: the caller must see the failure.
+    try { clients.delete(serverName); } catch (_) {}
+    throw e;
+  }
   clients.set(serverName, client);
   if (journal) journal('mcp connecte (http): ' + serverName + ' ' + safeUrl(cfg.url));
-  const initId = 1;
-  await httpRpc(client, 'initialize', {
-    protocolVersion: '2024-11-05',
-    capabilities: {},
-    clientInfo: { name: 'sudo-agent', version: '0.1.0' },
-  }, initId, cfg.timeoutMs);
-  client.seq = initId;
-  const listed = await httpRpc(client, 'tools/list', {}, 2, cfg.timeoutMs);
-  client.seq = 2;
-  client.tools = Array.isArray(listed && listed.tools) ? listed.tools : [];
   return client;
 }
 
 async function connect(home, serverName, journal) {
   reapIdle(journal);
   const hit = clients.get(serverName);
-  if (hit && hit.http) { hit.lastUsed = Date.now(); return hit; }
-  if (hit && hit.child && !hit.child.killed) { hit.lastUsed = Date.now(); return hit; }
-  if (hit) clients.delete(serverName);
+  // A cached client from another home, or one whose handshake never completed,
+  // is not a hit: reconnect so the state stays honest (P54 offline tolerance).
+  const sameHome = hit && (hit.home === undefined || hit.home === String(home || ''));
+  if (hit && !sameHome) { try { disconnectOne(serverName, null, null, hit); } catch (_) {} clients.delete(serverName); }
+  else if (hit && hit.http && Array.isArray(hit.tools)) { hit.lastUsed = Date.now(); return hit; }
+  else if (hit && hit.child && !hit.child.killed) { hit.lastUsed = Date.now(); return hit; }
+  else if (hit) { try { disconnectOne(serverName, null, null, hit); } catch (_) {} clients.delete(serverName); }
   const cfg = loadConfig(home)[serverName];
   if (!cfg) throw new Error('serveur MCP inconnu: ' + serverName);
   if (isHttpCfg(cfg)) return connectHttp(home, serverName, cfg, journal);
@@ -331,7 +538,7 @@ async function connect(home, serverName, journal) {
     detached: process.platform !== 'win32',
     shell: false,
   });
-  const client = { name: serverName, child, buf: '', seq: 0, pending: {}, lastUsed: Date.now(), tools: null };
+  const client = { name: serverName, home: String(home || ''), child, buf: '', seq: 0, pending: {}, lastUsed: Date.now(), tools: null };
   child.stdout.on('data', (d) => onData(client, d, journal));
   child.stderr.on('data', (d) => { if (journal) journal('mcp stderr ' + serverName + ': ' + String(d).slice(0, 300)); });
   child.on('error', (e) => {
@@ -340,7 +547,7 @@ async function connect(home, serverName, journal) {
     }
     client.pending = {};
   });
-  child.on('exit', () => disconnectOne(serverName, journal));
+  child.on('exit', () => disconnectOne(serverName, journal, null, client));
   clients.set(serverName, client);
   if (journal) journal('mcp connecte: ' + serverName + ' (pid ' + (child.pid || '?') + ')');
   await sendReq(client, 'initialize', {
@@ -395,6 +602,8 @@ function disconnectAll(journal) {
 }
 
 module.exports = {
+  PRESETS, presets, isEnabled, setEnabled, setToolDecision, toolDecision, exposedTools, setExposed,
+  toMcpServersJson, importMcpServersJson, readToolsState, toolsStateFile, TOOL_DECISIONS,
   agentDir, loadConfig, saveConfig, policyFile, loadPolicy, isAllowed,
   validateServerConfig, describeServer, testServer,
   connect, listTools, callTool, disconnectAll, textOf,

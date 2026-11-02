@@ -166,8 +166,12 @@ async function tTools() {
 
 // -- D. system prompts -------------------------------------------------------
 async function tModes() {
-  assert(modes.buildSystem().indexOf('before reading a path') !== -1, 'build lists first');
-  assert(modes.planSystem().indexOf('before reading a path') !== -1, 'plan lists first');
+  // P53-5: French is the product default (conversation language), English is
+  // opt-in. Both must carry the same "list before reading" rule.
+  assert(modes.buildSystem().indexOf('avant de lire un chemin') !== -1, 'build lists first');
+  assert(modes.planSystem().indexOf('avant de lire un chemin') !== -1, 'plan lists first');
+  assert(modes.buildSystem({ lang: 'en' }).indexOf('before reading a path') !== -1, 'en build lists first');
+  assert(modes.modeSystem('build', 'small', { lang: 'fr' }).indexOf('mode BUILD') !== -1, 'small keeps identity');
 }
 
 // -- E/F/G/H. turn-level integration -----------------------------------------

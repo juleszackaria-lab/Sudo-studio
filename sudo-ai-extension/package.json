@@ -231,8 +231,8 @@
         "icon": "$(plug)"
       },
       {
-        "command": "sudoStudio.openMcpPanel",
-        "title": "Open MCP Servers Page",
+        "command": "sudoStudio.openAgentExtensions",
+        "title": "Open Agent Extensions Page",
         "category": "Sudo Studio",
         "icon": "$(tools)"
       },

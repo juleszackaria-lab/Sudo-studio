@@ -272,16 +272,19 @@ t('B6 auth requise (401)', async () => {
   } finally { await close(); }
 }),
 t('B7 page : panneau + commande + zero secret', async () => {
-  const panelPath = path.join(ROOT, 'sudo-ai-extension/src/panels/MCPServersPanel.js');
+  // P54: la page MCP a ete remplacee par la page Agent Extensions (onglet MCP).
+  const panelPath = path.join(ROOT, 'sudo-ai-extension/src/panels/AgentExtensionsPanel.js');
   assert(fs.existsSync(panelPath), 'panneau present');
   const src = fs.readFileSync(panelPath, 'utf8');
-  assert(src.includes('type="password"'), 'champ password');
-  assert(src.includes('tokenCleared'), 'champ vide apres envoi');
+  assert(src.indexOf("type=\"password\"") !== -1, 'champ jeton masque');
+  assert(src.indexOf("mcpAskToken") !== -1, 'saisie du jeton en clair masque');
+  assert(src.indexOf("'/keyring/secret'") !== -1, 'jeton range dans le trousseau');
+  assert(src.includes('/keyring/secret'), 'route trousseau utilisee');
   assert(!/console\.log\([^)]*secret/i.test(src), 'aucun log de secret');
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'sudo-ai-extension/package.json'), 'utf8'));
-  assert((pkg.contributes.commands || []).some((c) => c.command === 'sudoStudio.openMcpPanel'), 'commande package.json');
+  assert((pkg.contributes.commands || []).some((c) => c.command === 'sudoStudio.openAgentExtensions'), 'commande package.json');
   const ext = fs.readFileSync(path.join(ROOT, 'sudo-ai-extension/extension.js'), 'utf8');
-  assert(ext.includes('sudoStudio.openMcpPanel') && ext.includes('MCPServersPanel'), 'commande extension.js');
+  assert(ext.includes('sudoStudio.openAgentExtensions') && ext.includes('AgentExtensionsPanel'), 'commande extension.js');
   const srvSrc = fs.readFileSync(path.join(AGENT_SRC, 'server.js'), 'utf8');
   assert(!/log\.info\('keyring (set|delete)'[^)]*secret/.test(srvSrc), 'journal trousseau sans secret');
 }),
@@ -300,7 +303,11 @@ t('C1 import local : apercu sans installation, puis activation globale', async (
   const listed = skills.listSkills(home, null);
   assert(listed.length === 1 && listed[0].active === true && listed[0].scope === 'global', 'liste: ' + JSON.stringify(listed));
   let inj = skills.activeSkillsText(home, null);
-  assert(inj.text.indexOf('MARQUEUR-REVUE') !== -1 && inj.used.join(',') === 'global/revue', 'injection: ' + JSON.stringify(inj.used));
+  assert(inj.used.join(',') === 'global/revue', 'injection: ' + JSON.stringify(inj.used));
+  // P54: descriptions only in the context; the body is loaded on demand.
+  assert(inj.text.indexOf('revue') !== -1 && inj.text.indexOf('relit le code') !== -1, 'description injectee');
+  assert(inj.text.indexOf('MARQUEUR-REVUE') === -1, 'corps non injecte');
+  assert(skills.loadSkillText(home, null, 'revue').text.indexOf('MARQUEUR-REVUE') !== -1, 'corps a la demande');
   const off = skills.setActive(home, null, 'global', 'revue', false);
   assert(off.ok === true, 'desactivation');
   inj = skills.activeSkillsText(home, null);
@@ -317,7 +324,8 @@ t('C2 skill projet : decouverte + activation explicite', async () => {
   assert(skills.activeSkillsText(home, root).text === '', 'pas injecte avant activation');
   const on = skills.setActive(home, root, 'project', 'normes', true);
   assert(on.ok === true, 'activation projet');
-  assert(skills.activeSkillsText(home, root).text.indexOf('MARQUEUR-NORMES') !== -1, 'injecte apres activation');
+  assert(skills.activeSkillsText(home, root).text.indexOf('normes') !== -1, 'decrite apres activation');
+  assert(skills.loadSkillText(home, root, 'normes').text.indexOf('MARQUEUR-NORMES') !== -1, 'corps a la demande (projet)');
   assert(skills.activeSkillsText(home, null).text === '', 'projet isole du global');
 }),
 t('C3 imports malformes refuses (codes clairs)', async () => {
@@ -356,7 +364,8 @@ t('C4 import git via file:// (ou echec clair sans git)', async () => {
   assert(pv.ok === true && pv.name === 'gitdemo' && pv.excerpt.indexOf('MARQUEUR-GIT') !== -1, 'clone + apercu: ' + JSON.stringify(pv).slice(0, 200));
   const ac = skills.activateStaged(home, null, pv.stagingId, 'global');
   assert(ac.ok === true, 'activation apres clone');
-  assert(skills.activeSkillsText(home, null).text.indexOf('MARQUEUR-GIT') !== -1, 'injecte');
+  assert(skills.activeSkillsText(home, null).text.indexOf('gitdemo') !== -1, 'decrite apres clone');
+  assert(skills.loadSkillText(home, null, 'gitdemo').text.indexOf('MARQUEUR-GIT') !== -1, 'corps a la demande (git)');
 }),
 t('C5 endpoints skills (apercu, activation, toggle, suppression)', async () => {
   const { port, token, close } = await startAgentServer();
@@ -388,11 +397,18 @@ t('C6 injection boucle : forme + cablage statique', async () => {
   assert(pv.ok === true, 'apercu');
   const ac = skills.activateStaged(home, null, pv.stagingId, 'global', 'c6');
   assert(ac.ok === true && ac.name === 'c6', 'renommage a l activation');
+  // P54: le contexte ne porte plus que les descriptions ; le corps complet se
+  // charge a la demande via l'outil skill (contexte court pour petits modeles).
   const inj = skills.activeSkillsText(home, null);
   assert(typeof inj.text === 'string' && Array.isArray(inj.used) && Array.isArray(inj.skipped), 'forme {text,used,skipped}');
-  assert(inj.text.indexOf('TEXTE-SKILL-C6') !== -1, 'corps injecte');
+  assert(inj.text.indexOf('c6') !== -1, 'nom de competence dans le contexte');
+  assert(inj.text.indexOf('TEXTE-SKILL-C6') === -1, 'corps non injecte (descriptions seules)');
+  const sb = skills.loadSkillText(home, null, 'c6');
+  assert(sb.ok === true && sb.text.indexOf('TEXTE-SKILL-C6') !== -1, 'corps charge a la demande: ' + JSON.stringify(sb).slice(0, 120));
   const loopSrc = fs.readFileSync(path.join(AGENT_SRC, 'loop.js'), 'utf8');
   assert(loopSrc.includes('activeSkillsText') && /out\.splice\([^;]*filter\(skillsText\)/.test(loopSrc), 'boucle injecte + filtre');
+  const toolsSrc = fs.readFileSync(path.join(AGENT_SRC, 'tools.js'), 'utf8');
+  assert(/^\s*skill: \{ description:/m.test(toolsSrc) && toolsSrc.includes('loadSkillText'), 'outil skill cable');
 }),
 // ---- groupe D : exec longs (live, stop, delai, boucle fix bornee) ---------
 t('D1 sortie live : morceaux sans repetition, code 0', async () => {
@@ -448,6 +464,10 @@ t('D3 delai de vie : tue + code timeout', async () => {
   execm.reapProcs();
 }),
 t('D4 boucle fix bornee : 6 echecs => PARTIEL build_fix', async () => {
+  // P53 recalibration: 6 protocol rounds need headroom above the localized
+  // prompt, otherwise compression (not the bounded fix loop) ends the turn.
+  const prevCtx50 = process.env.SUDO_AGENT_CTX_TOKENS;
+  process.env.SUDO_AGENT_CTX_TOKENS = '8192';
   const proj = tmp('p50d4');
   fs.writeFileSync(path.join(proj, 'f.txt'), 'x', 'utf8');
   const responses = [];
@@ -464,6 +484,8 @@ t('D4 boucle fix bornee : 6 echecs => PARTIEL build_fix', async () => {
   assert(String(end.reason || '').indexOf('boucle de correction bornee') !== -1, 'raison: ' + end.reason);
   assert(r.chats.length === 6, 'borne a 6 tours, got ' + r.chats.length);
   assert(r.journal.indexOf('build-fix borne atteinte') !== -1, 'journalise');
+  if (prevCtx50 === undefined) delete process.env.SUDO_AGENT_CTX_TOKENS;
+  else process.env.SUDO_AGENT_CTX_TOKENS = prevCtx50;
 }),
 t('D5 diagnostics : lignes d erreur + fin de sortie', async () => {
   const d = execm.extractErrors('ok line\nerror TS123: boom\nmiddle\nFAILED tests\nTraceback (most recent call last)\nlast');

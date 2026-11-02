@@ -102,7 +102,13 @@ function createWorld(proj) {
       const p = runTurn({ store, sessionId: s.id, prompt, corr: opts.corr || ('p52o-' + w.seq),
         provider: { type: 'local', baseUrl: 'http://' + HOST + ':' + mock.port, model: 'mock-model' },
         toolsCtx: w.toolsCtx(), runs, log,
-        onEvent: (e) => { try { events.push(e); } catch (_) {} } });
+        onEvent: (e) => {
+          try { events.push(e); } catch (_) {}
+          // P53: event-driven abort (deterministic landing point).
+          if (opts.abortOnOrchStep && e && e.type === 'orch.step' && e.n === opts.abortOnOrchStep) {
+            try { abortRun(runs, s.id); } catch (_) {}
+          }
+        } });
       if (opts.autoApprove || opts.abortOnPaused || opts.abortOnOrchStep) {
         let settled = false;
         let aborted = false;
@@ -115,10 +121,6 @@ function createWorld(proj) {
             }
           }
           if (!aborted && opts.abortOnPaused && events.some((e) => e.type === 'turn.paused')) {
-            aborted = true;
-            try { abortRun(runs, s.id); } catch (_) {}
-          }
-          if (!aborted && opts.abortOnOrchStep && events.some((e) => e.type === 'orch.step' && e.n === opts.abortOnOrchStep)) {
             aborted = true;
             try { abortRun(runs, s.id); } catch (_) {}
           }
@@ -293,7 +295,7 @@ t('O8 arret serveur simule a l etape 12 : reprise termine 30/30', async () => {
   assert(r1.events.some((e) => e.type === 'orch.step' && e.n >= 12), 'etape 12 atteinte');
   const st1 = JSON.parse(fs.readFileSync(path.join(proj, '.sudo-agent', 'orch-o8plan.json'), 'utf8'));
   const K = st1.steps.findIndex((x) => x.status !== 'done') + 1;
-  assert(K >= 12 && K <= 15, 'point de chute K=' + K);
+  assert(K >= 12 && K <= 13, 'point de chute K=' + K);
   for (let i = 1; i < K; i++) {
     const f = 'f' + String(i).padStart(2, '0') + '.txt';
     assert(fs.readFileSync(path.join(proj, f), 'utf8') === 'F' + i + '\n', 'fichier ' + f);
