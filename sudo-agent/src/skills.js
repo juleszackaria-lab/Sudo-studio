@@ -130,8 +130,11 @@ function setActive(home, projectRoot, scope, name, on) {
   return { ok: true, active: !!on };
 }
 
-// Text injected in the agent system prompt. Only active + valid skills,
-// capped. Never throws: failures are reported in `skipped`.
+// P54-2: ONLY the descriptions enter the context. The full instructions are
+// loaded on demand (invocation by name through the `skill` tool), so small
+// local models are not saturated by skills they are not using right now.
+// Text injected in the agent system prompt. Never throws: failures are
+// reported in `skipped`.
 function activeSkillsText(home, projectRoot) {
   const used = [];
   const skipped = [];
@@ -141,20 +144,43 @@ function activeSkillsText(home, projectRoot) {
   try { skills = listSkills(home, projectRoot); } catch (_) { skills = []; }
   for (const s of skills) {
     if (!s.active || s.broken) continue;
-    const dir = scopeDir(home, projectRoot, s.scope);
-    const rf = readSkillFile(path.join(dir, s.name));
-    if (!rf.ok) { skipped.push({ name: s.scope + '/' + s.name, error: rf.code }); continue; }
-    const sm = skillMeta(s.name, rf.text);
-    if (!sm.ok) { skipped.push({ name: s.scope + '/' + s.name, error: sm.code }); continue; }
-    let body = sm.meta.body.trim();
-    if (body.length > MAX_INJECT_PER_SKILL) body = body.slice(0, MAX_INJECT_PER_SKILL) + '\n[...tronque...]';
-    if (total + body.length > MAX_INJECT_TOTAL) { skipped.push({ name: s.scope + '/' + s.name, error: 'budget_depasse' }); continue; }
-    total += body.length;
+    const line = '- ' + s.name + ' (' + s.scope + ') : ' + (s.description || 'sans description');
+    if (total + line.length > MAX_INJECT_TOTAL) { skipped.push({ name: s.scope + '/' + s.name, error: 'budget_depasse' }); continue; }
+    total += line.length;
     used.push(s.scope + '/' + s.name);
-    parts.push('## Skill: ' + s.name + ' (' + s.scope + ')' + (sm.meta.version ? ' v' + sm.meta.version : '') + '\n' + body);
+    parts.push(line.slice(0, MAX_INJECT_PER_SKILL));
   }
-  const text = parts.length ? 'Active skills (follow them):\n' + parts.join('\n\n') : '';
-  return { text, used, skipped };
+  if (!parts.length) return { text: '', used, skipped };
+  const head = 'Skills disponibles (description seule : charge les instructions completes avec ' +
+    'skill({"name": "<nom>"}) avant de les appliquer) :';
+  return { text: head + '\n' + parts.join('\n'), used, skipped };
+}
+
+// P54-2: full instructions of ONE skill, on demand (name may be "scope/name"
+// or just the name, project scope first). Returns { ok, name, scope, text }.
+function loadSkillText(home, projectRoot, name) {
+  const raw = String(name || '').trim();
+  if (!raw) return { ok: false, code: 'bad_args', error: 'skill: name requis.' };
+  let wantScope = '';
+  let wantName = raw;
+  const sl = raw.indexOf('/');
+  if (sl > 0) { wantScope = raw.slice(0, sl); wantName = raw.slice(sl + 1); }
+  if (!validName(wantName)) return { ok: false, code: 'bad_args', error: 'nom de skill invalide.' };
+  const skills = listSkills(home, projectRoot);
+  const candidates = skills.filter((s) => !s.broken && s.name === wantName && (!wantScope || s.scope === wantScope));
+  // project first (more specific), then global
+  candidates.sort((a, b) => (a.scope === b.scope ? 0 : (a.scope === 'project' ? -1 : 1)));
+  const hit = candidates[0];
+  if (!hit) return { ok: false, code: 'not_found', error: 'skill introuvable : ' + wantName.slice(0, 60) };
+  if (!hit.active) return { ok: false, code: 'not_active', error: 'skill inactif : ' + hit.scope + '/' + hit.name + ' (activez-le dans Agent Extensions).' };
+  const dir = scopeDir(home, projectRoot, hit.scope);
+  const rf = dir ? readSkillFile(path.join(dir, hit.name)) : { ok: false, code: 'no_skill_md' };
+  if (!rf.ok) return { ok: false, code: rf.code, error: 'SKILL.md illisible.' };
+  const sm = skillMeta(hit.name, rf.text);
+  if (!sm.ok) return { ok: false, code: sm.code, error: 'skill invalide.' };
+  let body = sm.meta.body.trim();
+  if (body.length > MAX_INJECT_PER_SKILL) body = body.slice(0, MAX_INJECT_PER_SKILL) + '\n[...tronque...]';
+  return { ok: true, name: hit.name, scope: hit.scope, text: body };
 }
 
 // ---- import (preview then activate) --------------------------------------
@@ -356,6 +382,7 @@ function deleteSkill(home, projectRoot, scope, name) {
 }
 
 module.exports = {
+  loadSkillText,
   globalDir, projectDir, stagingDir, validName,
   listSkills, setActive, activeSkillsText,
   previewImport, activateStaged, discardStaged, listStaged, deleteSkill,

@@ -29,6 +29,8 @@ const compressMod = require('./compress');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
 const skillsMod = require('./skills');
+const agentsMod = require('./agents');
+const commandsMod = require('./commands');
 const pmap = require('./projectmap');
 
 const MAX_HISTORY = 50;
@@ -182,11 +184,46 @@ async function runTurn(opts) {
   const model = provider.model || (probe.models && probe.models[0]) || '';
   if (!model) return fail('no_model', 'Aucun modele charge sur le runtime local (liste des modeles vide).');
 
-  store.append(sessionId, { role: 'user', content: prompt });
+  // P54-3: custom command. "/name args" becomes the rendered template; an
+  // unknown command is reported honestly (never a silent chat fallback).
+  // Done here so questions, tool turns and legacy turns behave the same.
+  let turnPrompt = prompt;
+  let storedText = prompt;
+  try {
+    const home0 = homeOf(opts.toolsCtx);
+    let root0 = null;
+    try {
+      root0 = fs.realpathSync(session.projectRoot);
+    } catch (_) {
+      try { root0 = session.projectRoot || null; } catch (_) { root0 = null; }
+    }
+    const cmd = commandsMod.expand(home0, root0, prompt);
+    if (cmd && cmd.matched) {
+      if (!cmd.ok) {
+        if (log) { try { log.warn('commande inconnue', { session: sessionId, name: String(cmd.name || '').slice(0, 40) }, corr); } catch (_) {} }
+        store.append(sessionId, { role: 'user', content: prompt });
+        store.append(sessionId, { role: 'assistant', content: cmd.error });
+        try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+        try { onEvent({ type: 'message.done', text: cmd.error, aborted: false }); } catch (_) {}
+        try { onEvent({ type: 'turn.start', turnId: corr, model }); } catch (_) {}
+        try { onEvent({ type: 'turn.done', turnId: corr, messageCount: (store.get(sessionId) || { messages: [] }).messages.length, model, aborted: false, status: 'PARTIEL', reason: 'unknown_command', filesModified: [], stopReason: 'unknown_command', declaredDone: true, toolCalls: 0, unresolvedErrors: [] }); } catch (_) {}
+        return { status: 'done', model, runStatus: 'PARTIEL', code: 'unknown_command' };
+      }
+      turnPrompt = cmd.prompt;
+      storedText = 'Commande /' + cmd.name + (cmd.scope === 'project' ? ' (projet)' : '') + ' :\n' + cmd.prompt;
+      if (log) {
+        try { log.info('commande developpee', { session: sessionId, name: String(cmd.name).slice(0, 40), scope: cmd.scope, chars: cmd.prompt.length }, corr); } catch (_) {}
+        if (cmd.missing && cmd.missing.length) { try { log.warn('commande argument manquant', { session: sessionId, args: cmd.missing.join(',') }, corr); } catch (_) {} }
+      }
+    }
+  } catch (e) {
+    if (log) { try { log.warn('commande illisible', { session: sessionId, error: String((e && e.message) || e).slice(0, 120) }, corr); } catch (_) {} }
+  }
+  store.append(sessionId, { role: 'user', content: storedText });
   const sessionNow = store.get(sessionId) || session;
   const useTools = !!opts.toolsCtx && sessionNow.projectRoot && opts.tools !== false;
 
-  const base = { store, provider, sessionId, prompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, maxIt: opts.maxIt, subDepth: opts.subDepth };
+  const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, maxIt: opts.maxIt, subDepth: opts.subDepth };
   if (useTools) return toolsTurn(base, sessionNow, opts.toolsCtx);
   return legacyTurn(base, sessionNow);
 }
@@ -396,6 +433,16 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
 // ---------------------------------------------------------------------------
 // Tool turn (P25 + P26).
 // ---------------------------------------------------------------------------
+// P54-5: global rules (Agent Extensions > Rules, scope global). Capped, never
+// throws: a broken file must never break a turn.
+function readGlobalRulesSafe(home) {
+  try {
+    const t = agentsMod.readGlobalRules(home);
+    if (!t || t.length > MAX_AGENTS_MD) return null;
+    return 'Regles globales (Agent Extensions) :\n' + t;
+  } catch (_) { return null; }
+}
+
 function readAgentsMd(root) {
   try {
     const st = fs.statSync(path.join(root, 'AGENTS.md'));
@@ -661,7 +708,7 @@ async function toolsTurn(base, session, toolsCtx) {
   const run = { id: turnId, sessionId, checkpointed: false, checkpointName: null, snapshot: null, calls: [], created: [], killFns: runEntry.killFns };
   try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
 
-  const agentsMd = readAgentsMd(root);
+  const agentsMd = [readGlobalRulesSafe(home), readAgentsMd(root)].filter(Boolean).join('\n\n');
   // P50-2: active skills (global + project) injected as system context.
   // Failures never break a turn; they are journaled instead.
   let skillsText = '';
@@ -693,10 +740,14 @@ async function toolsTurn(base, session, toolsCtx) {
     let servers = {};
     try { servers = mcpMod.loadConfig(home); } catch (_) { servers = {}; }
     for (const srv of Object.keys(servers)) {
+      // P54-1: a DISABLED server never spawns and never offers tools.
+      let expose = [];
+      try { expose = mcpMod.exposedTools(home, srv); } catch (_) { expose = []; }
+      if (!expose.length) continue;
       try {
         const listed = await mcpMod.listTools(home, srv, (m) => journal('info', 'mcp', { msg: m }));
         for (const t of listed) {
-          if (!t || !t.name || !mcpMod.isAllowed(home, srv, t.name)) continue;
+          if (!t || !t.name || expose.indexOf(t.name) === -1) continue;
           schemas.push({ type: 'function', function: {
             name: 'mcp__' + srv + '__' + t.name,
             description: ('MCP ' + srv + '/' + t.name + ': ' + String(t.description || '')).slice(0, 400),
@@ -706,6 +757,17 @@ async function toolsTurn(base, session, toolsCtx) {
       } catch (e) {
         journal('warn', 'mcp list failed', { server: srv, error: String((e && e.message) || e).slice(0, 160) });
       }
+    }
+  }
+  // P54-4: a custom agent may restrict the tools its child turn can use. The
+  // finish tools stay available so a turn can always end honestly.
+  if (Array.isArray(base.allowedTools) && base.allowedTools.length) {
+    const keep = new Set(base.allowedTools.concat(['reply', 'done']));
+    const filtered = schemas.filter((x) => x && x.function && keep.has(x.function.name));
+    if (filtered.length) {
+      schemas.length = 0;
+      for (const x of filtered) schemas.push(x);
+      journal('info', 'outils restreints (agent)', { tools: filtered.length });
     }
   }
   const schemaChars = JSON.stringify(schemas).length;
@@ -1233,8 +1295,20 @@ async function toolsTurn(base, session, toolsCtx) {
           if (sa.tasks.length > MAX_SUB_PARALLEL) { refuseSub('fan-out max 3 sous-agents.'); continue; }
           jobs = sa.tasks;
         } else if (typeof sa.task === 'string' && sa.task.trim()) {
-          jobs = [{ task: sa.task, focus: sa.focus, readonly: sa.readonly, maxRounds: sa.maxRounds }];
+          jobs = [{ task: sa.task, focus: sa.focus, readonly: sa.readonly, maxRounds: sa.maxRounds, agent: sa.agent }];
         } else { refuseSub('subagent: task (ou tasks[]) requis.'); continue; }
+        // P54-4: named agents (custom definitions). Unknown name = honest refusal.
+        if (sa.agent !== undefined) {
+          for (const j of jobs) if (j && j.agent === undefined) j.agent = sa.agent;
+        }
+        const agentDefs = new Map();
+        for (const j of jobs) {
+          if (!j || j.agent === undefined || j.agent === null || j.agent === '') continue;
+          const def = agentsMod.findAgent(home, j.agent);
+          if (!def) { refuseSub('agent inconnu : ' + String(j.agent).slice(0, 60) + ' (Agent Extensions > Agents).'); jobs = null; break; }
+          agentDefs.set(String(j.agent).toLowerCase(), def);
+        }
+        if (!jobs) continue;
         let jobsOk = true;
         for (const j of jobs) {
           if (!j || typeof j.task !== 'string' || !j.task.trim() || j.task.length > 2000) { refuseSub('tache invalide (texte requis, <=2000).'); jobsOk = false; break; }
@@ -1251,17 +1325,25 @@ async function toolsTurn(base, session, toolsCtx) {
           let mr = parseInt(job.maxRounds, 10);
           if (!Number.isFinite(mr)) mr = 4;
           mr = Math.min(6, Math.max(1, mr));
-          const cprompt = 'Execute cette sous-tache agent (enfant ' + n + '). Tache : ' + String(job.task).slice(0, 2000)
+          // P54-4: a custom agent contributes its instructions and its tool
+          // allowlist; Build/Plan stay the default when no agent is named.
+          const defA = job.agent ? agentDefs.get(String(job.agent).toLowerCase()) : null;
+          const cprompt = 'Execute cette sous-tache agent (enfant ' + n + ')'
+            + (defA ? ' avec l\'agent "' + defA.name + '"' : '') + '. Tache : ' + String(job.task).slice(0, 2000)
             + (job.focus ? '\nContexte : ' + String(job.focus).slice(0, 1000) : '')
+            + (defA && defA.instructions ? '\nInstructions de l\'agent :\n' + defA.instructions.slice(0, 4000) : '')
             + '\nTermine par done avec un RESUME compact (faits + fichiers touches).'
+            + (defA && defA.tools && defA.tools.length ? '\nOutils autorises pour cet agent : ' + defA.tools.join(', ') + '.' : '')
             + (job.readonly === true ? ' Lecture seule (mode PLAN).' : '');
-          journal('info', 'sous-agent demarre', { child: child.id, mode: childMode, maxRounds: mr });
+          journal('info', 'sous-agent demarre', { child: child.id, mode: childMode, maxRounds: mr,
+            agent: defA ? String(defA.name).slice(0, 40) : 'build/plan', tools: defA && defA.tools ? defA.tools.length : 0 });
           try { onEvent({ type: 'subagent.start', callId: callIdS, child: child.id }); } catch (_) {}
           let cres = null;
           try {
             cres = await runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.s' + n,
               provider, toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map(), noResume: true },
-              runs, log, onEvent: () => {}, subDepth: subDepth + 1, maxIt: mr, runtimeWait });
+              runs, log, onEvent: () => {}, subDepth: subDepth + 1, maxIt: mr, runtimeWait,
+              allowedTools: (defA && defA.tools && defA.tools.length) ? defA.tools.slice(0, 40) : null });
           } catch (e) {
             journal('warn', 'sous-agent erreur', { child: child.id, error: String((e && e.message) || e).slice(0, 160) });
             return { ok: false, child: child.id, error: String((e && e.message) || e).slice(0, 300) };

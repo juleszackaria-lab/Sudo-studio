@@ -17,6 +17,10 @@ const modesMod = require('./modes');
 const mcpMod = require('./mcp');
 const keyringMod = require('./keyring');
 const skillsMod = require('./skills');
+const commandsMod = require('./commands');
+const agentsMod = require('./agents');
+const rulesMod = require('./rules');
+const pmapMod = require('./projectmap');
 const execMod = require('./exec');
 
 const HOST = '127.0.0.1';
@@ -513,6 +517,190 @@ function createApp(opts) {
         if (!r.ok) { sendJson(res, 400, { error: r.error }); done(400); return; }
         if (log) { try { log.info('skill delete', { scope: body.scope, name: mSkillDel[1] }, corr); } catch (_) {} }
         sendJson(res, 200, r); done(200); return;
+      }
+      // -- P54: Agent Extensions (MCP extra + commands + agents + rules) -------
+      const qRootOf = () => {
+        const q = url.searchParams.get('projectRoot');
+        if (!q) return { ok: true, root: null };
+        const tr = toolRoot(q);
+        return tr.ok ? { ok: true, root: tr.root } : { ok: false, error: tr.error };
+      };
+      if (req.method === 'GET' && p === '/extensions/mcp/presets') {
+        sendJson(res, 200, { presets: mcpMod.presets() }); done(200); return;
+      }
+      if (req.method === 'GET' && p === '/extensions/mcp/tools') {
+        const servers0 = mcpMod.loadConfig(home);
+        const policy0 = mcpMod.loadPolicy(home);
+        const st0 = mcpMod.readToolsState(home);
+        const out = {};
+        for (const n of Object.keys(servers0)) {
+          out[n] = {
+            enabled: mcpMod.isEnabled(servers0[n]),
+            // Keyring ENTRY NAME only (used by the page to open the masked
+            // input): never a token value.
+            tokenTarget: servers0[n].tokenTarget ? String(servers0[n].tokenTarget).slice(0, 160) : '',
+            allowed: policy0[n] === '*' ? ['*'] : (Array.isArray(policy0[n]) ? policy0[n].slice(0, 100) : []),
+            expose: mcpMod.exposedTools(home, n),
+            decisions: (st0.servers && st0.servers[n]) ? st0.servers[n] : {},
+          };
+        }
+        sendJson(res, 200, { servers: out }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/extensions/mcp/tools') {
+        const body = await readBody(req);
+        const server = String(body.server || '');
+        if (body.expose !== undefined) {
+          const r = mcpMod.setExposed(home, server, body.expose);
+          if (!r.ok) { sendJson(res, 400, { error: r.error }); done(400); return; }
+        }
+        if (body.tool && body.decision) {
+          const r2 = mcpMod.setToolDecision(home, server, String(body.tool), String(body.decision));
+          if (!r2.ok) { sendJson(res, 400, { error: r2.error }); done(400); return; }
+        }
+        if (log) { try { log.info('mcp tools maj', { server, exposed: Array.isArray(body.expose) ? body.expose.length : -1 }, corr); } catch (_) {} }
+        sendJson(res, 200, { ok: true, expose: mcpMod.exposedTools(home, server) }); done(200); return;
+      }
+      if (mMcpSrv && !mMcpSrv[2] && req.method === 'POST') {
+        const body = await readBody(req);
+        if (body.enabled === undefined) { sendJson(res, 400, { error: 'enabled (booleen) requis.' }); done(400); return; }
+        const r3 = mcpMod.setEnabled(home, mMcpSrv[1], body.enabled !== false);
+        if (!r3.ok) { sendJson(res, 404, { error: r3.error }); done(404); return; }
+        if (log) { try { log.info('mcp serveur etat', { server: mMcpSrv[1], enabled: r3.enabled }, corr); } catch (_) {} }
+        sendJson(res, 200, r3); done(200); return;
+      }
+      if (req.method === 'GET' && p === '/extensions/mcp/export') {
+        sendJson(res, 200, mcpMod.toMcpServersJson(home)); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/extensions/mcp/import') {
+        const body = await readBody(req);
+        const r4 = mcpMod.importMcpServersJson(home, body);
+        if (!r4.ok) { sendJson(res, 400, r4); done(400); return; }
+        if (log) { try { log.info('mcp import', { added: r4.added.length, refused: r4.refused.length }, corr); } catch (_) {} }
+        sendJson(res, 200, r4); done(200); return;
+      }
+      const mCmd = p.match(/^\/extensions\/commands\/([A-Za-z0-9_-]{1,64})$/);
+      if (req.method === 'GET' && p === '/extensions/commands') {
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        sendJson(res, 200, { commands: commandsMod.listCommands(home, qr.root) }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/extensions/commands') {
+        const body = await readBody(req);
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        const r5 = commandsMod.saveCommand(home, qr.root, body.scope || 'global', String(body.name || ''),
+          body.description, body.template, body.args);
+        if (!r5.ok) { sendJson(res, 400, { error: r5.error }); done(400); return; }
+        if (log) { try { log.info('commande enregistree', { scope: r5.scope, name: r5.name }, corr); } catch (_) {} }
+        sendJson(res, 201, r5); done(201); return;
+      }
+      if (mCmd && req.method === 'GET') {
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        const all = commandsMod.listCommands(home, qr.root).filter((c) => c.name === mCmd[1]);
+        if (!all.length) { sendJson(res, 404, { error: 'commande introuvable.' }); done(404); return; }
+        const argList = (url.searchParams.get('args') || '').split(/\s+/).filter(Boolean);
+        const ex = commandsMod.expand(home, qr.root, '/' + mCmd[1] + (argList.length ? ' ' + argList.join(' ') : ''));
+        sendJson(res, 200, { command: all[0], preview: ex.ok ? ex.prompt : '', missing: ex.missing || [] }); done(200); return;
+      }
+      if (mCmd && req.method === 'DELETE') {
+        const body = await readBody(req);
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        const r6 = commandsMod.deleteCommand(home, qr.root, body.scope || 'global', mCmd[1]);
+        if (!r6.ok) { sendJson(res, 400, { error: r6.error }); done(400); return; }
+        sendJson(res, 200, r6); done(200); return;
+      }
+      const mAgent = p.match(/^\/extensions\/agents\/([A-Za-z0-9 _%-]{1,60})$/);
+      if (req.method === 'GET' && p === '/extensions/agents') {
+        sendJson(res, 200, { agents: agentsMod.listAgents(home) }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/extensions/agents') {
+        const body = await readBody(req);
+        const r7 = agentsMod.saveAgent(home, body);
+        if (!r7.ok) { sendJson(res, 400, { error: r7.error }); done(400); return; }
+        if (log) { try { log.info('agent enregistre', { name: r7.agent.name, tools: r7.agent.tools.length }, corr); } catch (_) {} }
+        sendJson(res, 201, r7); done(201); return;
+      }
+      if (mAgent && req.method === 'DELETE') {
+        const r8 = agentsMod.deleteAgent(home, decodeURIComponent(mAgent[1]));
+        if (!r8.ok) { sendJson(res, 404, { error: r8.error }); done(404); return; }
+        sendJson(res, 200, r8); done(200); return;
+      }
+      if (req.method === 'GET' && p === '/extensions/rules') {
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        const project = qr.root ? rulesMod.readProjectRules(qr.root) : { ok: true, exists: false, text: '' };
+        sendJson(res, 200, { project, global: agentsMod.readGlobalRules(home) }); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/extensions/rules') {
+        const body = await readBody(req);
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        if (body.scope === 'global') {
+          const r9 = agentsMod.saveGlobalRules(home, body.text);
+          if (!r9.ok) { sendJson(res, 400, { error: r9.error }); done(400); return; }
+          if (log) { try { log.info('regles globales maj', { bytes: r9.bytes }, corr); } catch (_) {} }
+          sendJson(res, 200, r9); done(200); return;
+        }
+        if (!qr.root) { sendJson(res, 400, { error: 'aucun projet : AGENTS.md non editable.' }); done(400); return; }
+        const r10 = rulesMod.saveProjectRules(qr.root, body.text, { confirm: body.confirm === true });
+        if (!r10.ok) { const code = r10.code === 'confirm_required' ? 409 : 400; sendJson(res, code, r10); done(code); return; }
+        if (log) { try { log.info('AGENTS.md maj', { bytes: r10.bytes, added: r10.diff.added, removed: r10.diff.removed }, corr); } catch (_) {} }
+        sendJson(res, 200, r10); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/extensions/rules/generate') {
+        const qr = qRootOf();
+        if (!qr.ok || !qr.root) { sendJson(res, 400, { error: 'aucun projet.' }); done(400); return; }
+        const draft = rulesMod.generateDraft(pmapMod, qr.root);
+        if (!draft.ok) { sendJson(res, 400, { error: draft.error }); done(400); return; }
+        const cur = rulesMod.readProjectRules(qr.root);
+        const diff = rulesMod.diffText(cur.exists ? cur.text : '', draft.text);
+        sendJson(res, 200, { ok: true, text: draft.text, exists: !!cur.exists, diff, type: draft.type }); done(200); return;
+      }
+      if (req.method === 'GET' && p === '/extensions/export') {
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        const bundle = {
+          version: 1, exportedAt: new Date().toISOString(),
+          mcp: mcpMod.toMcpServersJson(home),
+          mcpTools: mcpMod.readToolsState(home),
+          commands: commandsMod.listCommands(home, qr.root).map((c) => Object.assign({}, c)),
+          agents: agentsMod.listAgents(home).filter((a) => !a.builtin),
+          rules: { global: agentsMod.readGlobalRules(home),
+            project: qr.root ? (rulesMod.readProjectRules(qr.root).text || '') : '' },
+        };
+        sendJson(res, 200, bundle); done(200); return;
+      }
+      if (req.method === 'POST' && p === '/extensions/import') {
+        const body = await readBody(req);
+        const qr = qRootOf();
+        if (!qr.ok) { sendJson(res, 400, { error: qr.error }); done(400); return; }
+        const report = { mcp: null, commands: [], agents: [], rules: [] };
+        if (body.mcp) report.mcp = mcpMod.importMcpServersJson(home, body.mcp);
+        if (Array.isArray(body.commands)) {
+          for (const c of body.commands) {
+            if (!c || !c.name) continue;
+            const rc = commandsMod.saveCommand(home, qr.root, c.scope === 'project' ? 'project' : 'global',
+              String(c.name), c.description, String(c.template || c.descriptionText || ''), c.args);
+            report.commands.push({ name: String(c.name), ok: !!rc.ok, error: rc.error });
+          }
+        }
+        if (Array.isArray(body.agents)) {
+          for (const a of body.agents) {
+            const ra = agentsMod.saveAgent(home, a);
+            report.agents.push({ name: String((a && a.name) || ''), ok: !!ra.ok, error: ra.error });
+          }
+        }
+        if (body.rules && typeof body.rules === 'object') {
+          if (typeof body.rules.global === 'string') report.rules.push({ scope: 'global', ok: agentsMod.saveGlobalRules(home, body.rules.global).ok });
+          if (qr.root && typeof body.rules.project === 'string' && body.rules.project) {
+            const rp = rulesMod.saveProjectRules(qr.root, body.rules.project, { confirm: true });
+            report.rules.push({ scope: 'project', ok: !!rp.ok, error: rp.error });
+          }
+        }
+        if (log) { try { log.info('extensions import', { commands: report.commands.length, agents: report.agents.length }, corr); } catch (_) {} }
+        sendJson(res, 200, { ok: true, report }); done(200); return;
       }
       sendJson(res, 404, { error: 'route inconnue.' }); done(404);
     };

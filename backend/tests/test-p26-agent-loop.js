@@ -340,7 +340,7 @@ t('A3', 'profiles: size detection, ctx resolution, budget', () => {
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'local' }) === 'small', 'unknown local small');
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'cloud' }) === 'full', 'unknown cloud full');
   assert(p.selectProfile({ modelId: 'llama-8b', providerType: 'local', override: 'small' }) === 'small', 'override wins');
-  assert(p.profileTools('small').length === 12 && p.profileTools('full').length === 29, 'tool counts (P52: -todo engine-owned, +append +mkdir)');
+  assert(p.profileTools('small').length === 13 && p.profileTools('full').length === 30, 'tool counts (P54: +skill on demand)');
   assert(p.profileTools('small').indexOf('patch') === -1, 'small drops patch');
   assert(p.profileTools('small').indexOf('todo') === -1, 'P52: engine owns todos');
   assert(p.profileTools('small').indexOf('reply') !== -1 && p.profileTools('small').indexOf('done') !== -1, 'P49: small exits');
@@ -520,7 +520,7 @@ t('D1', 'guard v2: 3 identical -> corrective strategy first (P52)', async () => 
 });
 
 // E: profiles -----------------------------------------------------------------
-t('E1', 'small profile: 12 terse tools for 1.5B', async () => {
+t('E1', 'small profile: 13 terse tools for 1.5B', async () => {
   const proj = fixtureProject();
   const mock = await mockProvider({ responses: [{ content: 'done' }] });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: 'qwen-1.5b' });
@@ -529,7 +529,10 @@ t('E1', 'small profile: 12 terse tools for 1.5B', async () => {
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const tools = mock.chats[0].tools || [];
     const names = tools.map((x) => x.function.name);
-    assert(names.length === 12, 'twelve tools, got ' + names.length);
+    // P54: +skill (load a skill body on demand: the context only carries the
+    // descriptions, so a small model must still be able to fetch the body).
+    assert(names.length === 13, 'thirteen tools, got ' + names.length);
+    assert(names.indexOf('skill') !== -1, 'skill available to small models');
     assert(names.indexOf('patch') === -1 && names.indexOf('glob') === -1, 'no patch/glob');
     assert(names.indexOf('todo') === -1 && names.indexOf('reply') !== -1 && names.indexOf('done') !== -1, 'P52: no todo, exits kept');
     assert(names.indexOf('append') !== -1 && names.indexOf('mkdir') !== -1, 'P52: append+mkdir');
@@ -548,7 +551,7 @@ t('E2', 'full profile: 13 tools for 8B', async () => {
     const sid = await newSession(port, token, proj);
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const names = (mock.chats[0].tools || []).map((x) => x.function.name);
-    assert(names.length === 29 && names.indexOf('patch') !== -1 && names.indexOf('exec_poll') !== -1 && names.indexOf('gen_report') !== -1 && names.indexOf('subagent') !== -1 && names.indexOf('append') !== -1, 'twenty-nine tools, got ' + names.length);
+    assert(names.length === 30 && names.indexOf('patch') !== -1 && names.indexOf('skill') !== -1 && names.indexOf('exec_poll') !== -1 && names.indexOf('gen_report') !== -1 && names.indexOf('subagent') !== -1 && names.indexOf('append') !== -1, 'thirty tools, got ' + names.length);
     await pollFile(path.join(a.logsDir, 'agent.log'), /profile=full/, 3000);
   } finally { killChild(a.child); await mock.close(); }
 });
@@ -789,9 +792,10 @@ t('G4', 'MCP unknown server: clear error', async () => {
   try {
     const sid = await newSession(hs.port, a.token, proj);
     const r = await callTool(hs.port, a.token, sid, 'mcp__ghost__tool', {});
-    assert(r.body.status === 'need-approval', 'allowed tool asks');
-    const ap = await approve(hs.port, a.token, sid, r.body.request.id, 'once');
-    assert(ap.body.status === 'error' && String(ap.body.reason).indexOf('serveur MCP inconnu') !== -1, 'clear error, got ' + JSON.stringify(ap.body).slice(0, 200));
+    // P54: an unknown (or disabled) MCP server is refused BEFORE execution:
+    // no approval prompt, a clear coded error instead.
+    assert(r.body.status === 'error' && r.body.code === 'mcp_unknown', 'refus immediat, got ' + JSON.stringify(r.body).slice(0, 200));
+    assert(String(r.body.reason).indexOf('serveur MCP inconnu') !== -1, 'clear error, got ' + JSON.stringify(r.body).slice(0, 200));
   } finally { killChild(a.child); await mock.close(); }
 });
 

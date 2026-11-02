@@ -49,7 +49,7 @@ const PANELS = [
   ['providers', 'AI Providers'],
   ['analysis', 'Full Panel'],
   ['logs', 'Voir les journaux'],
-  ['mcp', 'MCP Servers'], // P50: MCP servers page (chaque panneau)
+  ['extensions', 'Agent Extensions'], // P54: page unique MCP/Skills/Commands/Agents/Rules
 ];
 
 function arg(name, def) {

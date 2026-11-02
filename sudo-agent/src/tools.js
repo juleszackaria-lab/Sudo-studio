@@ -18,6 +18,7 @@ const { maskSecrets } = require('./journal');
 const { PLAN_REFUSED } = require('./modes');
 const pmap = require('./projectmap');
 const prereq = require('./prereq');
+const skillsMod = require('./skills');
 const msgs = require('./msgs');
 const profiles = require('./profiles');
 const verifyMod = require('./verify');
@@ -982,6 +983,7 @@ async function hDone(ctx, args) {
 // ---------------------------------------------------------------------------
 const TOOLS = {
   read: { description: 'Lit un fichier du projet (borne, tronque). Marque le fichier comme lu.', danger: 'read', mutating: false, pathArg: 'file', defDir: '.', handler: hRead },
+  skill: { description: 'Charge les instructions completes d une competence active (nom).', danger: 'read', mutating: false, handler: hSkill },
   list: { description: 'Liste un dossier du projet (borne).', danger: 'read', mutating: false, pathArg: 'dir', defDir: '.', handler: hList },
   glob: { description: 'Recherche de fichiers par motif (*, ?, **).', danger: 'read', mutating: false, pathArg: 'dir', defDir: '.', handler: hGlob },
   grep: { description: 'Recherche textuelle (regex) dans le projet, bornee.', danger: 'read', mutating: false, pathArg: 'path', defDir: '.', handler: hGrep },
@@ -1021,6 +1023,7 @@ function toOpenAISchema(profile) {
   const names = small ? profiles.profileTools('small') : toolNames().filter((n) => n !== 'todo'); // P52: the model never manages todos (registry-only tool).
   const schemas = {
     read: { file: str('Project-relative file path.'), offset: { type: 'integer' }, limit: { type: 'integer' } },
+    skill: { name: str('Skill name (or scope/name).') },
     list: { dir: str('Project-relative directory (default root).'), recursive: { type: 'boolean' }, limit: { type: 'integer' } },
     glob: { pattern: str('Glob pattern, e.g. src/**/*.js.'), dir: str('Base directory.'), limit: { type: 'integer' } },
     grep: { pattern: str('Regular expression.'), path: str('File or directory to search.'), limit: { type: 'integer' } },
@@ -1077,6 +1080,20 @@ function markReadFiles(ctx, rels) {
 }
 
 // ---------------------------------------------------------------------------
+// P54-2: load ONE skill's full instructions on demand (name, or scope/name).
+// The context only carries descriptions; the body is fetched here, capped.
+async function hSkill(ctx, args) {
+  const name = String(args.name || '').trim();
+  if (!name) return { ok: false, code: 'bad_args', error: 'skill: name requis.' };
+  let r = null;
+  try { r = skillsMod.loadSkillText(ctx.home, ctx.root, name); } catch (e) { r = { ok: false, code: 'io', error: String((e && e.message) || e).slice(0, 120) }; }
+  if (!r.ok) return { ok: false, code: r.code, error: r.error };
+  // The FULL body travels in `data.content` (that is what the model receives);
+  // the context only carried the description, so this is the on-demand load.
+  return { ok: true, data: { name: r.name, scope: r.scope, chars: r.text.length, content: r.text },
+    summary: 'competence ' + r.scope + '/' + r.name + ' chargee (' + r.text.length + ' caracteres).' };
+}
+
 // MCP tool path (P26-e): mcp__server__tool. Admin allowlist first
 // (fail-closed, operator rules cannot override), then the standard
 // permission system, then the stdio call. MCP side effects live outside
@@ -1091,6 +1108,20 @@ async function executeMcpTool(ctx, toolName, args, opts, t0) {
     return { status: 'error', reason: 'nom d\'outil MCP invalide : ' + String(toolName).slice(0, 60), code: 'bad_args' };
   }
   if (!ctx.root) return { status: 'denied', reason: 'aucun dossier de projet sur cette session.', code: 'no_project' };
+  {
+    let cfgE = null;
+    try { cfgE = mcpMod.loadConfig(ctx.home)[server]; } catch (_) { cfgE = null; }
+    if (!cfgE) {
+      const reason = 'serveur MCP inconnu : ' + server + ' (Agent Extensions > MCP).';
+      recordCall(ctx, toolName, args, false, 'mcp_unknown', Date.now() - t0, reason);
+      return { status: 'error', reason, code: 'mcp_unknown' };
+    }
+    if (!mcpMod.isEnabled(cfgE)) {
+      const reason = 'serveur MCP desactive : ' + server + ' (activez-le dans Agent Extensions > MCP).';
+      recordCall(ctx, toolName, args, false, 'mcp_disabled', Date.now() - t0, reason);
+      return { status: 'denied', reason, code: 'mcp_disabled' };
+    }
+  }
   if (!mcpMod.isAllowed(ctx.home, server, tool)) {
     const reason = 'outil MCP non autorise (liste administrateur) : ' + server + '/' + tool;
     recordCall(ctx, toolName, args, false, 'mcp_not_allowed', Date.now() - t0, reason);
@@ -1098,6 +1129,34 @@ async function executeMcpTool(ctx, toolName, args, opts, t0) {
     return { status: 'denied', reason, code: 'mcp_not_allowed' };
   }
   const pattern = { kind: 'mcptool', text: (server + '/' + tool).slice(0, 300) };
+  // P54-1: the per-tool decision from the Agent Extensions page wins over the
+  // generic prompt: "allow" runs without asking, "deny" is refused here.
+  const decision = mcpMod.toolDecision(ctx.home, server, tool);
+  if (decision === 'deny') {
+    const reason = 'outil MCP refuse par la politique : ' + server + '/' + tool + ' (Agent Extensions > MCP).';
+    recordCall(ctx, toolName, args, false, 'mcp_denied_rule', Date.now() - t0, reason);
+    return { status: 'denied', reason, code: 'mcp_denied_rule' };
+  }
+  if (decision === 'allow') {
+    const journalA = (msg) => {
+      if (ctx.log) { try { ctx.log.info('mcp', { session: ctx.sessionId, msg: String(msg).slice(0, 300) }, ctx.corr); } catch (_) {} }
+    };
+    let resA = null;
+    try {
+      resA = await mcpMod.callTool(ctx.home, server, tool, args, {}, journalA);
+    } catch (e) {
+      const code = (e && e.code) || 'mcp_error';
+      const reason = 'MCP ' + server + '/' + tool + ' : ' + String((e && e.message) || e).slice(0, 200);
+      const callA = recordCall(ctx, toolName, args, false, code, Date.now() - t0, reason);
+      callA.error = reason;
+      return { status: 'error', reason, code, call: callA };
+    }
+    const callA = recordCall(ctx, toolName, args, !!resA.ok, resA.ok ? 'ok' : 'mcp_error', resA.ms,
+      'MCP ' + server + '/' + tool + ' (' + resA.ms + 'ms, autorise)');
+    callA.result = resA.ok ? String(resA.text || '').slice(0, 8000) : null;
+    if (!resA.ok) { callA.error = String(resA.text || 'echec MCP.').slice(0, 500); return { status: 'error', reason: callA.error, code: 'mcp_error', call: callA }; }
+    return { status: 'done', call: callA };
+  }
   const chk = perm.check({ tool: 'mcp', pattern, p8verdict: null, denyList: null,
     sessionRules: ctx.sessionRules || new Set(), projectRules: ctx.projectRules || new Set() });
   if (chk.decision === 'deny') {
