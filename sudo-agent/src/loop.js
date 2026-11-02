@@ -22,6 +22,8 @@ const { maskSecrets } = require('./journal');
 const plan = require('./plan');
 const orch = require('./orch');
 const modes = require('./modes');
+const prereq = require('./prereq');
+const msgs = require('./msgs');
 const profiles = require('./profiles');
 const compressMod = require('./compress');
 const verifyMod = require('./verify');
@@ -440,7 +442,7 @@ const GUARD_SKIP_CODES = ['need_approval', 'asked', 'denied', 'deploy_policy', '
 // restriction) and exists (write is create-only: use edit/append) join
 // them; todos_open/no_plan stay listed so old transcripts never poison
 // new verdicts.
-const GUIDANCE_CODES = ['todos_open', 'no_plan', 'engine_todos', 'recon_required', 'verify', 'corrective'];
+const GUIDANCE_CODES = ['todos_open', 'no_plan', 'engine_todos', 'recon_required', 'verify', 'corrective', 'verify_timeout'];
 
 // P49-4: same sentence 3+ times in one reply = a stuck small model.
 // Pure (unit-tested): returns { repeated, count } or null.
@@ -472,6 +474,9 @@ function unresolvedErrors(calls) {
       if (!calls[j].ok) continue;
       if (c.code === 'bad_args') { fixed = true; break; }
       if (c.code === 'exists' && c.target && calls[j].target === c.target) { fixed = true; break; }
+      // P53-1: a missing tool is recovered by ANY later success (the model
+      // adapted: another tool, or the user installed it mid-turn).
+      if (c.code === 'tool_missing') { fixed = true; break; }
       if (calls[j].tool === c.tool && calls[j].target === c.target) { fixed = true; break; }
     }
     if (!fixed) bad.push(c);
@@ -479,14 +484,35 @@ function unresolvedErrors(calls) {
   return bad;
 }
 
-function computeRunStatus(declared, calls) {
+// P53-3: ECHEC only when NOTHING could be done. Real modifications plus
+// standing tool errors, or an impossible/failed verification, are a PARTIEL
+// with the file list and the honest reason.
+function computeRunStatus(declared, calls, extra) {
   const unresolved = unresolvedErrors(calls);
-  if (!declared) return { status: 'PARTIEL', reason: 'iterations max atteintes sans reponse finale.', unresolved };
+  const ex = extra || {};
+  const files = Array.isArray(ex.files) ? ex.files : [];
+  const verifyNote = ex.verifyNote ? String(ex.verifyNote) : '';
+  const lang = ex.lang === 'en' ? 'en' : 'fr';
+  const filesTxt = files.slice(0, 6).join(', ');
+  if (!declared) {
+    return { status: 'PARTIEL', reason: 'iterations max atteintes sans reponse finale.', unresolved, verifyNote,
+      partialFiles: files.slice() };
+  }
   if (unresolved.length) {
     const names = unresolved.slice(0, 5).map((c) => c.tool + ':' + (c.code || 'error')).join(', ');
-    return { status: 'ECHEC', reason: 'erreurs d\'outil non resolues : ' + names + '.', unresolved };
+    const why = 'erreurs d\'outil non resolues : ' + names;
+    if (files.length) {
+      return { status: 'PARTIEL', reason: msgs.t(lang).finalPartial(files.length, filesTxt, why),
+        unresolved, verifyNote, partialFiles: files.slice() };
+    }
+    return { status: 'ECHEC', reason: why + '.', unresolved, verifyNote };
   }
-  return { status: 'TERMINE', reason: '', unresolved };
+  if (verifyNote) {
+    const reason = files.length ? msgs.t(lang).finalPartial(files.length, filesTxt, verifyNote)
+      : 'verification non executee ou echouee : ' + verifyNote + '.';
+    return { status: 'PARTIEL', reason, unresolved, verifyNote, partialFiles: files.slice() };
+  }
+  return { status: 'TERMINE', reason: '', unresolved, verifyNote };
 }
 
 function probeNctx(preProbe, model) {
@@ -684,11 +710,28 @@ async function toolsTurn(base, session, toolsCtx) {
   }
   const schemaChars = JSON.stringify(schemas).length;
 
+  // P53-5: the engine speaks the conversation language (French by default).
+  let convLang = 'fr';
+  try {
+    const recent = (store.get(sessionId) || { messages: [] }).messages.slice(-4)
+      .filter((x) => x && x.role === 'user').map((x) => String(x.content || '')).join('\n');
+    convLang = msgs.detectLang(String(base.prompt || '') + '\n' + recent, 'fr');
+  } catch (_) { convLang = 'fr'; }
+  const T = () => msgs.t(convLang);
+  tctx.lang = convLang; // tools speak the conversation language too (P53-5)
+  // P53-7: verified machine environment (5 s probes, cached, same data the
+  // Environment panel shows). Failures never break a turn.
+  let envSnap = null;
+  try { envSnap = await prereq.envSnapshot(); } catch (_) { envSnap = null; }
+  if (envSnap && envSnap.missing && envSnap.missing.length) {
+    journal('info', 'environnement', { lang: convLang, absents: envSnap.missing.slice(0, 10).join(',') });
+  }
+
   const modelMessages = () => {
     const stored = (store.get(sessionId) || { messages: [] }).messages.slice(-MAX_HISTORY);
     const out = toProviderMessages(stored, false);
     if (agentsMd) out.unshift({ role: 'system', content: 'Project instructions (AGENTS.md):\n' + filter(agentsMd) });
-    let sys = modes.modeSystem(mode, profile); // P43-3: terse system on small
+    let sys = modes.modeSystem(mode, profile, { lang: convLang, env: envSnap }); // P43-3: terse system on small; P53-5/7: language + environment
     const note = profiles.chunkNote(profile);
     if (note) sys += '\n' + note;
     out.unshift({ role: 'system', content: sys });
@@ -771,6 +814,15 @@ async function toolsTurn(base, session, toolsCtx) {
   let verifyRounds = 0;
   let stopReason = '';
   let stopDetail = '';
+  // P53-1/2/3: verification can be IMPOSSIBLE (tool absent) or TIME OUT.
+  // Neither is a tool error, neither may block the final answer: they become
+  // the honest reason of a PARTIEL verdict.
+  let verifyNote = '';
+  const verifyTimeoutMs = (() => {
+    const v = parseInt(process.env.SUDO_AGENT_VERIFY_TIMEOUT_MS, 10);
+    if (Number.isFinite(v) && v >= 5000) return Math.min(600000, v);
+    return 120000; // P53-2: build/test checks get 120 s by default
+  })();
   const maybeVerify = async () => {
     if (mode !== 'build') return 'done';
     if (base.verify === false) { journal('info', 'verify ignore (desactive)'); return 'done'; }
@@ -778,10 +830,22 @@ async function toolsTurn(base, session, toolsCtx) {
     const checks = verifyMod.detectChecks(root);
     if (!checks.length) { journal('info', 'verify: aucune commande detectee'); return 'done'; }
     const failures = [];
+    const skipped = [];
+    const timedOut = [];
     for (const c of checks) {
       if (runEntry.aborted) return 'stop';
+      // P53-1: prove the tool exists BEFORE running anything. Absent =>
+      // skipped step with an install action: no 30 s wait, no retry.
+      let pre = { ok: true, checked: false };
+      try { pre = await prereq.checkCommand(c.command, { lang: convLang }); } catch (_) { pre = { ok: true, checked: false }; }
+      if (!pre.ok) {
+        skipped.push({ check: c, reason: pre.message, action: pre.action });
+        journal('warn', 'verify non executee', { check: c.name, tool: pre.tool, raison: pre.reason });
+        continue;
+      }
       let r = null;
-      try { r = await executeTool(tctx, 'bash', { command: c.command }, {}); }
+      // P53-2: control commands get the configurable budget (120 s default).
+      try { r = await executeTool(tctx, 'bash', { command: c.command, timeoutMs: verifyTimeoutMs }, {}); }
       catch (e) { r = { status: 'error', reason: String((e && e.message) || e).slice(0, 300) }; }
       if (r.status === 'need-approval') {
         // P52: verify approvals pause like any other (no waiter: legacy stop).
@@ -795,7 +859,7 @@ async function toolsTurn(base, session, toolsCtx) {
         if (paused.decision === 'deny') {
           r = { status: 'denied', reason: 'verification refusee par l\'operateur.' };
         } else {
-          try { r = await executeTool(tctx, 'bash', { command: c.command }, { preApproved: true }); }
+          try { r = await executeTool(tctx, 'bash', { command: c.command, timeoutMs: verifyTimeoutMs }, { preApproved: true }); }
           catch (e) { r = { status: 'error', reason: String((e && e.message) || e).slice(0, 300) }; }
           if (r.status === 'need-approval') {
             stopReason = 'verify_approval';
@@ -810,12 +874,40 @@ async function toolsTurn(base, session, toolsCtx) {
         return 'stop';
       }
       if (r.status !== 'done') {
+        // P53-2: a timeout is "delai depasse", not "echec d'outil non resolu".
+        // Retrying a 120 s command wastes minutes: report it and move on.
+        if (r.code === 'timeout') {
+          // P53-2: the timeout belongs to the CHECK, not to the model: the
+          // recorded call is re-labelled so it never reads as an unresolved
+          // tool error ("delai depasse", not "echec d'outil non resolu").
+          const last = run.calls[run.calls.length - 1];
+          if (last && last.tool === 'bash' && last.code === 'timeout') {
+            last.code = 'verify_timeout';
+            last.ok = false;
+            last.summary = 'delai depasse (' + Math.round(verifyTimeoutMs / 1000) + ' s) : ' + c.name;
+          }
+          timedOut.push({ check: c, ms: verifyTimeoutMs });
+          journal('warn', 'verify delai depasse', { check: c.name, ms: verifyTimeoutMs });
+          continue;
+        }
         failures.push({ check: c, reason: String(r.reason || 'echec.').slice(0, 500) });
         continue;
       }
       journal('info', 'verify pass', { check: c.name });
     }
-    if (!failures.length) return 'done';
+    // P53-1/3: nothing actionable failed, but verification did not happen.
+    // Record the honest reason and let the turn finish (never blocked).
+    if (!failures.length) {
+      const notes = [];
+      if (skipped.length) notes.push(skipped.map((x) => x.check.name + ' ' + x.reason).join('; '));
+      if (timedOut.length) notes.push(timedOut.map((x) => T().verifyTimeout(x.check.name, x.ms)).join('; '));
+      if (notes.length) {
+        verifyNote = notes.join('; ');
+        journal('warn', 'verify incomplete', { skipped: skipped.length, timeouts: timedOut.length });
+        return 'done';
+      }
+      return 'done';
+    }
     if (verifyRounds >= 2) {
       for (const f of failures) {
         run.calls.push({ tool: 'bash', target: f.check.command, ok: false, code: 'verify_failed', ms: 0, at: new Date().toISOString(), summary: f.reason.slice(0, 300) });
@@ -825,8 +917,9 @@ async function toolsTurn(base, session, toolsCtx) {
       return 'done'; // finalize: declared + unresolved => ECHEC (honest)
     }
     verifyRounds += 1;
+    // P53-5: engine message, conversation language, imperative, no apology bait.
     const body = failures.map((f) => '- ' + f.check.name + ' (' + f.check.command + ') : ' + f.reason).join('\n');
-    store.append(sessionId, { role: 'user', content: 'VERIFICATION ECHOUEE (essai ' + verifyRounds + '/2) :\n' + body + '\nCorrige le probleme puis reponds.' });
+    store.append(sessionId, { role: 'user', content: T().verifyFail(verifyRounds, 2, body) });
     journal('warn', 'verify fail, retry', { round: verifyRounds, checks: failures.map((f) => f.check.name).join(', ') });
     return 'continue';
   };
@@ -847,7 +940,7 @@ async function toolsTurn(base, session, toolsCtx) {
     for (let a = 0; a < 2; a++) {
       if (runEntry.aborted) return null;
       journal('warn', 'reparation contrainte', { attempt: a + 1, why: String(why).slice(0, 120) });
-      store.append(sessionId, { role: 'user', content: 'RAPPEL STRICT : ' + why + ' Tu DOIS emettre exactement UN appel d\'outil maintenant (aucun texte libre). Si la tache est vraiment finie, appelle done ou reply ; sinon agis avec read/list/grep/write/edit.' });
+      store.append(sessionId, { role: 'user', content: T().strictAction(why) });
       let r2 = null;
       try {
         r2 = await roundOnce();
@@ -1042,7 +1135,7 @@ async function toolsTurn(base, session, toolsCtx) {
         }
         run.calls.push({ tool: first.name || '?', target: '', ok: false, code: 'corrective', ms: 0, at: new Date().toISOString(), summary: 'refuse : strategie corrective, change d\'appel.' });
         store.append(sessionId, { role: 'tool', tool_call_id: callIdG, name: first.name,
-          content: JSON.stringify({ ok: false, code: 'corrective', error: 'STRATEGIE CORRECTIVE : tu as repete 3 fois le meme appel (meme outil, memes arguments, meme resultat). Change de strategie : constate autrement (list/grep/read), choisis un autre outil ou d\'autres arguments, ou termine via reply/done. Ne re-emets PAS cet appel (une repetition identique = arret du tour).', detail: 'change de strategie.' }) });
+          content: JSON.stringify({ ok: false, code: 'corrective', error: 'STRATEGIE CORRECTIVE : ' + T().corrective, detail: 'change de strategie.' }) });
         try { onEvent({ type: 'tool.result', callId: callIdG, tool: first.name, ok: false, code: 'corrective', ms: 0, summary: 'strategie corrective.' }); } catch (_) {}
         closeExtrasG();
         continue;
@@ -1072,7 +1165,7 @@ async function toolsTurn(base, session, toolsCtx) {
           ? String((first.args && first.args.text) || '').trim()
           : String((first.args && first.args.summary) || '').trim();
         if (first.parseError) {
-          finishIntercept(false, 'bad_args', 'arguments d\'outil illisibles : ' + first.parseError + ' Reponds avec UN appel JSON strict.');
+          finishIntercept(false, 'bad_args', T().badArgs(first.parseError));
           closeExtrasF();
           continue;
         }
@@ -1095,7 +1188,9 @@ async function toolsTurn(base, session, toolsCtx) {
         } catch (_) {}
         const vF = await maybeVerify();
         if (vF === 'continue' || vF === 'stop') {
-          finishIntercept(false, 'verify', 'verifications en cours : poursuis le travail (des checks ont ete modifies).');
+          finishIntercept(false, 'verify', convLang === 'en'
+            ? 'Verification still running: finish the work, then reply (checks were modified).'
+            : 'verifications en cours : poursuis le travail (des checks ont ete modifies).');
           closeExtrasF();
           if (vF === 'stop') break; else continue;
         }
@@ -1220,7 +1315,11 @@ async function toolsTurn(base, session, toolsCtx) {
         const entry = { tool: first.name || '?', target: '', ok: false, code: 'bad_args', ms: 0, at: new Date().toISOString(), summary: first.parseError };
         run.calls.push(entry);
         // P26-b: constraining hint on top of the runtime grammar + retry.
-        content = JSON.stringify({ ok: false, error: 'arguments d\'outil illisibles : ' + first.parseError + ' Reponds avec UN appel JSON strict.', detail: 'arguments d\'outil illisibles.' });
+        content = JSON.stringify({ ok: false, code: 'bad_args', error: T().badArgs(first.parseError), detail: 'arguments d\'outil illisibles.' });
+      } else if (!first.name) {
+        run.calls.push({ tool: '?', target: '', ok: false, code: 'bad_args', ms: 0, at: new Date().toISOString(), summary: 'appel sans nom.' });
+        content = JSON.stringify({ ok: false, code: 'bad_args', error: T().invalidCall('name'),
+          example: '{"name":"read","arguments":{"file":"README.md"}}', detail: 'champ name manquant.' });
       } else if (strictAction && intent.improvement && !reconDone && FILE_MUTATING.indexOf(first.name) !== -1) {
         // P49-3: improvement without recon is forbidden: look first.
         run.calls.push({ tool: first.name, target: '', ok: false, code: 'recon_required', ms: 0, at: new Date().toISOString(), summary: 'bloque : constat requis avant ecriture.' });
@@ -1338,7 +1437,7 @@ async function toolsTurn(base, session, toolsCtx) {
     // mid-turn approval need) stops immediately, never retried.
     if (!runEntry.aborted && strictAction && declared && mode === 'build' &&
         !currentFilesModified().length && !(runOnly && run.calls.some((c) => c.ok)) &&
-        computeRunStatus(declared, run.calls).status === 'TERMINE') {
+        computeRunStatus(declared, run.calls, { files: currentFilesModified(), verifyNote, lang: convLang }).status === 'TERMINE') {
       continue;
     }
     break;
@@ -1465,7 +1564,7 @@ async function toolsTurn(base, session, toolsCtx) {
 
   // Honest status (P25-g + P26 stops).
   const filesModified = currentFilesModified();
-  let verdict = computeRunStatus(declared, run.calls);
+  let verdict = computeRunStatus(declared, run.calls, { files: currentFilesModified(), verifyNote, lang: convLang });
   if (orchVerdict) verdict = orchVerdict; // P52: the orchestrated verdict wins (honest per-step report).
   if (!declared && stopReason && stopReason !== 'verify_failed') {
     verdict = { status: 'PARTIEL', reason: stopDetail || 'arret.', unresolved: verdict.unresolved };
@@ -1490,7 +1589,7 @@ async function toolsTurn(base, session, toolsCtx) {
     if (declared && filesModified.length > 0) {
       // Errors may still stand (unresolved): then ECHEC is kept, with the
       // files listed above. TERMINE only when nothing stands unresolved.
-      if (!verdict.unresolved.length && !orchVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      if (!verdict.unresolved.length && !verdict.verifyNote && !orchVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
       if (!finalText.trim()) finalText = 'Tache terminee.';
       store.append(sessionId, { role: 'assistant', content: finalText });
     } else if (declared && runOnly && okCalls > 0) {
@@ -1523,6 +1622,30 @@ async function toolsTurn(base, session, toolsCtx) {
       // history and panels read the store, not just message.done).
       store.append(sessionId, { role: 'assistant', content: finalText });
     }
+  }
+  // P53-3: honest status in the ANSWER itself:
+  // "PARTIEL : N fichiers modifies (liste) ; verification non executee ou echouee : raison".
+  // P53-3: the status line rides in the ANSWER when the run really did
+  // something and verification could not confirm it (files + reason), or when
+  // verification was impossible/failed. Pure stops (loop, rescue) keep their
+  // deterministic text: the status is already in turn.done/lastRun.
+  const honestWhy = (verdict.verifyNote || (verdict.unresolved && verdict.unresolved.length && filesModified.length > 0));
+  if (honestWhy && verdict.status !== 'TERMINE' && verdict.reason && !/^(PARTIEL|ECHEC)/.test(String(finalText || '').trim())) {
+    const head = (finalText || '').replace(/\s+$/, '');
+    finalText = (head ? head + '\n\n' : '') + verdict.status + ' : ' + verdict.reason;
+    try {
+      const cur = (store.get(sessionId) || { messages: [] }).messages;
+      const last = cur[cur.length - 1];
+      if (last && last.role === 'assistant') {
+        store.update(sessionId, (st) => {
+          const arr = st.messages || [];
+          const i = arr.length - 1;
+          if (arr[i] && arr[i].role === 'assistant') arr[i].content = finalText;
+        });
+      } else {
+        store.append(sessionId, { role: 'assistant', content: finalText });
+      }
+    } catch (_) {}
   }
   // P52: orchestrated turns always store the report (even file-less or
   // interrupted ones: the store is the transcript of record).

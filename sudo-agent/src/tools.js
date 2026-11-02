@@ -17,6 +17,8 @@ const ckpt = require('./checkpoints');
 const { maskSecrets } = require('./journal');
 const { PLAN_REFUSED } = require('./modes');
 const pmap = require('./projectmap');
+const prereq = require('./prereq');
+const msgs = require('./msgs');
 const profiles = require('./profiles');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
@@ -34,6 +36,19 @@ const MAX_DIFF_LINES = 200;
 const MAX_BASH_BYTES = 64 * 1024;
 const BASH_DEFAULT_TIMEOUT = 30000;
 const BASH_MAX_TIMEOUT = 120000;
+// P53-2: control commands (build/test/analyze/install) get 120 s by default
+// -- configurable, clamped to the tool max. A plain command keeps 30 s.
+const CONTROL_DEFAULT_TIMEOUT = 120000;
+const CONTROL_RE = /(^|[\s;&|])(test|tests|analyze|build|compile|lint|check|typecheck|install|get|run build|run test|pub get|assemble|gradle)([\s;]|$)/i;
+function isControlCommand(cmd) {
+  const c = String(cmd || '');
+  return CONTROL_RE.test(c) && /^\s*[\w./\\:-]*\s*(flutter|dart|npm|npx|yarn|pnpm|node|gradle|gradlew|mvn|dotnet|go|cargo|make|pytest|python|python3|pip|pip3|cmake|msbuild)\b/i.test(c);
+}
+function controlTimeout() {
+  const v = parseInt(process.env.SUDO_AGENT_CONTROL_TIMEOUT_MS, 10);
+  if (Number.isFinite(v) && v >= 5000) return Math.min(BASH_MAX_TIMEOUT, v);
+  return Math.min(BASH_MAX_TIMEOUT, CONTROL_DEFAULT_TIMEOUT);
+}
 
 // ---------------------------------------------------------------------------
 // P8 sandbox module (real one, monorepo). Absent in a bare package -> the
@@ -404,6 +419,53 @@ async function hWrite(ctx, args, resolved) {
   return { ok: true, data: { rel: r.rel, overwritten: false, bytes: args.content.length }, summary: 'cree ' + r.rel + '.', created: [r.rel], markRead: [r.rel] };
 }
 
+// P53-4: edit is robust to real-world files. Exact match first (unchanged
+// contract), then line-ending tolerance (CRLF/LF), then whitespace tolerance,
+// then a fuzzy window. When nothing matches, the model gets the REAL lines
+// around the probable zone plus concrete alternatives (append / exact line).
+function eolOf(text) { return String(text).indexOf('\r\n') !== -1 ? '\r\n' : '\n'; }
+function toLF(t) { return String(t).replace(/\r\n/g, '\n'); }
+
+function wordsOf(line) {
+  const out = new Set();
+  const parts = String(line || '').toLowerCase().match(/[a-z0-9_]+/g) || [];
+  for (const w of parts) if (w.length > 1) out.add(w);
+  return out;
+}
+
+function lineScore(a, b) {
+  const A = wordsOf(a);
+  const B = wordsOf(b);
+  if (!A.size && !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter += 1;
+  return inter / (A.size + B.size - inter);
+}
+
+// Slide the old block over the file; score = mean best per-line similarity.
+// Bounded: 8000 file lines, 400 old lines (bigger edits use patch).
+function fuzzyPlaces(fileLines, oldLines) {
+  const out = [];
+  const n = fileLines.length;
+  const m = oldLines.length;
+  if (!m || m > 400 || n > 8000) return out;
+  for (let start = 0; start + m <= n; start++) {
+    let sum = 0;
+    for (let i = 0; i < m; i++) sum += lineScore(oldLines[i], fileLines[start + i]);
+    out.push({ start, score: sum / m });
+  }
+  out.sort((x, y) => y.score - x.score || x.start - y.start);
+  return out;
+}
+
+function nearBlock(fileLines, start, eol) {
+  const from = Math.max(0, (start || 0) - 2);
+  const to = Math.min(fileLines.length, (start || 0) + 6);
+  const rows = [];
+  for (let i = from; i < to; i++) rows.push(String(i + 1) + '| ' + fileLines[i].slice(0, 160));
+  return { from: from + 1, to, text: rows.join('\n') };
+}
+
 async function hEdit(ctx, args, resolved) {
   if (typeof args.old !== 'string' || !args.old) return { ok: false, code: 'bad_args', error: 'edit: old (chaine exacte) requis.' };
   if (typeof args.new !== 'string') return { ok: false, code: 'bad_args', error: 'edit: new (string) requis.' };
@@ -411,18 +473,67 @@ async function hEdit(ctx, args, resolved) {
   if (!r.ok) return { ok: false, code: r.code, error: 'edit refuse: ' + r.reason };
   let text = null;
   try { text = fs.readFileSync(r.abs, 'utf8'); } catch (_) { return richNotFound('edit', ctx, r, '.'); }
+
+  const write = (next, note) => {
+    const diff = diffLines(text, next);
+    try {
+      const tmp = r.abs + '.tmp-' + process.pid;
+      fs.writeFileSync(tmp, next, 'utf8');
+      fs.renameSync(tmp, r.abs);
+    } catch (e) { return { ok: false, code: 'io', error: 'edit: ' + String((e && e.message) || e).slice(0, 150) }; }
+    return { ok: true, data: { rel: r.rel, bytes: next.length, tolerant: !!note }, summary: 'modifie ' + r.rel + ' (1 remplacement' + (note ? ', ' + note : '') + ').', diff, markRead: [r.rel] };
+  };
+
+  // 1. exact (historical contract, bit for bit).
   const parts = text.split(args.old);
   const count = parts.length - 1;
-  if (count === 0) return { ok: false, code: 'not_found', error: 'edit: chaine introuvable dans ' + r.rel + '.' };
+  if (count === 1) return write(parts.join(args.new), '');
   if (count > 1) return { ok: false, code: 'ambiguous', error: 'edit: chaine ambigue (' + count + ' occurrences dans ' + r.rel + '). Precisez un bloc unique.' };
-  const next = parts.join(args.new);
-  const diff = diffLines(text, next);
-  try {
-    const tmp = r.abs + '.tmp-' + process.pid;
-    fs.writeFileSync(tmp, next, 'utf8');
-    fs.renameSync(tmp, r.abs);
-  } catch (e) { return { ok: false, code: 'io', error: 'edit: ' + String((e && e.message) || e).slice(0, 150) }; }
-  return { ok: true, data: { rel: r.rel, bytes: next.length }, summary: 'modifie ' + r.rel + ' (1 remplacement).', diff, markRead: [r.rel] };
+
+  // 2. line-ending tolerance: CRLF file vs LF `old` (or the reverse).
+  const lfText = toLF(text);
+  const lfOld = toLF(args.old);
+  if (lfText !== text && lfText.split(lfOld).length - 1 === 1) {
+    const next = lfText.split(lfOld).join(toLF(args.new));
+    return write(eolOf(text) === '\r\n' ? next.replace(/\n/g, '\r\n') : next, 'fins de ligne tolerees');
+  }
+
+  // 3. whitespace tolerance: compare with runs of spaces/tabs collapsed.
+  const fileLines = text.split(/\r?\n/);
+  const oldLinesRaw = lfOld.split('\n');
+  while (oldLinesRaw.length && !oldLinesRaw[oldLinesRaw.length - 1].trim()) oldLinesRaw.pop();
+  const collapse = (l) => String(l).replace(/[ \t]+/g, ' ').trim();
+  if (oldLinesRaw.length && oldLinesRaw.length <= fileLines.length) {
+    const want = oldLinesRaw.map(collapse).join('\n');
+    for (let i = 0; i + oldLinesRaw.length <= fileLines.length; i++) {
+      const got = fileLines.slice(i, i + oldLinesRaw.length).map(collapse).join('\n');
+      if (got !== want) continue;
+      const nextLines = fileLines.slice(0, i).concat(toLF(args.new).split('\n'), fileLines.slice(i + oldLinesRaw.length));
+      return write(nextLines.join(eolOf(text) === '\r\n' ? '\r\n' : '\n'), 'espaces toleres');
+    }
+  }
+
+  // 4. fuzzy window: real files drift by a word or two.
+  const places = fuzzyPlaces(fileLines, oldLinesRaw);
+  const best = places[0] || null;
+  if (best && best.score >= 0.62) {
+    const second = places[1];
+    if (second && (best.score - second.score) < 0.03) {
+      return { ok: false, code: 'ambiguous', error: 'edit: zone ambigue dans ' + r.rel + ' (2 passages ressemblants). Ajoute du contexte a old.' };
+    }
+    const nextLines = fileLines.slice(0, best.start).concat(toLF(args.new).split('\n'), fileLines.slice(best.start + oldLinesRaw.length));
+    return write(nextLines.join(eolOf(text) === '\r\n' ? '\r\n' : '\n'), 'correspondance approchee');
+  }
+
+  // 5. honest not_found: the model reads REAL lines and picks an alternative.
+  const near = nearBlock(fileLines, best ? best.start : 0, '\n');
+  const suggestion = near.text.split('\n').filter((l) => l.split('| ')[1] && l.split('| ')[1].trim()).slice(0, 3)
+    .map((l) => l.trim()).join('\n');
+  const hint = 'edit: chaine introuvable dans ' + r.rel + '. Lignes reelles autour de la zone probable (L' +
+    near.from + '-L' + near.to + ') :\n' + near.text +
+    '\nReprends une ligne EXACTE ci-dessus comme old, ou utilise append (ajouter a la fin du fichier).';
+  return { ok: false, code: 'not_found', error: hint,
+    data: { rel: r.rel, near: near.text, suggestions: ['append', 'edit'], exactLines: suggestion } };
 }
 
 async function hPatch(ctx, args) {
@@ -503,7 +614,9 @@ async function hBash(ctx, args, resolved) {
   let st = null;
   try { st = fs.statSync(r.abs); } catch (_) { return { ok: false, code: 'not_found', error: 'bash: dossier introuvable.' }; }
   if (!st.isDirectory()) return { ok: false, code: 'not_dir', error: 'bash: pas un dossier.' };
-  const timeoutMs = Math.min(BASH_MAX_TIMEOUT, Math.max(1000, parseInt(args.timeoutMs, 10) || BASH_DEFAULT_TIMEOUT));
+  const asked = parseInt(args.timeoutMs, 10);
+  const dflt = isControlCommand(command) ? controlTimeout() : BASH_DEFAULT_TIMEOUT;
+  const timeoutMs = Math.min(BASH_MAX_TIMEOUT, Math.max(1000, asked || dflt));
   const mod = p8();
   const env = mod ? mod.filterSpawnEnv(process.env).env : filterEnvFallback(process.env);
   const l2 = l2status();
@@ -1048,6 +1161,24 @@ async function executeTool(ctx, toolName, args, opts) {
     return { status: 'denied', reason, code: 'plan_mode' };
   }
 
+  // 1a. P53-1: tool pre-check for shell commands, BEFORE any approval prompt:
+  // a missing binary is refused at once with an install action, so the user is
+  // never asked to authorise "flutter test" on a machine without flutter.
+  if ((toolName === 'bash' || toolName === 'exec_start') && typeof args.command === 'string') {
+    const want = prereq.toolOf(args.command);
+    if (want) {
+      const lang = ctx && ctx.lang === 'en' ? 'en' : 'fr';
+      const pre = await prereq.checkCommand(args.command, { lang });
+      if (!pre.ok) {
+        const reason = msgs.t(lang).missingTool(pre.tool, pre.action && pre.action.hint);
+        const call = recordCall(ctx, toolName, args, false, 'tool_missing', Date.now() - t0, reason);
+        call.error = reason;
+        if (ctx.log) { try { ctx.log.warn('tool absent', { tool: toolName, missing: pre.tool, action: pre.action && pre.action.kind }, ctx.corr); } catch (_) {} }
+        return { status: 'error', reason, code: 'tool_missing', call, data: { tool: pre.tool, action: pre.action } };
+      }
+    }
+  }
+
   // 1. Boundary resolution for path-bearing tools.
   let resolved = { ok: true, abs: ctx.root, rel: '', flavor: 'posix' };
   if (def.pathArg) {
@@ -1245,6 +1376,9 @@ module.exports = {
   toolNames,
   toOpenAISchema,
   executeTool,
+  isControlCommand,
+  controlTimeout,
+  CONTROL_DEFAULT_TIMEOUT,
   ensureSeriesCheckpoint,
   saveRunSidecar,
   diffLines,

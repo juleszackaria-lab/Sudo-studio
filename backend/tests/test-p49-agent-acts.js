@@ -12,6 +12,12 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 
+// P53: the system prompt is now in the conversation language and carries the
+// verified environment, so a 2048-token micro-budget would trigger context
+// compression in the middle of a 3-round protocol. Real local models used by
+// the product run >= 8k: the protocol is proved on that realistic budget.
+if (!process.env.SUDO_AGENT_CTX_TOKENS) process.env.SUDO_AGENT_CTX_TOKENS = '8192';
+
 const ROOT = path.join(__dirname, '..', '..');
 const AGENT_SRC = path.join(ROOT, 'sudo-agent', 'src');
 const HOST = '127.0.0.1';

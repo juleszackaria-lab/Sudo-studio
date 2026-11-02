@@ -928,7 +928,9 @@ t('F3', 'AGENTS.md injected as project instructions', async () => {
     // messages; project instructions must still be injected intact).
     // P39 evolution: the project map sits between mode and AGENTS.md (3).
     const hasAgents = sys.some((m) => m.content.indexOf('FROBNICATE') !== -1);
-    const hasMode = sys.some((m) => m.content.indexOf('BUILD mode') !== -1);
+    // P53-5: the mode prompt follows the conversation language (French
+    // default) -> accept both wordings.
+    const hasMode = sys.some((m) => /BUILD mode|mode BUILD/.test(m.content));
     const hasMap = sys.some((m) => m.content.indexOf('[carte du projet]') !== -1);
     assert(sys.length === 3 && hasAgents && hasMode && hasMap, 'instructions missing');
   } finally { killChild(a.child); await mock.close(); }

@@ -448,6 +448,10 @@ t('D3 delai de vie : tue + code timeout', async () => {
   execm.reapProcs();
 }),
 t('D4 boucle fix bornee : 6 echecs => PARTIEL build_fix', async () => {
+  // P53 recalibration: 6 protocol rounds need headroom above the localized
+  // prompt, otherwise compression (not the bounded fix loop) ends the turn.
+  const prevCtx50 = process.env.SUDO_AGENT_CTX_TOKENS;
+  process.env.SUDO_AGENT_CTX_TOKENS = '8192';
   const proj = tmp('p50d4');
   fs.writeFileSync(path.join(proj, 'f.txt'), 'x', 'utf8');
   const responses = [];
@@ -464,6 +468,8 @@ t('D4 boucle fix bornee : 6 echecs => PARTIEL build_fix', async () => {
   assert(String(end.reason || '').indexOf('boucle de correction bornee') !== -1, 'raison: ' + end.reason);
   assert(r.chats.length === 6, 'borne a 6 tours, got ' + r.chats.length);
   assert(r.journal.indexOf('build-fix borne atteinte') !== -1, 'journalise');
+  if (prevCtx50 === undefined) delete process.env.SUDO_AGENT_CTX_TOKENS;
+  else process.env.SUDO_AGENT_CTX_TOKENS = prevCtx50;
 }),
 t('D5 diagnostics : lignes d erreur + fin de sortie', async () => {
   const d = execm.extractErrors('ok line\nerror TS123: boom\nmiddle\nFAILED tests\nTraceback (most recent call last)\nlast');

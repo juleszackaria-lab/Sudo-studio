@@ -11,6 +11,15 @@ const path = require('path');
 const crypto = require('crypto');
 
 const FORMAT_VERSION = 1;
+// P53-6: level threshold. Default 'info' keeps the journal quiet (approval
+// polling moved to 'debug'); SUDO_AGENT_LOG_LEVEL=debug turns it back on.
+const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+function resolveLevel(opts) {
+  let v = opts && opts.level;
+  if (!v) { try { v = process.env.SUDO_AGENT_LOG_LEVEL; } catch (_) { v = ''; } }
+  const l = String(v || 'info').toLowerCase();
+  return LEVELS[l] ? l : 'info';
+}
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 const DEFAULT_MAX_FILES = 10;               // current + 9 rotated
 
@@ -158,6 +167,7 @@ class AgentLogger {
     this.corr = opts.corr || null;
     this.maxBytes = opts.maxBytes || DEFAULT_MAX_BYTES;
     this.maxFiles = opts.maxFiles || DEFAULT_MAX_FILES;
+    this.level = resolveLevel(opts);
     this.fileOk = ensureDir(this.dir);
     if (!this.fileOk) {
       try { process.stderr.write('[agent-journal] WARNING: cannot use ' + this.dir + '\n'); } catch (_) {}
@@ -189,6 +199,8 @@ class AgentLogger {
   }
 
   log(level, msg, fields, corr) {
+    const lvl = String(level || 'info').toLowerCase();
+    if ((LEVELS[lvl] || LEVELS.info) < LEVELS[this.level]) return null;
     const e = {
       ts: tsWithTz(new Date()),
       level: String(level || 'info'),
@@ -203,12 +215,13 @@ class AgentLogger {
     return e;
   }
 
+  debug(msg, fields, corr) { return this.log('debug', msg, fields, corr); }
   info(msg, fields, corr) { return this.log('info', msg, fields, corr); }
   warn(msg, fields, corr) { return this.log('warn', msg, fields, corr); }
   error(msg, fields, corr) { return this.log('error', msg, fields, corr); }
 
   child(corr) {
-    const c = new AgentLogger({ logsDir: this.dir, component: this.component, corr: corr || newCorr('sess'), maxBytes: this.maxBytes, maxFiles: this.maxFiles });
+    const c = new AgentLogger({ logsDir: this.dir, component: this.component, corr: corr || newCorr('sess'), maxBytes: this.maxBytes, maxFiles: this.maxFiles, level: this.level });
     c.fileOk = this.fileOk;
     return c;
   }
@@ -241,7 +254,7 @@ class AgentLogger {
 }
 
 const NOOP = {
-  log() {}, info() {}, warn() {}, error() {}, child() { return NOOP; }, sessionHeader() {},
+  log() {}, debug() {}, info() {}, warn() {}, error() {}, child() { return NOOP; }, sessionHeader() {},
 };
 
 function createLogger(opts) {
@@ -251,6 +264,8 @@ function createLogger(opts) {
 
 module.exports = {
   FORMAT_VERSION,
+  LEVELS,
+  resolveLevel,
   createLogger,
   newCorr,
   corrFromReq,

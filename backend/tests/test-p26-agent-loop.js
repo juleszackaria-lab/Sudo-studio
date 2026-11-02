@@ -555,10 +555,11 @@ t('E2', 'full profile: 13 tools for 8B', async () => {
 
 t('E3', 'probe n_ctx drives budget: compression at >75%', async () => {
   const proj = fixtureProject();
-  // Fixed overhead ~1107 tokens (P52 small schemas + mode system). n_ctx=2000:
-  // seeds stay under 1500, the final prompt crosses it, post-compress fits.
+  // P53 recalibration: measured est0 = 1285/1363/1440/1518 for the 4 seeds,
+  // 1635 for the 5th. 75% of 2100 = 1575 sits exactly between them: the seeds
+  // stay below, the 5th prompt crosses it, the post-compress turn fits.
   const mock = await mockProvider({
-    models: [{ id: 'm', n_ctx: 2000 }],
+    models: [{ id: 'm', n_ctx: 2100 }],
     responses: [
       { content: 'ok1' }, { content: 'ok2' }, { content: 'ok3' }, { content: 'ok4' },
       { content: 'SUMMARY AlphaBeta decisions/files/errors kept' },
@@ -584,7 +585,7 @@ t('E3', 'probe n_ctx drives budget: compression at >75%', async () => {
     assert(g.body.messages[0].content.indexOf('AlphaBeta') !== -1, 'summary stored');
     assert(g.body.messages.length <= 7, 'history compacted, got ' + g.body.messages.length);
     const log = await pollFile(path.join(a.logsDir, 'agent.log'), /contexte compresse/, 3000);
-    assert(/ctx=2000/.test(log), 'probe n_ctx reached the budget');
+    assert(/ctx=2100/.test(log), 'probe n_ctx reached the budget');
   } finally { killChild(a.child); await mock.close(); }
 });
 
@@ -649,7 +650,9 @@ t('F2', 'scenario: fix the failing test via verify feedback', async () => {
     assert(done.status === 'TERMINE', 'TERMINE, got ' + done.status + ' ' + done.reason);
     assert(fs.readFileSync(path.join(proj, 'flag.txt'), 'utf8').trim() === 'ok', 'flag fixed');
     assert(done.filesModified.some((f) => f.indexOf('flag.txt') !== -1), 'flag.txt reported modified');
-    const sawFeedback = mock.chats.some((c) => JSON.stringify(c.messages || []).indexOf('VERIFICATION ECHOUEE') !== -1);
+    // P53-5: feedback follows the conversation language (prompt is English
+    // here) -> assert the marker, not one language's wording.
+    const sawFeedback = mock.chats.some((c) => /VERIFICATION (ECHOUEE|FAILED)/.test(JSON.stringify(c.messages || [])));
     assert(sawFeedback, 'model received verify failures');
     const sawOutput = mock.chats.some((c) => JSON.stringify(c.messages || []).indexOf('CHECK FAIL') !== -1);
     assert(sawOutput, 'model received the failing output');
@@ -866,7 +869,9 @@ t('I2', 'never-valid model -> PARTIEL max_iters (honest)', async () => {
   const proj = fixtureProject();
   const bad = [];
   for (let i = 0; i < 8; i++) bad.push({ content: '', rawCalls: [{ id: 'b' + i, name: 'read', argsText: '{bad' + i }] });
-  const mock = await mockProvider({ responses: bad });
+  // P53 recalibration: 8 protocol rounds need headroom above the (longer)
+  // localized prompt; otherwise compression -- not max_iters -- ends the turn.
+  const mock = await mockProvider({ models: [{ id: 'm', n_ctx: 8192 }], responses: bad });
   const { a, port, token } = await boot({ type: 'local', baseUrl: mock.url, model: '' });
   try {
     const sid = await newSession(port, token, proj);

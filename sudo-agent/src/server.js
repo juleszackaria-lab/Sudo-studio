@@ -109,7 +109,17 @@ function createApp(opts) {
     const t0 = Date.now();
     const url = new URL(req.url || '/', 'http://x');
     const p = url.pathname || '/';
-    const done = (code) => { if (log) { try { log.info('http', { method: req.method, path: p, code, ms: Date.now() - t0 }, corr); } catch (_) {} } };
+    // P53-6: approval polling is a heartbeat, not an event: it lands in
+    // DEBUG (off by default) so ten idle minutes write a handful of lines.
+    const isApprovalPoll = req.method === 'GET' && /^\/sessions\/[A-Za-z0-9_-]{1,64}\/approvals$/.test(p);
+    const done = (code) => {
+      if (!log) return;
+      try {
+        const f = { method: req.method, path: p, code, ms: Date.now() - t0 };
+        if (isApprovalPoll) log.debug('http', f, corr);
+        else log.info('http', f, corr);
+      } catch (_) {}
+    };
 
     if (!authed(req)) { sendJson(res, 401, { error: 'authentification requise.' }); done(401); return; }
 

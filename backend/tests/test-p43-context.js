@@ -268,8 +268,12 @@ async function tUnitsModes() {
   assert(modes.modeSystem('plan') === modes.planSystem(), 'default plan unchanged');
   assert(modes.modeSystem('build', 'small') === modes.buildSystemSmall(), 'small build wired');
   assert(modes.modeSystem('plan', 'small') === modes.planSystemSmall(), 'small plan wired');
-  assert(modes.buildSystemSmall().indexOf('BUILD mode') !== -1, 'small keeps mode identity');
-  assert(modes.planSystemSmall().indexOf('PLAN mode') !== -1, 'small keeps mode identity');
+  // P53-5: French is the default prompt language ('mode BUILD'); English is
+  // opt-in and keeps 'BUILD mode'.
+  assert(modes.buildSystemSmall().indexOf('mode BUILD') !== -1, 'small keeps mode identity');
+  assert(modes.buildSystemSmall({ lang: 'en' }).indexOf('BUILD mode') !== -1, 'small keeps EN mode identity');
+  assert(modes.planSystemSmall().indexOf('mode PLAN') !== -1, 'small keeps plan identity');
+  assert(modes.planSystemSmall({ lang: 'en' }).indexOf('PLAN mode') !== -1, 'small keeps EN plan identity');
   assert(modes.buildSystemSmall().length < modes.buildSystem().length / 2, 'small is terse');
 }
 
