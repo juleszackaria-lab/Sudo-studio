@@ -4,8 +4,18 @@
 // back over STDOUT: never argv (visible in process lists), never files,
 // never the journal (callers log the TARGET name at most).
 //
-// Targets look like 'SudoStudio/mcp/<server>'. Non-Windows platforms
-// report keyring_unavailable (clear error, no silent fallback).
+// Targets look like 'SudoStudio/mcp/<server>'.
+//
+// P57-5: on a non-Windows host (or when the operator wants their own secret
+// store) an INTERCHANGEABLE credential helper can be configured with
+// SUDO_AGENT_KEYRING_HELPER = path to a local executable, same contract as
+// the git credential helpers:
+//     <helper> get <target>   -> the secret on stdout, exit 0
+//     <helper> set <target>   -> the secret arrives on STDIN, exit 0
+//     <helper> delete <target>
+// The helper is opt-in, local only, and its stdout is NEVER logged. Without
+// helper and without Windows the keyring reports keyring_unavailable (clear
+// error, no silent fallback).
 'use strict';
 
 const childProcess = require('child_process');
@@ -17,8 +27,39 @@ function validTarget(t) {
   return typeof t === 'string' && /^[A-Za-z0-9][A-Za-z0-9/_.-]{0,120}$/.test(t);
 }
 
+function helperPath() {
+  const p = process.env.SUDO_AGENT_KEYRING_HELPER;
+  if (!p) return null;
+  try {
+    const st = require('fs').statSync(p);
+    return st.isFile() ? p : null;
+  } catch (_) { return null; }
+}
+
+function runHelper(op, target, secret) {
+  return new Promise((resolve) => {
+    const hp = helperPath();
+    if (!hp) { resolve({ code: -1, stdout: '', stderr: 'no helper' }); return; }
+    const childProcess = require('child_process');
+    let child = null;
+    let out = '';
+    try {
+      child = childProcess.spawn(hp, [op, String(target)], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, shell: false });
+    } catch (e) { resolve({ code: -1, stdout: '', stderr: 'helper spawn' }); return; }
+    child.stdout.on('data', (c) => { if (out.length < 4096) out += c.toString('utf8'); });
+    child.on('error', () => resolve({ code: -1, stdout: '', stderr: 'helper error' }));
+    child.on('exit', (code) => resolve({ code: code === null ? -1 : code, stdout: out.trim(), stderr: '' }));
+    try {
+      if (op === 'set' && secret) child.stdin.write(String(secret));
+      child.stdin.end();
+    } catch (_) { /* ignore */ }
+    setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} }, 5000);
+  });
+}
+
 function available() {
   if (runner) return { ok: true, via: 'seam' };
+  if (helperPath()) return { ok: true, via: 'helper' };
   if (process.platform !== 'win32') return { ok: false, code: 'keyring_unavailable', error: 'trousseau indisponible hors Windows.' };
   return { ok: true, via: 'credman' };
 }
@@ -136,6 +177,11 @@ async function setSecret(target, secret, opts) {
   if (secret.length > 10000) return { ok: false, code: 'too_big', error: 'secret trop long (10 000 max).' };
   const av = available();
   if (!av.ok) return av;
+  if (av.via === 'helper') {
+    const rh = await runHelper('set', target, secret);
+    if (rh.code === 0) return { ok: true, target, via: 'helper' };
+    return { ok: false, code: 'keyring_error', error: 'ecriture via assistant impossible (' + target + ').' };
+  }
   const b64 = Buffer.from(secret, 'utf8').toString('base64');
   const r = await runPs(scriptFor('set', target, b64), opts && opts.timeoutMs);
   if (r.code === 0 && String(r.stdout).indexOf('OK') !== -1) return { ok: true, target };
@@ -146,6 +192,12 @@ async function getSecret(target, opts) {
   if (!validTarget(target)) return { ok: false, code: 'bad_args', error: 'cible trousseau invalide.' };
   const av = available();
   if (!av.ok) return av;
+  if (av.via === 'helper') {
+    const r = await runHelper('get', target);
+    // Le secret ne sort JAMAIS d'ici : pas de journal, pas d'erreur detaillee.
+    if (r.code === 0 && r.stdout) return { ok: true, target, secret: r.stdout, via: 'helper' };
+    return { ok: false, code: 'not_found', error: 'aucun secret pour ' + target + '.' };
+  }
   const r = await runPs(scriptFor('get', target), opts && opts.timeoutMs);
   if (r.code === 0) return { ok: true, target, secret: String(r.stdout || '') };
   if (String(r.stderr).indexOf('NOTFOUND') !== -1) return { ok: false, code: 'not_found', error: 'aucun secret pour ' + target + '.' };
@@ -156,9 +208,14 @@ async function deleteSecret(target, opts) {
   if (!validTarget(target)) return { ok: false, code: 'bad_args', error: 'cible trousseau invalide.' };
   const av = available();
   if (!av.ok) return av;
+  if (av.via === 'helper') {
+    const rd = await runHelper('delete', target);
+    return rd.code === 0 ? { ok: true, target, via: 'helper' }
+      : { ok: false, code: 'keyring_error', error: 'suppression via assistant impossible (' + target + ').' };
+  }
   const r = await runPs(scriptFor('delete', target), opts && opts.timeoutMs);
   if (r.code === 0) return { ok: true, target };
   return { ok: false, code: 'keyring_error', error: 'suppression trousseau impossible (' + target + ').' };
 }
 
-module.exports = { available, setSecret, getSecret, deleteSecret, setKeyringRunner, validTarget };
+module.exports = { available, setSecret, getSecret, deleteSecret, setKeyringRunner, validTarget, helperPath };

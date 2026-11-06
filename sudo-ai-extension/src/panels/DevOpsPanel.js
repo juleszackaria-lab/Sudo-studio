@@ -5,6 +5,7 @@
  * Also has AI-powered generation via runtime port 6000.
  */
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const axios  = require('axios');
@@ -157,6 +158,7 @@ class DevOpsPanel {
     }
 
     async handleMessage(msg) {
+        try { noteJournal('devops', msg); } catch (_) { /* journal jamais bloquant */ }
         // P30(d): static form, zero backend dependency (AI-gen errors already
         // handled locally); snippet + routing only, no auto-probe that could cry wolf.
         if (bf.handlePanelMessage(this.panel, msg, () => {})) return;

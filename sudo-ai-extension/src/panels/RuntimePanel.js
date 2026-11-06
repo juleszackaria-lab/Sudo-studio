@@ -4,6 +4,7 @@
  * 100% offline for all scan/select logic — network only for explicit Download.
  */
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const wvFallback = require('../utils/backendFallback');
 const { guardSnippet } = require('../utils/webviewGuard');
 const axios  = require('axios');
@@ -78,6 +79,7 @@ class RuntimePanel {
     }
 
     async handleMessage(msg) {
+        try { noteJournal('runtime', msg); } catch (_) { /* journal jamais bloquant */ }
         if (wvFallback.handlePanelMessage(null, msg)) return;
         console.log('[RUNTIME] handleMessage:', msg.type);
         switch (msg.type) {

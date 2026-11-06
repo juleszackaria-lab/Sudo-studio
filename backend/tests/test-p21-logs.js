@@ -285,7 +285,12 @@ async function main() {
   check('F4: panel serves files + filtered tail',
     posted.some((m) => m.type === 'files' && m.files.length === 2 && m.dir === dF) &&
     posted.some((m) => m.type === 'tail' && m.file === 'sdk.log' && m.lines.length === 1), posted.map((m) => m.type));
-  const clientJs = lpanel.webview.html.split('<script>')[1].split('</scr' + 'ipt>')[0];
+  // P58: the guard snippet is the FIRST <script>; the viewer client is the
+  // LAST one. The old split('<script>')[1] was checking the guard, not the
+  // viewer (it never asserted anything about the viewer).
+  const lhtmlAll = lpanel.webview.html;
+  const lastScript = lhtmlAll.lastIndexOf('<script>');
+  const clientJs = lhtmlAll.slice(lhtmlAll.indexOf('>', lastScript) + 1, lhtmlAll.indexOf('</scr' + 'ipt>', lastScript));
   let parses = true;
   let perr = '';
   try { new vm.Script(clientJs); } catch (e) { parses = false; perr = e.message; }

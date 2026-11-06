@@ -11,6 +11,7 @@
  * - Actions: propose des corrections pour chaque outil manquant/désynchronisé
  */
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const wvFallback = require('../utils/backendFallback');
 const { guardSnippet } = require('../utils/webviewGuard');
 const axios  = require('axios');
@@ -69,6 +70,7 @@ class EnvironmentPanel {
     }
 
     async handleMessage(msg) {
+        try { noteJournal('environment', msg); } catch (_) { /* journal jamais bloquant */ }
         if (wvFallback.handlePanelMessage(null, msg)) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {

@@ -296,6 +296,7 @@ class AgentEngine extends EventEmitter {
             this._raw('delta', { text: '', done: true, sessionId: sid });
         } else if (type === 'tool.start') {
             const d = { phase: 'start', tool: o.tool || '?', callId: o.callId || '',
+                args: (o.args && typeof o.args === 'object') ? o.args : null,
                 atime: Date.now() };
             this._raw('tool', Object.assign({ sessionId: sid }, d));
             this._leg('tool', d);
@@ -306,6 +307,29 @@ class AgentEngine extends EventEmitter {
                 summary: shortText(o.summary || '', 300), atime: Date.now() };
             this._raw('tool', Object.assign({ sessionId: sid }, d));
             this._leg('tool', d);
+        } else if (type === 'job.plan') {
+            // P56: le cahier des charges a ete recu, le plan attend "Lancer".
+            const d = { phase: 'plan', sessionId: sid, jobId: o.jobId || '',
+                specId: o.specId || '', title: o.title || '',
+                steps: o.steps || 0, requirements: o.requirements || 0,
+                sections: o.sections || 0, plan: shortText(o.plan || '', 20000) };
+            this._raw('job', d);
+            this._leg('job', d);
+        } else if (type === 'job.step') {
+            const d = { phase: 'step', sessionId: sid, jobId: o.jobId || '',
+                n: o.n || 0, N: o.N || 0, status: o.status || '',
+                done: o.done || 0, text: shortText(o.text || '', 200),
+                reqs: Array.isArray(o.reqs) ? o.reqs.slice(0, 12) : [],
+                detail: shortText(o.detail || '', 300),
+                files: Array.isArray(o.files) ? o.files.slice(0, 12) : [] };
+            this._raw('job', d);
+            this._leg('job', d);
+        } else if (type === 'job.done') {
+            const d = { phase: 'done', sessionId: sid, jobId: o.jobId || '',
+                done: o.done || 0, failed: o.failed || 0, skipped: o.skipped || 0,
+                total: o.total || 0, report: shortText(o.report || '', 20000) };
+            this._raw('job', d);
+            this._leg('job', d);
         } else if (type === 'turn.start') {
             this._raw('turn', { phase: 'turn-start', sessionId: sid, turnId: o.turnId || '' });
         } else if (type === 'runtime.wait') {
@@ -319,6 +343,34 @@ class AgentEngine extends EventEmitter {
         }
         // turn.done resolves stream(); turn.error rejects it (both handled
         // by the caller). Nothing else to do here.
+    }
+
+    // P56(4): etat des projets sur disque. Sert au bouton "Reprendre" du
+    // panneau ; jamais bloquant (une erreur rend un objet vide).
+    async jobsInfo(sessionId) {
+        const q = sessionId ? ('?session=' + encodeURIComponent(sessionId)) : '';
+        try {
+            const r = await this._server.request('/jobs' + q, { timeoutMs: 8000 });
+            if (r && r.body) return { jobs: r.body.jobs || [], resumable: r.body.resumable || null };
+        } catch (_) { /* ignore */ }
+        return { jobs: [], resumable: null };
+    }
+
+    // P57(7): resume et inventaire des extensions pour l'en-tete du panneau
+    // ("N MCP, N skills actifs"). Jamais bloquant : une erreur rend un objet
+    // vide et le panneau affiche "extensions : ?".
+    async extensionInfo(sessionId) {
+        const q = sessionId ? ('?session=' + encodeURIComponent(sessionId)) : '';
+        const out = { summary: null, registry: null };
+        try {
+            const r = await this._server.request('/extensions/summary' + q, { timeoutMs: 8000 });
+            if (r && r.body) out.summary = r.body;
+        } catch (_) { /* ignore */ }
+        try {
+            const r2 = await this._server.request('/extensions/registry' + q, { timeoutMs: 8000 });
+            if (r2 && r2.body) out.registry = r2.body;
+        } catch (_) { /* ignore */ }
+        return out;
     }
 
     // -- approvals (poll-based: the loop never blocks, requests land in --

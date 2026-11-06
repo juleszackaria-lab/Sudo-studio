@@ -21,16 +21,26 @@ const { diffSnapshot } = require('./checkpoints');
 const { maskSecrets } = require('./journal');
 const plan = require('./plan');
 const orch = require('./orch');
+const specMod = require('./spec'); // P56: cahiers des charges longs
+const jobMod = require('./job');   // P56: projet = plan + etat sur disque + reprise
 const modes = require('./modes');
 const prereq = require('./prereq');
 const msgs = require('./msgs');
 const profiles = require('./profiles');
+
+// P57: en dessous de ce contexte, l'inventaire d'extensions n'est pas injecte
+// dans le prompt (il mangeait le budget des petits modeles) ; les outils
+// restent la voie d'acces.
+const EXT_MIN_CTX = 8192;
 const compressMod = require('./compress');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
 const skillsMod = require('./skills');
 const agentsMod = require('./agents');
 const commandsMod = require('./commands');
+const recovery = require('./recovery');
+const recipes = require('./recipes');
+const extMod = require('./extensions');
 const pmap = require('./projectmap');
 
 const MAX_HISTORY = 50;
@@ -181,7 +191,8 @@ async function runTurn(opts) {
     }
   }
   if (!probe.ok) return fail(probe.code || 'provider_error', probe.error || 'fournisseur indisponible.');
-  const model = provider.model || (probe.models && probe.models[0]) || '';
+  // P56-6: a step may run on another model (policy), when it is available.
+  const model = opts.modelOverride || provider.model || (probe.models && probe.models[0]) || '';
   if (!model) return fail('no_model', 'Aucun modele charge sur le runtime local (liste des modeles vide).');
 
   // P54-3: custom command. "/name args" becomes the rendered template; an
@@ -222,6 +233,8 @@ async function runTurn(opts) {
   store.append(sessionId, { role: 'user', content: storedText });
   const sessionNow = store.get(sessionId) || session;
   const useTools = !!opts.toolsCtx && sessionNow.projectRoot && opts.tools !== false;
+
+
 
   const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, maxIt: opts.maxIt, subDepth: opts.subDepth };
   if (useTools) return toolsTurn(base, sessionNow, opts.toolsCtx);
@@ -435,6 +448,22 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
 // ---------------------------------------------------------------------------
 // P54-5: global rules (Agent Extensions > Rules, scope global). Capped, never
 // throws: a broken file must never break a turn.
+// P57(3): "@nom" dans la barre de texte. Un skill -> son contenu complet est
+// charge (une fois) ; un agent -> le tour delegue a cet agent. Aucun "@" ou nom
+// inconnu : aucune erreur, le texte reste une demande normale.
+function parseMention(home, root, prompt) {
+  const m = /(^|\s)@([A-Za-z0-9][A-Za-z0-9_-]{0,63})/.exec(String(prompt || ''));
+  if (!m) return null;
+  const name = m[2];
+  const rest = String(prompt).replace(m[0], ' ').replace(/\s+/g, ' ').trim();
+  try {
+    const d = extMod.describe(home, root, name);
+    if (d.ok && d.kind === 'skill') return { kind: 'skill', name: d.name, rest, active: d.active };
+    if (d.ok && d.kind === 'agent') return { kind: 'agent', name: d.name, rest };
+  } catch (_) { return null; }
+  return null;
+}
+
 function readGlobalRulesSafe(home) {
   try {
     const t = agentsMod.readGlobalRules(home);
@@ -704,6 +733,51 @@ async function toolsTurn(base, session, toolsCtx) {
   const ctxTokens = profiles.resolveCtxTokens({ override: process.env.SUDO_AGENT_CTX_TOKENS, probeNctx: probeNctx(base.preProbe, model), providerType: provider.type });
 
   const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
+
+  // P56-1: a LONG brief (>= SUDO_AGENT_SPEC_LINES lines or SUDO_AGENT_SPEC_CHARS
+  // chars) is stored as a SPEC document on disk; the context only ever gets a
+  // section slice. The engine extracts sections + numbered requirements, builds
+  // the plan and STOPS for validation (Lancer / Modifier) before any action.
+  // A later short "lancer" / "reprendre" resumes the stored job on disk.
+  let jobState = null;
+  try {
+    const rootP = session.projectRoot;
+    const isChildTurn = !!(toolsCtx && (toolsCtx.noOrchPlan || toolsCtx.noResume));
+    if (mode === 'build' && !isChildTurn && rootP && intent.kind !== 'QUESTION') {
+      const short = String(base.prompt || '').trim();
+      const wantsStart = short.length < 400 && /^\s*(lancer|lance|demarrer|demarre|valider|valide|go)\b/i.test(short);
+      const wantsResume = short.length < 400 && /reprend/i.test(short);
+      const resum = (wantsStart || wantsResume) ? jobMod.resumable(rootP) : null;
+      if (resum) {
+        jobState = jobMod.load(rootP, resum.id);
+        if (log) { try { log.info('projet repris', { session: sessionId, job: resum.id, restant: resum.steps - resum.done }, corr); } catch (_) {} }
+      } else if (specMod.isLongSpec(base.prompt)) {
+        const meta = specMod.ingest(rootP, base.prompt, {});
+        if (!meta.error) {
+          const stepsP = specMod.planSteps(meta);
+          const st = jobMod.create(rootP, meta, stepsP, {});
+          const planTxt = specMod.planText(meta, stepsP);
+          if (log) { try { log.info('cahier des charges recu', { session: sessionId, spec: meta.id, lignes: meta.lines, exigences: meta.requirements.length, etapes: stepsP.length }, corr); } catch (_) {} }
+          store.append(sessionId, { role: 'assistant', content: planTxt });
+          try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+          try { onEvent({ type: 'message.done', text: planTxt, aborted: false }); } catch (_) {}
+          try { onEvent({ type: 'job.plan', jobId: st.id, specId: meta.id, steps: stepsP.length,
+            requirements: meta.requirements.length, sections: meta.sections.length,
+            title: meta.title, plan: planTxt.slice(0, 6000) }); } catch (_) {}
+          try {
+            onEvent({ type: 'turn.done', turnId: corr, messageCount: (store.get(sessionId) || { messages: [] }).messages.length,
+              model, aborted: false, status: 'PARTIEL', reason: 'plan en attente de validation (Lancer / Modifier).',
+              filesModified: [], stopReason: 'spec_plan', declaredDone: true, toolCalls: 0, unresolvedErrors: [] });
+          } catch (_) {}
+          if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
+          return { status: 'done', model, runStatus: 'PARTIEL', code: 'spec_plan', job: st.id, spec: meta.id };
+        }
+        if (log) { try { log.warn('cahier des charges refuse', { error: String(meta.error).slice(0, 120) }, corr); } catch (_) {} }
+      }
+    }
+  } catch (e) {
+    if (log) { try { log.warn('cahier des charges illisible', { error: String((e && e.message) || e).slice(0, 120) }, corr); } catch (_) {} }
+  }
   runs.set(sessionId, runEntry);
   const run = { id: turnId, sessionId, checkpointed: false, checkpointName: null, snapshot: null, calls: [], created: [], killFns: runEntry.killFns };
   try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
@@ -721,6 +795,72 @@ async function toolsTurn(base, session, toolsCtx) {
     journal('warn', 'skills illisibles', { error: String((e && e.message) || e).slice(0, 120) });
   }
 
+  // P55-4: recette integree chargee A LA DEMANDE. Elle n'est injectee que si
+  // la demande correspond a une tache frequente (aucun cout sinon) et elle
+  // porte la pile detectee du projet (dossier de tests, commande a lancer).
+  let recipeText = '';
+  try {
+    recipeText = recipes.promptText(base.prompt, root);
+    if (recipeText) journal('info', 'recette chargee', { recipe: (recipes.match(base.prompt) || {}).id || '?',
+      chars: recipeText.length });
+  } catch (e) {
+    journal('warn', 'recette indisponible', { error: String((e && e.message) || e).slice(0, 120) });
+  }
+
+  // P57(1): registre d'extensions. Le contexte ne recoit que des NOMS et UNE
+  // ligne de description (jamais les corps de skills) ; le moteur propose
+  // d'office les extensions pertinentes pour la demande. Les fonctions
+  // extensions_list/describe/skill_load/mcp_call font le reste A LA DEMANDE.
+  let extDigest = '';
+  let extProposal = '';
+  // P57(1): sur un contexte micro (<=4096), l'inventaire n'apporte rien et
+  // ferait deborder le prompt : il est omis, et les outils (extensions_list,
+  // extensions_describe) restent disponibles a la demande. Le journal le dit.
+  const extRoom = ctxTokens >= EXT_MIN_CTX;
+  if (extRoom) {
+    try {
+      extDigest = extMod.digest(home, root);
+      extProposal = extMod.proposalText(home, root, base.prompt);
+      const sug = extMod.suggest(home, root, base.prompt, 3);
+      if (extDigest || extProposal) {
+        journal('info', 'extensions visibles', { digestChars: extDigest.length,
+          proposed: sug.map((x) => x.kind + ':' + x.name) });
+      }
+    } catch (e) {
+      journal('warn', 'extensions illisibles', { error: String((e && e.message) || e).slice(0, 120) });
+    }
+  } else {
+    journal('info', 'extensions omises (contexte court)', { ctx: ctxTokens, min: EXT_MIN_CTX });
+  }
+  // P57(3): "@nom" dans la barre de texte charge un skill ou cible un agent.
+  let mention = null;
+  try { mention = parseMention(home, root, base.prompt); } catch (_) { mention = null; }
+  let mentionText = '';
+  if (mention && mention.kind === 'skill') {
+    // Le corps n'entre dans le contexte QUE parce que l'utilisateur l'a
+    // explicitement cite : meme chemin que skill_load (skill actif exige).
+    try {
+      const sk = extMod.loadSkill(home, root, mention.name);
+      if (sk.ok) {
+        mentionText = 'SKILL ' + sk.scope + '/' + sk.name + ' (charge par @mention)\n' + sk.text;
+        journal('info', 'skill charge par mention', { name: sk.name, chars: sk.text.length });
+      } else {
+        journal('warn', 'mention skill refusee', { name: mention.name, code: sk.code || 'error' });
+      }
+    } catch (e) { journal('warn', 'mention skill illisible', { error: String((e && e.message) || e).slice(0, 120) }); }
+  }
+  if (mention && mention.kind === 'agent') {
+    try {
+      const def = agentsMod.findAgent(home, mention.name);
+      if (def) {
+        if (Array.isArray(def.tools) && def.tools.length) base.allowedTools = def.tools.slice(0, 40);
+        if (def.instructions) mentionText = 'AGENT ' + def.name + ' (choisi par @mention)\n' + String(def.instructions).slice(0, 2000);
+        journal('info', 'agent cible par mention', { name: def.name, tools: (def.tools || []).length });
+      }
+    } catch (_) { /* la mention ne casse jamais le tour */ }
+  }
+  if (mention) journal('info', 'mention resolue', { kind: mention.kind, name: mention.name });
+
   const sessionRulesMap = (toolsCtx && toolsCtx.sessionRules) || new Map();
   if (!sessionRulesMap.has(sessionId)) sessionRulesMap.set(sessionId, new Set());
   const projRules = loadProjectRules(home, root);
@@ -735,7 +875,9 @@ async function toolsTurn(base, session, toolsCtx) {
   tctx.checkpoint = () => ensureSeriesCheckpoint(tctx);
 
   // P26-b/e: tool schemas for the profile + (full only) policy-allowed MCP tools.
-  const schemas = toOpenAISchema(profile);
+  // P57-1: les schemas d'extensions ne sont proposes que si le contexte les
+  // porte (meme seuil que le digest) ; sinon l'agent garde son jeu d'avant.
+  const schemas = toOpenAISchema(profile, ctxTokens);
   if (profile === 'full') {
     let servers = {};
     try { servers = mcpMod.loadConfig(home); } catch (_) { servers = {}; }
@@ -803,6 +945,13 @@ async function toolsTurn(base, session, toolsCtx) {
     if (mapText) out.splice(1, 0, { role: 'system', content: mapText });
     // P50-2: skills after map/preload (counted by the context estimate).
     if (skillsText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0), 0, { role: 'system', content: filter(skillsText) });
+    if (recipeText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0) + (skillsText ? 1 : 0), 0,
+      { role: 'system', content: filter(recipeText) });
+    // P57(1): inventaire compact + propositions (noms et une ligne seulement).
+    let extAt = 1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0) + (skillsText ? 1 : 0) + (recipeText ? 1 : 0);
+    if (extDigest) { out.splice(extAt, 0, { role: 'system', content: filter('EXTENSIONS DISPONIBLES\n' + extDigest) }); extAt += 1; }
+    if (extProposal) { out.splice(extAt, 0, { role: 'system', content: filter(extProposal) }); extAt += 1; }
+    if (mentionText) out.splice(extAt, 0, { role: 'system', content: filter(mentionText) });
     return out;
   };
   // Field named `ctx` (not ctxTokens): the journal masks *token* substrings.
@@ -826,7 +975,7 @@ async function toolsTurn(base, session, toolsCtx) {
       mmChars += c;
       if (m && m.role === 'tool') resChars += c;
     }
-    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0) + (skillsText ? skillsText.length : 0);
+    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0) + (skillsText ? skillsText.length : 0) + (recipeText ? recipeText.length : 0) + extDigest.length + extProposal.length + mentionText.length;
     const mapChars = mapText.length + preloadText.length;
     const budget = profiles.tokenBudget({ system: sysChars, tools: schemaChars, map: mapChars,
       history: Math.max(0, mmChars - sysChars - mapChars - resChars), results: resChars });
@@ -993,9 +1142,66 @@ async function toolsTurn(base, session, toolsCtx) {
   const chatOpts = strictAction
     ? { toolChoice: 'required', sampling: { temperature: 0.15, topP: 0.9, topK: 40, repeatPenalty: 1.12, maxTokens: 1200 } }
     : {};
-  const roundOnce = () => chatOnce(provider, Object.assign({ model, messages: modelMessages(), tools: schemas,
-    onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; } },
-  chatOpts));
+  const onReq = (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; };
+  const roundRaw = (toolsUsed) => chatOnce(provider, Object.assign({ model, messages: modelMessages(), tools: toolsUsed,
+    onRequest: onReq }, chatOpts));
+  // P55-3: une panne du fournisseur (500, delai, appel d'outil invalide) est
+  // RECUPERABLE : jusqu'a 3 essais avec un schema reduit, puis le format de
+  // secours "FICHIER: chemin". On ne renonce qu'apres avoir epuise les voies.
+  const reducedSchemas = recovery.reducedTools(schemas);
+  let recoveryUsed = 0;
+  // Ecritures issues du format de secours : elles passent par le CHEMIN
+  // NORMAL (approbation, journal, verification), pas par un raccourci.
+  const fallbackQueue = [];
+  let fallbackRounds = 0;
+  const roundOnce = async () => {
+    if (fallbackQueue.length) {
+      const f = fallbackQueue.shift();
+      const args = { file: f.path, content: f.content };
+      journal('info', 'ecriture issue du format de secours', { file: f.path, reste: fallbackQueue.length });
+      return { text: '', usage: null, fallbackFile: true,
+        toolCalls: [{ id: 'fb-' + run.calls.length, type: 'function', name: 'write',
+          argsText: JSON.stringify(args), args, parseError: null }] };
+    }
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const useReduced = attempt > 0;
+        const r = await roundRaw(useReduced ? reducedSchemas : schemas);
+        // Le runtime signale un appel inutilisable par 200 + erreur structuree.
+        if (r && r.invalidCall && !(r.toolCalls && r.toolCalls.length)) {
+          recoveryUsed += 1;
+          journal('warn', 'appel outil invalide, reprise', { field: r.invalidCall.field,
+            attempt: attempt + 1, detail: String(r.invalidCall.detail || '').slice(0, 120) });
+          // On renvoie l'exemple valide au modele (message explicite).
+          store.append(sessionId, { role: 'assistant', content: String(r.text || '').slice(0, 800) });
+          store.append(sessionId, { role: 'user', content: String(r.invalidCall.message || 'Appel invalide.').slice(0, 800)
+            + (r.invalidCall.example ? ' Exemple valide : ' + JSON.stringify(r.invalidCall.example).slice(0, 300) : '') });
+          continue;
+        }
+        if (attempt > 0) journal('info', 'reprise apres panne fournisseur', { attempt: attempt + 1,
+          tools: useReduced ? reducedSchemas.length : schemas.length, why: String((lastErr && lastErr.message) || '').slice(0, 120) });
+        return r;
+      } catch (e) {
+        lastErr = e;
+        const cls = recovery.classify(e);
+        if (!cls.recoverable || runEntry.aborted) throw e;
+        recoveryUsed += 1;
+        journal('warn', 'panne fournisseur recuperable', { attempt: attempt + 1, why: cls.why });
+        // Une seconde d'attente entre deux essais (le runtime peut se remettre).
+        if (attempt < 2) await new Promise((r2) => setTimeout(r2, 400));
+      }
+    }
+    // Derniere voie : le format de secours texte, sans aucun outil.
+    journal('warn', 'format de secours (FICHIER: chemin)', { used: recoveryUsed });
+    const fb = await chatOnce(provider, { model, messages: modelMessages().concat([
+      { role: 'user', content: recovery.fallbackPrompt(base.prompt) }]), onRequest: onReq });
+    const parsed = recovery.parseFileBlocks(fb && fb.text);
+    journal('info', 'roundOnce format de secours rendu', { files: (parsed.files || []).length,
+      ok: !!parsed.ok, chars: String((fb && fb.text) || '').length });
+    return { text: String((fb && fb.text) || ''), toolCalls: [], usage: (fb && fb.usage) || null,
+      fallback: { parsed, raw: String((fb && fb.text) || '').slice(0, 2000) } };
+  };
   // P49-1: constrained repair: free text is never a valid ACTION output.
   // Up to 2 driver retries with an explicit order, then an honest stop.
   const actionRepair = async (why) => {
@@ -1037,7 +1243,8 @@ async function toolsTurn(base, session, toolsCtx) {
   const noOrchPlan = !!(toolsCtx && toolsCtx.noOrchPlan);
   const seedTexts = noOrchPlan ? [] : plan.parseSteps(base.prompt, intent.taskItems || []);
   const wantPlan = !noOrchPlan && mode === 'build' && (strictAction || (intent.kind === 'AMBIGUOUS' && (intent.hasTaskList || seedTexts.length >= 2)));
-  const orchTexts = (wantPlan && seedTexts.length >= orch.longSteps()) ? seedTexts : [];
+  // P56: a project run (job) never doubles as a P52 orchestration.
+  const orchTexts = (!jobState && wantPlan && seedTexts.length >= orch.longSteps()) ? seedTexts : [];
   // P52-7: explicit resume words revive the most recent unfinished
   // orchestrated plan (crash/stop/close recovery). Anything else starts
   // a fresh plan (never hijacks an old one implicitly).
@@ -1143,6 +1350,36 @@ async function toolsTurn(base, session, toolsCtx) {
         runEntry.destroy = null;
       }
       let calls = Array.isArray(reply.toolCalls) ? reply.toolCalls : [];
+      // P57-3: task(agent, consigne) est le raccourci nomme de subagent : meme
+      // chemin (profondeur 1 max, memes garde-fous), un seul enfant.
+      calls = calls.map((c) => {
+        if (!c || c.name !== 'task' || !c.args || typeof c.args !== 'object') return c;
+        const consigne = String(c.args.consigne || c.args.task || '').slice(0, 2000);
+        const agent = String(c.args.agent || '').slice(0, 60);
+        if (!consigne || !agent) return c;
+        return Object.assign({}, c, { name: 'subagent',
+          args: { task: consigne, agent, readonly: c.args.readonly === true } });
+      });
+      // P55-3: reponse au format de secours ("FICHIER: chemin"). Les fichiers
+      // sont EMPILES puis ecrits par le chemin normal d'outil (approbation,
+      // journal, verification) : la panne fournisseur ne doit pas abandonner
+      // la tache, et aucun raccourci ne contourne les garde-fous.
+      if (!calls.length && reply.fallback && reply.fallback.parsed
+          && reply.fallback.parsed.ok && reply.fallback.parsed.files.length && !runEntry.aborted) {
+        fallbackRounds += 1;
+        if (fallbackRounds > 1) {
+          // Deux series completes (3 essais + secours) sans retablissement :
+          // le fournisseur est juge indisponible. On s'arrete HONNETEMENT,
+          // sans perdre le travail deja ecrit.
+          stopReason = 'provider_unavailable';
+          stopDetail = 'le fournisseur refuse les appels d outil (2 series de reprises + format de secours).';
+          break;
+        }
+        const files = reply.fallback.parsed.files.slice(0, 12);
+        for (const f of files) fallbackQueue.push(f);
+        journal('info', 'fichiers du format de secours empiles', { files: files.length, serie: fallbackRounds });
+        continue;
+      }
       // P49-1: free text NEVER ends an ACTION turn: constrained repair
       // (2 driver retries), then an honest no_tool stop.
       if (!calls.length && strictAction && !runEntry.aborted) {
@@ -1265,6 +1502,8 @@ async function toolsTurn(base, session, toolsCtx) {
       // P50-6: sub-agents (one task or parallel fan-out). Spawn is free
       // (no privilege escalation: same root, same rules, depth<=1, all
       // capped) but journaled. Children run real turns on child sessions.
+      // (P57-3: task(agent, consigne) est traduit AVANT, au point d'emission de
+      // l'appel, pour rester sur `const first` - voir calls.map plus haut.)
       if (first.name === 'subagent') {
         const callIdS = first.id || ('call-' + run.calls.length);
         const closeExtrasS = () => {
@@ -1315,7 +1554,8 @@ async function toolsTurn(base, session, toolsCtx) {
         }
         if (!jobsOk) continue;
         subSpawns += 1;
-        try { onEvent({ type: 'tool.start', callId: callIdS, tool: 'subagent' }); } catch (_) {}
+        try { onEvent({ type: 'tool.start', callId: callIdS, tool: 'subagent',
+          args: { agent: (jobs[0] && jobs[0].agent) || '', consigne: String((jobs[0] && jobs[0].task) || '').slice(0, 120) } }); } catch (_) {}
         const runChild = async (job) => {
           childSeq += 1;
           const n = childSeq;
@@ -1391,7 +1631,7 @@ async function toolsTurn(base, session, toolsCtx) {
         continue;
       }
       const callId = first.id || ('call-' + run.calls.length);
-      try { onEvent({ type: 'tool.start', callId, tool: first.name }); } catch (_) {}
+      try { onEvent({ type: 'tool.start', callId, tool: first.name, args: first.args }); } catch (_) {}
       let content = '';
       if (first.parseError) {
         const entry = { tool: first.name || '?', target: '', ok: false, code: 'bad_args', ms: 0, at: new Date().toISOString(), summary: first.parseError };
@@ -1546,6 +1786,122 @@ async function toolsTurn(base, session, toolsCtx) {
   // minimal child context (step text + short summary of previous steps);
   // plan/state/hashes/journal persist on disk (crash/stop/close resume
   // via explicit resume words). The parent makes no model calls itself.
+  // P56-2/3/4/5: project run. Each step is a FRESH child turn whose context
+  // only holds the objective, the useful SPEC slice, the files already touched
+  // and a two-line summary of previous steps. State (attempts, files, tests,
+  // coverage) is checkpointed on disk before AND after every step, so a stop,
+  // a crash, a runtime restart or a closed panel resumes at the same step.
+  let jobVerdict = null;
+  if (jobState && !runEntry.aborted) {
+    journal('info', 'tour projet', { job: jobState.id, etapes: jobState.steps.length, execution: jobState.runs });
+    const waiters = (toolsCtx && toolsCtx.waiters) || null;
+    const stepRunner = async (step, ctx) => {
+      if (runEntry.aborted) return { calls: 0, aborted: true, error: 'tour abandonne.' };
+      const child = store.create({ title: 'etape ' + ctx.n + '/' + ctx.N + ': ' + String(step.text).slice(0, 50), projectRoot: session.projectRoot });
+      try { store.update(child.id, (x) => { x.meta.jobParent = sessionId; x.meta.job = jobState.id; }); } catch (_) {}
+      try { sessionRulesMap.set(child.id, sessionRulesMap.get(sessionId)); } catch (_) {}
+      const cprompt = jobMod.stepPrompt(ctx);
+      const t0 = Date.now();
+      let cres = null;
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; try { abortRun(runs, child.id); } catch (_) {} }, ctx.msBudget);
+      if (timer.unref) { try { timer.unref(); } catch (_) {} }
+      const pabort = setInterval(() => { if (runEntry.aborted) { try { abortRun(runs, child.id); } catch (_) {} } }, 250);
+      if (pabort.unref) { try { pabort.unref(); } catch (_) {} }
+      // P56-4: un pas de projet ne peut JAMAIS bloquer le reste du projet.
+      // Le delai est double : 1) on demande l'arret du tour enfant, 2) si le
+      // tour ne rend pas la main (attente externe), on rend l'etape en echec
+      // au lieu de laisser le projet fige indefiniment.
+      let watchdog = null;
+      try {
+        const childTurn = runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.j' + ctx.n,
+          provider, modelOverride: ctx.model || undefined,
+          toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map(),
+            waiters: (toolsCtx && toolsCtx.waiters) || null,
+            parentSessionId: sessionId, noResume: true, noOrchPlan: true },
+          runs, log, onEvent: (e) => {
+            try {
+              if (e && (e.type === 'turn.paused' || (typeof e.type === 'string' && e.type.indexOf('tool.') === 0) || e.type === 'runtime.wait')) onEvent(e);
+            } catch (_) {}
+          }, maxIt: ctx.callBudget, runtimeWait });
+        cres = await Promise.race([
+          childTurn,
+          new Promise((resolve) => {
+            watchdog = setTimeout(() => {
+              timedOut = true;
+              // Diagnostic : ce que le processus attend encore (socket modele,
+              // attente externe, processus enfant) au moment du depassement.
+              let pending = [];
+              try {
+                pending = process._getActiveHandles().map((h) => {
+                  const n = (h && h.constructor && h.constructor.name) || '?';
+                  return n + (h && h.remotePort ? ':' + h.remotePort : '');
+                });
+              } catch (_) {}
+              journal('warn', 'etape projet delai depasse', { n: ctx.n, handles: pending.slice(0, 8) });
+              try { abortRun(runs, child.id); } catch (_) {}
+              resolve({ status: 'error', error: 'delai etape depasse (tour enfant sans reponse).' });
+            }, ctx.msBudget + 15000);
+            if (watchdog.unref) { try { watchdog.unref(); } catch (_) {} }
+          }),
+        ]);
+      } catch (e) {
+        journal('warn', 'etape projet erreur', { n: ctx.n, error: String((e && e.message) || e).slice(0, 160) });
+      } finally {
+        try { clearTimeout(timer); } catch (_) {}
+        try { clearTimeout(watchdog); } catch (_) {}
+        try { clearInterval(pabort); } catch (_) {}
+      }
+      const cs = store.get(child.id);
+      const cmeta = (cs && cs.meta && cs.meta.lastRun) || {};
+      const calls = Array.isArray(cmeta.calls) ? cmeta.calls : [];
+      const files = Array.isArray(cmeta.filesModified) ? cmeta.filesModified : [];
+      const testCall = calls.find((c) => c && c.ok && (c.tool === 'bash') && /test|spec|pytest|jest|npm run/.test(String(c.target || '')));
+      if (runEntry.aborted) return { calls: calls.length, aborted: true, error: 'tour abandonne.' };
+      if (timedOut) return { calls: calls.length, ok: false, error: 'delai etape depasse (' + Math.round((Date.now() - t0) / 1000) + 's).', files };
+      const childDeclared = cmeta.stopReason === 'declared';
+      const okChild = !cres || cres.status !== 'error';
+      return {
+        calls: calls.length,
+        // Honnetete (P56-5) : "declare terminee" sans fichier modifie et sans
+        // test execute n'est PAS une preuve. L'etape est alors marquee en
+        // echec et le rapport la compte en "non realisee".
+        ok: okChild && (files.length > 0 || !!testCall),
+        declared: childDeclared,
+        files,
+        test: testCall ? String(testCall.target).slice(0, 160) : null,
+        detail: files.length ? files.slice(0, 4).join(', ')
+          : (testCall ? 'test execute : ' + String(testCall.target).slice(0, 100)
+            : (childDeclared ? 'declare terminee sans modification verifiee' : 'aucune modification verifiee')),
+        error: (cres && cres.status === 'error') ? String(cres.error || 'erreur enfant').slice(0, 200) : '',
+      };
+    };
+    try {
+      const res = await jobMod.run({
+        root, state: jobState, runStep: stepRunner,
+        shouldStop: () => runEntry.aborted,
+        availableModels: (base.preProbe && Array.isArray(base.preProbe.models)) ? base.preProbe.models : [],
+        emit: (t, o) => { try { onEvent(Object.assign({ type: t }, o)); } catch (_) {} },
+      });
+      finalText = res.report || '';
+      declared = true;
+      const failed = res.failed || 0;
+      const skipped = res.skipped || 0;
+      const total = res.total || jobState.steps.length;
+      if (res.aborted) jobVerdict = { status: 'PARTIEL', reason: 'projet interrompu (bouton Reprendre ou "reprendre").', unresolved: [] };
+      else if (failed > 0 && res.done === 0) jobVerdict = { status: 'ECHEC', reason: failed + ' etape(s) non realisee(s) sur ' + total + '.', unresolved: [] };
+      else if (failed > 0) jobVerdict = { status: 'PARTIEL', reason: failed + ' etape(s) non realisee(s) sur ' + total + ', les autres sont faites.', unresolved: [] };
+      else if (skipped > 0) jobVerdict = { status: 'PARTIEL', reason: skipped + ' etape(s) non tentee(s) (budget).', unresolved: [] };
+      else jobVerdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      journal('info', 'projet termine', { job: jobState.id, faites: res.done, echouees: failed, nontentees: skipped });
+    } catch (e) {
+      finalText = 'Projet interrompu : ' + String((e && e.message) || e).slice(0, 300);
+      declared = true;
+      jobVerdict = { status: 'ECHEC', reason: 'execution du projet interrompue.', unresolved: [] };
+      journal('warn', 'projet interrompu', { error: String((e && e.message) || e).slice(0, 160) });
+    }
+  }
+
   if ((orchResumeId || orchTexts.length) && !runEntry.aborted) {
     const orchPlanId = orchResumeId || turnId;
     journal('info', 'tour orchestre', { plan: orchPlanId, steps: orchTexts.length || 'reprise', resume: !!orchResumeId });
@@ -1647,7 +2003,8 @@ async function toolsTurn(base, session, toolsCtx) {
   // Honest status (P25-g + P26 stops).
   const filesModified = currentFilesModified();
   let verdict = computeRunStatus(declared, run.calls, { files: currentFilesModified(), verifyNote, lang: convLang });
-  if (orchVerdict) verdict = orchVerdict; // P52: the orchestrated verdict wins (honest per-step report).
+  const strongVerdict = orchVerdict || jobVerdict; // P52/P56: per-step report wins (honest).
+  if (strongVerdict) verdict = strongVerdict;
   if (!declared && stopReason && stopReason !== 'verify_failed') {
     verdict = { status: 'PARTIEL', reason: stopDetail || 'arret.', unresolved: verdict.unresolved };
   }
@@ -1671,17 +2028,36 @@ async function toolsTurn(base, session, toolsCtx) {
     if (declared && filesModified.length > 0) {
       // Errors may still stand (unresolved): then ECHEC is kept, with the
       // files listed above. TERMINE only when nothing stands unresolved.
-      if (!verdict.unresolved.length && !verdict.verifyNote && !orchVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      if (!verdict.unresolved.length && !verdict.verifyNote && !strongVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
       if (!finalText.trim()) finalText = 'Tache terminee.';
+      store.append(sessionId, { role: 'assistant', content: finalText });
+    } else if (declared && !filesModified.length && okCalls > 0
+               && run.calls.some((c) => c.ok && c.code === 'ok' && (c.tool === 'mcp_call' || /^mcp__/.test(String(c.tool || ''))))
+               && !verdict.unresolved.length && !verdict.verifyNote && !strongVerdict) {
+      // P57-8: une ACTION EXTERNE verifiee (appel MCP abouti, sortie reelle)
+      // n'est pas un echec faute de fichier modifie : le statut reste honnete
+      // parce qu'il s'appuie sur une preuve, et le resume le dit.
+      verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      finalText = (finalText.trim() ? finalText.trim() + '\n\n' : '') +
+        'Action externe verifiee par MCP (' + run.calls.filter((c) => c.ok && c.code === 'ok' && c.tool === 'mcp_call').length + ' appel(s) abouti(s)) : aucun fichier du projet modifie.';
       store.append(sessionId, { role: 'assistant', content: finalText });
     } else if (declared && runOnly && okCalls > 0) {
       verdict = { status: 'TERMINE', reason: '', unresolved: [] };
       finalText = (finalText.trim() || 'Execution verifiee.') + '\n\nAucun fichier modifie (execution seule, verifiee : ' + okCalls + ' appels aboutis).';
       store.append(sessionId, { role: 'assistant', content: finalText });
+    } else if (stopReason === 'provider_unavailable' && filesModified.length > 0) {
+      // P55-3: arret honnete. Le travail ecrit reste, la verification n'a pas
+      // pu etre faite : statut PARTIEL explicite, jamais un TERMINE flatteur.
+      const list = filesModified.slice(0, 5).join(', ');
+      finalText = 'PARTIEL : fournisseur d\'inference indisponible (erreur HTTP 500 repetee). ' +
+        filesModified.length + ' fichier(s) ecrit(s) par le format de secours (' + list + '). ' +
+        'Verification non executee : relancez la demande des que le modele repond.';
+      verdict = { status: 'PARTIEL', reason: 'fournisseur indisponible', unresolved: verdict.unresolved };
+      store.append(sessionId, { role: 'assistant', content: finalText });
     } else if (!declared && (filesModified.length > 0 || finalText.trim())) {
       // Undeclared but real: modified files without a declaration, or an
       // answer already produced (context/loop rescue): keep the verdict.
-    } else if ((!declared || verdict.status === 'TERMINE') && !orchVerdict) {
+    } else if ((!declared || verdict.status === 'TERMINE') && !strongVerdict) {
       // P49-2 target: false TERMINE (declared, no evidence) and answerless
       // stops (no_tool). A declared ECHEC (mid-turn approval need, standing
       // tool errors) is loud already: it stands, never downgraded.

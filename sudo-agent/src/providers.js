@@ -248,6 +248,15 @@ function chatOnce(cfg, opts) {
           try { data = JSON.parse(body); } catch (_) { fail('provider_error', 'Reponse fournisseur illisible.'); return; }
           const msg = data && data.choices && data.choices[0] && data.choices[0].message;
           if (!msg) { fail('provider_error', 'Reponse fournisseur vide.'); return; }
+          // P55-2: le runtime repond 200 + erreur structuree quand l'appel
+          // d'outil reste inutilisable apres reparation. Ce n'est PAS une panne
+          // du fournisseur : le moteur doit pouvoir reprendre (essais reduits,
+          // puis format de secours).
+          const invalidCall = (data && data.error && data.error.code === 'invalid_tool_call')
+            ? { code: 'invalid_tool_call', field: data.error.field || 'json',
+              message: String(data.error.message || '').slice(0, 600),
+              example: data.error.example || {}, detail: String(data.error.detail || '').slice(0, 300) }
+            : null;
           const rawCalls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
           const toolCalls = rawCalls.map((c, i) => {
             const fn = (c && c.function) || {};
@@ -258,7 +267,8 @@ function chatOnce(cfg, opts) {
             catch (_) { parseError = 'arguments JSON invalides'; }
             return { id: (c && c.id) || ('call-' + i), name: fn.name || '', argsText, args: parsed, parseError };
           });
-          resolve({ text: typeof msg.content === 'string' ? msg.content : '', toolCalls, usage: data.usage || null });
+          resolve({ text: typeof msg.content === 'string' ? msg.content : '', toolCalls,
+            usage: data.usage || null, invalidCall });
         });
       });
     } catch (e) { fail('provider_error', 'Erreur du fournisseur: ' + shortError(e)); return; }

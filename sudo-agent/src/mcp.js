@@ -530,9 +530,27 @@ async function connect(home, serverName, journal) {
   if (!cfg) throw new Error('serveur MCP inconnu: ' + serverName);
   if (isHttpCfg(cfg)) return connectHttp(home, serverName, cfg, journal);
   if (!cfg.command) throw new Error('serveur MCP inconnu: ' + serverName);
+  // P57-5: les variables de `secretEnv` sont resolues dans le TROUSSEAU au
+  // moment du demarrage et injectees dans l'environnement du serveur. Elles
+  // ne sont jamais journalisees, jamais renvoyees au modele.
+  let secretEnv = {};
+  if (cfg.secretEnv && typeof cfg.secretEnv === 'object') {
+    for (const varName of Object.keys(cfg.secretEnv)) {
+      let target = String(cfg.secretEnv[varName] || '').trim();
+      if (!target) continue;
+      if (target.indexOf('/') === -1) target = 'SudoStudio/mcp/' + serverName + '/' + target;
+      try {
+        const got = await keyring.getSecret(target);
+        if (got && got.ok && got.secret) secretEnv[varName] = String(got.secret);
+        else if (journal) journal('mcp secret manquant: ' + serverName + '/' + varName);
+      } catch (_) {
+        if (journal) journal('mcp secret illisible: ' + serverName + '/' + varName);
+      }
+    }
+  }
   const child = spawner()(String(cfg.command), (cfg.args || []).map(String), {
     cwd: cfg.cwd || process.cwd(),
-    env: filteredEnv(cfg.env),
+    env: Object.assign(filteredEnv(cfg.env), secretEnv),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     detached: process.platform !== 'win32',

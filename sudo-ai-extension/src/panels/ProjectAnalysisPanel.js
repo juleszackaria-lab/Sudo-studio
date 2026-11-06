@@ -4,6 +4,7 @@
  * No backend required. AI recommendations via runtime port 6000.
  */
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const wvFallback = require('../utils/backendFallback');
 const { guardSnippet } = require('../utils/webviewGuard');
 const axios  = require('axios');
@@ -58,6 +59,7 @@ class ProjectAnalysisPanel {
     }
 
     async handleMessage(msg) {
+        try { noteJournal('analysis', msg); } catch (_) { /* journal jamais bloquant */ }
         if (wvFallback.handlePanelMessage(null, msg)) return;
         switch (msg.type) {
             case 'reanalyze':      await this.analyzeProject(); break;

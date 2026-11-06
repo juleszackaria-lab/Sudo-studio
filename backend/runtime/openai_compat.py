@@ -28,6 +28,13 @@ import re
 import time
 import uuid
 
+# P55: reparation des appels d'outils (module frere, stdlib only). Import
+# defensif : si le bundle ne l'embarque pas, on garde l'ancien parseur.
+try:
+    import toolcall_repair
+except Exception:  # pragma: no cover - packaging safety
+    toolcall_repair = None
+
 # ---------------------------------------------------------------------------
 # n_ctx policy (P1-c)
 # ---------------------------------------------------------------------------
@@ -173,9 +180,16 @@ def tool_defs_for_prompt(tools):
 def parse_toolcall_json(text, tools):
     """Parse model output into ({"name","arguments"}, None) or (None, reason).
 
-    Accepts raw JSON, ```json fenced blocks, and arguments given either as
-    an object or as a JSON-encoded string. The name must match a declared tool.
+    P55: delegates to toolcall_repair when available (clotures markdown, texte
+    autour, arguments en texte JSON, arguments absents, noms approximatifs,
+    appels multiples separes). Kept for the P1 contract and its tests.
     """
+    if toolcall_repair is not None:
+        res = toolcall_repair.repair_toolcall(text, tools)
+        if res.get("ok"):
+            first = res["calls"][0]
+            return {"name": first["name"], "arguments": first["arguments"]}, None
+        return None, toolcall_repair.describe_error(res)
     if text is None:
         return None, "empty reply"
     s = str(text).strip()
@@ -510,50 +524,146 @@ def register_openai_routes(app, ctx):
             except (AttributeError, TypeError, IndexError):
                 return ""
 
+        # -- P55-2: pipeline de REPARATION, jamais de 500 sur une sortie
+        # imparfaite. On tente, on repare, on redemande avec un exemple
+        # valide, on repare encore ; si l'appel reste inutilisable, on
+        # repond 200 avec une erreur structuree que le MOTEUR renvoie au
+        # modele (la boucle de l'agent peut alors reprendre).
+        def _repair_or_none(txt):
+            if toolcall_repair is None:
+                p, err = parse_toolcall_json(txt, tools)
+                if p:
+                    return {"ok": True, "calls": [p], "repairs": []}
+                return {"ok": False, "code": "invalid_tool_call", "field": "json",
+                        "message": "Appel invalide : JSON. Reponds par {tool, args}.",
+                        "detail": err or "", "example": {}, "repairs": []}
+            return toolcall_repair.repair_toolcall(txt, tools)
+
+        repairs_log = []
+        usage = {}
+        res = None
         try:
             out1 = _attempt(aug)
+            if isinstance(out1, dict) and out1.get("usage"):
+                usage = out1["usage"]
+            text1 = _text_of(out1)
+            dlog("[OPENAI] tool attempt1 raw: %.200s" % (text1 or "",))
+            res = _repair_or_none(text1)
+            repairs_log.extend(res.get("repairs") or [])
         except Exception as e:
+            # Une exception de llama n'est pas une sortie imparfaite : on la
+            # signale comme erreur de service (503), jamais un faux succes.
             return _openai_500("tool inference failed: %s: %s" % (
                 type(e).__name__, e))
-        text1 = _text_of(out1)
-        dlog("[OPENAI] tool attempt1 raw: %.200s" % (text1 or "",))
-        parsed, err = parse_toolcall_json(text1, tools)
-        usage = out1.get("usage", {}) if isinstance(out1, dict) else {}
-        if err:
-            # -- ONE retry with a repair prompt (P1-a) --
-            dlog("[OPENAI] tool attempt1 invalid (%s), retrying once" % err)
+
+        if not res.get("ok"):
+            # 2e passe : message de reparation explicite (message + exemple).
+            dlog("[OPENAI] tool attempt1 invalid (%s), repair prompt" %
+                 (res.get("detail") or res.get("field")))
             aug2 = (aug + [{"role": "assistant", "content": text1 or ""}] +
                     [{"role": "user", "content":
-                      "That was not a valid tool call (%s). Reply with JSON "
-                      "only: {\"name\": ..., \"arguments\": {...}}." % err}])
+                      (toolcall_repair.repair_prompt(res) if toolcall_repair
+                       else "Reply with JSON only: {\"name\": \"<tool>\", \"arguments\": {}}.")}])
             try:
                 out2 = _attempt(aug2)
+                if isinstance(out2, dict) and out2.get("usage"):
+                    usage = out2["usage"]
+                text2 = _text_of(out2)
+                dlog("[OPENAI] tool attempt2 raw: %.200s" % (text2 or "",))
+                res2 = _repair_or_none(text2)
+                repairs_log.extend(res2.get("repairs") or [])
+                if res2.get("ok"):
+                    res = res2
+                else:
+                    res = res2
             except Exception as e:
-                return _openai_500("tool retry failed: %s: %s" % (
-                    type(e).__name__, e))
-            text2 = _text_of(out2)
-            parsed, err = parse_toolcall_json(text2, tools)
-            if isinstance(out2, dict) and out2.get("usage"):
-                usage = out2["usage"]
-            if err:
-                dlog("[OPENAI] tool retry invalid too (%s), failing clean" % err)
-                return jsonify({"error": {
-                    "message": "tool call JSON invalid after retry: " + err,
-                    "type": "server_error", "code": 500}}), 500
+                dlog("[OPENAI] tool attempt2 exception: %s" % e)
+
+        if not res.get("ok"):
+            # 3e passe (derniere) : on redemande en format TRES simple, sans
+            # schema, pour laisser une chance a un petit modele.
+            dlog("[OPENAI] tool attempt2 invalid (%s), last simple pass" %
+                 (res.get("detail") or res.get("field")))
+            ex = (res.get("example") or {})
+            simple = (aug + [{"role": "assistant", "content": text1 or ""},
+                             {"role": "user", "content":
+                              "Reponds par un seul objet JSON, rien d'autre. "
+                              "Exemple exact : " + json.dumps(ex, ensure_ascii=True)}])
+            try:
+                out3 = _attempt(simple)
+                if isinstance(out3, dict) and out3.get("usage"):
+                    usage = out3["usage"]
+                res3 = _repair_or_none(_text_of(out3))
+                repairs_log.extend(res3.get("repairs") or [])
+                if res3.get("ok"):
+                    res = res3
+            except Exception as e:
+                dlog("[OPENAI] tool attempt3 exception: %s" % e)
+
+        if repairs_log:
+            dlog("[OPENAI] tool repairs: %s" % ", ".join(repairs_log[:8]))
+
+        if not res.get("ok"):
+            # Jamais 500 : 200 + erreur structuree (le moteur la renvoie au
+            # modele et tente une autre voie).
+            dlog("[OPENAI] tool call unusable after repairs (%s)" %
+                 (res.get("detail") or res.get("field")))
+            instr = (toolcall_repair.describe_error(res) if toolcall_repair
+                     else "Appel invalide. Reponds par {tool, args}.")
+            req_id_bad = "chatcmpl-" + uuid.uuid4().hex[:12]
+            err_payload = {
+                "id": req_id_bad, "object": "chat.completion",
+                "created": int(time.time()), "model": _model_id(),
+                "choices": [{"index": 0,
+                             "message": {"role": "assistant", "content": instr,
+                                         "tool_calls": None},
+                             "finish_reason": "stop"}],
+                "error": {"code": "invalid_tool_call",
+                          "field": res.get("field", "json"),
+                          "message": instr,
+                          "detail": res.get("detail", ""),
+                          "example": res.get("example", {}),
+                          "repairs": repairs_log[:8],
+                          "type": "invalid_tool_call"},
+                "usage": usage,
+            }
+            # 200 explicite : une sortie imparfaite n'est pas une panne serveur.
+            if not stream:
+                return jsonify(err_payload)
+            err_body = json.dumps(err_payload, ensure_ascii=True)
+
+            def _err_sse():
+                yield "data: " + err_body + "\n\n"
+                yield "data: [DONE]\n\n"
+            return Response(_err_sse(), mimetype="text/event-stream",
+                            headers={"Cache-Control": "no-cache",
+                                     "X-Accel-Buffering": "no"})
+
+        calls = res.get("calls") or []
+        parsed = {"name": calls[0]["name"], "arguments": calls[0]["arguments"]}
 
         call_id = "call_" + uuid.uuid4().hex[:8]
         req_id = "chatcmpl-" + uuid.uuid4().hex[:12]
         created = int(time.time())
+        # P55-2: plusieurs appels separes par la reparation -> plusieurs
+        # tool_calls dans la reponse (le moteur applique sa politique).
         tool_call = {"id": call_id, "type": "function", "function": {
             "name": parsed["name"],
             "arguments": json.dumps(parsed["arguments"], ensure_ascii=True)}}
+        all_calls = [tool_call]
+        for extra in calls[1:5]:
+            all_calls.append({"id": "call_" + uuid.uuid4().hex[:8],
+                              "type": "function", "function": {
+                                  "name": extra["name"],
+                                  "arguments": json.dumps(extra["arguments"],
+                                                          ensure_ascii=True)}})
         if not stream:
             return jsonify({
                 "id": req_id, "object": "chat.completion",
                 "created": created, "model": _model_id(),
                 "choices": [{"index": 0,
                              "message": {"role": "assistant", "content": None,
-                                         "tool_calls": [tool_call]},
+                                         "tool_calls": all_calls},
                              "finish_reason": "tool_calls"}],
                 "usage": usage,
             })
@@ -565,9 +675,11 @@ def register_openai_routes(app, ctx):
                                       "delta": {"role": "assistant"},
                                       "finish_reason": None}])
             yield "data: " + json.dumps(e1, ensure_ascii=True) + "\n\n"
+            deltas = []
+            for i, tc in enumerate(all_calls):
+                deltas.append(dict(tc, index=i))
             e2 = dict(base, choices=[{"index": 0,
-                                      "delta": {"tool_calls": [dict(
-                                          tool_call, index=0)]},
+                                      "delta": {"tool_calls": deltas},
                                       "finish_reason": None}])
             yield "data: " + json.dumps(e2, ensure_ascii=True) + "\n\n"
             e3 = dict(base, choices=[{"index": 0, "delta": {},

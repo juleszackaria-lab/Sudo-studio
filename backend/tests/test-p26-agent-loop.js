@@ -340,7 +340,10 @@ t('A3', 'profiles: size detection, ctx resolution, budget', () => {
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'local' }) === 'small', 'unknown local small');
   assert(p.selectProfile({ modelId: 'mystery', providerType: 'cloud' }) === 'full', 'unknown cloud full');
   assert(p.selectProfile({ modelId: 'llama-8b', providerType: 'local', override: 'small' }) === 'small', 'override wins');
-  assert(p.profileTools('small').length === 13 && p.profileTools('full').length === 30, 'tool counts (P54: +skill on demand)');
+  // P57: full gagne 5 outils d'extensions (extensions_list, extensions_describe,
+  // skill_load, mcp_call, task); small reste a 13 (mesure : +5 schemas sur un
+  // contexte micro 2048 faisaient deborder le prompt, P25/P26).
+  assert(p.profileTools('small').length === 13 && p.profileTools('full').length === 35, 'tool counts (P54: +skill on demand ; P57: +5 extensions)');
   assert(p.profileTools('small').indexOf('patch') === -1, 'small drops patch');
   assert(p.profileTools('small').indexOf('todo') === -1, 'P52: engine owns todos');
   assert(p.profileTools('small').indexOf('reply') !== -1 && p.profileTools('small').indexOf('done') !== -1, 'P49: small exits');
@@ -551,7 +554,9 @@ t('E2', 'full profile: 13 tools for 8B', async () => {
     const sid = await newSession(port, token, proj);
     await ssePost(port, token, '/sessions/' + sid + '/messages', { prompt: 'hi' }, () => {});
     const names = (mock.chats[0].tools || []).map((x) => x.function.name);
-    assert(names.length === 30 && names.indexOf('patch') !== -1 && names.indexOf('skill') !== -1 && names.indexOf('exec_poll') !== -1 && names.indexOf('gen_report') !== -1 && names.indexOf('subagent') !== -1 && names.indexOf('append') !== -1, 'thirty tools, got ' + names.length);
+    // P57: en 4096, les 5 schemas d'extensions sont retires (sinon le tour
+// saturait) ; le jeu reste celui d'avant P57 -> 30 outils.
+    assert(names.length === 30 && names.indexOf('mcp_call') === -1 && names.indexOf('patch') !== -1 && names.indexOf('skill') !== -1 && names.indexOf('exec_poll') !== -1 && names.indexOf('gen_report') !== -1 && names.indexOf('subagent') !== -1 && names.indexOf('append') !== -1, 'thirty tools, got ' + names.length);
     await pollFile(path.join(a.logsDir, 'agent.log'), /profile=full/, 3000);
   } finally { killChild(a.child); await mock.close(); }
 });
