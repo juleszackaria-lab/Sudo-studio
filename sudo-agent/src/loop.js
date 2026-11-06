@@ -21,6 +21,8 @@ const { diffSnapshot } = require('./checkpoints');
 const { maskSecrets } = require('./journal');
 const plan = require('./plan');
 const orch = require('./orch');
+const specMod = require('./spec'); // P56: cahiers des charges longs
+const jobMod = require('./job');   // P56: projet = plan + etat sur disque + reprise
 const modes = require('./modes');
 const prereq = require('./prereq');
 const msgs = require('./msgs');
@@ -189,7 +191,8 @@ async function runTurn(opts) {
     }
   }
   if (!probe.ok) return fail(probe.code || 'provider_error', probe.error || 'fournisseur indisponible.');
-  const model = provider.model || (probe.models && probe.models[0]) || '';
+  // P56-6: a step may run on another model (policy), when it is available.
+  const model = opts.modelOverride || provider.model || (probe.models && probe.models[0]) || '';
   if (!model) return fail('no_model', 'Aucun modele charge sur le runtime local (liste des modeles vide).');
 
   // P54-3: custom command. "/name args" becomes the rendered template; an
@@ -230,6 +233,8 @@ async function runTurn(opts) {
   store.append(sessionId, { role: 'user', content: storedText });
   const sessionNow = store.get(sessionId) || session;
   const useTools = !!opts.toolsCtx && sessionNow.projectRoot && opts.tools !== false;
+
+
 
   const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, maxIt: opts.maxIt, subDepth: opts.subDepth };
   if (useTools) return toolsTurn(base, sessionNow, opts.toolsCtx);
@@ -728,6 +733,51 @@ async function toolsTurn(base, session, toolsCtx) {
   const ctxTokens = profiles.resolveCtxTokens({ override: process.env.SUDO_AGENT_CTX_TOKENS, probeNctx: probeNctx(base.preProbe, model), providerType: provider.type });
 
   const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
+
+  // P56-1: a LONG brief (>= SUDO_AGENT_SPEC_LINES lines or SUDO_AGENT_SPEC_CHARS
+  // chars) is stored as a SPEC document on disk; the context only ever gets a
+  // section slice. The engine extracts sections + numbered requirements, builds
+  // the plan and STOPS for validation (Lancer / Modifier) before any action.
+  // A later short "lancer" / "reprendre" resumes the stored job on disk.
+  let jobState = null;
+  try {
+    const rootP = session.projectRoot;
+    const isChildTurn = !!(toolsCtx && (toolsCtx.noOrchPlan || toolsCtx.noResume));
+    if (mode === 'build' && !isChildTurn && rootP && intent.kind !== 'QUESTION') {
+      const short = String(base.prompt || '').trim();
+      const wantsStart = short.length < 400 && /^\s*(lancer|lance|demarrer|demarre|valider|valide|go)\b/i.test(short);
+      const wantsResume = short.length < 400 && /reprend/i.test(short);
+      const resum = (wantsStart || wantsResume) ? jobMod.resumable(rootP) : null;
+      if (resum) {
+        jobState = jobMod.load(rootP, resum.id);
+        if (log) { try { log.info('projet repris', { session: sessionId, job: resum.id, restant: resum.steps - resum.done }, corr); } catch (_) {} }
+      } else if (specMod.isLongSpec(base.prompt)) {
+        const meta = specMod.ingest(rootP, base.prompt, {});
+        if (!meta.error) {
+          const stepsP = specMod.planSteps(meta);
+          const st = jobMod.create(rootP, meta, stepsP, {});
+          const planTxt = specMod.planText(meta, stepsP);
+          if (log) { try { log.info('cahier des charges recu', { session: sessionId, spec: meta.id, lignes: meta.lines, exigences: meta.requirements.length, etapes: stepsP.length }, corr); } catch (_) {} }
+          store.append(sessionId, { role: 'assistant', content: planTxt });
+          try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+          try { onEvent({ type: 'message.done', text: planTxt, aborted: false }); } catch (_) {}
+          try { onEvent({ type: 'job.plan', jobId: st.id, specId: meta.id, steps: stepsP.length,
+            requirements: meta.requirements.length, sections: meta.sections.length,
+            title: meta.title, plan: planTxt.slice(0, 6000) }); } catch (_) {}
+          try {
+            onEvent({ type: 'turn.done', turnId: corr, messageCount: (store.get(sessionId) || { messages: [] }).messages.length,
+              model, aborted: false, status: 'PARTIEL', reason: 'plan en attente de validation (Lancer / Modifier).',
+              filesModified: [], stopReason: 'spec_plan', declaredDone: true, toolCalls: 0, unresolvedErrors: [] });
+          } catch (_) {}
+          if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
+          return { status: 'done', model, runStatus: 'PARTIEL', code: 'spec_plan', job: st.id, spec: meta.id };
+        }
+        if (log) { try { log.warn('cahier des charges refuse', { error: String(meta.error).slice(0, 120) }, corr); } catch (_) {} }
+      }
+    }
+  } catch (e) {
+    if (log) { try { log.warn('cahier des charges illisible', { error: String((e && e.message) || e).slice(0, 120) }, corr); } catch (_) {} }
+  }
   runs.set(sessionId, runEntry);
   const run = { id: turnId, sessionId, checkpointed: false, checkpointName: null, snapshot: null, calls: [], created: [], killFns: runEntry.killFns };
   try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
@@ -1193,7 +1243,8 @@ async function toolsTurn(base, session, toolsCtx) {
   const noOrchPlan = !!(toolsCtx && toolsCtx.noOrchPlan);
   const seedTexts = noOrchPlan ? [] : plan.parseSteps(base.prompt, intent.taskItems || []);
   const wantPlan = !noOrchPlan && mode === 'build' && (strictAction || (intent.kind === 'AMBIGUOUS' && (intent.hasTaskList || seedTexts.length >= 2)));
-  const orchTexts = (wantPlan && seedTexts.length >= orch.longSteps()) ? seedTexts : [];
+  // P56: a project run (job) never doubles as a P52 orchestration.
+  const orchTexts = (!jobState && wantPlan && seedTexts.length >= orch.longSteps()) ? seedTexts : [];
   // P52-7: explicit resume words revive the most recent unfinished
   // orchestrated plan (crash/stop/close recovery). Anything else starts
   // a fresh plan (never hijacks an old one implicitly).
@@ -1735,6 +1786,122 @@ async function toolsTurn(base, session, toolsCtx) {
   // minimal child context (step text + short summary of previous steps);
   // plan/state/hashes/journal persist on disk (crash/stop/close resume
   // via explicit resume words). The parent makes no model calls itself.
+  // P56-2/3/4/5: project run. Each step is a FRESH child turn whose context
+  // only holds the objective, the useful SPEC slice, the files already touched
+  // and a two-line summary of previous steps. State (attempts, files, tests,
+  // coverage) is checkpointed on disk before AND after every step, so a stop,
+  // a crash, a runtime restart or a closed panel resumes at the same step.
+  let jobVerdict = null;
+  if (jobState && !runEntry.aborted) {
+    journal('info', 'tour projet', { job: jobState.id, etapes: jobState.steps.length, execution: jobState.runs });
+    const waiters = (toolsCtx && toolsCtx.waiters) || null;
+    const stepRunner = async (step, ctx) => {
+      if (runEntry.aborted) return { calls: 0, aborted: true, error: 'tour abandonne.' };
+      const child = store.create({ title: 'etape ' + ctx.n + '/' + ctx.N + ': ' + String(step.text).slice(0, 50), projectRoot: session.projectRoot });
+      try { store.update(child.id, (x) => { x.meta.jobParent = sessionId; x.meta.job = jobState.id; }); } catch (_) {}
+      try { sessionRulesMap.set(child.id, sessionRulesMap.get(sessionId)); } catch (_) {}
+      const cprompt = jobMod.stepPrompt(ctx);
+      const t0 = Date.now();
+      let cres = null;
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; try { abortRun(runs, child.id); } catch (_) {} }, ctx.msBudget);
+      if (timer.unref) { try { timer.unref(); } catch (_) {} }
+      const pabort = setInterval(() => { if (runEntry.aborted) { try { abortRun(runs, child.id); } catch (_) {} } }, 250);
+      if (pabort.unref) { try { pabort.unref(); } catch (_) {} }
+      // P56-4: un pas de projet ne peut JAMAIS bloquer le reste du projet.
+      // Le delai est double : 1) on demande l'arret du tour enfant, 2) si le
+      // tour ne rend pas la main (attente externe), on rend l'etape en echec
+      // au lieu de laisser le projet fige indefiniment.
+      let watchdog = null;
+      try {
+        const childTurn = runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.j' + ctx.n,
+          provider, modelOverride: ctx.model || undefined,
+          toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map(),
+            waiters: (toolsCtx && toolsCtx.waiters) || null,
+            parentSessionId: sessionId, noResume: true, noOrchPlan: true },
+          runs, log, onEvent: (e) => {
+            try {
+              if (e && (e.type === 'turn.paused' || (typeof e.type === 'string' && e.type.indexOf('tool.') === 0) || e.type === 'runtime.wait')) onEvent(e);
+            } catch (_) {}
+          }, maxIt: ctx.callBudget, runtimeWait });
+        cres = await Promise.race([
+          childTurn,
+          new Promise((resolve) => {
+            watchdog = setTimeout(() => {
+              timedOut = true;
+              // Diagnostic : ce que le processus attend encore (socket modele,
+              // attente externe, processus enfant) au moment du depassement.
+              let pending = [];
+              try {
+                pending = process._getActiveHandles().map((h) => {
+                  const n = (h && h.constructor && h.constructor.name) || '?';
+                  return n + (h && h.remotePort ? ':' + h.remotePort : '');
+                });
+              } catch (_) {}
+              journal('warn', 'etape projet delai depasse', { n: ctx.n, handles: pending.slice(0, 8) });
+              try { abortRun(runs, child.id); } catch (_) {}
+              resolve({ status: 'error', error: 'delai etape depasse (tour enfant sans reponse).' });
+            }, ctx.msBudget + 15000);
+            if (watchdog.unref) { try { watchdog.unref(); } catch (_) {} }
+          }),
+        ]);
+      } catch (e) {
+        journal('warn', 'etape projet erreur', { n: ctx.n, error: String((e && e.message) || e).slice(0, 160) });
+      } finally {
+        try { clearTimeout(timer); } catch (_) {}
+        try { clearTimeout(watchdog); } catch (_) {}
+        try { clearInterval(pabort); } catch (_) {}
+      }
+      const cs = store.get(child.id);
+      const cmeta = (cs && cs.meta && cs.meta.lastRun) || {};
+      const calls = Array.isArray(cmeta.calls) ? cmeta.calls : [];
+      const files = Array.isArray(cmeta.filesModified) ? cmeta.filesModified : [];
+      const testCall = calls.find((c) => c && c.ok && (c.tool === 'bash') && /test|spec|pytest|jest|npm run/.test(String(c.target || '')));
+      if (runEntry.aborted) return { calls: calls.length, aborted: true, error: 'tour abandonne.' };
+      if (timedOut) return { calls: calls.length, ok: false, error: 'delai etape depasse (' + Math.round((Date.now() - t0) / 1000) + 's).', files };
+      const childDeclared = cmeta.stopReason === 'declared';
+      const okChild = !cres || cres.status !== 'error';
+      return {
+        calls: calls.length,
+        // Honnetete (P56-5) : "declare terminee" sans fichier modifie et sans
+        // test execute n'est PAS une preuve. L'etape est alors marquee en
+        // echec et le rapport la compte en "non realisee".
+        ok: okChild && (files.length > 0 || !!testCall),
+        declared: childDeclared,
+        files,
+        test: testCall ? String(testCall.target).slice(0, 160) : null,
+        detail: files.length ? files.slice(0, 4).join(', ')
+          : (testCall ? 'test execute : ' + String(testCall.target).slice(0, 100)
+            : (childDeclared ? 'declare terminee sans modification verifiee' : 'aucune modification verifiee')),
+        error: (cres && cres.status === 'error') ? String(cres.error || 'erreur enfant').slice(0, 200) : '',
+      };
+    };
+    try {
+      const res = await jobMod.run({
+        root, state: jobState, runStep: stepRunner,
+        shouldStop: () => runEntry.aborted,
+        availableModels: (base.preProbe && Array.isArray(base.preProbe.models)) ? base.preProbe.models : [],
+        emit: (t, o) => { try { onEvent(Object.assign({ type: t }, o)); } catch (_) {} },
+      });
+      finalText = res.report || '';
+      declared = true;
+      const failed = res.failed || 0;
+      const skipped = res.skipped || 0;
+      const total = res.total || jobState.steps.length;
+      if (res.aborted) jobVerdict = { status: 'PARTIEL', reason: 'projet interrompu (bouton Reprendre ou "reprendre").', unresolved: [] };
+      else if (failed > 0 && res.done === 0) jobVerdict = { status: 'ECHEC', reason: failed + ' etape(s) non realisee(s) sur ' + total + '.', unresolved: [] };
+      else if (failed > 0) jobVerdict = { status: 'PARTIEL', reason: failed + ' etape(s) non realisee(s) sur ' + total + ', les autres sont faites.', unresolved: [] };
+      else if (skipped > 0) jobVerdict = { status: 'PARTIEL', reason: skipped + ' etape(s) non tentee(s) (budget).', unresolved: [] };
+      else jobVerdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      journal('info', 'projet termine', { job: jobState.id, faites: res.done, echouees: failed, nontentees: skipped });
+    } catch (e) {
+      finalText = 'Projet interrompu : ' + String((e && e.message) || e).slice(0, 300);
+      declared = true;
+      jobVerdict = { status: 'ECHEC', reason: 'execution du projet interrompue.', unresolved: [] };
+      journal('warn', 'projet interrompu', { error: String((e && e.message) || e).slice(0, 160) });
+    }
+  }
+
   if ((orchResumeId || orchTexts.length) && !runEntry.aborted) {
     const orchPlanId = orchResumeId || turnId;
     journal('info', 'tour orchestre', { plan: orchPlanId, steps: orchTexts.length || 'reprise', resume: !!orchResumeId });
@@ -1836,7 +2003,8 @@ async function toolsTurn(base, session, toolsCtx) {
   // Honest status (P25-g + P26 stops).
   const filesModified = currentFilesModified();
   let verdict = computeRunStatus(declared, run.calls, { files: currentFilesModified(), verifyNote, lang: convLang });
-  if (orchVerdict) verdict = orchVerdict; // P52: the orchestrated verdict wins (honest per-step report).
+  const strongVerdict = orchVerdict || jobVerdict; // P52/P56: per-step report wins (honest).
+  if (strongVerdict) verdict = strongVerdict;
   if (!declared && stopReason && stopReason !== 'verify_failed') {
     verdict = { status: 'PARTIEL', reason: stopDetail || 'arret.', unresolved: verdict.unresolved };
   }
@@ -1860,12 +2028,12 @@ async function toolsTurn(base, session, toolsCtx) {
     if (declared && filesModified.length > 0) {
       // Errors may still stand (unresolved): then ECHEC is kept, with the
       // files listed above. TERMINE only when nothing stands unresolved.
-      if (!verdict.unresolved.length && !verdict.verifyNote && !orchVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      if (!verdict.unresolved.length && !verdict.verifyNote && !strongVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
       if (!finalText.trim()) finalText = 'Tache terminee.';
       store.append(sessionId, { role: 'assistant', content: finalText });
     } else if (declared && !filesModified.length && okCalls > 0
                && run.calls.some((c) => c.ok && c.code === 'ok' && (c.tool === 'mcp_call' || /^mcp__/.test(String(c.tool || ''))))
-               && !verdict.unresolved.length && !verdict.verifyNote && !orchVerdict) {
+               && !verdict.unresolved.length && !verdict.verifyNote && !strongVerdict) {
       // P57-8: une ACTION EXTERNE verifiee (appel MCP abouti, sortie reelle)
       // n'est pas un echec faute de fichier modifie : le statut reste honnete
       // parce qu'il s'appuie sur une preuve, et le resume le dit.
@@ -1889,7 +2057,7 @@ async function toolsTurn(base, session, toolsCtx) {
     } else if (!declared && (filesModified.length > 0 || finalText.trim())) {
       // Undeclared but real: modified files without a declaration, or an
       // answer already produced (context/loop rescue): keep the verdict.
-    } else if ((!declared || verdict.status === 'TERMINE') && !orchVerdict) {
+    } else if ((!declared || verdict.status === 'TERMINE') && !strongVerdict) {
       // P49-2 target: false TERMINE (declared, no evidence) and answerless
       // stops (no_tool). A declared ECHEC (mid-turn approval need, standing
       // tool errors) is loud already: it stands, never downgraded.

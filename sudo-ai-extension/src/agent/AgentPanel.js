@@ -190,6 +190,12 @@ details.toolrow.ext .tname::before { content:">"; opacity:0.6; }
 .node.warn { border:2px solid var(--vscode-editorWarning-foreground,var(--sudo-warn)); background:transparent; }
 .rnc { padding-left:20px; }
 .stepline { font-size:12px; color:var(--vscode-descriptionForeground,var(--sudo-dim)); padding:2px 0; }
+/* P56: carte du cahier des charges (plan + Lancer/Modifier) et suivi du projet. */
+.jobcard { margin:8px 0; border:1px solid var(--vscode-editorWidget-border,var(--sudo-border)); border-radius:var(--r-surf); background:var(--vscode-editor-background,var(--sudo-surface)); padding:8px 12px; }
+.jobcard .jobhead { font-size:12px; font-weight:500; margin-bottom:6px; }
+.jobcard pre.jobplan { margin:0 0 8px; padding:8px 12px; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-family:var(--sudo-font-code); font-size:12px; line-height:1.5; background:var(--sudo-code-bg); border-radius:var(--r-surf); }
+.jobcard .jobacts { display:flex; gap:8px; align-items:center; }
+.jobind { position:sticky; bottom:0; font-size:12px; padding:4px 8px; margin:4px 0; border:1px solid var(--vscode-editorWidget-border,var(--sudo-border)); border-radius:var(--r-surf); background:var(--sudo-code-bg); color:var(--vscode-descriptionForeground,var(--sudo-dim)); }
 details.toolrow summary { cursor:pointer; padding:4px 0; list-style:none; display:flex; gap:8px; align-items:center; font-size:12px; }
 details.toolrow summary::-webkit-details-marker { display:none; }
 details.toolrow .tname { font-weight:500; }
@@ -1079,6 +1085,114 @@ function renderHistory(turns) {
   });
   thread.scrollTop = thread.scrollHeight;
 }
+// P56: le projet (cahier des charges) se pilote depuis la conversation : le
+// plan s'affiche avec Lancer / Modifier, la progression affiche "etape n/N",
+// et un projet interrompu propose "Reprendre".
+function jobSend(text) {
+  clearEmpty();
+  var d = document.createElement("div");
+  d.className = "msg user";
+  d.textContent = text;
+  thread.appendChild(d);
+  thread.scrollTop = thread.scrollHeight;
+  lastUserText = text;
+  post({ type: "send", text: text });
+}
+function setJobIndicator(txt) {
+  var el = document.getElementById("jobind");
+  if (!txt) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "jobind";
+    el.className = "jobind";
+    thread.appendChild(el);
+  }
+  el.textContent = txt;
+  stick();
+}
+function renderJobPlan(m) {
+  var card = document.createElement("div");
+  card.className = "jobcard";
+  var h = document.createElement("div");
+  h.className = "jobhead";
+  h.textContent = "Cahier des charges : " + (m.title || "sans titre") + " - " +
+    (m.requirements || 0) + " exigences, " + (m.steps || 0) + " etapes";
+  card.appendChild(h);
+  var pre = document.createElement("pre");
+  pre.className = "jobplan";
+  pre.textContent = String(m.plan || "");
+  card.appendChild(pre);
+  var row = document.createElement("div");
+  row.className = "jobacts";
+  var b1 = document.createElement("button");
+  b1.className = "btn sm";
+  b1.textContent = "Lancer";
+  b1.addEventListener("click", function() {
+    // La carte reste (le plan doit rester lisible pendant la construction) ;
+    // seuls les boutons disparaissent : impossible de lancer deux fois.
+    if (row.parentNode) row.parentNode.removeChild(row);
+    var ok = document.createElement("div");
+    ok.className = "stepline";
+    ok.textContent = "Cahier valide : lancement du projet.";
+    card.appendChild(ok);
+    jobSend("lancer");
+  });
+  var b2 = document.createElement("button");
+  b2.className = "btn sm";
+  b2.textContent = "Modifier";
+  b2.addEventListener("click", function() {
+    input.value = "modifier le plan : ";
+    input.focus();
+  });
+  row.appendChild(b1);
+  row.appendChild(b2);
+  card.appendChild(row);
+  thread.appendChild(card);
+  stick();
+}
+function renderJobResume(m) {
+  var card = document.createElement("div");
+  card.className = "jobcard";
+  var h = document.createElement("div");
+  h.className = "jobhead";
+  h.textContent = "Projet interrompu : " + (m.title || m.id || "") + " - " +
+    (m.done || 0) + "/" + (m.total || 0) + " etapes faites";
+  card.appendChild(h);
+  var row = document.createElement("div");
+  row.className = "jobacts";
+  var rb = document.createElement("button");
+  rb.className = "btn sm";
+  rb.textContent = "Reprendre";
+  rb.addEventListener("click", function() {
+    if (row.parentNode) row.parentNode.removeChild(row);
+    var ok = document.createElement("div");
+    ok.className = "stepline";
+    ok.textContent = "Reprise du projet demandee.";
+    card.appendChild(ok);
+    jobSend("reprendre le projet");
+  });
+  row.appendChild(rb);
+  card.appendChild(row);
+  thread.appendChild(card);
+  stick();
+}
+function onJobMsg(m) {
+  if (m.phase === "plan") { setJobIndicator(""); renderJobPlan(m); return; }
+  if (m.phase === "step") {
+    if (m.status === "start") setJobIndicator("Etape " + m.n + "/" + m.N + (m.text ? " : " + m.text : ""));
+    else if (m.status === "done") setJobIndicator("Etape " + m.n + "/" + m.N + " faite" + (m.done ? " (" + m.done + " faites)" : ""));
+    else if (m.status === "failed") addStep("job", "Etape " + m.n + "/" + m.N + " NON REALISEE : " + (m.detail || ""));
+    else if (m.status === "skipped") addStep("job", "Etape " + m.n + "/" + m.N + " non tentee (budget).");
+    return;
+  }
+  if (m.phase === "done") {
+    setJobIndicator("");
+    addStep("job", "Projet : " + (m.done || 0) + " faites, " + (m.failed || 0) + " en echec, " +
+      (m.skipped || 0) + " non tentees sur " + (m.total || 0) + ".");
+    return;
+  }
+  if (m.phase === "resumable" && m.resumable) { renderJobResume(m.resumable); }
+}
 function onDelta(text) {
   if (!text) return;
   var a = ensureAgent();
@@ -1148,6 +1262,7 @@ window.addEventListener("message", function(ev) {
   if (m.type === "runState") setRunning(!!m.running, m.queued || 0);
   else if (m.type === "started") { parts = {}; ensureAgent(); addStep("run", "Mode " + (m.mode || "")); showSkel(); }
   else if (m.type === "step") addStep(m.phase, m.message);
+  else if (m.type === "job") onJobMsg(m);
   else if (m.type === "delta") onDelta(m.text || "");
   else if (m.type === "tool") onToolMsg(m);
   else if (m.type === "part") onPart(m.properties || {});
@@ -1349,7 +1464,22 @@ class AgentPanel {
         this.engine.on('approval_needed', (d) => this._onApproval(d));
         this.engine.on('approval_resolved', (d) => this._post({ type: 'approvalDone',
             id: d.reqId, decision: d.decision, status: d.status, detail: d.detail || '' }));
+        this.engine.on('job', (d) => this._post(Object.assign({ type: 'job' }, d)));
         this.engine.on('done', (d) => this._onDone(d));
+    }
+
+    // P56(4): un projet interrompu (arret, crash, redemarrage) doit pouvoir
+    // etre repris d'un clic. Le panneau lit l'etat SUR DISQUE, jamais un
+    // souvenir de session.
+    async _postJobs() {
+        if (!this.engine || typeof this.engine.jobsInfo !== 'function') return;
+        let info = { jobs: [], resumable: null };
+        try { info = await this.engine.jobsInfo(this._resumeSessionId || undefined); } catch (_) { return; }
+        const r = info && info.resumable;
+        if (!r || r.status === 'done') return;
+        this._post({ type: 'job', phase: 'resumable',
+            resumable: { id: r.id, title: r.title || '', done: r.done || 0,
+                total: r.steps || 0, status: r.status || '' } });
     }
 
     _onDone(d) {
@@ -1357,6 +1487,9 @@ class AgentPanel {
         // P57(7): le resume de l'en-tete suit l'etat reel (skill active, serveur
         // ajoute pendant la session...).
         this._postExtensions();
+        // P56: apres chaque tour, l'etat des projets est relu sur disque (le
+        // bouton "Reprendre" apparait si un projet est inacheve).
+        try { this._postJobs(); } catch (_) {}
         const reason = d.reason || '';
         const noModel = d.status === 'ECHEC' && /NO_MODEL_LOADED|Runtime offline/.test(reason);
         const fileStats = [];

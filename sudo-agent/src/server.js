@@ -21,6 +21,7 @@ const commandsMod = require('./commands');
 const agentsMod = require('./agents');
 const rulesMod = require('./rules');
 const extMod = require('./extensions');
+const jobMod = require('./job'); // P56-4: etat des projets (reprise)
 const pmapMod = require('./projectmap');
 const execMod = require('./exec');
 
@@ -527,6 +528,48 @@ function createApp(opts) {
         return tr.ok ? { ok: true, root: tr.root } : { ok: false, error: tr.error };
       };
       // P57(7): resume pour l'en-tete du panneau : "N MCP, N skills actifs".
+      // P56-4: etat des projets sur disque (reprise). Lecture seule: le
+      // demarrage/l'arret passent par la conversation ("lancer", bouton
+      // Reprendre, bouton Arreter), donc aucun second chemin d'execution.
+      if (req.method === 'GET' && p === '/jobs') {
+        const qS = (req.url && /[?&]session=([A-Za-z0-9_-]{1,64})/.exec(req.url)) || null;
+        let rootJ = null;
+        if (qS) { const se = store.get(qS[1]); rootJ = se ? se.projectRoot : null; }
+        if (!rootJ) { sendJson(res, 200, { jobs: [], resumable: null }); done(200); return; }
+        let jobs = [];
+        let resumable = null;
+        try {
+          jobs = jobMod.list(rootJ);
+          resumable = jobMod.resumable(rootJ);
+        } catch (_) { jobs = []; }
+        sendJson(res, 200, { jobs, resumable }); done(200); return;
+      }
+      if (req.method === 'GET' && /^\/jobs\/[A-Za-z0-9_-]{1,80}$/.test(p)) {
+        const idJ = p.split('/')[2];
+        const qS2 = (req.url && /[?&]session=([A-Za-z0-9_-]{1,64})/.exec(req.url)) || null;
+        let rootJ2 = null;
+        if (qS2) { const se = store.get(qS2[1]); rootJ2 = se ? se.projectRoot : null; }
+        const st = rootJ2 ? jobMod.load(rootJ2, idJ) : null;
+        if (!st) { sendJson(res, 404, { error: 'projet inconnu.' }); done(404); return; }
+        sendJson(res, 200, { job: {
+          id: st.id, title: st.title, status: st.status, runs: st.runs,
+          steps: st.steps.map((x) => ({ i: x.i, text: x.text, reqs: x.reqs, status: x.status,
+            attempts: x.attempts, calls: x.calls, ms: x.ms, detail: x.detail, files: x.files, test: x.test, model: x.model })),
+          coverage: jobMod.coverageTable(st),
+          budgets: st.budgets, journal: st.journal.slice(-60),
+        } });
+        done(200); return;
+      }
+      if (req.method === 'GET' && /^\/jobs\/[A-Za-z0-9_-]{1,80}\/coverage$/.test(p)) {
+        const idC = p.split('/')[2];
+        const qS3 = (req.url && /[?&]session=([A-Za-z0-9_-]{1,64})/.exec(req.url)) || null;
+        let rootJ3 = null;
+        if (qS3) { const se = store.get(qS3[1]); rootJ3 = se ? se.projectRoot : null; }
+        const st3 = rootJ3 ? jobMod.load(rootJ3, idC) : null;
+        if (!st3) { sendJson(res, 404, { error: 'projet inconnu.' }); done(404); return; }
+        sendJson(res, 200, { coverage: jobMod.coverageTable(st3), text: jobMod.coverageText(st3) });
+        done(200); return;
+      }
       if (req.method === 'GET' && p === '/extensions/summary') {
         let out = null;
         try {
