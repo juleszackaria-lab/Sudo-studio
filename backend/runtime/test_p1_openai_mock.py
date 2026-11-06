@@ -136,6 +136,16 @@ def call(path, methods, body):
     return app.routes[(path, tuple(methods))]()
 
 
+def call_norm(path, methods, body):
+    """P55: normalise (dict seul = 200 JSON, tuple = (corps, code))."""
+    out = call(path, methods, body)
+    if isinstance(out, tuple):
+        return out[0], out[1]
+    if isinstance(out, dict):
+        return out, 200
+    return out, 200
+
+
 TOOLS = [{"type": "function", "function": {
     "name": "get_weather",
     "description": "city weather",
@@ -218,14 +228,23 @@ r = call("/v1/chat/completions", ["POST"],
          {"messages": [{"role": "user", "content": "meteo ?"}], "tools": TOOLS})
 check("tools retry recovers", r["choices"][0]["message"]["tool_calls"][0]["function"]["name"] == "get_weather"
       and len(state.model.calls) == 2, len(state.model.calls))
-check("tools retry has repair prompt", any("not a valid tool call" in str(m.get("content", ""))
-      for m in state.model.calls[-1]["messages"]))
+# P55-2: le message de reparation est explicite et porte un exemple valide.
+check("tools retry has repair prompt",
+      any(("Appel invalide" in str(m.get("content", ""))
+           and "Exemple valide" in str(m.get("content", "")))
+          for m in state.model.calls[-1]["messages"]),
+      [m.get("content", "") for m in state.model.calls[-1]["messages"]][-1:])
 
-# 9. tools: invalide x2 -> 500 claire, PAS de succes fictif
+# 9. tools: invalide x2 -> 200 + erreur STRUCTUREE (P55: jamais de 500)
 state.model = FakeLlama(script=['nope', 'toujours pas'])
-r, s = call("/v1/chat/completions", ["POST"],
-            {"messages": [{"role": "user", "content": "meteo ?"}], "tools": TOOLS})
-check("tools double-fail 500", s == 500 and "after retry" in r["error"]["message"], (s, r))
+r, s = call_norm("/v1/chat/completions", ["POST"],
+                 {"messages": [{"role": "user", "content": "meteo ?"}], "tools": TOOLS})
+check("tools double-fail 200 structuree",
+      s == 200 and r["error"]["code"] == "invalid_tool_call"
+      and "Reponds par" in r["error"]["message"]
+      and isinstance(r["error"].get("example"), dict)
+      and r["choices"][0]["message"]["tool_calls"] is None,
+      (s, r))
 
 # 10. tools + stream
 state.model = FakeLlama(script=['{"name": "get_weather", "arguments": {}}'])
@@ -291,9 +310,9 @@ check("toolcall schema", sch["properties"]["name"]["enum"] == ["get_weather"]
 p, e = oc.parse_toolcall_json('```json\n{"name": "get_weather", "arguments": "{\\"city\\": \\"Nice\\"}"}\n```', TOOLS)
 check("parse fenced+string-args", p == {"name": "get_weather", "arguments": {"city": "Nice"}}, (p, e))
 p, e = oc.parse_toolcall_json('{"name": "nope", "arguments": {}}', TOOLS)
-check("parse unknown tool rejected", p is None and "unknown tool" in e, (p, e))
+check("parse unknown tool rejected", p is None and "outil inconnu" in e, (p, e))
 p, e = oc.parse_toolcall_json('pas json', TOOLS)
-check("parse garbage rejected", p is None and "invalid JSON" in e, (p, e))
+check("parse garbage rejected", p is None and "Appel invalide" in e, (p, e))
 
 # 14. P49-4: sampling overrides forwarded to llama, invalid dropped
 sk = oc.sampling_kwargs({"top_p": 0.9, "top_k": 40, "repeat_penalty": 1.12})

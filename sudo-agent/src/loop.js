@@ -31,6 +31,8 @@ const mcpMod = require('./mcp');
 const skillsMod = require('./skills');
 const agentsMod = require('./agents');
 const commandsMod = require('./commands');
+const recovery = require('./recovery');
+const recipes = require('./recipes');
 const pmap = require('./projectmap');
 
 const MAX_HISTORY = 50;
@@ -721,6 +723,18 @@ async function toolsTurn(base, session, toolsCtx) {
     journal('warn', 'skills illisibles', { error: String((e && e.message) || e).slice(0, 120) });
   }
 
+  // P55-4: recette integree chargee A LA DEMANDE. Elle n'est injectee que si
+  // la demande correspond a une tache frequente (aucun cout sinon) et elle
+  // porte la pile detectee du projet (dossier de tests, commande a lancer).
+  let recipeText = '';
+  try {
+    recipeText = recipes.promptText(base.prompt, root);
+    if (recipeText) journal('info', 'recette chargee', { recipe: (recipes.match(base.prompt) || {}).id || '?',
+      chars: recipeText.length });
+  } catch (e) {
+    journal('warn', 'recette indisponible', { error: String((e && e.message) || e).slice(0, 120) });
+  }
+
   const sessionRulesMap = (toolsCtx && toolsCtx.sessionRules) || new Map();
   if (!sessionRulesMap.has(sessionId)) sessionRulesMap.set(sessionId, new Set());
   const projRules = loadProjectRules(home, root);
@@ -803,6 +817,8 @@ async function toolsTurn(base, session, toolsCtx) {
     if (mapText) out.splice(1, 0, { role: 'system', content: mapText });
     // P50-2: skills after map/preload (counted by the context estimate).
     if (skillsText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0), 0, { role: 'system', content: filter(skillsText) });
+    if (recipeText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0) + (skillsText ? 1 : 0), 0,
+      { role: 'system', content: filter(recipeText) });
     return out;
   };
   // Field named `ctx` (not ctxTokens): the journal masks *token* substrings.
@@ -826,7 +842,7 @@ async function toolsTurn(base, session, toolsCtx) {
       mmChars += c;
       if (m && m.role === 'tool') resChars += c;
     }
-    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0) + (skillsText ? skillsText.length : 0);
+    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0) + (skillsText ? skillsText.length : 0) + (recipeText ? recipeText.length : 0);
     const mapChars = mapText.length + preloadText.length;
     const budget = profiles.tokenBudget({ system: sysChars, tools: schemaChars, map: mapChars,
       history: Math.max(0, mmChars - sysChars - mapChars - resChars), results: resChars });
@@ -993,9 +1009,66 @@ async function toolsTurn(base, session, toolsCtx) {
   const chatOpts = strictAction
     ? { toolChoice: 'required', sampling: { temperature: 0.15, topP: 0.9, topK: 40, repeatPenalty: 1.12, maxTokens: 1200 } }
     : {};
-  const roundOnce = () => chatOnce(provider, Object.assign({ model, messages: modelMessages(), tools: schemas,
-    onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; } },
-  chatOpts));
+  const onReq = (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; };
+  const roundRaw = (toolsUsed) => chatOnce(provider, Object.assign({ model, messages: modelMessages(), tools: toolsUsed,
+    onRequest: onReq }, chatOpts));
+  // P55-3: une panne du fournisseur (500, delai, appel d'outil invalide) est
+  // RECUPERABLE : jusqu'a 3 essais avec un schema reduit, puis le format de
+  // secours "FICHIER: chemin". On ne renonce qu'apres avoir epuise les voies.
+  const reducedSchemas = recovery.reducedTools(schemas);
+  let recoveryUsed = 0;
+  // Ecritures issues du format de secours : elles passent par le CHEMIN
+  // NORMAL (approbation, journal, verification), pas par un raccourci.
+  const fallbackQueue = [];
+  let fallbackRounds = 0;
+  const roundOnce = async () => {
+    if (fallbackQueue.length) {
+      const f = fallbackQueue.shift();
+      const args = { file: f.path, content: f.content };
+      journal('info', 'ecriture issue du format de secours', { file: f.path, reste: fallbackQueue.length });
+      return { text: '', usage: null, fallbackFile: true,
+        toolCalls: [{ id: 'fb-' + run.calls.length, type: 'function', name: 'write',
+          argsText: JSON.stringify(args), args, parseError: null }] };
+    }
+    let lastErr = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const useReduced = attempt > 0;
+        const r = await roundRaw(useReduced ? reducedSchemas : schemas);
+        // Le runtime signale un appel inutilisable par 200 + erreur structuree.
+        if (r && r.invalidCall && !(r.toolCalls && r.toolCalls.length)) {
+          recoveryUsed += 1;
+          journal('warn', 'appel outil invalide, reprise', { field: r.invalidCall.field,
+            attempt: attempt + 1, detail: String(r.invalidCall.detail || '').slice(0, 120) });
+          // On renvoie l'exemple valide au modele (message explicite).
+          store.append(sessionId, { role: 'assistant', content: String(r.text || '').slice(0, 800) });
+          store.append(sessionId, { role: 'user', content: String(r.invalidCall.message || 'Appel invalide.').slice(0, 800)
+            + (r.invalidCall.example ? ' Exemple valide : ' + JSON.stringify(r.invalidCall.example).slice(0, 300) : '') });
+          continue;
+        }
+        if (attempt > 0) journal('info', 'reprise apres panne fournisseur', { attempt: attempt + 1,
+          tools: useReduced ? reducedSchemas.length : schemas.length, why: String((lastErr && lastErr.message) || '').slice(0, 120) });
+        return r;
+      } catch (e) {
+        lastErr = e;
+        const cls = recovery.classify(e);
+        if (!cls.recoverable || runEntry.aborted) throw e;
+        recoveryUsed += 1;
+        journal('warn', 'panne fournisseur recuperable', { attempt: attempt + 1, why: cls.why });
+        // Une seconde d'attente entre deux essais (le runtime peut se remettre).
+        if (attempt < 2) await new Promise((r2) => setTimeout(r2, 400));
+      }
+    }
+    // Derniere voie : le format de secours texte, sans aucun outil.
+    journal('warn', 'format de secours (FICHIER: chemin)', { used: recoveryUsed });
+    const fb = await chatOnce(provider, { model, messages: modelMessages().concat([
+      { role: 'user', content: recovery.fallbackPrompt(base.prompt) }]), onRequest: onReq });
+    const parsed = recovery.parseFileBlocks(fb && fb.text);
+    journal('info', 'roundOnce format de secours rendu', { files: (parsed.files || []).length,
+      ok: !!parsed.ok, chars: String((fb && fb.text) || '').length });
+    return { text: String((fb && fb.text) || ''), toolCalls: [], usage: (fb && fb.usage) || null,
+      fallback: { parsed, raw: String((fb && fb.text) || '').slice(0, 2000) } };
+  };
   // P49-1: constrained repair: free text is never a valid ACTION output.
   // Up to 2 driver retries with an explicit order, then an honest stop.
   const actionRepair = async (why) => {
@@ -1143,6 +1216,26 @@ async function toolsTurn(base, session, toolsCtx) {
         runEntry.destroy = null;
       }
       let calls = Array.isArray(reply.toolCalls) ? reply.toolCalls : [];
+      // P55-3: reponse au format de secours ("FICHIER: chemin"). Les fichiers
+      // sont EMPILES puis ecrits par le chemin normal d'outil (approbation,
+      // journal, verification) : la panne fournisseur ne doit pas abandonner
+      // la tache, et aucun raccourci ne contourne les garde-fous.
+      if (!calls.length && reply.fallback && reply.fallback.parsed
+          && reply.fallback.parsed.ok && reply.fallback.parsed.files.length && !runEntry.aborted) {
+        fallbackRounds += 1;
+        if (fallbackRounds > 1) {
+          // Deux series completes (3 essais + secours) sans retablissement :
+          // le fournisseur est juge indisponible. On s'arrete HONNETEMENT,
+          // sans perdre le travail deja ecrit.
+          stopReason = 'provider_unavailable';
+          stopDetail = 'le fournisseur refuse les appels d outil (2 series de reprises + format de secours).';
+          break;
+        }
+        const files = reply.fallback.parsed.files.slice(0, 12);
+        for (const f of files) fallbackQueue.push(f);
+        journal('info', 'fichiers du format de secours empiles', { files: files.length, serie: fallbackRounds });
+        continue;
+      }
       // P49-1: free text NEVER ends an ACTION turn: constrained repair
       // (2 driver retries), then an honest no_tool stop.
       if (!calls.length && strictAction && !runEntry.aborted) {
@@ -1677,6 +1770,15 @@ async function toolsTurn(base, session, toolsCtx) {
     } else if (declared && runOnly && okCalls > 0) {
       verdict = { status: 'TERMINE', reason: '', unresolved: [] };
       finalText = (finalText.trim() || 'Execution verifiee.') + '\n\nAucun fichier modifie (execution seule, verifiee : ' + okCalls + ' appels aboutis).';
+      store.append(sessionId, { role: 'assistant', content: finalText });
+    } else if (stopReason === 'provider_unavailable' && filesModified.length > 0) {
+      // P55-3: arret honnete. Le travail ecrit reste, la verification n'a pas
+      // pu etre faite : statut PARTIEL explicite, jamais un TERMINE flatteur.
+      const list = filesModified.slice(0, 5).join(', ');
+      finalText = 'PARTIEL : fournisseur d\'inference indisponible (erreur HTTP 500 repetee). ' +
+        filesModified.length + ' fichier(s) ecrit(s) par le format de secours (' + list + '). ' +
+        'Verification non executee : relancez la demande des que le modele repond.';
+      verdict = { status: 'PARTIEL', reason: 'fournisseur indisponible', unresolved: verdict.unresolved };
       store.append(sessionId, { role: 'assistant', content: finalText });
     } else if (!declared && (filesModified.length > 0 || finalText.trim())) {
       // Undeclared but real: modified files without a declaration, or an
