@@ -3,6 +3,7 @@
  * Real-time system diagnostics with AutoFix buttons.
  */
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const axios  = require('axios');
@@ -43,6 +44,7 @@ class DoctorPanel {
     _p30Ensure() { return bf.ensureBackend(this.panel, () => this.runDiagnostic()); }
 
     async handleMessage(msg) {
+        try { noteJournal('autofix', msg); } catch (_) { /* journal jamais bloquant */ }
         if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {

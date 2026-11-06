@@ -10,6 +10,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const { exec } = require('child_process');
@@ -84,6 +85,7 @@ class SecurityPanel {
     _p30Ensure() { return bf.ensureBackend(this.panel, () => this._runAudit()); }
 
     async _onMessage(msg) {
+        try { noteJournal('secaudit', msg); } catch (_) { /* journal jamais bloquant */ }
         if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         // Input validation: all incoming webview messages are untrusted
         if (!msg || typeof msg !== 'object') return;

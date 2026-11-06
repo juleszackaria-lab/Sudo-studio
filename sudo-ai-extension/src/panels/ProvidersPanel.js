@@ -9,6 +9,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const wvFallback = require('../utils/backendFallback');
 const { guardSnippet } = require('../utils/webviewGuard');
 const { getAIProviderService } = require('../services/AIProviderService');
@@ -51,6 +52,7 @@ class ProvidersPanel {
     _post(msg) { try { this.panel.webview.postMessage(msg); } catch (_) { /* ignore */ } }
 
     async _onMessage(msg) {
+        try { noteJournal('providers', msg); } catch (_) { /* journal jamais bloquant */ }
         switch (msg.type) {
             case 'load': await this._pushAll(); break;
             case 'addProvider': {

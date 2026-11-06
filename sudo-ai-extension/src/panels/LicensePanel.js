@@ -16,6 +16,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const wvFallback = require('../utils/backendFallback');
 const { guardSnippet } = require('../utils/webviewGuard');
 const fs   = require('fs');
@@ -59,6 +60,7 @@ class LicensePanel {
     }
 
     async _onMessage(msg) {
+        try { noteJournal('license', msg); } catch (_) { /* journal jamais bloquant */ }
         if (wvFallback.handlePanelMessage(null, msg)) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {

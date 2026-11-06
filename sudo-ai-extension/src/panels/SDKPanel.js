@@ -5,6 +5,7 @@
  * No backend required - works standalone.
  */
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const wvFallback = require('../utils/backendFallback');
 const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
@@ -294,6 +295,7 @@ class SDKPanel {
     _p30Ensure() { return bf.ensureBackend(this.panel, () => this.detectAll()); }
 
     async handleMessage(msg) {
+        try { noteJournal('sdk', msg); } catch (_) { /* journal jamais bloquant */ }
         if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {

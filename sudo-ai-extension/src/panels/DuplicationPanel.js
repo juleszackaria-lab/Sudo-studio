@@ -14,6 +14,7 @@
 'use strict';
 
 const vscode = require('vscode');
+const { note: noteJournal } = require('../utils/panelJournal'); // P58-3: marqueur de composant
 const { guardSnippet } = require('../utils/webviewGuard');
 const bf = require('../utils/backendFallback'); // P30(d)
 const { exec, execSync } = require('child_process');
@@ -266,6 +267,7 @@ class DuplicationPanel {
     _p30Ensure() { return bf.ensureBackend(this.panel, () => this._scanLocal()); }
 
     async _onMessage(msg) {
+        try { noteJournal('duplication', msg); } catch (_) { /* journal jamais bloquant */ }
         if (bf.handlePanelMessage(this.panel, msg, () => this._p30Ensure())) return;
         if (!msg || typeof msg !== 'object') return;
         switch (msg.type) {
