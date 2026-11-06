@@ -19,6 +19,7 @@ const { PLAN_REFUSED } = require('./modes');
 const pmap = require('./projectmap');
 const prereq = require('./prereq');
 const skillsMod = require('./skills');
+const extMod = require('./extensions');
 const msgs = require('./msgs');
 const profiles = require('./profiles');
 const verifyMod = require('./verify');
@@ -984,6 +985,11 @@ async function hDone(ctx, args) {
 const TOOLS = {
   read: { description: 'Lit un fichier du projet (borne, tronque). Marque le fichier comme lu.', danger: 'read', mutating: false, pathArg: 'file', defDir: '.', handler: hRead },
   skill: { description: 'Charge les instructions completes d une competence active (nom).', danger: 'read', mutating: false, handler: hSkill },
+  extensions_list: { description: 'Liste les extensions configurees (MCP, skills, commandes, agents), une ligne chacune.', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hExtensionsList },
+  extensions_describe: { description: 'Detail d une extension : outils MCP disponibles, skill, commande ou agent.', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hExtensionsDescribe },
+  skill_load: { description: 'Charge le contenu COMPLET d un skill actif (a la demande).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hSkillLoad },
+  mcp_call: { description: 'Appelle un outil d un serveur MCP (permissions + audit appliques).', danger: 'execute', mutating: true, pathArg: null, defDir: null, handler: hMcpCall },
+  task: { description: 'Delegue a un agent personnalise (agent, consigne).', danger: 'execute', mutating: false, pathArg: null, defDir: null, handler: hTask },
   list: { description: 'Liste un dossier du projet (borne).', danger: 'read', mutating: false, pathArg: 'dir', defDir: '.', handler: hList },
   glob: { description: 'Recherche de fichiers par motif (*, ?, **).', danger: 'read', mutating: false, pathArg: 'dir', defDir: '.', handler: hGlob },
   grep: { description: 'Recherche textuelle (regex) dans le projet, bornee.', danger: 'read', mutating: false, pathArg: 'path', defDir: '.', handler: hGrep },
@@ -1017,13 +1023,30 @@ const TOOLS = {
 
 function toolNames() { return Object.keys(TOOLS); }
 
-function toOpenAISchema(profile) {
+// P57-1: cinq outils d'extensions n'entrent dans le profil complet que si le
+// contexte peut les payer. Mesure : +5 schemas (~1560 car.) suffisaient a
+// saturer un tour "full" en 4096 (P26-E2). En dessous de ce seuil, l'agent
+// garde exactement les outils d'avant P57 et decouvre les extensions par
+// extensions_list/mcp_call quand un appel explicite arrive... ces outils
+// n'existant plus, il ne les propose simplement pas.
+const EXT_TOOLS = ['extensions_list', 'extensions_describe', 'skill_load', 'mcp_call', 'task'];
+const EXT_MIN_CTX = 8192;
+
+function toOpenAISchema(profile, ctxTokens) {
   const str = (d) => ({ type: 'string', description: d });
   const small = profile === 'small';
-  const names = small ? profiles.profileTools('small') : toolNames().filter((n) => n !== 'todo'); // P52: the model never manages todos (registry-only tool).
+  let names = small ? profiles.profileTools('small') : toolNames().filter((n) => n !== 'todo'); // P52: the model never manages todos (registry-only tool).
+  if (!small && Number.isFinite(ctxTokens) && ctxTokens < EXT_MIN_CTX) {
+    names = names.filter((n) => EXT_TOOLS.indexOf(n) === -1);
+  }
   const schemas = {
     read: { file: str('Project-relative file path.'), offset: { type: 'integer' }, limit: { type: 'integer' } },
     skill: { name: str('Skill name (or scope/name).') },
+    extensions_list: { kind: str('mcp|skill|command|agent (default: all).') },
+    extensions_describe: { name: str('Extension name.') },
+    skill_load: { name: str('Skill name (must be active).') },
+    mcp_call: { serveur: str('MCP server name.'), outil: str('Tool name on that server.'), arguments: { type: 'object', description: 'Tool arguments.' } },
+    task: { agent: str('Custom agent name.'), consigne: str('Instruction for the sub-agent.') },
     list: { dir: str('Project-relative directory (default root).'), recursive: { type: 'boolean' }, limit: { type: 'integer' } },
     glob: { pattern: str('Glob pattern, e.g. src/**/*.js.'), dir: str('Base directory.'), limit: { type: 'integer' } },
     grep: { pattern: str('Regular expression.'), path: str('File or directory to search.'), limit: { type: 'integer' } },
@@ -1054,7 +1077,7 @@ function toOpenAISchema(profile) {
     reply: { text: str('Final answer text (ends the turn).') },
     done: { summary: str('Short summary of what changed (optional, ends the turn).') },
   };
-  const required = { read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], exec_start: ['command'], exec_poll: ['id'], exec_stop: ['id'], gen_start: ['goal'], gen_phase: ['run', 'phase'], gen_check: ['run', 'phase', 'command'], gen_report: ['run'], gen_restore: ['run', 'phase'], sdk: ['op'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], append: ['file', 'content'], mkdir: ['dir'], reply: ['text'] };
+  const required = { extensions_describe: ['name'], skill_load: ['name'], mcp_call: ['serveur', 'outil'], task: ['agent', 'consigne'], read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], exec_start: ['command'], exec_poll: ['id'], exec_stop: ['id'], gen_start: ['goal'], gen_phase: ['run', 'phase'], gen_check: ['run', 'phase', 'command'], gen_report: ['run'], gen_restore: ['run', 'phase'], sdk: ['op'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], append: ['file', 'content'], mkdir: ['dir'], reply: ['text'] };
   return names.map((n) => ({ type: 'function', function: { name: n, description: (small && profiles.TERSE[n]) || TOOLS[n].description, parameters: { type: 'object', properties: schemas[n], required: required[n] || [] } } }));
 }
 
@@ -1082,6 +1105,111 @@ function markReadFiles(ctx, rels) {
 // ---------------------------------------------------------------------------
 // P54-2: load ONE skill's full instructions on demand (name, or scope/name).
 // The context only carries descriptions; the body is fetched here, capped.
+// ---------------------------------------------------------------------------
+// P57(1): decouverte d'extensions. Les outils restent COURTS (nom + une ligne)
+// pour ne pas saturer le contexte d'un petit modele ; le contenu complet n'est
+// charge qu'a la demande (skill_load, extensions_describe).
+// ---------------------------------------------------------------------------
+async function hExtensionsList(ctx, args) {
+  const kind = String(args.kind || '').trim().toLowerCase();
+  let inv = null;
+  try { inv = extMod.inventory(ctx.home, ctx.root); } catch (e) {
+    return { ok: false, code: 'io', error: 'extensions_list : ' + String((e && e.message) || e).slice(0, 120) };
+  }
+  const KEYS = { mcp: 'mcp', skill: 'skills', command: 'commands', agent: 'agents' };
+  const pick = (k) => (kind && kind !== k ? [] : (inv[KEYS[k]] || []));
+  const lines = [];
+  for (const m of pick('mcp')) lines.push('mcp ' + m.name + (m.enabled ? '' : ' (desactive)') + ' : ' + m.toolCount + ' outils');
+  for (const k of pick('skill')) lines.push('skill ' + k.name + (k.active ? '' : ' (inactif)') + ' : ' + k.description);
+  for (const c of pick('command')) lines.push('commande /' + c.name + ' : ' + c.description);
+  for (const a of pick('agent')) { if (!a.builtin) lines.push('agent ' + a.name + ' : ' + a.description); }
+  extMod.audit(ctx.home, { kind: 'discover', op: 'list', ok: true, filter: kind, n: lines.length });
+  if (!lines.length) {
+    return { ok: true, data: { entries: [], summary: extMod.summary(ctx.home, ctx.root) },
+      summary: 'aucune extension configuree (page Agent Extensions).' };
+  }
+  return { ok: true, data: { entries: lines.slice(0, extMod.MAX_INVENTORY), summary: extMod.summary(ctx.home, ctx.root) },
+    summary: lines.length + ' extensions ; detail : extensions_describe(nom).' };
+}
+
+async function hExtensionsDescribe(ctx, args) {
+  const name = String(args.name || '').trim();
+  let d = null;
+  try { d = extMod.describe(ctx.home, ctx.root, name); } catch (e) {
+    return { ok: false, code: 'io', error: 'extensions_describe : ' + String((e && e.message) || e).slice(0, 120) };
+  }
+  // P57-1: si l'exposition n'est pas encore listee, on decouvre les outils du
+  // serveur A LA DEMANDE (une seule liste, bornee), pour que le modele sache
+  // ce qu'il peut appeler.
+  if (d.ok && d.kind === 'mcp' && (!d.tools || !d.tools.length)) {
+    try {
+      const listed = await mcpMod.listTools(ctx.home, name, null);
+      const names = (listed || []).map((t) => (t && t.name) || '').filter(Boolean);
+      if (names.length) { d.tools = names.slice(0, 24); d.discovered = true; }
+    } catch (e) {
+      d.offline = true;
+      d.offlineReason = String((e && e.message) || e).slice(0, 160);
+    }
+  }
+  extMod.audit(ctx.home, { kind: 'discover', op: 'describe', name: name.slice(0, 60), ok: !!d.ok, code: d.code || 'ok' });
+  if (!d.ok) return { ok: false, code: d.code || 'not_found', error: d.error };
+  return { ok: true, data: d, summary: d.kind + ' ' + d.name + ' : ' + String(d.description || '').slice(0, 120) };
+}
+
+async function hSkillLoad(ctx, args) {
+  const name = String(args.name || '').trim();
+  if (!name) return { ok: false, code: 'bad_args', error: 'skill_load: name requis.' };
+  const r = extMod.loadSkill(ctx.home, ctx.root, name);
+  if (!r.ok) return { ok: false, code: r.code, error: r.error };
+  return { ok: true, data: { name: r.name, scope: r.scope, chars: r.text.length, content: r.text },
+    summary: 'skill ' + r.scope + '/' + r.name + ' charge (' + r.text.length + ' caracteres).' };
+}
+
+async function hMcpCall(ctx, args) {
+  const server = String(args.serveur || args.server || '').trim();
+  const tool = String(args.outil || args.tool || '').trim();
+  const callArgs = (args.arguments && typeof args.arguments === 'object') ? args.arguments
+    : ((args.args && typeof args.args === 'object') ? args.args : {});
+  // P57-6: permissions et politique appliquees a CHAQUE appel ; l audit est
+  // ecrit par le registre, la sortie est masquee.
+  const permCheck = (desc) => {
+    try {
+      return perm.check({ tool: 'mcp', pattern: { kind: 'mcptool', text: (desc.server + '/' + desc.name).slice(0, 300) },
+        p8verdict: null, denyList: null,
+        sessionRules: ctx.sessionRules || new Set(), projectRules: ctx.projectRules || new Set() });
+    } catch (_) { return { decision: 'ask' }; }
+  };
+  const r = await extMod.callMcp(ctx, server, tool, callArgs,
+    { perm: { check: permCheck }, log: ctx.log, corr: ctx.corr,
+      preApproved: ctx.preApproved === true || args.preApproved === true });
+  if (r.code === 'need-approval') {
+    const request = {
+      id: 'appr-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 0xffff).toString(16),
+      sessionId: ctx.sessionId, tool: 'mcp_call',
+      pattern: { kind: 'mcptool', text: (server + '/' + tool).slice(0, 300) },
+      at: new Date().toISOString(), summary: 'MCP ' + server + ' : ' + tool,
+      diff: null, args: cappedArgs('mcp_call', callArgs), deploy: false,
+    };
+    return { status: 'need-approval', request };
+  }
+  if (!r.ok) {
+    // Serveur hors ligne ou en erreur : message clair, le tour CONTINUE.
+    return { ok: false, code: r.code || 'mcp_error',
+      error: 'MCP ' + server + '/' + tool + ' : ' + String(r.error || 'echec').slice(0, 300) };
+  }
+  return { ok: true, data: { server, tool, ms: r.ms || 0, text: r.text },
+    summary: 'MCP ' + server + ' : ' + tool + ' -> ' + r.text.length + ' caracteres (' + (r.ms || 0) + ' ms).' };
+}
+
+async function hTask(ctx, args) {
+  // P57-3: sous-agent nomme. Le cablage reel vit dans loop.js (boucle agent) :
+  // ici on refuse proprement un appel direct, comme subagent.
+  const agent = String(args.agent || '').trim();
+  const consigne = String(args.consigne || args.task || '').trim();
+  if (!agent || !consigne) return { ok: false, code: 'bad_args', error: 'task: agent et consigne requis.' };
+  return { ok: false, code: 'loop_only', error: 'task : traite par la boucle agent (sous-agent ' + agent + ').' };
+}
+
 async function hSkill(ctx, args) {
   const name = String(args.name || '').trim();
   if (!name) return { ok: false, code: 'bad_args', error: 'skill: name requis.' };
@@ -1282,7 +1410,11 @@ async function executeTool(ctx, toolName, args, opts) {
   if (toolName === 'bash') denyHit = perm.matchDenyList(args.command);
 
   // 5. Permission.
-  const pattern = perm.patternOf(toolName, args, resolved);
+  // P57-6: un appel MCP s'approuve sur "serveur/outil" (demande lisible dans
+  // le panneau), pas sur un motif generique.
+  const pattern = toolName === 'mcp_call'
+    ? { kind: 'mcptool', text: (String(args.serveur || args.server || '?') + '/' + String(args.outil || args.tool || '?')).slice(0, 300) }
+    : perm.patternOf(toolName, args, resolved);
   const sessionRules = ctx.sessionRules || new Set();
   const projectRules = ctx.projectRules || new Set();
   const chk = perm.check({ tool: toolName, pattern, p8verdict, denyList: denyHit, sessionRules, projectRules });
@@ -1349,8 +1481,13 @@ async function executeTool(ctx, toolName, args, opts) {
 
   // 7. Execute.
   let res = null;
+  // P57-6: le handler a besoin de savoir si l'operateur a deja approuve (un
+  // appel MCP ne redemande pas). Le contexte est restaure juste apres.
+  const prevPre = ctx.preApproved;
+  ctx.preApproved = opts.preApproved === true;
   try { res = await def.handler(ctx, args, resolved); }
   catch (e) { res = { ok: false, code: 'exception', error: toolName + ': ' + String((e && e.message) || e).slice(0, 200) }; }
+  finally { ctx.preApproved = prevPre; }
   const ms = Date.now() - t0;
   if (res.markRead) markReadFiles(ctx, res.markRead);
   if (res.created && ctx.run) { for (const c of res.created) { if (ctx.run.created.indexOf(c) === -1) ctx.run.created.push(c); } }
@@ -1378,6 +1515,12 @@ function recordCall(ctx, toolName, args, ok, code, ms, summary) {
 
 function toolTarget(toolName, args) {
   args = args || {};
+  // P57-7: un appel d'extension s'affiche "serveur : outil" (ligne repliee).
+  if (toolName === 'mcp_call') return String(args.serveur || args.server || '?') + ' : ' + String(args.outil || args.tool || '?').slice(0, 120);
+  if (toolName === 'skill_load' || toolName === 'skill') return String(args.name || '?').slice(0, 120);
+  if (toolName === 'extensions_describe') return String(args.name || '?').slice(0, 120);
+  if (toolName === 'extensions_list') return String(args.kind || 'tout');
+  if (toolName === 'task') return String(args.agent || '?') + ' : ' + String(args.consigne || args.task || '').slice(0, 80);
   if (toolName === 'rename' && (args.from || args.to)) return String(args.from || '') + ' -> ' + String(args.to || '').slice(0, 200);
   const v = args.file || args.from || args.dir || args.path || args.cwd || args.pattern || args.command || args.op || args.scope || args.text || '';
   return String(v).slice(0, 200);

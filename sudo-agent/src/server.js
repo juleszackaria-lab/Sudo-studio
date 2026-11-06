@@ -20,6 +20,7 @@ const skillsMod = require('./skills');
 const commandsMod = require('./commands');
 const agentsMod = require('./agents');
 const rulesMod = require('./rules');
+const extMod = require('./extensions');
 const pmapMod = require('./projectmap');
 const execMod = require('./exec');
 
@@ -525,6 +526,37 @@ function createApp(opts) {
         const tr = toolRoot(q);
         return tr.ok ? { ok: true, root: tr.root } : { ok: false, error: tr.error };
       };
+      // P57(7): resume pour l'en-tete du panneau : "N MCP, N skills actifs".
+      if (req.method === 'GET' && p === '/extensions/summary') {
+        let out = null;
+        try {
+          const qRoot = (req.url && /[?&]session=([A-Za-z0-9_-]{1,64})/.exec(req.url)) || null;
+          let rootS = null;
+          if (qRoot) { const se = store.get(qRoot[1]); rootS = se ? se.projectRoot : null; }
+          out = extMod.summary(home, rootS);
+        } catch (e) {
+          sendJson(res, 500, { error: 'resume indisponible.' }); done(500); return;
+        }
+        sendJson(res, 200, out); done(200); return;
+      }
+      // P57(2): inventaire detaille (memes donnees que le modele, sans secret).
+      if (req.method === 'GET' && p === '/extensions/registry') {
+        let inv = null;
+        try {
+          const mSess = /[?&]session=([A-Za-z0-9_-]{1,64})/.exec(req.url || '');
+          let rootR = null;
+          if (mSess) { const se = store.get(mSess[1]); rootR = se ? se.projectRoot : null; }
+          inv = extMod.inventory(home, rootR);
+          const q = /[?&]q=([^&]{1,200})/.exec(req.url || '');
+          if (q) inv.suggestions = extMod.suggest(home, rootR, decodeURIComponent(q[1]), 5);
+        } catch (e) { sendJson(res, 500, { error: 'inventaire indisponible.' }); done(500); return; }
+        sendJson(res, 200, inv); done(200); return;
+      }
+      // P57(6): journal d'audit des appels d'extension (masque, lecture seule).
+      if (req.method === 'GET' && p === '/extensions/audit') {
+        const lim = /[?&]limit=(\d{1,3})/.exec(req.url || '');
+        sendJson(res, 200, { entries: extMod.readAudit(home, lim ? parseInt(lim[1], 10) : 50) }); done(200); return;
+      }
       if (req.method === 'GET' && p === '/extensions/mcp/presets') {
         sendJson(res, 200, { presets: mcpMod.presets() }); done(200); return;
       }

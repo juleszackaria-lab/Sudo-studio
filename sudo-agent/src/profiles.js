@@ -9,18 +9,29 @@
 const FULL_TOOLS = ['read', 'skill', 'list', 'glob', 'grep', 'write', 'edit', 'patch', 'bash',
   'delete', 'rename', 'append', 'mkdir', 'reply', 'done', 'exec_start', 'exec_poll', 'exec_stop',
   'gen_start', 'gen_phase', 'gen_check', 'gen_report', 'gen_restore',
-  'analyze', 'secaudit', 'mkignore', 'ci', 'doctor', 'sdk', 'subagent'];
+  'analyze', 'secaudit', 'mkignore', 'ci', 'doctor', 'sdk', 'subagent',
+  'extensions_list', 'extensions_describe', 'skill_load', 'mcp_call', 'task'];
 // P49: small models also get delete/rename (supprime/renomme must work on
 // 1.5B), todo (forced decomposition) and reply/done (the ONLY way to end
 // a turn: the local runtime grammar-forces a tool call every round).
 // P54: skill (load a skill body on demand) is available to small models too:
 // the context only carries the descriptions, so the body must stay reachable.
+// P57-1: les outils d'extension restent hors du profil SMALL. Mesure faite :
+// +5 schemas sur un contexte micro 2048 font deborder le prompt (P25/P26
+// passaient de vert a "contexte sature"). Sur petit modele, l'inventaire est
+// donc omis du prompt et les extensions ne sont pas proposees ; le profil
+// complet (>=8192) les expose et recoit le digest.
 const SMALL_TOOLS = ['read', 'skill', 'list', 'grep', 'write', 'edit', 'delete', 'rename',
   'bash', 'append', 'mkdir', 'reply', 'done'];
 
 const TERSE = {
   read: 'Read a project file.',
   skill: 'Load a skill body by name.',
+  extensions_list: 'List configured extensions (one line each).',
+  extensions_describe: 'Describe one extension (MCP tools, skill, command, agent).',
+  skill_load: 'Load one active skill full text.',
+  mcp_call: 'Call an MCP server tool (permissions + audit).',
+  task: 'Delegate to a custom agent (agent, consigne).',
   list: 'List a directory.',
   grep: 'Search text (regex).',
   write: 'Create/replace a file (replace needs prior read).',

@@ -296,6 +296,7 @@ class AgentEngine extends EventEmitter {
             this._raw('delta', { text: '', done: true, sessionId: sid });
         } else if (type === 'tool.start') {
             const d = { phase: 'start', tool: o.tool || '?', callId: o.callId || '',
+                args: (o.args && typeof o.args === 'object') ? o.args : null,
                 atime: Date.now() };
             this._raw('tool', Object.assign({ sessionId: sid }, d));
             this._leg('tool', d);
@@ -319,6 +320,23 @@ class AgentEngine extends EventEmitter {
         }
         // turn.done resolves stream(); turn.error rejects it (both handled
         // by the caller). Nothing else to do here.
+    }
+
+    // P57(7): resume et inventaire des extensions pour l'en-tete du panneau
+    // ("N MCP, N skills actifs"). Jamais bloquant : une erreur rend un objet
+    // vide et le panneau affiche "extensions : ?".
+    async extensionInfo(sessionId) {
+        const q = sessionId ? ('?session=' + encodeURIComponent(sessionId)) : '';
+        const out = { summary: null, registry: null };
+        try {
+            const r = await this._server.request('/extensions/summary' + q, { timeoutMs: 8000 });
+            if (r && r.body) out.summary = r.body;
+        } catch (_) { /* ignore */ }
+        try {
+            const r2 = await this._server.request('/extensions/registry' + q, { timeoutMs: 8000 });
+            if (r2 && r2.body) out.registry = r2.body;
+        } catch (_) { /* ignore */ }
+        return out;
     }
 
     // -- approvals (poll-based: the loop never blocks, requests land in --

@@ -25,6 +25,11 @@ const modes = require('./modes');
 const prereq = require('./prereq');
 const msgs = require('./msgs');
 const profiles = require('./profiles');
+
+// P57: en dessous de ce contexte, l'inventaire d'extensions n'est pas injecte
+// dans le prompt (il mangeait le budget des petits modeles) ; les outils
+// restent la voie d'acces.
+const EXT_MIN_CTX = 8192;
 const compressMod = require('./compress');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
@@ -33,6 +38,7 @@ const agentsMod = require('./agents');
 const commandsMod = require('./commands');
 const recovery = require('./recovery');
 const recipes = require('./recipes');
+const extMod = require('./extensions');
 const pmap = require('./projectmap');
 
 const MAX_HISTORY = 50;
@@ -437,6 +443,22 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
 // ---------------------------------------------------------------------------
 // P54-5: global rules (Agent Extensions > Rules, scope global). Capped, never
 // throws: a broken file must never break a turn.
+// P57(3): "@nom" dans la barre de texte. Un skill -> son contenu complet est
+// charge (une fois) ; un agent -> le tour delegue a cet agent. Aucun "@" ou nom
+// inconnu : aucune erreur, le texte reste une demande normale.
+function parseMention(home, root, prompt) {
+  const m = /(^|\s)@([A-Za-z0-9][A-Za-z0-9_-]{0,63})/.exec(String(prompt || ''));
+  if (!m) return null;
+  const name = m[2];
+  const rest = String(prompt).replace(m[0], ' ').replace(/\s+/g, ' ').trim();
+  try {
+    const d = extMod.describe(home, root, name);
+    if (d.ok && d.kind === 'skill') return { kind: 'skill', name: d.name, rest, active: d.active };
+    if (d.ok && d.kind === 'agent') return { kind: 'agent', name: d.name, rest };
+  } catch (_) { return null; }
+  return null;
+}
+
 function readGlobalRulesSafe(home) {
   try {
     const t = agentsMod.readGlobalRules(home);
@@ -735,6 +757,60 @@ async function toolsTurn(base, session, toolsCtx) {
     journal('warn', 'recette indisponible', { error: String((e && e.message) || e).slice(0, 120) });
   }
 
+  // P57(1): registre d'extensions. Le contexte ne recoit que des NOMS et UNE
+  // ligne de description (jamais les corps de skills) ; le moteur propose
+  // d'office les extensions pertinentes pour la demande. Les fonctions
+  // extensions_list/describe/skill_load/mcp_call font le reste A LA DEMANDE.
+  let extDigest = '';
+  let extProposal = '';
+  // P57(1): sur un contexte micro (<=4096), l'inventaire n'apporte rien et
+  // ferait deborder le prompt : il est omis, et les outils (extensions_list,
+  // extensions_describe) restent disponibles a la demande. Le journal le dit.
+  const extRoom = ctxTokens >= EXT_MIN_CTX;
+  if (extRoom) {
+    try {
+      extDigest = extMod.digest(home, root);
+      extProposal = extMod.proposalText(home, root, base.prompt);
+      const sug = extMod.suggest(home, root, base.prompt, 3);
+      if (extDigest || extProposal) {
+        journal('info', 'extensions visibles', { digestChars: extDigest.length,
+          proposed: sug.map((x) => x.kind + ':' + x.name) });
+      }
+    } catch (e) {
+      journal('warn', 'extensions illisibles', { error: String((e && e.message) || e).slice(0, 120) });
+    }
+  } else {
+    journal('info', 'extensions omises (contexte court)', { ctx: ctxTokens, min: EXT_MIN_CTX });
+  }
+  // P57(3): "@nom" dans la barre de texte charge un skill ou cible un agent.
+  let mention = null;
+  try { mention = parseMention(home, root, base.prompt); } catch (_) { mention = null; }
+  let mentionText = '';
+  if (mention && mention.kind === 'skill') {
+    // Le corps n'entre dans le contexte QUE parce que l'utilisateur l'a
+    // explicitement cite : meme chemin que skill_load (skill actif exige).
+    try {
+      const sk = extMod.loadSkill(home, root, mention.name);
+      if (sk.ok) {
+        mentionText = 'SKILL ' + sk.scope + '/' + sk.name + ' (charge par @mention)\n' + sk.text;
+        journal('info', 'skill charge par mention', { name: sk.name, chars: sk.text.length });
+      } else {
+        journal('warn', 'mention skill refusee', { name: mention.name, code: sk.code || 'error' });
+      }
+    } catch (e) { journal('warn', 'mention skill illisible', { error: String((e && e.message) || e).slice(0, 120) }); }
+  }
+  if (mention && mention.kind === 'agent') {
+    try {
+      const def = agentsMod.findAgent(home, mention.name);
+      if (def) {
+        if (Array.isArray(def.tools) && def.tools.length) base.allowedTools = def.tools.slice(0, 40);
+        if (def.instructions) mentionText = 'AGENT ' + def.name + ' (choisi par @mention)\n' + String(def.instructions).slice(0, 2000);
+        journal('info', 'agent cible par mention', { name: def.name, tools: (def.tools || []).length });
+      }
+    } catch (_) { /* la mention ne casse jamais le tour */ }
+  }
+  if (mention) journal('info', 'mention resolue', { kind: mention.kind, name: mention.name });
+
   const sessionRulesMap = (toolsCtx && toolsCtx.sessionRules) || new Map();
   if (!sessionRulesMap.has(sessionId)) sessionRulesMap.set(sessionId, new Set());
   const projRules = loadProjectRules(home, root);
@@ -749,7 +825,9 @@ async function toolsTurn(base, session, toolsCtx) {
   tctx.checkpoint = () => ensureSeriesCheckpoint(tctx);
 
   // P26-b/e: tool schemas for the profile + (full only) policy-allowed MCP tools.
-  const schemas = toOpenAISchema(profile);
+  // P57-1: les schemas d'extensions ne sont proposes que si le contexte les
+  // porte (meme seuil que le digest) ; sinon l'agent garde son jeu d'avant.
+  const schemas = toOpenAISchema(profile, ctxTokens);
   if (profile === 'full') {
     let servers = {};
     try { servers = mcpMod.loadConfig(home); } catch (_) { servers = {}; }
@@ -819,6 +897,11 @@ async function toolsTurn(base, session, toolsCtx) {
     if (skillsText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0), 0, { role: 'system', content: filter(skillsText) });
     if (recipeText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0) + (skillsText ? 1 : 0), 0,
       { role: 'system', content: filter(recipeText) });
+    // P57(1): inventaire compact + propositions (noms et une ligne seulement).
+    let extAt = 1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0) + (skillsText ? 1 : 0) + (recipeText ? 1 : 0);
+    if (extDigest) { out.splice(extAt, 0, { role: 'system', content: filter('EXTENSIONS DISPONIBLES\n' + extDigest) }); extAt += 1; }
+    if (extProposal) { out.splice(extAt, 0, { role: 'system', content: filter(extProposal) }); extAt += 1; }
+    if (mentionText) out.splice(extAt, 0, { role: 'system', content: filter(mentionText) });
     return out;
   };
   // Field named `ctx` (not ctxTokens): the journal masks *token* substrings.
@@ -842,7 +925,7 @@ async function toolsTurn(base, session, toolsCtx) {
       mmChars += c;
       if (m && m.role === 'tool') resChars += c;
     }
-    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0) + (skillsText ? skillsText.length : 0) + (recipeText ? recipeText.length : 0);
+    const sysChars = modes.modeSystem(mode, profile).length + profiles.chunkNote(profile).length + (agentsMd ? agentsMd.length : 0) + (skillsText ? skillsText.length : 0) + (recipeText ? recipeText.length : 0) + extDigest.length + extProposal.length + mentionText.length;
     const mapChars = mapText.length + preloadText.length;
     const budget = profiles.tokenBudget({ system: sysChars, tools: schemaChars, map: mapChars,
       history: Math.max(0, mmChars - sysChars - mapChars - resChars), results: resChars });
@@ -1216,6 +1299,16 @@ async function toolsTurn(base, session, toolsCtx) {
         runEntry.destroy = null;
       }
       let calls = Array.isArray(reply.toolCalls) ? reply.toolCalls : [];
+      // P57-3: task(agent, consigne) est le raccourci nomme de subagent : meme
+      // chemin (profondeur 1 max, memes garde-fous), un seul enfant.
+      calls = calls.map((c) => {
+        if (!c || c.name !== 'task' || !c.args || typeof c.args !== 'object') return c;
+        const consigne = String(c.args.consigne || c.args.task || '').slice(0, 2000);
+        const agent = String(c.args.agent || '').slice(0, 60);
+        if (!consigne || !agent) return c;
+        return Object.assign({}, c, { name: 'subagent',
+          args: { task: consigne, agent, readonly: c.args.readonly === true } });
+      });
       // P55-3: reponse au format de secours ("FICHIER: chemin"). Les fichiers
       // sont EMPILES puis ecrits par le chemin normal d'outil (approbation,
       // journal, verification) : la panne fournisseur ne doit pas abandonner
@@ -1358,6 +1451,8 @@ async function toolsTurn(base, session, toolsCtx) {
       // P50-6: sub-agents (one task or parallel fan-out). Spawn is free
       // (no privilege escalation: same root, same rules, depth<=1, all
       // capped) but journaled. Children run real turns on child sessions.
+      // (P57-3: task(agent, consigne) est traduit AVANT, au point d'emission de
+      // l'appel, pour rester sur `const first` - voir calls.map plus haut.)
       if (first.name === 'subagent') {
         const callIdS = first.id || ('call-' + run.calls.length);
         const closeExtrasS = () => {
@@ -1408,7 +1503,8 @@ async function toolsTurn(base, session, toolsCtx) {
         }
         if (!jobsOk) continue;
         subSpawns += 1;
-        try { onEvent({ type: 'tool.start', callId: callIdS, tool: 'subagent' }); } catch (_) {}
+        try { onEvent({ type: 'tool.start', callId: callIdS, tool: 'subagent',
+          args: { agent: (jobs[0] && jobs[0].agent) || '', consigne: String((jobs[0] && jobs[0].task) || '').slice(0, 120) } }); } catch (_) {}
         const runChild = async (job) => {
           childSeq += 1;
           const n = childSeq;
@@ -1484,7 +1580,7 @@ async function toolsTurn(base, session, toolsCtx) {
         continue;
       }
       const callId = first.id || ('call-' + run.calls.length);
-      try { onEvent({ type: 'tool.start', callId, tool: first.name }); } catch (_) {}
+      try { onEvent({ type: 'tool.start', callId, tool: first.name, args: first.args }); } catch (_) {}
       let content = '';
       if (first.parseError) {
         const entry = { tool: first.name || '?', target: '', ok: false, code: 'bad_args', ms: 0, at: new Date().toISOString(), summary: first.parseError };
@@ -1766,6 +1862,16 @@ async function toolsTurn(base, session, toolsCtx) {
       // files listed above. TERMINE only when nothing stands unresolved.
       if (!verdict.unresolved.length && !verdict.verifyNote && !orchVerdict) verdict = { status: 'TERMINE', reason: '', unresolved: [] };
       if (!finalText.trim()) finalText = 'Tache terminee.';
+      store.append(sessionId, { role: 'assistant', content: finalText });
+    } else if (declared && !filesModified.length && okCalls > 0
+               && run.calls.some((c) => c.ok && c.code === 'ok' && (c.tool === 'mcp_call' || /^mcp__/.test(String(c.tool || ''))))
+               && !verdict.unresolved.length && !verdict.verifyNote && !orchVerdict) {
+      // P57-8: une ACTION EXTERNE verifiee (appel MCP abouti, sortie reelle)
+      // n'est pas un echec faute de fichier modifie : le statut reste honnete
+      // parce qu'il s'appuie sur une preuve, et le resume le dit.
+      verdict = { status: 'TERMINE', reason: '', unresolved: [] };
+      finalText = (finalText.trim() ? finalText.trim() + '\n\n' : '') +
+        'Action externe verifiee par MCP (' + run.calls.filter((c) => c.ok && c.code === 'ok' && c.tool === 'mcp_call').length + ' appel(s) abouti(s)) : aucun fichier du projet modifie.';
       store.append(sessionId, { role: 'assistant', content: finalText });
     } else if (declared && runOnly && okCalls > 0) {
       verdict = { status: 'TERMINE', reason: '', unresolved: [] };

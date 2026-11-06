@@ -148,6 +148,18 @@ body { font-family:var(--sudo-font-ui); font-size:var(--fs-1); background:var(--
 #hdr { display:flex; align-items:center; gap:8px; padding:8px 16px; flex-shrink:0; flex-wrap:wrap; border-bottom:1px solid var(--vscode-editorWidget-border,var(--sudo-border)); background:var(--vscode-editor-background,var(--sudo-surface)); }
 #hdr .title { font-weight:600; font-size:var(--fs-1); display:flex; align-items:center; gap:8px; white-space:nowrap; margin-right:8px; }
 #hdr .title .codicon { font-size:16px; }
+#hdr .extbadge { display:inline-flex; align-items:center; gap:8px; font-size:12px; color:var(--vscode-descriptionForeground,var(--sudo-dim)); background:var(--vscode-input-background,var(--sudo-input)); border:1px solid var(--vscode-input-border,var(--sudo-border)); border-radius:6px; padding:4px 8px; cursor:pointer; font-family:inherit; white-space:nowrap; }
+#hdr .extbadge:hover { color:var(--vscode-editor-foreground,var(--sudo-text)); }
+#hdr .extbadge.on { color:var(--vscode-textLink-foreground,var(--sudo-accent)); border-color:var(--vscode-textLink-foreground,var(--sudo-accent)); }
+#compl { position:absolute; left:16px; right:16px; bottom:100%; max-height:180px; overflow:auto; background:var(--vscode-editorWidget-background,var(--sudo-raised)); border:1px solid var(--vscode-editorWidget-border,var(--sudo-border)); border-radius:var(--r-surf); z-index:5; }
+#compl .it { display:flex; gap:8px; align-items:baseline; padding:4px 8px; font-size:12px; cursor:pointer; }
+#compl .it.sel { background:var(--vscode-list-activeSelectionBackground,var(--sudo-accent)); color:var(--vscode-list-activeSelectionForeground,var(--sudo-accent-ink)); }
+#compl .it .k { font-family:var(--sudo-font-code); font-weight:600; }
+#compl .it .d { opacity:0.8; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#composer { position:relative; }
+details.toolrow.ext .tname { color:var(--vscode-textLink-foreground,var(--sudo-accent)); }
+details.toolrow.ext .tname::before { content:">"; opacity:0.6; }
+.offline-hint { font-size:12px; color:var(--vscode-editorWarning-foreground,var(--sudo-warn)); padding:0 0 8px 16px; }
 #hdr label { font-size:12px; color:var(--vscode-descriptionForeground,var(--sudo-dim)); white-space:nowrap; }
 #hdr select { background:var(--vscode-input-background,var(--sudo-input)); color:var(--vscode-input-foreground,var(--sudo-text)); border:1px solid var(--vscode-input-border,var(--sudo-border)); border-radius:6px; padding:4px 8px; font-size:12px; font-family:inherit; max-width:240px; }
 .seg { display:inline-flex; border:1px solid var(--vscode-input-border,var(--sudo-border)); border-radius:6px; padding:2px; gap:2px; background:var(--vscode-input-background,var(--sudo-input)); }
@@ -281,6 +293,8 @@ ${guardSnippet({ nonce: nonce })}
 ${modeBlock}  <label for="providerSel">Fournisseur</label>
   <select id="providerSel"></select>
   ${modelBlock}<span id="sandboxBadge" class="sandbox" title="Isolation : Mode restreint (L1). Pas de sandbox isol&eacute;e sur ce poste.">Mode restreint</span>
+  <button id="extBadge" class="extbadge" title="Extensions disponibles pour l'agent (MCP, skills, commandes, agents). Cliquer pour actualiser."><span class="codicon codicon-extensions"></span><span id="extTxt">0 MCP, 0 skill actif</span></button>
+  ${isChat ? '' : '<label for="agentSel">Agent</label>\n  <select id="agentSel" title="Agent pour ce tour"><option value="Build">Build</option><option value="Plan">Plan</option></select>'}
   ${agentCtrls}${toAgentBlock}  <button id="rt" class="rtbtn" title="Cliquer pour actualiser"><span class="dot bad" id="rtDot"></span><span id="rtTxt">Runtime : ?</span></button>
 </div>
 <div id="thread" role="log" aria-label="Conversation"><div id="empty"><div class="t">${titleText}</div><div class="s">D&eacute;crivez une t&acirc;che ci-dessous. Entr&eacute;e envoie, Maj+Entr&eacute;e = nouvelle ligne.</div><div class="sugg"><button class="btn" data-sugg="Explique ce projet : structure, langage et point d&rsquo;entr&eacute;e">Expliquer ce projet</button><button class="btn" data-sugg="Ajoute des tests au projet et lance-les">Ajouter des tests</button><button class="btn" data-sugg="Corrige l&rsquo;erreur affich&eacute;e dans le panneau Probl&egrave;mes">Corriger l&rsquo;erreur du panneau Probl&egrave;mes</button><button class="btn" data-sugg="Analyse ce projet et r&eacute;sume son &eacute;tat">Analyser le projet</button></div></div></div>
@@ -309,7 +323,85 @@ var parts = {};
 var approvals = {};
 var lastUserText = "";
 var skelEl = null;
+// P57(7): extensions visibles dans l'en-tete + completion "/" et "@".
+var extBadge = document.getElementById("extBadge");
+var extTxt = document.getElementById("extTxt");
+var agentSel = document.getElementById("agentSel");
+var extInfo = { summary: null, registry: null };
+var complEl = null;
+var complItems = [];
+var complSel = 0;
 function post(m) { vscode.postMessage(m); }
+function setExtensions(summary, registry) {
+  if (summary) {
+    extInfo.summary = summary;
+    if (extTxt) extTxt.textContent = summary.label || (summary.mcpEnabled + " MCP, " + summary.skillsActive + " skill");
+    if (extBadge) {
+      if ((summary.mcpEnabled || 0) + (summary.skillsActive || 0) > 0) extBadge.classList.add("on");
+      extBadge.title = (summary.mcpEnabled || 0) + " serveur(s) MCP actif(s), " + (summary.skillsActive || 0)
+        + " skill(s) actif(s), " + (summary.commands || 0) + " commande(s), " + (summary.agents || 0)
+        + " agent(s) personnalise(s). Cliquer pour actualiser.";
+    }
+  }
+  if (registry) {
+    extInfo.registry = registry;
+    if (agentSel && Array.isArray(registry.agents)) {
+      var cur = agentSel.value;
+      var opts = registry.agents.map(function (a) { return '<option value="' + esc(a.name) + '">' + esc(a.name) + '</option>'; });
+      agentSel.innerHTML = opts.join("");
+      if (cur) agentSel.value = cur;
+    }
+  }
+}
+function completionSource() {
+  var out = [];
+  var r = extInfo.registry || {};
+  (r.commands || []).forEach(function (c) { out.push({ k: "/" + c.name, d: c.description || "commande", ins: "/" + c.name + " " }); });
+  (r.skills || []).forEach(function (s) { out.push({ k: "@" + s.name, d: (s.active ? "" : "(inactif) ") + (s.description || "skill"), ins: "@" + s.name + " " }); });
+  (r.agents || []).forEach(function (a) { if (!a.builtin) out.push({ k: "@" + a.name, d: a.description || "agent", ins: "@" + a.name + " " }); });
+  (r.mcp || []).forEach(function (m) { out.push({ k: "MCP " + m.name, d: (m.enabled ? "" : "(desactive) ") + (m.description || "serveur MCP"), ins: null }); });
+  return out;
+}
+function hideCompl() { if (complEl && complEl.parentNode) complEl.parentNode.removeChild(complEl); complEl = null; complItems = []; complSel = 0; }
+function showCompl(prefix) {
+  var all = completionSource().filter(function (x) { return x.ins && x.k.toLowerCase().indexOf(prefix.toLowerCase()) === 0; });
+  hideCompl();
+  if (!all.length) return;
+  complItems = all.slice(0, 8);
+  complEl = document.createElement("div");
+  complEl.id = "compl";
+  for (var i = 0; i < complItems.length; i++) {
+    var it = document.createElement("div");
+    it.className = "it" + (i === 0 ? " sel" : "");
+    it.setAttribute("data-i", String(i));
+    var k = document.createElement("span"); k.className = "k"; k.textContent = complItems[i].k;
+    var d = document.createElement("span"); d.className = "d"; d.textContent = complItems[i].d;
+    it.appendChild(k); it.appendChild(d);
+    it.addEventListener("mousedown", function (ev) { ev.preventDefault(); applyCompl(parseInt(ev.currentTarget.getAttribute("data-i"), 10)); });
+    complEl.appendChild(it);
+  }
+  var comp = document.getElementById("composer");
+  if (comp) comp.appendChild(complEl);
+}
+function applyCompl(i) {
+  var it = complItems[i];
+  if (!it) return;
+  input.value = it.ins;
+  input.focus();
+  hideCompl();
+}
+function moveCompl(d) {
+  if (!complItems.length) return;
+  complSel = (complSel + d + complItems.length) % complItems.length;
+  var nodes = complEl ? complEl.querySelectorAll(".it") : [];
+  for (var i = 0; i < nodes.length; i++) nodes[i].className = "it" + (i === complSel ? " sel" : "");
+}
+function refreshCompl() {
+  var v = input.value || "";
+  var m = /(^|\\s)([/@][A-Za-z0-9_-]*)$/.exec(v);
+  if (!m) { hideCompl(); return; }
+  showCompl(m[2]);
+}
 function esc(s) { return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
 function clearEmpty() { var e = document.getElementById("empty"); if (e) e.remove(); }
 function nearBottom() { return thread.scrollHeight - thread.scrollTop - thread.clientHeight < 120; }
@@ -338,12 +430,23 @@ function send() {
 btnSend.addEventListener("click", send);
 btnStop.addEventListener("click", function() { post({ type: "stop" }); });
 input.addEventListener("keydown", function(e) {
+  // P57(3): completion "/nom" (commande) et "@nom" (skill/agent).
+  if (complItems.length) {
+    if (e.key === "ArrowDown") { e.preventDefault(); moveCompl(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); moveCompl(-1); return; }
+    if (e.key === "Tab") { e.preventDefault(); applyCompl(complSel); return; }
+    if (e.key === "Escape") { e.preventDefault(); hideCompl(); return; }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); applyCompl(complSel); return; }
+  }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
 input.addEventListener("input", function() {
   input.style.height = "auto";
   input.style.height = Math.min(input.scrollHeight, 140) + "px";
+  refreshCompl();
 });
+if (extBadge) extBadge.addEventListener("click", function() { post({ type: "refreshExtensions" }); });
+if (agentSel) agentSel.addEventListener("change", function() { post({ type: "setAgent", name: agentSel.value }); });
 if (modeSel) {
   var mbtns = modeSel.querySelectorAll("button");
   for (var mi = 0; mi < mbtns.length; mi++) {
@@ -541,6 +644,15 @@ function onPart(props) {
 function toolTarget(inner, props) {
   var inp = inner.input || inner.args || props.input || {};
   if (typeof inp === "string") return inp.slice(0, 120);
+  // P57(7): "MCP render : deploy", "skill render-deploy", "task Agent : consigne".
+  var tn = inner.tool || props.tool || "";
+  if (tn === "mcp_call" && inp && (inp.serveur || inp.server)) {
+    return String(inp.serveur || inp.server) + " : " + String(inp.outil || inp.tool || "?");
+  }
+  if ((tn === "skill_load" || tn === "skill") && inp && inp.name) return String(inp.name);
+  if (tn === "task" && inp && (inp.agent || inp.consigne || inp.task)) {
+    return String(inp.agent || "?") + " : " + String(inp.consigne || inp.task || "").slice(0, 80);
+  }
   var cands = ["filePath", "path", "file", "command", "cmd", "pattern", "query", "url"];
   for (var i = 0; i < cands.length; i++) {
     if (inp && typeof inp[cands[i]] === "string" && inp[cands[i]]) return String(inp[cands[i]]).slice(0, 120);
@@ -552,12 +664,28 @@ function toolStatus(st) {
   if (st === "error" || st === "failed") return { cls: "err", icon: "x", label: "\\u00c9chec" };
   return { cls: "run", icon: "sync", label: "En cours" };
 }
+// P57(7): un serveur MCP hors ligne ne bloque JAMAIS le tour : la ligne
+// d'extension affiche une explication en francais clair, et l'agent continue
+// (repli CLI). Retourne "" quand il n'y a rien a signaler.
+function extHint(tn, inner) {
+  if (tn !== "mcp_call" && tn !== "skill_load" && tn !== "skill") return "";
+  var st = (inner && inner.state) || {};
+  var txt = String(st.error || st.message || st.text || (inner && inner.summary) || "");
+  var busy = /hors ligne|offline|ECONNREFUSED|ETIMEDOUT|timeout/i.test(txt);
+  if (!busy) return "";
+  var who = String((inner.args && (inner.args.serveur || inner.args.server)) || "MCP");
+  return who + " hors ligne : action non executee. L'agent continue (repli CLI) et le resultat reste marque comme non verifie.";
+}
 function onTool(props) {
   var a = ensureAgent();
   hideSkel();
   var inner = props.part || props;
   var k = "tool:" + (partKey(props) || (inner.tool || "tool"));
   var name = inner.tool || props.tool || "outil";
+  // P57(7): les appels d'extensions sont des lignes repliees lisibles
+  // ("MCP render : deploy", "skill render-deploy", "extensions_list").
+  var isExt = ["mcp_call", "skill_load", "skill", "extensions_list", "extensions_describe", "task"].indexOf(name) !== -1;
+  if (isExt) name = (name === "mcp_call" ? "MCP" : (name === "skill_load" || name === "skill") ? "skill" : name);
   var st = (inner.state && inner.state.status) || props.status || "running";
   var meta = toolStatus(st);
   var tgt = toolTarget(inner, props);
@@ -565,7 +693,7 @@ function onTool(props) {
   if (!el) {
     var r = railNode(ensureRail(a), meta.cls);
     el = document.createElement("details");
-    el.className = "toolrow";
+    el.className = "toolrow" + (isExt ? " ext" : "");
     el.id = k;
     el._node = r.node;
     r.box.appendChild(el);
@@ -580,6 +708,16 @@ function onTool(props) {
     "<span class=\\"tst\\">" + esc(meta.label) + "</span></summary><pre><code></code></pre>";
   var code = el.querySelector("code");
   if (code) highlightCode(code, "json", detail);
+  // P57(7): explication non bloquante sous la ligne d'extension.
+  var hint = isExt ? extHint(inner.tool || props.tool || "", inner) : "";
+  var oldHint = el.querySelector(".offline-hint");
+  if (oldHint && oldHint.parentNode) oldHint.parentNode.removeChild(oldHint);
+  if (hint) {
+    var hd = document.createElement("div");
+    hd.className = "offline-hint";
+    hd.textContent = hint;
+    el.appendChild(hd);
+  }
   stick();
 }
 var CHOICES = [
@@ -1030,6 +1168,8 @@ window.addEventListener("message", function(ev) {
   else if (m.type === "runtime") setRuntime(m);
   else if (m.type === "providers") setProviders(m.providers, m.activeId);
   else if (m.type === "mode") setModeUI(m.mode);
+  else if (m.type === "extensions") setExtensions(m.summary, m.registry);
+  else if (m.type === "agent") { if (agentSel && m.name) agentSel.value = m.name; }
   else if (m.type === "cleared") { thread.innerHTML = ""; currentAgent = null; parts = {}; approvals = {}; }
   else if (m.type === "context") setContext(m);
   else if (m.type === "history") renderHistory(m.turns || []);
@@ -1127,6 +1267,9 @@ class AgentPanel {
                     this._postRunState();
                     break;
                 case 'refreshRuntime': this._checkRuntime(); break;
+                // P57(7): badge d'extensions et choix de l'agent.
+                case 'refreshExtensions': await this._postExtensions(); break;
+                case 'setAgent': this._handleAgent(msg.name); break;
                 default: break;
             }
         } catch (e) {
@@ -1175,8 +1318,11 @@ class AgentPanel {
         this._approvals = [];
         this._resolved = new Set();
         this._post({ type: 'started', mode: this.mode });
+        // P57(3): l'agent choisi dans l'en-tete cible le tour ("@nom").
+        const promptOut = (this._activeAgent && text.indexOf('@' + this._activeAgent) !== 0)
+            ? ('@' + this._activeAgent + ' ' + text) : text;
         try {
-            await this.engine.run({ prompt: text, mode: this.mode, resumeSessionId: this._resumeSessionId || undefined });
+            await this.engine.run({ prompt: promptOut, mode: this.mode, resumeSessionId: this._resumeSessionId || undefined });
         } catch (e) {
             this._running = false;
             this._post({ type: 'error', message: e.message });
@@ -1208,6 +1354,9 @@ class AgentPanel {
 
     _onDone(d) {
         this._running = false;
+        // P57(7): le resume de l'en-tete suit l'etat reel (skill active, serveur
+        // ajoute pendant la session...).
+        this._postExtensions();
         const reason = d.reason || '';
         const noModel = d.status === 'ECHEC' && /NO_MODEL_LOADED|Runtime offline/.test(reason);
         const fileStats = [];
@@ -1315,6 +1464,7 @@ class AgentPanel {
         try {
             await host.relaunch(reason || 'manual');
             if (host.serverState) this._post(Object.assign({ type: 'server' }, host.serverState()));
+            await this._postExtensions();
         } catch (e) {
             let st = null;
             try { st = host.serverState ? host.serverState() : null; } catch (_) { st = null; }
@@ -1369,6 +1519,34 @@ class AgentPanel {
             this._post({ type: 'runtime', kind: 'local', online: true, models: ids });
         } catch (_) {
             this._post({ type: 'runtime', kind: 'local', online: false, models: [] });
+        }
+    }
+
+    // P57(7): l'en-tete affiche "N MCP, N skills actifs" et la liste servant a
+    // la completion "/" et "@". Une erreur laisse le panneau intact.
+    async _postExtensions() {
+        if (!this.engine || typeof this.engine.extensionInfo !== 'function') return;
+        try {
+            const info = await this.engine.extensionInfo(this._resumeSessionId || null);
+            if (info && (info.summary || info.registry)) {
+                this._post({ type: 'extensions', summary: info.summary, registry: info.registry });
+            } else {
+                this._post({ type: 'extensions', summary: { label: 'extensions : ?', mcpEnabled: 0, skillsActive: 0 } });
+            }
+        } catch (_) { /* jamais bloquant */ }
+    }
+
+    // P57(3): le selecteur d'agent de l'en-tete. Build/Plan = mode ; un agent
+    // personnalise prefixe la consigne par "@nom" (le moteur resout la mention).
+    _handleAgent(name) {
+        const n = String(name || '').trim();
+        if (!n) return;
+        if (n === 'Build' || n === 'Plan') {
+            this._handleMode(n.toLowerCase());
+            this._activeAgent = null;
+        } else {
+            this._activeAgent = n;
+            this._post({ type: 'agent', name: n });
         }
     }
 
