@@ -22,19 +22,41 @@ const os = require('os') // P33(c): homedir fallback for the single logs dir
 if (process.argv.indexOf('--selftest') !== -1) {
   require('./selftest').runAndExit(__filename);
 }
-// P33(c): single logs folder (SUDO_STUDIO_LOGS > %LOCALAPPDATA% win32 pkg > dev).
-const logDir = process.env.SUDO_STUDIO_LOGS
-  ? process.env.SUDO_STUDIO_LOGS
-  : (process.pkg && process.platform === 'win32'
-    ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio', 'logs')
-    : path.join(__dirname, '..', 'logs'))
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true })
+// P33(c): single logs folder (SUDO_STUDIO_LOGS > per-OS user dir when pkg > dev).
+// P57-linux: the pkg branch used to cover win32 only. In a pkg snapshot on
+// Linux/macOS __dirname is /snapshot (read-only virtual FS), so the dev
+// fallback made the PACKAGED backend crash at boot with
+// "Cannot mkdir in a snapshot". The pkg branch now covers every platform.
+function resolveLogDir() {
+  if (process.env.SUDO_STUDIO_LOGS) return process.env.SUDO_STUDIO_LOGS
+  if (!process.pkg) return path.join(__dirname, '..', 'logs')
+  if (process.platform === 'win32') {
+    return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+      'SudoStudio', 'logs')
+  }
+  // Linux / macOS: SUDO_STUDIO_HOME (portable launcher) > ~/.sudo_studio
+  return path.join(process.env.SUDO_STUDIO_HOME || path.join(os.homedir(), '.sudo_studio'), 'logs')
 }
-fs.writeFileSync(
-  path.join(logDir, 'backend.log'),
-  new Date().toISOString() + ' Backend starting...\n'
-)
+// The log file must never decide whether the backend boots: try the preferred
+// directory, then the temp dir, then go console-only.
+let logDir = resolveLogDir()
+function ensureLogDir(dir) {
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, 'backend.log'),
+      new Date().toISOString() + ' Backend starting...\n')
+    return true
+  } catch (_) {
+    return false
+  }
+}
+if (!ensureLogDir(logDir)) {
+  const fallback = path.join(os.tmpdir(), 'SudoStudio', 'logs')
+  process.stderr.write('[boot] WARNING: cannot write logs to ' + logDir +
+    ' -> falling back to ' + fallback + '\n')
+  logDir = ensureLogDir(fallback) ? fallback : ''
+}
+// (the boot line was just written by ensureLogDir)
 
 // ================================================================
 // STEP 0 — early log helper (appends to backend.log + stderr)

@@ -9,13 +9,37 @@ console.log('[user.model] Starting with lowdb...')
 const low = require('lowdb')
 const FileSync = require('lowdb/adapters/FileSync')
 
-const BASE = process.pkg
-  ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio')
-  : path.join(__dirname, '..', '..')
+// P57-linux: the pkg data dir used to be Windows-only. On Linux/macOS it fell
+// back to <home>/AppData/Local, which does not exist there (and made the boot
+// fatal on a read-only home). Per-OS resolution, same convention as
+// crashHandler.js: LOCALAPPDATA on Windows, SUDO_STUDIO_HOME or ~/.sudo_studio
+// elsewhere.
+function resolveBase() {
+  if (!process.pkg) return path.join(__dirname, '..', '..')
+  if (process.platform === 'win32') {
+    return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio')
+  }
+  return process.env.SUDO_STUDIO_HOME || path.join(os.homedir(), '.sudo_studio')
+}
 
-const dbDir = path.join(BASE, 'data')
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true })
+const BASE = resolveBase()
+
+// The data dir must never decide whether the backend boots: prefer the user
+// dir, then the portable install dir, and only then give up with a clear log.
+function ensureDir(dir) {
+  try {
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    return true
+  } catch (_) {
+    return false
+  }
+}
+let dbDir = path.join(BASE, 'data')
+if (!ensureDir(dbDir)) {
+  const fallback = path.join(path.dirname(process.execPath), '..', 'data')
+  console.log('[user.model] WARNING: cannot use ' + dbDir + ' -> falling back to ' + fallback)
+  dbDir = fallback
+  ensureDir(dbDir)
 }
 
 const dbPath = path.join(dbDir, 'enterprise.json')
