@@ -308,6 +308,19 @@ function waitForRuntime(cfg, opts) {
   if (!cfg || cfg.type !== 'local') {
     return Promise.resolve({ recovered: false, probe: null, attemptsMade: 0, aborted: false });
   }
+  // P56-stab: a port that is simply REFUSED (nothing listening) cannot come
+  // back by itself: a supervised restart re-opens it in about a second. So we
+  // probe immediately, then once 2 s later, and give up after two consecutive
+  // refusals instead of burning the full 50 s budget. A runtime that ANSWERS
+  // (even "no model loaded yet") keeps the full 5 x 10 s schedule: that is a
+  // restart in progress, not a dead endpoint.
+  // Only the production call sites opt in, and only when they did not pin an
+  // explicit schedule: the documented 5 x 10 s budget stays the contract for
+  // every caller that passes its own attempts (P48-D2).
+  const quickRefused = opts.quickRefusedFail === true && !(Number(opts.attempts) > 0);
+  const isRefused = (p) => !!(p && p.ok === false && p.code === 'runtime_offline' &&
+    /ECONNREFUSED|refus|refused/i.test(String(p.error || '')));
+  let refusedStreak = 0;
   return (async () => {
     let lastProbe = null;
     for (let n = 1; n <= max; n++) {
@@ -317,7 +330,10 @@ function waitForRuntime(cfg, opts) {
       if (onProgress) {
         try { onProgress(n, max, 'Runtime restarting, attempt ' + n + '/' + max); } catch (_) {}
       }
-      await sleep(delayMs);
+      // First probe is immediate; after a refusal the next one comes fast.
+      const waitMs = (quickRefused && n === 1) ? 0
+        : ((quickRefused && refusedStreak > 0) ? Math.min(delayMs, 2000) : delayMs);
+      await sleep(waitMs);
       if (shouldAbort && shouldAbort()) {
         return { recovered: false, probe: lastProbe, attemptsMade: n, aborted: true };
       }
@@ -327,6 +343,15 @@ function waitForRuntime(cfg, opts) {
       lastProbe = p;
       if (p && p.ok) return { recovered: true, probe: p, attemptsMade: n, aborted: false };
       const code = (p && p.code) || 'provider_error';
+      if (quickRefused && isRefused(p)) {
+        refusedStreak += 1;
+        if (refusedStreak >= 2) {
+          // Dead endpoint, twice, nothing came back: honest verdict, fast.
+          return { recovered: false, probe: p, attemptsMade: n, aborted: false, refused: true };
+        }
+      } else {
+        refusedStreak = 0;
+      }
       if (code !== 'runtime_offline' && code !== 'no_model') {
         return { recovered: false, probe: p, attemptsMade: n, aborted: false };
       }

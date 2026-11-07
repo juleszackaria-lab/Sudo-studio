@@ -97,7 +97,11 @@ function ssePost(port, token, p, body, onEvent, timeoutMs) {
           try { obj = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
           try { onEvent(cur, obj); } catch (_) {}
           if (cur === 'turn.done') { win(obj); try { res.destroy(); } catch (_) {} return; }
-          if (cur === 'turn.error') { fail(new Error('turn.error: ' + ((obj && obj.error) || '?'))); try { res.destroy(); } catch (_) {} return; }
+          if (cur === 'turn.error') {
+            const e = new Error('turn.error: ' + ((obj && obj.error) || '?'));
+            e.code = obj && obj.code; e.body = obj || {}; e.httpStatus = res.statusCode;
+            fail(e); try { res.destroy(); } catch (_) {} return;
+          }
           cur = 'message';
         }
       });
@@ -503,7 +507,13 @@ function isRefused(port) {
   });
 }
 
-t('F1', 'runtime offline: immediate clear 502 (<5s), never fake success', async () => {
+// P56-stab: since P39/P55 a runtime outage NEVER becomes a 5xx and never a
+// fake success. The honest contract is: the stream opens, the turn reports
+// `turn.error { code: 'runtime_offline' }` FAST (a refused port is a dead
+// endpoint, not a supervised restart: verdict in ~2s instead of 50s), the
+// message names the outage, and NOTHING is persisted as if the model had
+// answered. This test asserts exactly that (it used to expect a 502).
+t('F1', 'runtime offline: clear, fast runtime_offline, never fake success', async () => {
   // The "dead" port must really be dead: ephemeral reuse could hand it to our
   // own server or a leftover. Verify, retry with a fresh port if taken.
   let a = null;
@@ -531,9 +541,15 @@ t('F1', 'runtime offline: immediate clear 502 (<5s), never fake success', async 
       await ssePost(hs.port, a.token, '/sessions/' + c.body.id + '/messages', { prompt: 'hi' }, () => {});
     } catch (e) { err = e; }
     const ms = Date.now() - t0;
-    assert(err && err.status === 502, 'expected 502, got ' + (err && err.status));
-    assert(/hors ligne|injoignable/.test(err.body.error), 'unclear error: ' + err.body.error);
+    // 1. an error, never a silent success
+    assert(err, 'turn must not succeed while the runtime is offline');
+    // 2. explicit, actionable reason
+    assert(err.code === 'runtime_offline', 'expected runtime_offline, got ' + err.code);
+    const msg = String((err.body && err.body.error) || err.message || '');
+    assert(/hors ligne|injoignable/.test(msg), 'unclear error: ' + msg);
+    // 3. fast: a dead port must not cost the 50s restart budget
     assert(ms < 5000, 'too slow: ' + ms + 'ms');
+    // 4. never a fake answer in the session
     const g = await httpJson(hs.port, a.token, 'GET', '/sessions/' + c.body.id);
     assert(g.body.messages.length === 0, 'fake message persisted');
   } finally { killChild(a.child); }
@@ -566,7 +582,17 @@ t('G1', 'tools registered (P25), permissions ask-mutating', async () => {
     const tl = await httpJson(hs.port, a.token, 'GET', '/tools');
     assert(tl.status === 200 && Array.isArray(tl.body.tools), 'tools list');
     const names = tl.body.tools.map((x) => x.name).sort();
-    assert(JSON.stringify(names) === JSON.stringify(['analyze', 'append', 'bash', 'ci', 'delete', 'doctor', 'done', 'edit', 'exec_poll', 'exec_start', 'exec_stop', 'gen_check', 'gen_phase', 'gen_report', 'gen_restore', 'gen_start', 'glob', 'grep', 'list', 'mkdir', 'mkignore', 'patch', 'read', 'rename', 'reply', 'sdk', 'secaudit', 'subagent', 'todo', 'write']), 'tool names: ' + names.join(','));
+    // P57 added five extension tools (extensions_list, extensions_describe,
+    // skill_load, mcp_call, task) plus `skill`: the registry now exposes 36
+    // tools. The per-PROFILE contract (13 small / 30 at 4096 / 35 full at
+    // >=8192) is asserted by P25/P26, not here; this checks the registry.
+    const expected = ['analyze', 'append', 'bash', 'ci', 'delete', 'doctor', 'done', 'edit',
+      'exec_poll', 'exec_start', 'exec_stop', 'extensions_describe', 'extensions_list',
+      'gen_check', 'gen_phase', 'gen_report', 'gen_restore', 'gen_start', 'glob', 'grep',
+      'list', 'mcp_call', 'mkdir', 'mkignore', 'patch', 'read', 'rename', 'reply', 'sdk',
+      'secaudit', 'skill', 'skill_load', 'subagent', 'task', 'todo', 'write'];
+    assert(JSON.stringify(names) === JSON.stringify(expected), 'tool names: ' + names.join(','));
+    assert(names.length === 36, 'registry size: ' + names.length);
     for (const x of tl.body.tools) assert(!('handler' in x), 'handler leaked');
     const pm = await httpJson(hs.port, a.token, 'GET', '/permissions');
     assert(pm.status === 200 && pm.body.mode === 'ask-mutating', 'permissions mode');

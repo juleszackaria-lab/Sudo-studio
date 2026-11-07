@@ -70,6 +70,8 @@ function homeOf(toolsCtx) {
 // uses the waitForRuntime defaults: 5 x 10s, always <= 60s).
 async function waitAndRetry(ctx) {
   const w = await waitForRuntime(ctx.provider, {
+    // P56-stab: a refused port is a dead endpoint, not a restart in progress.
+    quickRefusedFail: true,
     attempts: ctx.waitOpts && ctx.waitOpts.attempts,
     delayMs: ctx.waitOpts && ctx.waitOpts.delayMs,
     probeTimeoutMs: ctx.waitOpts && ctx.waitOpts.probeTimeoutMs,
