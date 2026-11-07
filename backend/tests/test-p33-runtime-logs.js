@@ -73,15 +73,37 @@ check('B4: 02 gate boots the exe and asserts header-first', () => {
 
 // -- C: single logs folder ----------------------------------------------------
 const serverJs = read('backend/server.js');
-check('C1: backend logDir (env > LOCALAPPDATA win32 pkg > dev, old trap gone)', () => {
-  const region = serverJs.slice(serverJs.indexOf('const logDir'));
-  const iEnv = region.indexOf('process.env.SUDO_STUDIO_LOGS');
-  const iLocal = region.indexOf('LOCALAPPDATA');
-  const iDev = region.indexOf("path.join(__dirname, '..', 'logs')");
-  assert.ok(iEnv !== -1 && iLocal !== -1 && iDev !== -1, 'all three present');
-  assert.ok(iEnv < iLocal && iLocal < iDev, 'precedence order');
+check('C1: backend logDir (env > pkg per-OS > dev, old trap gone)', () => {
+  const m = serverJs.match(/function resolveLogDir\(\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(m, 'resolveLogDir present');
+  const fn = m[0];
+  const iEnv = fn.indexOf('process.env.SUDO_STUDIO_LOGS');
+  assert.ok(iEnv !== -1 && iEnv < fn.indexOf('if (!process.pkg)'),
+    'SUDO_STUDIO_LOGS wins over every default');
+  assert.ok(fn.includes("if (process.platform === 'win32')"), 'win32 branch kept');
+  assert.ok(fn.includes('LOCALAPPDATA'), 'win32 uses LOCALAPPDATA');
+  assert.ok(fn.includes('SUDO_STUDIO_HOME') && fn.includes('os.homedir()'),
+    'linux/macOS use SUDO_STUDIO_HOME or ~/.sudo_studio');
+  assert.ok(/if \(!process\.pkg\) return path\.join\(__dirname, '\.\.', 'logs'\)/.test(fn),
+    'dev fallback unreachable inside pkg (snapshot trap gone)');
   assert.ok(serverJs.includes("require('os')"), 'os required');
-  assert.ok(!serverJs.includes("process.execPath), '..', 'logs')"), 'old pkg trap gone');
+});
+check('C1b: P57-linux a log dir can never stop the boot (tmp fallback)', () => {
+  assert.ok(serverJs.includes('function ensureLogDir'), 'guarded creation');
+  assert.ok(serverJs.includes('os.tmpdir()'), 'tmp fallback');
+  const region = serverJs.slice(serverJs.indexOf('function ensureLogDir'),
+    serverJs.indexOf('// (the boot line'));
+  assert.ok(region.includes('catch'), 'mkdir/write failures are caught');
+});
+check('C1c: P57-linux data dir uses the same per-OS rule (no AppData on Linux)', () => {
+  const um = read('backend/models/user.model.js');
+  const m = um.match(/function resolveBase\(\)\s*\{[\s\S]*?\n\}/);
+  assert.ok(m, 'resolveBase present');
+  assert.ok(m[0].includes("if (process.platform === 'win32')"), 'win32 branch');
+  assert.ok(m[0].includes('LOCALAPPDATA'), 'win32 LOCALAPPDATA');
+  assert.ok(m[0].includes('SUDO_STUDIO_HOME') && m[0].includes('os.homedir()'),
+    'linux/macOS home');
+  assert.ok(um.includes('function ensureDir'), 'guarded creation');
 });
 const bat = read('start.bat');
 check('C2: launcher LOGS is the single folder + env export + migration', () => {
