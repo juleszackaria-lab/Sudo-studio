@@ -36,16 +36,16 @@ function guardSnippet(opts) {
   opts = opts || {};
   const nonceAttr = opts.nonce ? ' nonce="' + _safeNonce(opts.nonce) + '"' : '';
   return '<style>\n' +
-'#ssLoading{padding:28px 24px;font-family:var(--vscode-font-family,sans-serif);font-size:13px;color:var(--vscode-editor-foreground,#e6edf3);}\n' +
-'#ssLoading .spin{display:inline-block;width:12px;height:12px;margin-right:8px;border:2px solid var(--vscode-panel-border,#444);border-top-color:var(--vscode-focusBorder,#1f6feb);border-radius:50%;animation:ssspin 1s linear infinite;vertical-align:-1px;}\n' +
+'#ssLoading{padding:28px 24px;font-family:var(--vscode-font-family,sans-serif);font-size:13px;color:var(--vscode-editor-foreground);}\n' +
+'#ssLoading .spin{display:inline-block;width:12px;height:12px;margin-right:8px;border:2px solid var(--vscode-panel-border);border-top-color:var(--vscode-focusBorder);border-radius:50%;animation:ssspin 1s linear infinite;vertical-align:-1px;}\n' +
 '@keyframes ssspin{from{transform:rotate(0)}to{transform:rotate(360deg)}}\n' +
-'#ssFatal{position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;background:var(--vscode-editor-background,#1e1e1e);}\n' +
+'#ssFatal{position:fixed;inset:0;z-index:99998;display:flex;align-items:center;justify-content:center;background:var(--vscode-editor-background);}\n' +
 '#ssFatal[hidden]{display:none;}\n' +
-'.ssf-card{max-width:460px;padding:28px 32px;border:1px solid var(--vscode-panel-border,#444);border-radius:8px;background:var(--vscode-editorWidget-background,#252526);text-align:center;font-family:var(--vscode-font-family,sans-serif);}\n' +
-'.ssf-title{font-size:14px;font-weight:600;margin-bottom:8px;color:var(--vscode-errorForeground,#f48771);}\n' +
+'.ssf-card{max-width:460px;padding:28px 32px;border:1px solid var(--vscode-panel-border);border-radius:8px;background:var(--vscode-editorWidget-background);text-align:center;font-family:var(--vscode-font-family,sans-serif);}\n' +
+'.ssf-title{font-size:16px;font-weight:600;margin-bottom:8px;color:var(--vscode-errorForeground);}\n' +
 '.ssf-cause{font-size:12px;opacity:.9;margin-bottom:6px;word-break:break-word;}\n' +
 '.ssf-sub{font-size:12px;opacity:.7;margin-bottom:18px;}\n' +
-'.ssf-actions{display:flex;gap:10px;justify-content:center;}\n' +
+'.ssf-actions{display:flex;gap:8px;justify-content:center;}\n' +
 '.ssf-actions button{padding:6px 16px;cursor:pointer;}\n' +
 '</style>\n' +
 '<div id="ssLoading"><span class="spin"></span>Chargement en cours...</div>\n' +

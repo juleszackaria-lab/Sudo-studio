@@ -14,7 +14,7 @@ Module._load = function (req, ...rest) {
     if (req === 'axios') return axiosStub;
     return origLoad.call(this, req, ...rest);
 };
-const A = require('../../sudo-ai-extension/src/agent/AgentPanel.js');
+const A = require(require('path').join(__dirname, '..', '..', 'sudo-ai-extension/src/agent/AgentPanel.js'));
 
 let pass = 0, fail = 0;
 function check(name, cond, extra) {
@@ -26,7 +26,10 @@ const htmlA = A.getWebviewHtml({ nonce: 'N', cspSource: 'CSP', codiconUri: 'CODI
 const htmlC = A.getWebviewHtml({ nonce: 'N', cspSource: 'CSP', codiconUri: 'CODI', variant: 'chat' });
 const htmlW = A.getWebviewHtml({ nonce: 'N', cspSource: 'CSP', codiconUri: 'CODI',
     tokensUri: 'TOK', hljsUri: 'HLJS' });
-const TOK = '../../sudo-ai-extension/media/agent-ui-tokens.css';
+// P56-stab: chemin resolu depuis CE fichier (l'ancien chemin relatif ne
+// marchait que si le test etait lance depuis backend/).
+const ROOT = require('path').join(__dirname, '..', '..');
+const TOK = require('path').join(ROOT, 'sudo-ai-extension', 'media', 'agent-ui-tokens.css');
 const tok = fs.readFileSync(TOK, 'utf8');
 
 // T1: token file content
@@ -41,15 +44,15 @@ check('T1c-scale', tok.includes('--fs-2: 14px') && tok.includes('--r-surf: 10px'
 // T2: embedded fonts + OFL
 const fonts = ['sans-400', 'sans-500', 'sans-600', 'mono-400', 'mono-500'];
 const woffOk = fonts.every((f) => {
-    const b = fs.readFileSync('../../sudo-ai-extension/media/fonts/' + f + '.woff2');
+    const b = fs.readFileSync(require('path').join(ROOT, 'sudo-ai-extension/media/fonts/' + f + '.woff2'));
     return b.length > 4000 && b[0] === 0x77 && b[1] === 0x4f && b[2] === 0x46 && b[3] === 0x32;
 });
-const ofl = fs.readFileSync('../../sudo-ai-extension/media/fonts/OFL.txt', 'utf8');
+const ofl = fs.readFileSync(require('path').join(ROOT, 'sudo-ai-extension/media/fonts/OFL.txt'), 'utf8');
 check('T2-fonts', woffOk && ofl.includes('SIL Open Font License'));
 
 // T3: vendored highlighter + BSD + 9 languages functional
-const LIC = fs.readFileSync('../../sudo-ai-extension/media/vendor/highlight-LICENSE', 'utf8');
-const hlSrc = fs.readFileSync('../../sudo-ai-extension/media/vendor/highlight.min.js', 'utf8');
+const LIC = fs.readFileSync(require('path').join(ROOT, 'sudo-ai-extension/media/vendor/highlight-LICENSE'), 'utf8');
+const hlSrc = fs.readFileSync(require('path').join(ROOT, 'sudo-ai-extension/media/vendor/highlight.min.js'), 'utf8');
 let hlLangs = [];
 try { hlLangs = new Function(hlSrc + '; return hljs.listLanguages();')(); } catch (e) { hlLangs = []; }
 const need = ['dart', 'typescript', 'javascript', 'python', 'json', 'yaml', 'shell', 'xml', 'css'];
@@ -172,8 +175,8 @@ check('T9-stats', JSON.stringify(A.lineStats('a\nb\nc\n', 'a\nB\nc\nd\n')) === '
 })();
 
 // T11: ASCII sources
-for (const f of ['../../sudo-ai-extension/src/agent/AgentPanel.js',
-    '../../sudo-ai-extension/src/panels/ChatPanel.js', TOK]) {
+for (const f of [require('path').join(ROOT, 'sudo-ai-extension/src/agent/AgentPanel.js'),
+    require('path').join(ROOT, 'sudo-ai-extension/src/panels/ChatPanel.js'), TOK]) {
     const bad = (fs.readFileSync(f, 'utf8').match(/[^\x00-\x7F]/g) || []).length;
     check('T11-ascii ' + path.basename(f), bad === 0, 'bad=' + bad);
 }
