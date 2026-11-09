@@ -27,6 +27,7 @@ const mcpMod = require('./mcp');
 const execMod = require('./exec');
 const genMod = require('./gen');
 const bizMod = require('./biz');
+const platformMod = require('./platform'); // P59-A: platform bridge (audit, analyse, devops, doctor, logs...)
 
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_READ_LINES = 2000;
@@ -1019,7 +1020,25 @@ const TOOLS = {
   mkdir: { description: 'Cree un dossier (parents inclus, idempotent).', danger: 'write', mutating: true, pathArg: 'dir', defDir: null, handler: hMkdir },
   reply: { description: 'Reponse finale (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hReply },
   done: { description: 'Tache terminee (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hDone },
+  // P59-A: platform tools. Registered here (so /tools, the registry and the
+  // journal see them) but NEVER all exposed at once: toOpenAISchema adds only
+  // the subset chosen by the pre-router (router.js), max 6 per turn.
 };
+
+// P59-A: platform bridge tools (security audit, project analysis, devops,
+// doctor, environment, logs, runtime, licence). Their handler is dispatched in
+// executeTool (executePlatform) because one wrapper serves all of them.
+for (const _pn of platformMod.TOOL_NAMES) {
+  const _sp = platformMod.SPECS[_pn];
+  TOOLS[_pn] = {
+    description: _sp.description,
+    danger: _sp.mutating ? 'write' : 'read',
+    mutating: !!_sp.mutating,
+    pathArg: null, defDir: null, platform: true,
+    handler: async () => ({ ok: false, code: 'platform_dispatch', error: 'outil plateforme : dispatch interne' }),
+  };
+}
+function platformToolNames() { return platformMod.TOOL_NAMES.slice(); }
 
 function toolNames() { return Object.keys(TOOLS); }
 
@@ -1032,13 +1051,18 @@ function toolNames() { return Object.keys(TOOLS); }
 const EXT_TOOLS = ['extensions_list', 'extensions_describe', 'skill_load', 'mcp_call', 'task'];
 const EXT_MIN_CTX = 8192;
 
-function toOpenAISchema(profile, ctxTokens) {
+function toOpenAISchema(profile, ctxTokens, opts) {
   const str = (d) => ({ type: 'string', description: d });
   const small = profile === 'small';
-  let names = small ? profiles.profileTools('small') : toolNames().filter((n) => n !== 'todo'); // P52: the model never manages todos (registry-only tool).
+  // P59-B: platform tools are NEVER part of the default surface. The
+  // pre-router picks at most 6 of them for the turn and passes them here.
+  const routed = (opts && Array.isArray(opts.platformTools) ? opts.platformTools : [])
+    .filter((n) => platformMod.isPlatformTool(n)).slice(0, 6);
+  let names = small ? profiles.profileTools('small') : toolNames().filter((n) => n !== 'todo' && !platformMod.isPlatformTool(n)); // P52: the model never manages todos (registry-only tool).
   if (!small && Number.isFinite(ctxTokens) && ctxTokens < EXT_MIN_CTX) {
     names = names.filter((n) => EXT_TOOLS.indexOf(n) === -1);
   }
+  if (routed.length) names = names.concat(routed);
   const schemas = {
     read: { file: str('Project-relative file path.'), offset: { type: 'integer' }, limit: { type: 'integer' } },
     skill: { name: str('Skill name (or scope/name).') },
@@ -1077,6 +1101,10 @@ function toOpenAISchema(profile, ctxTokens) {
     reply: { text: str('Final answer text (ends the turn).') },
     done: { summary: str('Short summary of what changed (optional, ends the turn).') },
   };
+  // P59-A: platform tool schemas (same props the bridge documents).
+  for (const pn of platformMod.TOOL_NAMES) {
+    schemas[pn] = platformMod.SPECS[pn].props || {};
+  }
   const required = { extensions_describe: ['name'], skill_load: ['name'], mcp_call: ['serveur', 'outil'], task: ['agent', 'consigne'], read: ['file'], glob: ['pattern'], grep: ['pattern'], write: ['file', 'content'], edit: ['file', 'old', 'new'], patch: ['patch'], bash: ['command'], exec_start: ['command'], exec_poll: ['id'], exec_stop: ['id'], gen_start: ['goal'], gen_phase: ['run', 'phase'], gen_check: ['run', 'phase', 'command'], gen_report: ['run'], gen_restore: ['run', 'phase'], sdk: ['op'], todo: ['op'], delete: ['file'], rename: ['from', 'to'], append: ['file', 'content'], mkdir: ['dir'], reply: ['text'] };
   return names.map((n) => ({ type: 'function', function: { name: n, description: (small && profiles.TERSE[n]) || TOOLS[n].description, parameters: { type: 'object', properties: schemas[n], required: required[n] || [] } } }));
 }
@@ -1327,6 +1355,31 @@ async function executeMcpTool(ctx, toolName, args, opts, t0) {
 // { status:'done', call } | { status:'need-approval', request } |
 // { status:'denied', reason, code } | { status:'error', reason, code }.
 // ---------------------------------------------------------------------------
+// P59-A: platform tool dispatch. One line per call in the journal (time, tool,
+// duration, result - never the payload), a recorded call for the UI, and the
+// bounded/masked summary the model receives.
+async function executePlatform(ctx, toolName, args, t0) {
+  const t = t0 || Date.now();
+  const res = await platformMod.run({
+    root: ctx.root, home: ctx.home, ctxTokens: ctx.ctxTokens,
+    backendUrl: ctx.backendUrl, backendToken: ctx.backendToken,
+  }, toolName, args || {});
+  const ms = Date.now() - t;
+  const call = recordCall(ctx, toolName, args, !!res.ok, res.ok ? 'ok' : (res.code || 'error'), ms, res.summary || res.error);
+  call.result = res.ok ? (res.data || null) : null;
+  call.error = res.ok ? null : (res.error || 'echec.');
+  // P59-12: exactly one journal line per tool call; the summary is already
+  // masked and bounded by the bridge, so no raw secret can reach the journal.
+  if (ctx.log) {
+    try {
+      const fields = { tool: toolName, ms, ok: !!res.ok, chars: res.ok ? (res.chars || 0) : 0, code: res.ok ? 'ok' : (res.code || 'error') };
+      ctx.log[res.ok ? 'info' : 'warn']('platform ' + (res.ok ? 'ok' : 'fail'), fields, ctx.corr);
+    } catch (_) {}
+  }
+  if (!res.ok) return { status: 'error', reason: res.error, code: res.code || 'error', call };
+  return { status: 'done', call, data: res.data, summary: res.summary };
+}
+
 async function executeTool(ctx, toolName, args, opts) {
   opts = opts || {};
   args = args && typeof args === 'object' ? args : {};
@@ -1338,6 +1391,11 @@ async function executeTool(ctx, toolName, args, opts) {
   }
   const def = TOOLS[toolName];
   if (!def) return { status: 'error', reason: 'outil inconnu : ' + String(toolName).slice(0, 40), code: 'unknown_tool' };
+  // P59-A: platform tools do not need a project root (licence, runtime, logs
+  // and doctor work on the machine itself). They are dispatched here, before
+  // the boundary/approval pipeline, because they never touch a project path:
+  // devops_generate only RETURNS content, the write stays approval-gated.
+  if (def.platform) return executePlatform(ctx, toolName, args, t0);
   if (!ctx.root) return { status: 'denied', reason: 'aucun dossier de projet sur cette session.', code: 'no_project' };
 
   // P26-a: plan mode refuses mutating tools (clear refusal, no poisoning).
@@ -1578,6 +1636,8 @@ module.exports = {
   toolNames,
   toOpenAISchema,
   executeTool,
+  executePlatform,
+  platformToolNames,
   isControlCommand,
   controlTimeout,
   CONTROL_DEFAULT_TIMEOUT,
