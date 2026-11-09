@@ -608,6 +608,16 @@ function killTree(child) {
   } catch (_) { return 'none'; }
 }
 
+// P60: the ONE place that knows how to run a shell command. Windows keeps
+// cmd.exe (win32 branch); every other platform uses /bin/sh, which exists on
+// Linux and macOS. No implicit conversion, no PATH lookup of cmd.exe.
+function shellFor(command) {
+  if (process.platform === 'win32') {
+    return { bin: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', command] }; // win32 only
+  }
+  return { bin: '/bin/sh', args: ['-c', command] };
+}
+
 async function hBash(ctx, args, resolved) {
   const command = args.command;
   if (typeof command !== 'string' || !command.trim()) return { ok: false, code: 'bad_args', error: 'bash: command requise.' };
@@ -623,9 +633,7 @@ async function hBash(ctx, args, resolved) {
   const mod = p8();
   const env = mod ? mod.filterSpawnEnv(process.env).env : filterEnvFallback(process.env);
   const l2 = l2status();
-  const shell = process.platform === 'win32'
-    ? { bin: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', command] }
-    : { bin: '/bin/sh', args: ['-c', command] };
+  const shell = shellFor(command);
   const t0 = Date.now();
   return new Promise((resolve) => {
     let child = null;

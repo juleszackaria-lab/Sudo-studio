@@ -16,10 +16,12 @@ const FileSync = require('lowdb/adapters/FileSync')
 // elsewhere.
 function resolveBase() {
   if (!process.pkg) return path.join(__dirname, '..', '..')
-  if (process.platform === 'win32') {
-    return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio')
+  // P60: single per-OS decision (XDG on Linux/mac, LOCALAPPDATA on Windows).
+  try { return require('../utils/platformPaths').dataDir() } catch (_) {
+    return process.platform === 'win32'
+      ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio')
+      : process.env.SUDO_STUDIO_HOME || path.join(os.homedir(), '.local', 'share', 'sudo-studio')
   }
-  return process.env.SUDO_STUDIO_HOME || path.join(os.homedir(), '.sudo_studio')
 }
 
 const BASE = resolveBase()

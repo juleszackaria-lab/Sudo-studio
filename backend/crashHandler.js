@@ -17,11 +17,13 @@ const os = require('os');
 
 function resolveUnifiedDir() {
   if (process.env.SUDO_STUDIO_LOGS) return process.env.SUDO_STUDIO_LOGS;
-  if (process.platform === 'win32') {
-    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-    return path.join(local, 'SudoStudio', 'logs');
+  try { return require('./utils/platformPaths').logsDir(); } catch (_) {
+    if (process.platform === 'win32') {
+      const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+      return path.join(local, 'SudoStudio', 'logs');
+    }
+    return path.join(os.homedir(), '.local', 'share', 'sudo-studio', 'logs');
   }
-  return path.join(os.homedir(), '.sudo_studio', 'logs');
 }
 
 function appendLine(file, line) {

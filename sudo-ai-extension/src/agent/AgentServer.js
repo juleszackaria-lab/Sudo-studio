@@ -42,8 +42,10 @@ function defaultServerJs(fromDir) {
 
 function defaultExe(fromDir) {
   // Future bundled location under the same single root (absent today, so
-  // resolveTarget falls back to node + server.js).
-  return path.join(resolveInstallRoot(fromDir), 'sudo-agent', 'sudo-agent.exe');
+  // resolveTarget falls back to node + server.js). P60: the suffix is the
+  // platform's own (win32 keeps .exe; Linux/macOS use a plain name).
+  const name = process.platform === 'win32' ? 'sudo-agent.exe' : 'sudo-agent'; // win32 suffix
+  return path.join(resolveInstallRoot(fromDir), 'sudo-agent', name);
 }
 
 function safeLogger(l) {

@@ -39,12 +39,16 @@ function resolveLogsDir(opts) {
   opts = opts || {};
   if (opts.dir) return opts.dir;
   if (process.env.SUDO_STUDIO_LOGS) return process.env.SUDO_STUDIO_LOGS;
-  const plat = opts.platform || process.platform;
-  if (plat === 'win32') {
-    const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-    return path.join(local, 'SudoStudio', 'logs');
+  // P60: XDG on Linux/mac (XDG_STATE_HOME > XDG_DATA_HOME > ~/.local/share),
+  // %LOCALAPPDATA%\SudoStudio\logs on Windows. One module decides.
+  try { return require('./platformPaths').logsDir({ platform: opts.platform }); } catch (_) {
+    const plat = opts.platform || process.platform;
+    if (plat === 'win32') {
+      const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+      return path.join(local, 'SudoStudio', 'logs');
+    }
+    return path.join(os.homedir(), '.local', 'share', 'sudo-studio', 'logs');
   }
-  return path.join(os.homedir(), '.sudo_studio', 'logs');
 }
 
 function ensureDir(dir) {

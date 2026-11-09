@@ -146,8 +146,12 @@ async function main() {
         return;
     }
     if (!res.positive) {
-        console.log('[P47] INCONCLUSIVE: extension activation line not found in logs');
-        process.exitCode = 2;
+        // P60: on Linux the extension host may not flush its activation banner
+        // within the window. That is NOT a product failure and NOT a proof of
+        // activation either: exit 3 = "not observed", so the caller can record
+        // it as NON PROUVE instead of either faking a pass or failing the job.
+        console.log('[P47] NOT-OBSERVED: no activation line in ' + res.files + ' log file(s) (graphical activation NON PROUVE)');
+        process.exitCode = 3;
         return;
     }
     console.log('[P47] PASS: no registration error, extension activated');

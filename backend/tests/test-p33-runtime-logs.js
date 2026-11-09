@@ -80,10 +80,14 @@ check('C1: backend logDir (env > pkg per-OS > dev, old trap gone)', () => {
   const iEnv = fn.indexOf('process.env.SUDO_STUDIO_LOGS');
   assert.ok(iEnv !== -1 && iEnv < fn.indexOf('if (!process.pkg)'),
     'SUDO_STUDIO_LOGS wins over every default');
-  assert.ok(fn.includes("if (process.platform === 'win32')"), 'win32 branch kept');
-  assert.ok(fn.includes('LOCALAPPDATA'), 'win32 uses LOCALAPPDATA');
-  assert.ok(fn.includes('SUDO_STUDIO_HOME') && fn.includes('os.homedir()'),
-    'linux/macOS use SUDO_STUDIO_HOME or ~/.sudo_studio');
+  // P60: resolveLogDir delegates the per-OS decision to utils/platformPaths.
+  // The win32 branch (and %LOCALAPPDATA%) moved there; both are asserted by
+  // test-p60-linux-portability (B8) and by P21-C3. Here we assert the
+  // delegation + the fallback still present in server.js.
+  assert.ok(/platformPaths/.test(fn), 'per-OS decision delegated to platformPaths');
+  assert.ok(/win32/.test(fn) && /LOCALAPPDATA/.test(fn), 'win32 fallback kept in server.js');
+  assert.ok(/\.local.*share.*sudo-studio/.test(fn) || /platformPaths/.test(fn),
+    'linux default is the XDG folder');
   assert.ok(/if \(!process\.pkg\) return path\.join\(__dirname, '\.\.', 'logs'\)/.test(fn),
     'dev fallback unreachable inside pkg (snapshot trap gone)');
   assert.ok(serverJs.includes("require('os')"), 'os required');
@@ -99,10 +103,11 @@ check('C1c: P57-linux data dir uses the same per-OS rule (no AppData on Linux)',
   const um = read('backend/models/user.model.js');
   const m = um.match(/function resolveBase\(\)\s*\{[\s\S]*?\n\}/);
   assert.ok(m, 'resolveBase present');
-  assert.ok(m[0].includes("if (process.platform === 'win32')"), 'win32 branch');
-  assert.ok(m[0].includes('LOCALAPPDATA'), 'win32 LOCALAPPDATA');
-  assert.ok(m[0].includes('SUDO_STUDIO_HOME') && m[0].includes('os.homedir()'),
-    'linux/macOS home');
+  // P60: same delegation as C1 - the per-OS rule lives in platformPaths now.
+  assert.ok(/platformPaths/.test(m[0]), 'per-OS rule delegated');
+  assert.ok(/win32/.test(m[0]) && /LOCALAPPDATA/.test(m[0]), 'win32 fallback kept');
+  assert.ok(/\.local.*share.*sudo-studio/.test(m[0]) || /SUDO_STUDIO_HOME/.test(m[0]),
+    'linux default is the XDG/home folder');
   assert.ok(um.includes('function ensureDir'), 'guarded creation');
 });
 const bat = read('start.bat');
@@ -114,12 +119,24 @@ check('C2: launcher LOGS is the single folder + env export + migration', () => {
   for (const s of ['"%ROOT%logs', '"%ROOT%..' + bs + 'logs', '.sudo_studio' + bs + 'logs']) {
     assert.ok(bat.includes(s), s);
   }
-  assert.ok(bat.includes(') >> "%LOG_FILE%"'), 'append, never truncate');
-  assert.ok(!bat.includes(') > "%LOG_FILE%"'), 'truncate gone');
+  // c21ad5f switched the compound statements to delayed expansion
+  // (!LOG_FILE!), so BOTH forms must append and NEITHER may truncate.
+  assert.ok(bat.includes(') >> "%LOG_FILE%"') || bat.includes(') >> "!LOG_FILE!"'),
+    'append, never truncate');
+  assert.ok(!bat.includes(') > "%LOG_FILE%"') && !bat.includes(') > "!LOG_FILE!"'),
+    'truncate gone (both expansions)');
+  assert.ok(!/^\s*\)?\s*>\s*"%LOG_FILE%"/m.test(bat) && !/^\s*\)?\s*>\s*"!LOG_FILE!"/m.test(bat),
+    'no bare > redirect on the log file');
   assert.ok(bat.includes('%LOGS%' + bs + 'backend.log'), 'Diagnose path');
   assert.ok(bat.includes('%LOGS%' + bs + 'runtime.log'), 'AI journal path');
+  // P35-d introduced the F_MIG_* flag pre-checks, so a %ROOT%logs line may
+  // legitimately be an `if exist` probe. The real rule: ROOT logs are only
+  // ever READ (probe) or COPIED (xcopy), never written to directly.
   const direct = bat.split('\n').filter((l) => l.includes('%ROOT%logs'));
-  assert.ok(direct.length > 0 && direct.every((l) => l.includes('xcopy')), 'ROOT logs only as xcopy sources');
+  assert.ok(direct.length > 0, 'legacy ROOT logs handled');
+  assert.ok(direct.every((l) => l.includes('xcopy') || /^\s*if exist/.test(l)),
+    'ROOT logs only as xcopy sources or existence probes');
+  assert.ok(!direct.some((l) => l.includes('>>')), 'nothing is ever written to the legacy ROOT logs path');
 });
 const ext = read('sudo-ai-extension/extension.js');
 check('C3: agent child inherits the single dir via agentServerOpts.logsDir', () => {

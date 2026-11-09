@@ -166,9 +166,14 @@ async function main() {
   const pos = bTech.resolveLogsDir({ platform: 'linux' });
   process.env.SUDO_STUDIO_LOGS = savedLogs;
   if (savedLocal === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = savedLocal;
-  check('C3: single documented dir (override > %LOCALAPPDATA% > home)',
+  // P60: the Linux default moved to the documented XDG layout
+  // (~/.local/share/sudo-studio/logs). Windows is unchanged.
+  const posExpected = process.env.XDG_STATE_HOME
+    ? path.join(process.env.XDG_STATE_HOME, 'sudo-studio', 'logs')
+    : path.join(os.homedir(), '.local', 'share', 'sudo-studio', 'logs');
+  check('C3: single documented dir (override > %LOCALAPPDATA% > XDG/home)',
     ov === '/tmp/p21-override-x' && win === path.join('/tmp/fake-local', 'SudoStudio', 'logs') &&
-    pos === path.join(os.homedir(), '.sudo_studio', 'logs'), { ov, win, pos });
+    pos === posExpected, { ov, win, pos, posExpected });
   const dC4 = subdir('c4');
   bTech.createLogger({ dir: dC4, component: 'per' }).info('before restart', {});
   bTech.createLogger({ dir: dC4, component: 'per' }).sessionHeader(bTech.gatherSessionInfo({}));

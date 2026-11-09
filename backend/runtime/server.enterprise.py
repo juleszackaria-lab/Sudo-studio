@@ -598,9 +598,20 @@ def _cpu_has_avx_avx2() -> tuple:
 
 
 def detect_cpu_variant() -> str:
-    """Choose 'avx2' if the CPU supports it, else 'compat'. Cached + logged."""
+    """Choose 'avx2' if the CPU supports it, else 'compat'. Cached + logged.
+
+    P60: SUDO_LLAMACPP_VARIANT=avx2|compat forces the choice so CI can prove
+    BOTH variants really load (an old CPU is what the compat build exists for).
+    An unknown value is ignored: the real CPU detection always wins.
+    """
     global _CPU_VARIANT
     if _CPU_VARIANT is None:
+        forced = (os.environ.get('SUDO_LLAMACPP_VARIANT') or '').strip().lower()
+        if forced in ('avx2', 'compat'):
+            _CPU_VARIANT = forced
+            logger.info(f"[CPU] variante forcee par SUDO_LLAMACPP_VARIANT={forced}")
+            dlog(f"[CPU] forced variant={forced} (env)")
+            return _CPU_VARIANT
         has_avx2, has_avx = _cpu_has_avx_avx2()
         _CPU_VARIANT = 'avx2' if has_avx2 else 'compat'
         dlog(f"[CPU] AVX2={has_avx2} AVX={has_avx} -> variant={_CPU_VARIANT}")

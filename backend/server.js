@@ -22,20 +22,38 @@ const os = require('os') // P33(c): homedir fallback for the single logs dir
 if (process.argv.indexOf('--selftest') !== -1) {
   require('./selftest').runAndExit(__filename);
 }
+// P60: --license-status prints the edition and the feature map the licence
+// layer computes on THIS machine, then exits. Support use + Linux CI proof
+// that the Ed25519 licence path runs natively (it never changes any rule).
+if (process.argv.indexOf('--license-status') !== -1) {
+  let out = { ok: false, error: 'licence illisible' };
+  try {
+    const lic = require('./src/license/license');
+    const st = lic.getStatus();
+    out = { ok: true, platform: process.platform, edition: st.edition || st.name || 'community',
+      features: st.features || {}, valid: !!st.valid };
+  } catch (e) { out = { ok: false, error: String((e && e.message) || e).slice(0, 200) }; }
+  process.stdout.write(JSON.stringify(out) + '\n');
+  process.exit(out.ok ? 0 : 1);
+}
 // P33(c): single logs folder (SUDO_STUDIO_LOGS > per-OS user dir when pkg > dev).
 // P57-linux: the pkg branch used to cover win32 only. In a pkg snapshot on
 // Linux/macOS __dirname is /snapshot (read-only virtual FS), so the dev
 // fallback made the PACKAGED backend crash at boot with
 // "Cannot mkdir in a snapshot". The pkg branch now covers every platform.
+// P60: the per-OS decision lives in ONE module (utils/platformPaths), shared
+// with techLog, crashHandler and the data model. Linux honours XDG
+// (XDG_STATE_HOME/sudo-studio/logs, else XDG_DATA_HOME/sudo-studio/logs,
+// else ~/.local/share/sudo-studio/logs); Windows keeps %LOCALAPPDATA%\SudoStudio\logs.
 function resolveLogDir() {
   if (process.env.SUDO_STUDIO_LOGS) return process.env.SUDO_STUDIO_LOGS
   if (!process.pkg) return path.join(__dirname, '..', 'logs')
-  if (process.platform === 'win32') {
-    return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
-      'SudoStudio', 'logs')
+  try { return require('./utils/platformPaths').logsDir() } catch (_) {
+    // platformPaths is builtins-only; a broken require must not break boot.
+    return process.platform === 'win32'
+      ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'SudoStudio', 'logs')
+      : path.join(os.homedir(), '.local', 'share', 'sudo-studio', 'logs')
   }
-  // Linux / macOS: SUDO_STUDIO_HOME (portable launcher) > ~/.sudo_studio
-  return path.join(process.env.SUDO_STUDIO_HOME || path.join(os.homedir(), '.sudo_studio'), 'logs')
 }
 // The log file must never decide whether the backend boots: try the preferred
 // directory, then the temp dir, then go console-only.

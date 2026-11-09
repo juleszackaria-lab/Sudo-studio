@@ -170,6 +170,24 @@ router.post('/api/system/autofix', async (req, res) => {
     }
   }
 
+  // P60: on Linux there is no winget/UAC. Answer with the REAL package
+  // manager command for this machine (never executed here).
+  if (process.platform === 'linux') {
+    try {
+      const lp = require('../doctor/linuxPackages.enterprise');
+      const detected = lp.detect();
+      const s = lp.suggest(String(issueType || '').toLowerCase(), { detected });
+      return res.json({
+        success: !!s.ok, platform: 'linux', detected,
+        suggestion: s.ok ? { install: s.install, remove: s.remove, check: s.check, approvalRequired: s.approvalRequired } : null,
+        message: s.ok ? ('commande proposee (' + s.manager + ') : ' + s.install + ' -- approbation requise avant execution.')
+          : ('aucune commande automatique : ' + (s.error || 'gestionnaire inconnu')),
+      });
+    } catch (e) {
+      return res.status(500).json({ success: false, error: String((e && e.message) || e).slice(0, 200) });
+    }
+  }
+
   // For other issues return instructions
   const fixes = {
     'Node.js': 'Visit https://nodejs.org to install Node.js',
@@ -185,6 +203,32 @@ router.post('/api/system/autofix', async (req, res) => {
     message: fixes[issueType] || `No automated fix available for: ${issueType}`,
     issueType
   });
+});
+
+/**
+ * P60: Linux platform facts (paths + package manager). Read-only.
+ * The GUI shows exactly where the product writes and how it would install a
+ * missing SDK, without ever running anything.
+ */
+router.get('/api/platform/paths', (req, res) => {
+  try {
+    const pp = require('../utils/platformPaths');
+    res.json({ success: true, platform: process.platform, paths: pp.summary() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String((e && e.message) || e).slice(0, 200) });
+  }
+});
+
+router.get('/api/platform/packages', (req, res) => {
+  try {
+    const lp = require('../doctor/linuxPackages.enterprise');
+    const detected = lp.detect();
+    const id = String(req.query.id || '').slice(0, 40);
+    if (id) return res.json({ success: true, detected, suggestion: lp.suggest(id, { detected }) });
+    return res.json({ success: true, detected, known: lp.list() });
+  } catch (e) {
+    res.status(500).json({ success: false, error: String((e && e.message) || e).slice(0, 200) });
+  }
 });
 
 module.exports = router;
