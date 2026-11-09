@@ -50,16 +50,26 @@ check('A3: SUDO_STUDIO_ROOT env is honored', () => {
     else process.env.SUDO_STUDIO_ROOT = old;
   }
 });
-check('A4: explicit extension dir beats the env', () => {
+check('A4: launcher-provided env wins over the extension-relative guess', () => {
+  // P60 fix: P35(c) REVERSED this precedence on purpose (see the comment in
+  // resolveInstallRoot): the live extension can sit in
+  // %LOCALAPPDATA%\SudoStudio\extensions\sudo-ai, whose '../..' is NOT the
+  // install root, while the launcher always exports the true root. The old
+  // assertion ("explicit dir beats the env") contradicted the shipped code.
   const old = process.env.SUDO_STUDIO_ROOT;
   process.env.SUDO_STUDIO_ROOT = path.join('X', 'env-root');
   try {
     const fake = path.join(tmp('exp'), 'extensions', 'sudo-ai');
-    assert.strictEqual(resolveInstallRoot(fake), path.dirname(path.dirname(fake)));
+    assert.strictEqual(resolveInstallRoot(fake), path.resolve(process.env.SUDO_STUDIO_ROOT),
+      'the launcher env wins over the extension dir');
   } finally {
     if (old === undefined) delete process.env.SUDO_STUDIO_ROOT;
     else process.env.SUDO_STUDIO_ROOT = old;
   }
+  // and with no env, the extension dir IS used (A2 already covers the shape;
+  // this asserts the fallback immediately after the env is cleared).
+  const fake2 = path.join(tmp('exp2'), 'extensions', 'sudo-ai');
+  assert.strictEqual(resolveInstallRoot(fake2), path.dirname(path.dirname(fake2)));
 });
 check('A5: one documented location, wrong P29(f) canonical gone', () => {
   const ag = read('sudo-ai-extension/src/agent/AgentServer.js');
@@ -68,10 +78,13 @@ check('A5: one documented location, wrong P29(f) canonical gone', () => {
   assert.ok(!ag.includes('P29(f) CANONICAL'), 'wrong canonical claim removed');
   assert.ok(ag.includes('resolveInstallRoot'));
 });
-check('A6: defaultExe shares the same single root', () => {
+check('A6: defaultExe shares the same single root (platform suffix)', () => {
   const fake = path.join(tmp('exe'), 'extensions', 'sudo-ai');
   const root = resolveInstallRoot(fake);
-  assert.strictEqual(defaultExe(fake), path.join(root, 'sudo-agent', 'sudo-agent.exe'));
+  // P60: the bundled agent name is the platform's own. Asserting '.exe'
+  // unconditionally was a Windows-only assumption that fails on Linux.
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  assert.strictEqual(defaultExe(fake), path.join(root, 'sudo-agent', 'sudo-agent' + suffix));
   assert.strictEqual(path.dirname(defaultServerJs(fake)), path.join(root, 'sudo-agent', 'src'));
 });
 check('A7: extension.js wires extensionDir + journalPath at both launch sites', () => {

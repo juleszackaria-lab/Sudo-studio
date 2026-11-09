@@ -170,11 +170,34 @@ check('E3: installer uses brand icon + exe name',
 check('E4: applicationName technical, installer AppName display',
     prod.applicationName === 'sudo-studio' &&
     /#define MyAppName\s+"Sudo Studio"/.test(iss));
-const yml = fs.readFileSync(path.join(ROOT, '.github', 'workflows', '03-package.yml'), 'utf8');
-check('E5: rcedit strings + product verify gate in the package workflow',
-    yml.indexOf('rcedit ProductName failed') !== -1 &&
-    yml.indexOf('FileDescription') !== -1 &&
-    yml.indexOf("expected 'Sudo Studio'") !== -1);
+// P60 fix: 03-package.yml belongs to the sudo-studio-packager repository, so
+// reading it here CRASHED the whole suite with ENOENT on a plain checkout
+// (the remaining checks never ran). It is checked when the sibling checkout
+// is present, and reported as SKIP - never as a pass - when it is not.
+let skipped = 0;
+function skip(name, why) { skipped++; console.log('SKIP ' + name + ' :: ' + why); }
+const PKG_WF = [
+    path.join(ROOT, '.github', 'workflows', '03-package.yml'),
+    path.join(ROOT, '..', 'sudo-studio-packager', '.github', 'workflows', '03-package.yml'),
+].find((f) => fs.existsSync(f));
+if (PKG_WF) {
+    const yml = fs.readFileSync(PKG_WF, 'utf8');
+    // P60 fix: the gate was rewritten in 03-package.yml; the intent is
+    // "every rcedit write is checked AND the result is re-read from the exe
+    // afterwards". Both wordings are accepted, the presence of a re-read is
+    // not.
+    const verifyGate = yml.indexOf('expected \'Sudo Studio\'') !== -1 ||
+        yml.indexOf('if ($vi.ProductName -ne "Sudo Studio")') !== -1;
+    check('E5: rcedit strings + product verify gate in the package workflow',
+        yml.indexOf('rcedit ProductName failed') !== -1 &&
+        yml.indexOf('FileDescription') !== -1 &&
+        verifyGate &&
+        /\.VersionInfo/.test(yml),
+        'file=' + path.basename(path.dirname(path.dirname(PKG_WF))));
+} else {
+    skip('E5: rcedit strings + product verify gate in the package workflow',
+        '03-package.yml lives in sudo-studio-packager (not checked out next to this repo)');
+}
 
 // -- F: wiring + legal preserved -----------------------------------------------------------------
 const extSrc = fs.readFileSync(path.join(EXT, 'extension.js'), 'utf8');
@@ -245,10 +268,15 @@ check('H6: extension activation logs the build number (guarded)',
     extSrc.indexOf('Sudo Studio build dev (no build-manifest.json)') !== -1 &&
     extSrc.indexOf('Sudo Studio build ') !== -1);
 const bat42 = fs.readFileSync(path.join(ROOT, 'start.bat'), 'utf8');
+// P60 fix: c21ad5f moved the header to delayed expansion (!VAR!) so the
+// version is expanded at run time, not at parse time. Either form is correct
+// as long as the header prints the manifest version.
 check('H7: launcher header prints the manifest version',
     bat42.indexOf('BUILD_VERSION') !== -1 &&
-    bat42.indexOf('SUDO STUDIO v%BUILD_VERSION%') !== -1);
+    (bat42.indexOf('SUDO STUDIO v%BUILD_VERSION%') !== -1 ||
+     bat42.indexOf('SUDO STUDIO v!BUILD_VERSION!') !== -1));
 
-console.log(fail === 0 ? `\nP20: ${pass} checks passed (all green)`
-    : `\nP20: ${pass} passed, ${fail} FAILED`);
+const tail = skipped ? `, ${skipped} skipped` : '';
+console.log(fail === 0 ? `\nP20: ${pass} checks passed (all green)${tail}`
+    : `\nP20: ${pass} passed, ${fail} FAILED${tail}`);
 process.exitCode = fail === 0 ? 0 : 1;

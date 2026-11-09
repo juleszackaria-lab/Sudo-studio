@@ -16,6 +16,7 @@ const { spawnSync } = require('child_process');
 const TMP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'p22-home-'));
 process.env.SUDO_STUDIO_HOME = TMP_HOME;
 
+const { mainScript, allInline } = require('./lib/inlineScripts');
 const analyzer = require('../../sudo-ai-extension/src/analysis/projectAnalyzer');
 
 let pass = 0;
@@ -353,17 +354,20 @@ async function main() {
 
     // -- I: client render -------------------------------------------------------------------
     const html = ProjectAnalysisPanel.prototype.getHtmlContent.call({});
-    const clientJs = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+    // P60 fix: the client is the LARGEST inline block (a CSP shim now comes
+    // first); string assertions run over every inline block.
+    const clientJs = mainScript(html);
+    const allJs = allInline(html);
     const clientFile = path.join(FX, 'client-extract.js');
     fs.writeFileSync(clientFile, clientJs);
     const chk = spawnSync(process.execPath, ['--check', clientFile]);
     check('I1: panel client script compiles', chk.status === 0);
     check('I2: unverified state rendered',
-        clientJs.indexOf('arch-unver') !== -1 && clientJs.indexOf('non verifie') !== -1);
+        allJs.indexOf('arch-unver') !== -1 && allJs.indexOf('non verifie') !== -1);
     check('I3: per-dep table headers rendered',
-        clientJs.indexOf('verrouillee') !== -1 && clientJs.indexOf('<table') !== -1);
+        allJs.indexOf('verrouillee') !== -1 && allJs.indexOf('<table') !== -1);
     check('I4: explicit no-manifest message',
-        clientJs.indexOf('Aucun manifeste trouve') !== -1);
+        allJs.indexOf('Aucun manifeste trouve') !== -1);
 }
 
 main().then(() => {

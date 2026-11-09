@@ -113,7 +113,10 @@ check('C3: editor monitor + precise cleanup', () => {
 check('C4: P21 journal path + manifest commit in header', () => {
     assert.ok(bat.includes('%LOGS%\\runtime.log'));
     assert.ok(bat.includes('BUILD_COMMIT'));
-    assert.ok(bat.includes('Build commit: %BUILD_COMMIT%'));
+    // P60 fix: c21ad5f moved the header to delayed expansion (!VAR!), so the
+    // commit is expanded when the line runs. Both forms keep the intent.
+    assert.ok(bat.includes('Build commit: %BUILD_COMMIT%') ||
+        bat.includes('Build commit: !BUILD_COMMIT!'));
 });
 
 // -- D: installer.iss ----------------------------------------------------------

@@ -8,6 +8,8 @@
 'use strict';
 
 const fs = require('fs');
+const { mainScript, allInline } = require('./lib/inlineScripts');
+
 const os = require('os');
 const path = require('path');
 const Module = require('module');
@@ -112,13 +114,15 @@ async function main() {
   check('A2: exactly 4 tabs, no cloud tab',
     ['tabbtn-users', 'tabbtn-policies', 'tabbtn-config', 'tabbtn-audit'].every((t) => html.includes(t))
     && !html.includes('tabbtn-cloud') && !html.includes('runPolicyCheck'));
-  const clientJs = html.split('<script>')[1].split('</scr' + 'ipt>')[0];
+  // P60 fix: largest inline block = the client (a CSP shim comes first now).
+  const clientJs = mainScript(html);
+  const allJs = allInline(html);
   let parses = true; let parseErr = '';
   try { new vm.Script(clientJs); } catch (e) { parses = false; parseErr = e.message; }
   check('A3: client script parses (root cause fixed)', parses, parseErr);
   check('A4: retry + error + tabs + backend UI present',
-    clientJs.includes('loadError') && clientJs.includes('essayer') && clientJs.includes('showTab')
-    && clientJs.includes('backendStatus') && clientJs.includes('data-act=\\"retry\\"')
+    allJs.includes('loadError') && allJs.includes('essayer') && allJs.includes('showTab')
+    && allJs.includes('backendStatus') && allJs.includes('data-act=\\"retry\\"')
     && html.includes('backendPill') && html.includes('errbar'));
   check('A5: original killer pattern gone', !html.includes("type:'runPolicyCheck'") && !html.includes("type:'openProviders'"));
   const posted = created.webview.posted;

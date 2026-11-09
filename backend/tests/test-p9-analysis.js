@@ -8,6 +8,8 @@
 'use strict';
 
 const assert = require('assert');
+const { mainScript, allInline } = require('./lib/inlineScripts');
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -405,14 +407,16 @@ async function main() {
         after6.indexOf('# fx-agents') === 0 &&
         g6.fp.webview.posted.some((m) => m.type === 'agentsWritten'));
     const html = ProjectAnalysisPanel.prototype.getHtmlContent.call({});
-    const clientJs = html.match(/<script>([\s\S]*?)<\/script>/)[1];
+    // P60 fix: largest inline block = the client (a CSP shim comes first now).
+    const clientJs = mainScript(html);
+    const allJs = allInline(html);
     const clientFile = path.join(FX, 'client-extract.js');
     fs.writeFileSync(clientFile, clientJs);
     const chk = spawnSync(process.execPath, ['--check', clientFile]);
     check('G8: panel client script compiles (root-cause regression)', chk.status === 0,
         String((chk.stderr || '').toString().split('\n')[0]).slice(0, 120));
     check('G9: emitted onclick escaping is intact',
-        clientJs.indexOf("runFix(\\'") !== -1 && clientJs.indexOf("runFix(''") === -1);
+        allJs.indexOf("runFix(\\'") !== -1 && allJs.indexOf("runFix(''") === -1);
     let gotPrompt = '';
     const g10 = mkPanel(fx.F);
     g10.p._aiComplete = async (pr) => { gotPrompt = pr; return { reply: 'FAKE SUMMARY' }; };

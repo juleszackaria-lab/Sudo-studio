@@ -1,0 +1,88 @@
+name: 00 - Test suite (backend + extension)
+
+# P60: the product's own test composer (`backend/npm test`, 49 suites) was
+# NEVER executed by CI: workflow 01 only ran tests/test-p30-backend.js. Seven
+# suites had been red for weeks without anyone noticing, and P60 fixes them.
+# This workflow is the place where "the whole suite is green" is proven.
+#
+# It is deliberately separate from 01/02/03: those build Windows artifacts and
+# must not gain a new failure surface. Runs on Linux, on every push to main
+# and on demand.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - 'sudo-ai-extension/**'
+      - '.github/workflows/00-test-suite.yml'
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "18"
+
+jobs:
+  static-suite:
+    name: 49 suites (backend composer)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install backend deps
+        working-directory: backend
+        run: npm ci --no-audit --no-fund
+
+      - name: Install extension deps
+        working-directory: sudo-ai-extension
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: Backend self-test (pkg snapshot trap / missing requires)
+        working-directory: backend
+        run: node server.js --selftest
+
+      - name: Whole suite
+        working-directory: backend
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/suite.log
+          rc=${PIPESTATUS[0]}
+          echo "--- resume ---"
+          grep -E '^(>>> FAILED|TOTAL)' /tmp/suite.log || true
+          if grep -q '^>>> FAILED' /tmp/suite.log; then
+            echo '[FAIL] au moins une suite est rouge'
+            exit 1
+          fi
+          grep -q 'TOTAL: 49 suites, 0 failed' /tmp/suite.log || {
+            echo '[FAIL] le compositeur n annonce pas 0 echec'
+            exit 1
+          }
+          exit $rc
+
+      - name: No SKIP hidden as a pass
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          # test-ai-flow is a LIVE test (needs the runtime): its skip is
+          # expected and printed. Any OTHER skip line is a defect.
+          others=$(grep '^SKIP ' /tmp/suite.log | grep -v 'test-ai-flow.js' || true)
+          if [ -n "$others" ]; then
+            echo "$others"
+            echo '[WARN] suites non executees (a corriger, ecrit comme non prouve)'
+          fi
+
+      - name: Upload suite log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: P60-test-suite-log
+          path: /tmp/suite.log
+          if-no-files-found: warn
+          retention-days: 30

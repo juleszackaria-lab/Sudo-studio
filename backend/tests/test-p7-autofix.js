@@ -9,6 +9,8 @@
 'use strict';
 
 const fs = require('fs');
+const { mainScript, allInline } = require('./lib/inlineScripts');
+
 const os = require('os');
 const path = require('path');
 const Module = require('module');
@@ -411,13 +413,15 @@ async function main() {
     !docSrc.includes('openExternal') && !engSrc.includes('openExternal')
     && !/nodejs\.org|python\.org|git-scm|docker\.com\/get-docker|docker\.com\/products/.test(docSrc));
   const html = vscodeMock.window.panels[0].webview.html;
-  const clientJs = html.split('<script>')[1].split('</scr' + 'ipt>')[0];
+  // P60 fix: largest inline block = the client (a CSP shim comes first now).
+  const clientJs = mainScript(html);
+  const allJs = allInline(html);
   let parses = true; let perr = '';
   try { new vm.Script(clientJs); } catch (e) { parses = false; perr = e.message; }
   check('E2: client parses', parses, perr);
   check('E3: progress + table UI present',
-    clientJs.includes('renderFixTable') && clientJs.includes('showFixProgress')
-    && clientJs.includes("type: 'autoFixAll'") && clientJs.includes("case 'fixAllDone'"));
+    allJs.includes('renderFixTable') && allJs.includes('showFixProgress')
+    && allJs.includes("type: 'autoFixAll'") && allJs.includes("case 'fixAllDone'"));
   const pkg = JSON.parse(fs.readFileSync(path.join(EXT, 'package.json'), 'utf8'));
   check('E4: offline folder setting contributed',
     !!(pkg.contributes.configuration.properties || {})['sudoStudio.offlineInstallersDir']);
