@@ -582,17 +582,21 @@ t('G1', 'tools registered (P25), permissions ask-mutating', async () => {
     const tl = await httpJson(hs.port, a.token, 'GET', '/tools');
     assert(tl.status === 200 && Array.isArray(tl.body.tools), 'tools list');
     const names = tl.body.tools.map((x) => x.name).sort();
-    // P57 added five extension tools (extensions_list, extensions_describe,
-    // skill_load, mcp_call, task) plus `skill`: the registry now exposes 36
-    // tools. The per-PROFILE contract (13 small / 30 at 4096 / 35 full at
-    // >=8192) is asserted by P25/P26, not here; this checks the registry.
-    const expected = ['analyze', 'append', 'bash', 'ci', 'delete', 'doctor', 'done', 'edit',
-      'exec_poll', 'exec_start', 'exec_stop', 'extensions_describe', 'extensions_list',
-      'gen_check', 'gen_phase', 'gen_report', 'gen_restore', 'gen_start', 'glob', 'grep',
-      'list', 'mcp_call', 'mkdir', 'mkignore', 'patch', 'read', 'rename', 'reply', 'sdk',
-      'secaudit', 'skill', 'skill_load', 'subagent', 'task', 'todo', 'write'];
+    // P57 added five extension tools; P59 adds twelve PLATFORM tools (security
+    // audit, project analysis, devops, doctor, environment, logs, runtime,
+    // licence): the registry now exposes 48 tools. The per-PROFILE contract
+    // (13 small / 30 at 4096 / 35 full at >=8192) is asserted by P25/P26 and
+    // is UNCHANGED: platform tools are never in the default surface, the
+    // pre-router (router.js) exposes at most six of them per turn.
+    const expected = ['analyze', 'append', 'bash', 'ci', 'delete', 'devops_generate', 'devops_read',
+      'doctor', 'doctor_read', 'doctor_run', 'done', 'edit', 'environment_read', 'exec_poll',
+      'exec_start', 'exec_stop', 'extensions_describe', 'extensions_list', 'gen_check', 'gen_phase',
+      'gen_report', 'gen_restore', 'gen_start', 'glob', 'grep', 'license_status', 'list', 'logs_read',
+      'mcp_call', 'mkdir', 'mkignore', 'patch', 'project_analysis_read', 'project_analysis_run',
+      'read', 'rename', 'reply', 'runtime_status', 'sdk', 'secaudit', 'security_audit_read',
+      'security_audit_run', 'skill', 'skill_load', 'subagent', 'task', 'todo', 'write'];
     assert(JSON.stringify(names) === JSON.stringify(expected), 'tool names: ' + names.join(','));
-    assert(names.length === 36, 'registry size: ' + names.length);
+    assert(names.length === 48, 'registry size: ' + names.length);
     for (const x of tl.body.tools) assert(!('handler' in x), 'handler leaked');
     const pm = await httpJson(hs.port, a.token, 'GET', '/permissions');
     assert(pm.status === 200 && pm.body.mode === 'ask-mutating', 'permissions mode');

@@ -13,9 +13,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { probeProvider, streamChat, chatOnce, waitForRuntime } = require('./providers');
 const { classifyAction } = require('./intent');
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
+const routerMod = require('./router'); // P59-B: routeur d intention deterministe
+const platformMod = require('./platform'); // P59-A: pont plateforme (resultat pre-charge)
 const { loadProjectRules } = require('./permissions');
 const { diffSnapshot } = require('./checkpoints');
 const { maskSecrets } = require('./journal');
@@ -151,6 +154,20 @@ function summarizeResult(text) {
   }
 }
 
+// P59-13: `git status` BEFORE and AFTER every task, journaled (one line each).
+// Read-only, 5 s max, never fatal: a folder without git simply reports 'sans git'.
+function gitStatusOf(root) {
+  if (!root) return { kind: 'sans projet' };
+  try {
+    const out = execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    const lines = String(out).split(/\r?\n/).filter((l) => l.trim());
+    return { kind: 'git', count: lines.length, sample: lines.slice(0, 12).map((l) => l.trim().slice(0, 120)) };
+  } catch (e) {
+    const msg = String((e && e.message) || e);
+    return { kind: /not a git repository/i.test(msg) ? 'sans git' : 'erreur', error: msg.slice(0, 120) };
+  }
+}
+
 async function runTurn(opts) {
   opts = opts || {};
   const store = opts.store;
@@ -235,12 +252,22 @@ async function runTurn(opts) {
   store.append(sessionId, { role: 'user', content: storedText });
   const sessionNow = store.get(sessionId) || session;
   const useTools = !!opts.toolsCtx && sessionNow.projectRoot && opts.tools !== false;
+  // P59-13: git status before/after (read-only proof that the agent did not
+  // touch files outside the demand). Journaled once each, never fatal.
+  const _root = (opts.toolsCtx && opts.toolsCtx.root) || sessionNow.projectRoot || null;
+  const _gitBefore = gitStatusOf(_root);
+  if (log) { try { log.info('git statut avant', { session: sessionId, kind: _gitBefore.kind, count: _gitBefore.count || 0, sample: (_gitBefore.sample || []).join(' | ') }, corr); } catch (_) {} }
+  const _after = (res) => {
+    const g = gitStatusOf(_root);
+    if (log) { try { log.info('git statut apres', { session: sessionId, kind: g.kind, count: g.count || 0, delta: (g.count || 0) - (_gitBefore.count || 0), sample: (g.sample || []).join(' | ') }, corr); } catch (_) {} }
+    return res;
+  };
 
 
 
   const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, maxIt: opts.maxIt, subDepth: opts.subDepth };
-  if (useTools) return toolsTurn(base, sessionNow, opts.toolsCtx);
-  return legacyTurn(base, sessionNow);
+  if (useTools) return _after(await toolsTurn(base, sessionNow, opts.toolsCtx));
+  return _after(await legacyTurn(base, sessionNow));
 }
 
 // ---------------------------------------------------------------------------
@@ -362,9 +389,31 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
   if (!tail.length || tail[tail.length - 1].role !== 'user') {
     tail.push({ role: 'user', content: filter(base.prompt) });
   }
+  // P59-B: a QUESTION about a platform feature ("Que dit le System Doctor ?")
+  // gets the same deterministic routing + pre-loaded READ result as an ACTION.
+  // No tool is offered (this path never calls one), the data is injected.
+  let platformQ = '';
+  try {
+    const qroute = routerMod.route(base.prompt);
+    if (qroute.domain && qroute.prefetch) {
+      const pf = await platformMod.run({
+        root, home: homeOf(toolsCtx), ctxTokens: base.ctxTokens,
+        backendUrl: process.env.SUDO_BACKEND_URL, backendToken: process.env.SUDO_BACKEND_TOKEN,
+      }, qroute.prefetch, {});
+      if (pf.ok) {
+        platformQ = 'DONNEES PLATEFORME (' + qroute.domain + ', source reelle)\n' + pf.summary;
+        journal('info', 'plateforme question prechargee', { tool: qroute.prefetch, chars: pf.chars });
+      } else {
+        journal('warn', 'plateforme question indisponible', { tool: qroute.prefetch, code: pf.code });
+      }
+    }
+  } catch (e) {
+    journal('warn', 'plateforme question erreur', { error: String((e && e.message) || e).slice(0, 120) });
+  }
   const messages = [{ role: 'system', content: 'You are Sudo Agent. Answer the question about this project briefly, from the context. No tools.' }];
   if (mapText) messages.push({ role: 'system', content: mapText });
   if (preloadText) messages.push({ role: 'system', content: preloadText });
+  if (platformQ) messages.push({ role: 'system', content: filter(platformQ) });
   if (qctx.text) messages.push({ role: 'system', content: qctx.text });
   for (const m of tail) messages.push(m);
   journal('info', 'question envoyee', { tokens: profiles.estimateTokens(messages, 0), files: qctx.files.join(','), history: tail.length });
@@ -690,6 +739,13 @@ async function toolsTurn(base, session, toolsCtx) {
   }
   const intent = classifyAction(base.prompt);
   journal('info', 'intention classee', { kind: intent.kind, verbs: intent.verbs.join(','), expectsChange: intent.expectsChange, collective: intent.collective, improvement: intent.improvement, taskItems: intent.taskItems.length });
+  // P59-B: deterministic pre-router. It picks the domain (security, analysis,
+  // devops, doctor, logs, extensions), the at-most-6 platform tools this turn
+  // may use, and the READ tool whose result is pre-loaded into the context.
+  // The model never has to choose among thirty tools for a platform question.
+  const route = routerMod.route(base.prompt);
+  const routeFix = routerMod.wantsFix(base.prompt) && route.domain === 'security';
+  journal('info', 'route intention', { domain: route.domain || 'aucun', tools: route.tools.join(','), fix: routeFix });
   // P43-2: QUESTIONS take the single-call path (no free tool exploration).
   // The map + preload above are shared, so the journal keeps the same
   // proof lines ('carte projet injectee', 'contexte general precharge').
@@ -733,6 +789,51 @@ async function toolsTurn(base, session, toolsCtx) {
   }
   const subDepth = base.subDepth || 0; // P50-6: spawn allowed only at depth 0
   const ctxTokens = profiles.resolveCtxTokens({ override: process.env.SUDO_AGENT_CTX_TOKENS, probeNctx: probeNctx(base.preProbe, model), providerType: provider.type });
+
+  // P59-B: pre-load the matching READ tool. Bounded (25% of n_ctx) and masked
+  // by the bridge; a failure is journaled and never blocks the turn.
+  let platformText = '';
+  if (route.domain && route.prefetch) {
+    try {
+      const pf = await platformMod.run({
+        root, home, ctxTokens,
+        backendUrl: process.env.SUDO_BACKEND_URL, backendToken: process.env.SUDO_BACKEND_TOKEN,
+      }, route.prefetch, {});
+      if (pf.ok) {
+        platformText = 'DONNEES PLATEFORME (' + route.domain + ', ' + route.prefetch + ', source reelle)\n' + pf.summary;
+        // Budget guard: the pre-loaded result must never push the turn over its
+        // own context (a 2k window cannot pay for a full audit). 10% of n_ctx,
+        // and nothing at all below 4k - the routed TOOLS stay available, so the
+        // agent can still ask for the data explicitly.
+        if (ctxTokens < 4096) {
+          platformText = '';
+          journal('info', 'plateforme omise (contexte trop petit)', { ctx: ctxTokens, tool: route.prefetch });
+        } else {
+          const cap = Math.max(400, Math.floor(ctxTokens * 4 * 0.10));
+          if (platformText.length > cap) platformText = platformText.slice(0, cap - 24) + '\n... [tronque]';
+        }
+        journal('info', 'plateforme prechargee', { tool: route.prefetch, chars: platformText.length });
+      } else {
+        journal('warn', 'plateforme indisponible', { tool: route.prefetch, code: pf.code });
+        platformText = 'PLATEFORME : ' + route.prefetch + ' indisponible - ' + String(pf.error || '').slice(0, 160);
+      }
+    } catch (e) {
+      journal('warn', 'plateforme erreur', { tool: route.prefetch, error: String((e && e.message) || e).slice(0, 120) });
+    }
+  }
+
+  // P59-5: "corrige les failles" is a PROTOCOL, not a single edit: one fix at
+  // a time, each with its diff + approval, then the audit is RE-RUN. A vuln is
+  // never called fixed without a confirming audit.
+  if (routeFix && platformText) {
+    platformText += '\n\nPROTOCOLE DE CORRECTION (obligatoire) :\n' +
+      '1) classe les failles par gravite et traite UNE seule faille par pas ;\n' +
+      '2) chaque correction passe par edit/patch (diff affiche puis approbation) ;\n' +
+      '3) apres chaque correction, appelle security_audit_run pour confirmer ;\n' +
+      '4) ne declare JAMAIS une faille corrigee sans une relance qui le prouve ;\n' +
+      '5) termine par le score AVANT / APRES et la liste des failles restantes avec la raison.';
+    journal('info', 'protocole correction failles', { domain: route.domain });
+  }
 
   const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
 
@@ -869,6 +970,8 @@ async function toolsTurn(base, session, toolsCtx) {
 
   const tctx = {
     root, sessionId, session, store, log, corr, run, home, mode,
+    ctxTokens, platformTools: route.tools, // P59: budget + routed surface
+    backendUrl: process.env.SUDO_BACKEND_URL, backendToken: process.env.SUDO_BACKEND_TOKEN,
     sessionRules: sessionRulesMap.get(sessionId),
     projectRules: projRules.rules,
     sessionKill: runEntry.killFns,
@@ -879,7 +982,7 @@ async function toolsTurn(base, session, toolsCtx) {
   // P26-b/e: tool schemas for the profile + (full only) policy-allowed MCP tools.
   // P57-1: les schemas d'extensions ne sont proposes que si le contexte les
   // porte (meme seuil que le digest) ; sinon l'agent garde son jeu d'avant.
-  const schemas = toOpenAISchema(profile, ctxTokens);
+  const schemas = toOpenAISchema(profile, ctxTokens, { platformTools: route.tools });
   if (profile === 'full') {
     let servers = {};
     try { servers = mcpMod.loadConfig(home); } catch (_) { servers = {}; }
@@ -944,6 +1047,7 @@ async function toolsTurn(base, session, toolsCtx) {
     // P39-a/c: map then preload, right after the system prompt (both are
     // counted by the context estimate, P39-e).
     if (preloadText) out.splice(1, 0, { role: 'system', content: preloadText });
+    if (platformText) out.splice(1, 0, { role: 'system', content: filter(platformText) });
     if (mapText) out.splice(1, 0, { role: 'system', content: mapText });
     // P50-2: skills after map/preload (counted by the context estimate).
     if (skillsText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0), 0, { role: 'system', content: filter(skillsText) });
