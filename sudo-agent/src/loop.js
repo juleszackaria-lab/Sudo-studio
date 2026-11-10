@@ -45,6 +45,7 @@ const recovery = require('./recovery');
 const recipes = require('./recipes');
 const extMod = require('./extensions');
 const pmap = require('./projectmap');
+const resolvePath = require('./resolvePath'); // P61-8: resolution tolerante des chemins
 
 const MAX_HISTORY = 50;
 const MAX_PROMPT = 200000;
@@ -58,6 +59,10 @@ const MAX_SUB_PARALLEL = 3;
 const BUILD_FIX_TOOLS = ['bash', 'exec_start', 'exec_poll', 'write', 'edit', 'patch', 'append', 'mkdir', 'gen_check', 'mkignore', 'ci', 'sdk'];
 const MAX_BUILD_FIX = 6;
 const MAX_AGENTS_MD = 32 * 1024;
+// P61-5: outils dont la cible doit avoir ete LUE avant d'agir (l'agent li
+// lui-meme au lieu de renvoyer une erreur au modele).
+const NEEDS_PRIOR_READ = ['delete', 'rename'];
+const AUTO_READ_LINES = 200;
 
 function homeOf(toolsCtx) {
   if (toolsCtx && toolsCtx.home) return String(toolsCtx.home);
@@ -159,7 +164,8 @@ function summarizeResult(text) {
 function gitStatusOf(root) {
   if (!root) return { kind: 'sans projet' };
   try {
-    const out = execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    const out = execFileSync('git', ['-C', root, 'status', '--porcelain'],
+      { encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     const lines = String(out).split(/\r?\n/).filter((l) => l.trim());
     return { kind: 'git', count: lines.length, sample: lines.slice(0, 12).map((l) => l.trim().slice(0, 120)) };
   } catch (e) {
@@ -569,7 +575,11 @@ const GUARD_SKIP_CODES = ['need_approval', 'asked', 'denied', 'deploy_policy', '
 // restriction) and exists (write is create-only: use edit/append) join
 // them; todos_open/no_plan stay listed so old transcripts never poison
 // new verdicts.
-const GUIDANCE_CODES = ['todos_open', 'no_plan', 'engine_todos', 'recon_required', 'verify', 'corrective', 'verify_timeout'];
+// P61: 'already_done' et 'duplicate' ne sont PAS des echecs : le travail a
+// deja ete fait une fois (idempotence), le doublon est simplement ecarte.
+// 'target_given_up' est une explication d'arret, pas une erreur d'outil.
+const GUIDANCE_CODES = ['todos_open', 'no_plan', 'engine_todos', 'recon_required', 'verify', 'corrective', 'verify_timeout',
+  'already_done', 'duplicate', 'not_found_resolved'];
 
 // P49-4: same sentence 3+ times in one reply = a stuck small model.
 // Pure (unit-tested): returns { repeated, count } or null.
@@ -640,6 +650,35 @@ function computeRunStatus(declared, calls, extra) {
     return { status: 'PARTIEL', reason, unresolved, verifyNote, partialFiles: files.slice() };
   }
   return { status: 'TERMINE', reason: '', unresolved, verifyNote };
+}
+
+// P61-9: aucun statut (PARTIEL / ECHEC / abandonne) n'est pose sans un texte
+// visible qui dit POURQUOI, CE QUI EST FAIT et CE QUI RESTE. Fonction pure.
+function statusNotice(verdict, calls, filesModified, stopReason) {
+  const v = verdict || {};
+  if (v.status === 'TERMINE') return '';
+  const done = (calls || []).filter((c) => c.ok && c.code !== 'skipped');
+  const ko = (calls || []).filter((c) => !c.ok && c.code !== 'skipped' && GUIDANCE_CODES.indexOf(c.code) === -1);
+  const lines = [];
+  const why = String(v.reason || stopReason || 'non precisee').replace(/[.\s]+$/, '');
+  lines.push('Statut : ' + (v.status || 'PARTIEL') + ' - raison : ' + why + '.');
+  if (filesModified && filesModified.length) {
+    lines.push('Fait : ' + filesModified.length + ' fichier(s) modifie(s) (' + filesModified.slice(0, 6).join(', ') + ').');
+  } else if (done.length) {
+    const uniq = [];
+    for (const c of done) { const k = c.tool + (c.target ? ' ' + String(c.target).slice(0, 40) : ''); if (uniq.indexOf(k) === -1) uniq.push(k); }
+    lines.push('Fait : ' + uniq.slice(0, 6).join(', ') + '.');
+  } else {
+    lines.push('Fait : aucun appel abouti.');
+  }
+  if (ko.length) {
+    const uniq = [];
+    for (const c of ko) { const k = c.tool + ' (' + (c.code || 'echec') + ')'; if (uniq.indexOf(k) === -1) uniq.push(k); }
+    lines.push('Reste : ' + uniq.slice(0, 6).join(', ') + '.');
+  } else {
+    lines.push('Reste : la demande n\'a pas ete confirmee terminee ; relancez-la ou precisez l\'action.');
+  }
+  return lines.join('\n');
 }
 
 function probeNctx(preProbe, model) {
@@ -1017,7 +1056,8 @@ async function toolsTurn(base, session, toolsCtx) {
       journal('info', 'outils restreints (agent)', { tools: filtered.length });
     }
   }
-  const schemaChars = JSON.stringify(schemas).length;
+  let activeSchemas = schemas;
+  let schemaChars = JSON.stringify(activeSchemas).length;
 
   // P53-5: the engine speaks the conversation language (French by default).
   let convLang = 'fr';
@@ -1066,8 +1106,32 @@ async function toolsTurn(base, session, toolsCtx) {
   journal('info', 'turn start', { model, tools: true, mode, profile, ctx: ctxTokens, est0,
     mapTokens: mapInfo ? mapInfo.tokens : 0, preload: preloadText ? preloadText.length : 0,
     agentsMd: agentsMd ? agentsMd.length : 0 });
-  if (est0 > ctxTokens * 0.75) {
-    journal('warn', 'contexte initial eleve', { est0, ctx: ctxTokens });
+  // P61-16: budget strict - jamais plus de 70 % de n_ctx par appel.
+  const CTX_BUDGET = 0.70;
+  // P61-16/19: si l'overhead FIXE (instructions + schemas) mange deja le
+  // budget de 70 %, on REDUIT la surface d'outils du tour au lieu de bloquer.
+  // Degradation progressive : jeu complet -> jeu reduit -> 6 outils coeur.
+  const CORE6 = ['read', 'write', 'edit', 'reply', 'done', 'bash'];
+  const trimSchemas = () => {
+    const steps = [];
+    const red = recovery.reducedTools(activeSchemas);
+    if (red.length && red.length < activeSchemas.length) steps.push({ how: 'reduit', set: red });
+    const core = activeSchemas.filter((x) => x && x.function && CORE6.indexOf(x.function.name) !== -1);
+    if (core.length && (!red.length || core.length < red.length)) steps.push({ how: 'coeur6', set: core });
+    for (const st of steps) {
+      const chars = JSON.stringify(st.set).length;
+      if (chars < schemaChars) {
+        activeSchemas = st.set; schemaChars = chars;
+        journal('info', 'surface d outils reduite pour tenir le budget', { how: st.how,
+          tools: st.set.length, budget: CTX_BUDGET });
+      }
+      const est = profiles.estimateTokens(modelMessages(), schemaChars);
+      if (est <= ctxTokens * CTX_BUDGET) break;
+    }
+  };
+  if (est0 > ctxTokens * CTX_BUDGET) {
+    journal('warn', 'contexte initial eleve, reduction de la surface', { est0, ctx: ctxTokens, budget: CTX_BUDGET });
+    trimSchemas();
   }
   // P43-3: per-part budget table (same chars/4 estimator): proves where the
   // context goes and makes every saturation diagnosable. Field values are
@@ -1100,27 +1164,70 @@ async function toolsTurn(base, session, toolsCtx) {
   // { ok:true } or { ok:false, reason } (honest stop, never silent loss).
   const maybeCompress = async () => {
     const est = profiles.estimateTokens(modelMessages(), schemaChars);
-    if (est <= ctxTokens * 0.75) return { ok: true, compressed: false };
+    // P61-16: 70 % maximum de n_ctx par appel (au-dela on compresse).
+    if (est <= ctxTokens * CTX_BUDGET) return { ok: true, compressed: false };
+    // P61-16: l'overhead fixe seul peut depasser le budget. Ce n'est pas un
+    // historique a compresser : on reduit la surface d'outils et on continue.
+    const fixedOnly = profiles.estimateTokens(modelMessages().slice(0, 1), schemaChars);
+    if (fixedOnly > ctxTokens * CTX_BUDGET) { trimSchemas(); }
     const stored = (store.get(sessionId) || { messages: [] }).messages;
-    if (stored.length <= 5) return { ok: false, reason: 'contexte sature (' + est + ' tokens estimes pour ' + ctxTokens + ', historique trop court pour compresser).' };
+    if (stored.length <= 5) {
+      // P61-16: un historique court ne se compresse pas. Deux cas distincts :
+      //  - au-dela de 100 % du contexte, meme la demande nue ne rentre pas :
+      //    on s'arrete HONNETEMENT (reponse de secours, statut PARTIEL) ;
+      //  - entre 70 % et 100 %, l'overhead fixe explique le depassement et la
+      //    surface d'outils vient d'etre reduite : le tour CONTINUE (bloquer
+      //    ici punirait la taille du contrat d'outils, pas l'historique).
+      const estR = profiles.estimateTokens(modelMessages(), schemaChars);
+      if (estR > ctxTokens) {
+        return { ok: false, reason: 'contexte sature (' + estR + ' tokens estimes pour ' + ctxTokens + ', historique trop court pour compresser).' };
+      }
+      journal('warn', 'budget depasse apres reduction (historique court), poursuite',
+        { est: estR, ctx: ctxTokens, budget: CTX_BUDGET, tools: activeSchemas.length });
+      return { ok: true, compressed: false, saturated: true };
+    }
     const old = stored.slice(0, -4).map((m) => {
       let c = m.content || '';
       if (Array.isArray(m.tool_calls) && m.tool_calls.length) c += '\n[appels: ' + m.tool_calls.map((t) => t.name).join(', ') + ']';
       return { role: m.role === 'tool' ? 'user' : m.role, content: ('[' + m.role + '] ' + c).slice(0, 2000) };
     });
+    // P61-16: sur un historique court (moins de 8 messages), un petit modele
+    // n'a rien d'utile a resumer ET l'appel de resume coute un tour complet :
+    // on prend le resume DETERMINISTE, sans appel modele. Au-dela, le modele
+    // resume (avec repli deterministe s'il ne rend rien).
     let summary = '';
-    try {
-      const r = await chatOnce(provider, { model, messages: [{ role: 'system', content: compressMod.summarizePrompt() }].concat(old) });
-      summary = String(r.text || '').trim();
-    } catch (e) {
-      journal('warn', 'compression failed', { error: String((e && e.message) || e).slice(0, 160) });
-      summary = '';
+    let summaryFromModel = false;
+    if (stored.length >= 8) {
+      try {
+        const r = await chatOnce(provider, { model, messages: [{ role: 'system', content: compressMod.summarizePrompt() }].concat(old) });
+        summary = String(r.text || '').trim();
+        summaryFromModel = !!summary;
+      } catch (e) {
+        journal('warn', 'compression failed', { error: String((e && e.message) || e).slice(0, 160) });
+        summary = '';
+      }
+    }
+    // P61-16: pas de resume modele utilisable -> resume DETERMINISTE (jamais
+    // d'echec de compression du a un petit modele).
+    let how = summaryFromModel ? 'modele' : 'deterministe (historique court ou modele muet)';
+    if (!summary) {
+      summary = compressMod.deterministicSummary(stored);
+      how = 'deterministe';
+      journal('warn', 'resume modele vide, resume deterministe', { chars: summary.length });
     }
     if (!summary) return { ok: false, reason: 'compression du contexte echouee (resume vide).' };
     store.setMessages(sessionId, compressMod.spliceHistory(summary, stored, 4));
+    journal('info', 'contexte compresse (methode)', { methode: how });
     journal('info', 'contexte compresse', { before: stored.length, summaryChars: summary.length });
     const est2 = profiles.estimateTokens(modelMessages(), schemaChars);
-    if (est2 > ctxTokens) return { ok: false, reason: 'contexte sature meme apres compression (' + est2 + ' / ' + ctxTokens + ').' };
+    if (est2 > ctxTokens * CTX_BUDGET) {
+      // P61-16: si le depassement vient de l'overhead FIXE (instructions +
+      // schemas d'outils), on ne bloque pas le tour : on le journalise, en
+      // nommant la cause. Bloquer ici punirait l'utilisateur pour la taille
+      // du contrat d'outils, pas pour son historique.
+      journal('warn', 'budget 70 pourcent depasse apres compression', { est2, ctx: ctxTokens,
+        cause: 'overhead fixe (instructions + schemas)' });
+    }
     return { ok: true, compressed: true };
   };
 
@@ -1254,7 +1361,7 @@ async function toolsTurn(base, session, toolsCtx) {
   // P55-3: une panne du fournisseur (500, delai, appel d'outil invalide) est
   // RECUPERABLE : jusqu'a 3 essais avec un schema reduit, puis le format de
   // secours "FICHIER: chemin". On ne renonce qu'apres avoir epuise les voies.
-  const reducedSchemas = recovery.reducedTools(schemas);
+  const reducedSchemas = recovery.reducedTools(activeSchemas);
   let recoveryUsed = 0;
   // Ecritures issues du format de secours : elles passent par le CHEMIN
   // NORMAL (approbation, journal, verification), pas par un raccourci.
@@ -1273,7 +1380,7 @@ async function toolsTurn(base, session, toolsCtx) {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const useReduced = attempt > 0;
-        const r = await roundRaw(useReduced ? reducedSchemas : schemas);
+        const r = await roundRaw(useReduced ? reducedSchemas : activeSchemas);
         // Le runtime signale un appel inutilisable par 200 + erreur structuree.
         if (r && r.invalidCall && !(r.toolCalls && r.toolCalls.length)) {
           recoveryUsed += 1;
@@ -1286,7 +1393,7 @@ async function toolsTurn(base, session, toolsCtx) {
           continue;
         }
         if (attempt > 0) journal('info', 'reprise apres panne fournisseur', { attempt: attempt + 1,
-          tools: useReduced ? reducedSchemas.length : schemas.length, why: String((lastErr && lastErr.message) || '').slice(0, 120) });
+          tools: useReduced ? reducedSchemas.length : activeSchemas.length, why: String((lastErr && lastErr.message) || '').slice(0, 120) });
         return r;
       } catch (e) {
         lastErr = e;
@@ -1294,7 +1401,34 @@ async function toolsTurn(base, session, toolsCtx) {
         if (!cls.recoverable || runEntry.aborted) throw e;
         recoveryUsed += 1;
         journal('warn', 'panne fournisseur recuperable', { attempt: attempt + 1, why: cls.why });
-        // Une seconde d'attente entre deux essais (le runtime peut se remettre).
+        // P61-10a: le runtime local est tombe. On ne rend pas la main au
+        // modele ni a l'utilisateur : la requete est MISE EN FILE et rejouee
+        // des que /health repond (120 s max, message clair a chaque essai).
+        // Un port ferme n'est pas une fin de tour, c'est un redemarrage.
+        if (e && e.code === 'runtime_offline') {
+          const w = await waitForRuntime(provider, {
+            // 12 x 10 s = 120 s (budget P61). Les essais rapides ci-dessus
+            // couvrent deja les coupures de moins d'une seconde.
+            attempts: (runtimeWait && runtimeWait.attempts) || 12,
+            delayMs: (runtimeWait && runtimeWait.delayMs) || 10000,
+            probeTimeoutMs: (runtimeWait && runtimeWait.probeTimeoutMs) || 2000,
+            shouldAbort: () => runEntry.aborted,
+            onProgress: (n, max) => {
+              try { onEvent({ type: 'runtime.wait', attempt: n, maxAttempts: max,
+                message: 'Runtime en redemarrage... (tentative ' + n + '/' + max + ', le travail est conserve)' }); } catch (_) {}
+            },
+          });
+          if (w.recovered) {
+            journal('info', 'runtime retabli, requete rejouee', { attempts: w.attemptsMade });
+            continue;
+          }
+          journal('warn', 'runtime indisponible apres 120 s', { attempts: w.attemptsMade });
+          const err = new Error('Runtime local indisponible apres ' + (w.attemptsMade || 0) +
+            ' tentatives (~120 s). La demande est conservee : relancez-la quand le runtime est revenu.');
+          err.code = 'runtime_offline';
+          throw err;
+        }
+        // Une seconde d'attente entre deux essais (panne transitoire).
         if (attempt < 2) await new Promise((r2) => setTimeout(r2, 400));
       }
     }
@@ -1384,12 +1518,28 @@ async function toolsTurn(base, session, toolsCtx) {
   }
   let declared = false;
   let finalText = '';
+  // P61-9: distingue un texte ECRIT PAR LE MODELE (reponse declaree ou
+  // reponse de secours) d'un texte ECRIT PAR L'AGENT (constat de statut). Le
+  // second porte toujours fait/reste ; le premier est stocke tel quel, le
+  // statut restant lisible dans turn.done / lastRun.
+  let answerFromModel = false;
   let iters = 0;
   let subSpawns = 0;
   let childSeq = 0;
   let buildFixFails = 0;
   let buildFixStop = false;
   const guard = plan.createLoopGuard();
+  // P61-4: idempotence stricte PAR TOUR. Un appel identique (meme outil, memes
+  // arguments) n'est execute qu'UNE fois ; une redemande recoit le resultat
+  // deja obtenu. Etat local a la fonction : rien ne fuit d'un tour au suivant.
+  const executed = new Map();      // sig -> { content, ok, code, tool, target }
+  const dupHits = new Map();       // sig -> nombre de redemandes identiques
+  const retryAllowed = new Set();  // sigs autorises une fois (apres une panne de garde)
+  // P61-8: cibles introuvables. 2 echecs identiques => la cible est abandonnee
+  // avec une explication, JAMAIS un max_iters.
+  const targetFails = new Map();   // cible -> nombre d'echecs
+  const listedTargets = new Set(); // cibles dont la liste des fichiers a deja ete donnee
+  const INVALIDATABLE = ['write', 'edit', 'patch', 'append', 'delete', 'rename', 'mkdir'];
   let loopStop = false;
   let pauseAborted = false;
   let orchVerdict = null;
@@ -1399,6 +1549,95 @@ async function toolsTurn(base, session, toolsCtx) {
   // P52 loop guard v2: a loop stop NEVER ends without an answer. Last
   // round WITHOUT tools (answer from what is collected), else a labelled
   // deterministic fallback. Status stays PARTIEL (loop happened).
+  // P61-4: invalide le cache d'idempotence quand un fichier a change.
+  const invalidateTarget = (tool, args) => {
+    if (INVALIDATABLE.indexOf(tool) === -1) return;
+    const target = String((args && (args.file || args.from)) || '');
+    if (!target) return;
+    for (const [k, v] of Array.from(executed.entries())) {
+      if (v && String(v.target || '') === target) executed.delete(k);
+    }
+  };
+  // P61-12: reparation des arguments d'outil illisibles. Deux passes, jamais
+  // une erreur brute envoyee a l'utilisateur.
+  const repairArgs = (raw, name) => {
+    let t = String(raw === undefined || raw === null ? '' : raw);
+    const tries = [];
+    const strip = () => t.replace(/^\s*```[a-z]*\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    tries.push(() => strip());
+    tries.push(() => strip()
+      .replace(/,\s*([}\]])/g, '$1')                       // virgules finales
+      .replace(/^\s*'([^']*)'\s*$/, '"$1"')                 // chaine simple quote
+      .replace(/([,{]\s*)'([^']*)'(\s*:)/g, '$1"$2"$3'));  // cles en simple quote
+    tries.push(() => {
+      const m = t.match(/\{[\s\S]*\}/);
+      return m ? m[0] : '';
+    });
+    for (const fn of tries) {
+      let cand = '';
+      try { cand = fn(); } catch (_) { cand = ''; }
+      if (!cand) continue;
+      try {
+        let v = JSON.parse(cand);
+        if (typeof v === 'string') { try { v = JSON.parse(v); } catch (_) {} }
+        if (v && typeof v === 'object' && !Array.isArray(v)) return v;
+      } catch (_) {}
+    }
+    // Dernier recours : une chaine nue "README.md" = { file: "README.md" }.
+    // P61-12: une chaine nue n'est acceptee comme chemin QUE si elle en a la
+    // forme (pas d'espace, un separateur ou une extension). "pas du json" ne
+    // doit pas devenir un nom de fichier : on prefere un message clair.
+    const lone = strip().replace(/^["']|["']$/g, '');
+    const looksLikePath = lone.length > 0 && lone.length < 200 && !/\s/.test(lone) && /[./\\]/.test(lone);
+    if (lone && looksLikePath && lone.indexOf('{') === -1 && name) {
+      const key = (name === 'read' || name === 'delete' || name === 'write' || name === 'edit') ? 'file' : '';
+      if (key) return { [key]: lone };
+    }
+    return null;
+  };
+  // P61-8: chemin introuvable -> l'agent resout lui-meme et le DIT.
+  const autoResolveTarget = async (toolName, args, res) => {
+    const target = String((args && (args.file || args.path || args.from)) || '');
+    if (!target || !res || res.ok) return null;
+    if (res.code !== 'not_found') return null;
+    // P61-8 (portee): not_found couvre DEUX cas tres differents. Si le
+    // FICHIER existe, l'echec porte sur son CONTENU (edit: chaine "old"
+    // introuvable) : ce n'est pas un probleme de chemin, il ne faut donc ni
+    // resoudre la cible ni l'abandonner - la boucle corrective s'en charge.
+    try {
+      const abs = require('path').resolve(root, target);
+      const st = require('fs').statSync(abs);
+      if (st && (st.isFile() || st.isDirectory())) return null;
+    } catch (_) { /* le fichier n'existe pas : c'est bien un chemin */ }
+    const n = (targetFails.get(target) || 0) + 1;
+    targetFails.set(target, n);
+    if (n > 2) return { giveUp: true };
+    const hit = resolvePath.resolveClosest(root, target);
+    // P61-8: compare la forme BRUTE (readme.md != README.md) : la casse est
+    // justement ce qu'on corrige.
+    if (hit.ok && hit.rel && hit.rel !== target) {
+      journal('info', 'chemin resolu', { demande: target.slice(0, 80), resolu: hit.rel.slice(0, 80), comment: hit.how });
+      const rd = await executeTool(tctx, 'read', { file: hit.rel, limit: 200 }, {});
+      if (rd.status === 'done') {
+        const body = { ok: true, summary: 'fichier introuvable sous le nom demande; lu sous le nom reel ' + hit.rel + '.',
+          result: rd.call.result, cheminCorrige: { demande: target, utilise: hit.rel, comment: hit.how },
+          note: 'utilise ce chemin exact (' + hit.rel + ') pour la suite.' };
+        return { content: JSON.stringify(body) };
+      }
+    }
+    const cands = (hit.candidates || []).slice(0, 40);
+    const already = listedTargets.has(target);
+    if (!already) listedTargets.add(target);
+    journal('warn', 'cible introuvable', { cible: target.slice(0, 80), candidats: cands.length, deja_liste: already });
+    return {
+      content: JSON.stringify({
+        ok: false, code: 'not_found',
+        error: 'fichier introuvable : ' + target + '. Fichiers existants (utilise un de ces chemins EXACTS) : ' + cands.join(', '),
+        candidats: cands,
+        note: already ? 'liste deja donnee : ne redemande pas ce chemin, choisis-en un ou termine.' : undefined,
+      }),
+    };
+  };
   const rescueAnswer = async (what) => {
     if (runEntry.aborted) return;
     try {
@@ -1411,6 +1650,7 @@ async function toolsTurn(base, session, toolsCtx) {
       const rt = String((rescue && rescue.text) || '').trim();
       if (rt) {
         finalText = rt;
+        answerFromModel = true;
         store.append(sessionId, { role: 'assistant', content: finalText });
         journal('info', 'reponse secours IA', { chars: rt.length });
       }
@@ -1419,6 +1659,8 @@ async function toolsTurn(base, session, toolsCtx) {
     }
     if (!finalText) {
       finalText = pmap.deterministicFallback({ root, map: mapInfo, calls: run.calls, loopKey: String(what || '?'), prompt: base.prompt });
+      // Repli deterministe : texte de l'agent, il porte deja son explication.
+      answerFromModel = true;
       store.append(sessionId, { role: 'assistant', content: finalText });
       journal('warn', 'reponse secours deterministe', { chars: finalText.length });
     }
@@ -1504,6 +1746,7 @@ async function toolsTurn(base, session, toolsCtx) {
         if (v === 'stop') break;
         declared = true;
         finalText = reply.text || '';
+        answerFromModel = true;
         store.append(sessionId, { role: 'assistant', content: finalText });
         break;
       }
@@ -1511,6 +1754,74 @@ async function toolsTurn(base, session, toolsCtx) {
       // (with their own tool message so the transcript stays valid).
       store.append(sessionId, { role: 'assistant', content: reply.text || '', tool_calls: calls.map((c) => ({ id: c.id, name: c.name, argsText: c.argsText })) });
       const first = calls[0];
+      // P61-12: arguments illisibles -> reparation cote agent (2 passes), puis
+      // message clair en francais. Jamais une erreur brute, jamais un 500.
+      if (first && first.parseError) {
+        const fixed = repairArgs(first.argsText, first.name);
+        if (fixed) {
+          first.args = fixed;
+          first.parseError = null;
+          journal('info', 'arguments d outil repares', { tool: String(first.name || '').slice(0, 40) });
+        }
+      }
+      // P61-4: un appel identique deja execute dans CE tour n'est pas rejoue.
+      const sig = (!first || first.parseError) ? '' : plan.argSig(first.name, first.args);
+      if (sig) {
+        const prior = executed.get(sig);
+        if (prior && !retryAllowed.has(sig)) {
+          const hits = (dupHits.get(sig) || 1) + 1;
+          dupHits.set(sig, hits);
+          const callIdD = first.id || ('call-' + run.calls.length);
+          // P61-4 + P52: un appel de MUTATION redemande 3 fois declenche la
+          // strategie corrective (le modele peut encore s'adapter) ; une
+          // redemande ulterieure arrete le tour proprement avec une reponse
+          // de secours. Un appel en LECTURE seule n'est jamais escalade :
+          // il n'a aucun effet de bord, on renvoie simplement son resultat.
+          const escalatable = GUARD_TOOLS.indexOf(first.name) !== -1;
+          const bodyD = (escalatable && hits >= 3)
+            ? { ok: false, code: 'corrective',
+                error: 'arret de la repetition : tu as redemande 3 fois le meme appel (' + String(first.name) + ') sans changer d\'arguments. ' +
+                  'Le resultat est deja ci-dessus. Change d\'argument, choisis un autre outil, ou termine via reply/done.' }
+            : { ok: false, code: 'already_done',
+                error: 'deja execute, passe a l\'etape suivante : cet appel a dEJA ete fait dans ce tour, voici son resultat.',
+                result: (function () { try { return JSON.parse(prior.content).result; } catch (_) { return undefined; } })(),
+                summary: 'deja execute, passe a l etape suivante.' };
+          run.calls.push({ tool: first.name || '?', target: '', ok: false, code: bodyD.code, ms: 0,
+            at: new Date().toISOString(), summary: 'non rejoue : appel identique deja execute.' });
+          store.append(sessionId, { role: 'tool', tool_call_id: callIdD, name: first.name, content: JSON.stringify(bodyD) });
+          try { onEvent({ type: 'tool.result', callId: callIdD, tool: first.name, ok: false, code: bodyD.code, ms: 0, summary: bodyD.summary || bodyD.error.slice(0, 120) }); } catch (_) {}
+          for (const extra of calls.slice(1)) {
+            const xid = extra.id || ('call-' + run.calls.length);
+            store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name,
+              content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.' }) });
+            try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore.' }); } catch (_) {}
+          }
+          // P61-4: au-dela de la strategie corrective, une 4e redemande
+          // identique arrete le tour PROPREMENT (reponse de secours, raison
+          // visible, statut PARTIEL) : on n'execute jamais deux fois la meme
+          // action, et on ne laisse jamais le modele tourner a vide.
+          if (escalatable && hits >= 5) {
+            stopReason = 'loop';
+            stopDetail = 'boucle : ' + String(first.name) + ' redemande a l\'identique ' + hits +
+              ' fois malgre la strategie corrective (execute une seule fois).';
+            journal('warn', 'repeat loop', { tool: first.name, hits, via: 'idempotence' });
+            await rescueAnswer(first.name);
+            break;
+          }
+          if (escalatable && hits >= 3) {
+            // La 3e redemande reste NON executee et arme la garde corrective :
+            // toute repetition ulterieure sera refusee puis arrettera le tour.
+            guard.forbiddenArgs = sig;
+            journal('warn', 'boucle corrective', { tool: first.name, hits, via: 'idempotence' });
+            store.append(sessionId, { role: 'user', content: 'STRATEGIE CORRECTIVE : tu as repete 3 fois le meme appel ' + String(first.name || '?') +
+              ' (memes arguments). Il n\'a ete execute QU\'UNE fois, son resultat est ci-dessus. ' +
+              'Change de strategie : constate autrement (list/grep/read), choisis un autre outil ou d\'autres arguments, ou termine via reply/done. ' +
+              'Ne re-emets PAS cet appel (une repetition identique = arret du tour).' });
+          }
+          continue;
+        }
+        if (prior && retryAllowed.has(sig)) retryAllowed.delete(sig);
+      }
       // P52 loop guard v2: while corrective, the IDENTICAL call (same tool
       // + same args) is refused with guidance; the 2nd identical repeat
       // stops the turn (with a rescue answer). A different tool or
@@ -1768,7 +2079,58 @@ async function toolsTurn(base, session, toolsCtx) {
           run.calls.push(entry);
           return JSON.stringify({ ok: false, code: 'need_approval', requestId: rr.request.id, summary: rr.request.summary, hint: 'appel NON execute : approbation operateur requise.', detail: rr.request.summary });
         };
-        const r = await executeTool(tctx, first.name, first.args, {});
+        // P61-5: protection "lire avant de supprimer/renommer" AUTOMATIQUE.
+        // Si la cible n'a pas ete lue pendant la session, l'AGENT la lit
+        // lui-meme (lecture bornee) puis rejoue l'action dans la MEME etape :
+        // aucun aller-retour avec le modele, aucune iteration consommee.
+        if (NEEDS_PRIOR_READ.indexOf(first.name) !== -1 && first.args && typeof first.args.file === 'string') {
+          const rel = String(first.args.file);
+          const readFiles = (session.meta && Array.isArray(session.meta.readFiles)) ? session.meta.readFiles : [];
+          const abs = path.join(root, rel);
+          let exists = false;
+          try { exists = fs.statSync(abs).isFile(); } catch (_) { exists = false; }
+          if (exists && readFiles.indexOf(rel) === -1) {
+            const ar = await executeTool(tctx, 'read', { file: rel, limit: AUTO_READ_LINES }, {});
+            const okRead = ar.status === 'done';
+            journal(okRead ? 'info' : 'warn', 'lecture automatique avant action',
+              { tool: first.name, file: rel.slice(0, 120), ok: okRead });
+            if (okRead) {
+              const fresh = store.get(sessionId) || session;
+              if (fresh && fresh.meta) session.meta = fresh.meta;
+            }
+          }
+        }
+        let r = await executeTool(tctx, first.name, first.args, {});
+        // P61-8: cible introuvable -> resolution automatique (casse, nom
+        // approche) ou liste UNE fois ; 2 echecs => cible abandonnee.
+        if (r.status === 'error' && (r.code === 'not_found')) {
+          const reso = await autoResolveTarget(first.name, first.args, { ok: false, code: r.code });
+          if (reso && reso.giveUp) {
+            stopReason = 'target_given_up';
+            stopDetail = 'cible introuvable apres 2 tentatives : ' + String((first.args && first.args.file) || '?') +
+              ' (aucun fichier correspondant dans le projet).';
+            content = JSON.stringify({ ok: false, code: 'target_given_up',
+              error: 'cible abandonnee : ' + String((first.args && first.args.file) || '?') + ' est introuvable (2 tentatives).' });
+            journal('warn', 'cible abandonnee', { cible: String((first.args && first.args.file) || '?').slice(0, 120) });
+            store.append(sessionId, { role: 'tool', tool_call_id: first.id || ('call-' + run.calls.length), name: first.name, content });
+            run.calls.push({ tool: first.name, target: String((first.args && first.args.file) || ''), ok: false, code: 'target_given_up', ms: 0, at: new Date().toISOString(), summary: stopDetail });
+            try { onEvent({ type: 'tool.result', callId: first.id || 'x', tool: first.name, ok: false, code: 'target_given_up', ms: 0, summary: stopDetail.slice(0, 200) }); } catch (_) {}
+            break;
+          }
+          if (reso && reso.content) {
+            content = reso.content;
+            run.calls.push({ tool: first.name, target: String((first.args && first.args.file) || ''), ok: false,
+              code: 'not_found_resolved', ms: 0, at: new Date().toISOString(), summary: 'cible introuvable : resolution automatique / liste fournie.' });
+            store.append(sessionId, { role: 'tool', tool_call_id: first.id || ('call-' + run.calls.length), name: first.name, content: content.slice(0, 8000) });
+            try { onEvent({ type: 'tool.result', callId: first.id || 'x', tool: first.name, ok: false, code: 'not_found_resolved', ms: 0, summary: 'chemin resolu automatiquement.' }); } catch (_) {}
+            for (const extra of calls.slice(1)) {
+              const xid = extra.id || ('call-' + run.calls.length);
+              store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name,
+                content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas.' }) });
+            }
+            continue;
+          }
+        }
         if (r.status === 'done') {
           content = doneContent(r);
         } else if (r.status === 'need-approval') {
@@ -1816,6 +2178,24 @@ async function toolsTurn(base, session, toolsCtx) {
       } catch (_) {}
       store.append(sessionId, { role: 'tool', tool_call_id: callId, name: first.name, content });
       const last = run.calls[run.calls.length - 1] || {};
+      // P61-4: memoise le resultat pour refuser une redemande identique.
+      if (sig) {
+        // P61-4 (portee): seuls les appels REELLEMENT executes alimentent la
+        // memoire d'idempotence. Un refus, une approbation en attente ou une
+        // reponse de guidance n'a rien fait : le rejouer n'est pas un doublon
+        // (sinon un utilisateur qui refuse 3 fois verrait une "boucle").
+        const NON_EXEC = ['denied', 'need_approval', 'asked', 'skipped', 'plan_mode', 'deploy_policy',
+          'no_project', 'unknown_tool', 'corrective', 'not_read'];
+        if (NON_EXEC.indexOf(last.code || 'ok') === -1) {
+          executed.set(sig, { content, ok: !!last.ok, code: last.code || 'ok', tool: first.name,
+            target: String((first.args && (first.args.file || first.args.from)) || '') });
+        }
+        if (last.ok) invalidateTarget(first.name, first.args);
+        // P61-6: une panne de GARDE (pas une panne d'outil) autorise UNE
+        // seule reprise a l'identique, pour que le modele puisse rejouer
+        // l'action apres la lecture corrective.
+        if (!last.ok && (last.code === 'not_read' || last.code === 'corrective')) retryAllowed.add(sig);
+      }
       try { onEvent({ type: 'tool.result', callId, tool: first.name, ok: !!last.ok, code: last.code || 'ok', ms: last.ms || 0, summary: (last.summary || '').slice(0, 300) }); } catch (_) {}
       // P52 loop guard v2: same tool + same args + same result on
       // COMPLETED calls only. The 3rd identical triggers the corrective
@@ -1852,6 +2232,18 @@ async function toolsTurn(base, session, toolsCtx) {
       }
       for (const extra of calls.slice(1)) {
         const xid = extra.id || ('call-' + run.calls.length);
+        // P61-4: un DOUBLON dans la meme reponse du modele est deduplique
+        // avant execution (meme outil, memes arguments que `first`).
+        const sameAsFirst = !extra.parseError && first && !first.parseError &&
+          plan.argSig(extra.name, extra.args) === plan.argSig(first.name, first.args);
+        if (sameAsFirst) {
+          run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'duplicate', ms: 0, at: new Date().toISOString(),
+            summary: 'doublon dans la meme reponse : non execute.' });
+          store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name,
+            content: JSON.stringify({ ok: false, code: 'duplicate', error: 'doublon dans la meme reponse du modele : non execute (le premier appel a deja ete fait). Passe a l\'etape suivante.' }) });
+          try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'duplicate', ms: 0, summary: 'doublon non execute.' }); } catch (_) {}
+          continue;
+        }
         run.calls.push({ tool: extra.name || '?', target: '', ok: false, code: 'skipped', ms: 0, at: new Date().toISOString(), summary: 'ignore : une seule action par pas.' });
           store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
         try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
@@ -2097,10 +2489,14 @@ async function toolsTurn(base, session, toolsCtx) {
     }
     if (rescued) {
       finalText = rescued;
+      answerFromModel = true;
       store.append(sessionId, { role: 'assistant', content: finalText });
       journal('info', 'reponse secours contexte', { chars: rescued.length });
     } else {
       finalText = pmap.deterministicFallback({ root, map: mapInfo, calls: run.calls, prompt: base.prompt, why: 'context' });
+      // Ce texte est redige par l'AGENT : il porte deja sa propre explication
+      // (mode sans IA, contexte sature) et n'a pas besoin du constat de statut.
+      answerFromModel = true;
       store.append(sessionId, { role: 'assistant', content: finalText });
       journal('warn', 'reponse secours deterministe', { chars: finalText.length, why: 'context' });
     }
@@ -2179,6 +2575,12 @@ async function toolsTurn(base, session, toolsCtx) {
         const denies = run.calls.filter((c) => !c.ok && c.code === 'denied').map((c) => c.tool);
         raison = denies.length ? 'action refusee par l\'operateur (' + denies.join(', ') + ').' : 'appels lecture seule uniquement, aucun fichier touche.';
       }
+      // P61-9: quand des outils ont REELLEMENT tourne, dire "AUCUNE
+      // MODIFICATION" masque le travail fait. Le titre doit dire ce qui s'est
+      // passe, pas l'inverse.
+      // Le titre reste factuel : RIEN n'a ete modifie sur le disque. Ce qui a
+      // ete fait (lectures, refus, outils aboutis) est dit par le constat
+      // "Fait / Reste" (P61-9) ajoute juste apres, pas par ce titre.
       finalText = 'AUCUNE MODIFICATION : ' + raison + '\n\nProposition : reformulez en UNE action precise (ex : "cree le fichier X qui ..."), ' +
         (mode === 'plan' ? 'basculez en BUILD pour modifier.' : 'verifiez les chemins (list/glob) puis relancez.');
       verdict = { status: 'PARTIEL', reason: 'AUCUNE MODIFICATION : ' + raison, unresolved: verdict.unresolved };
@@ -2222,6 +2624,56 @@ async function toolsTurn(base, session, toolsCtx) {
     } catch (_) {}
   }
   const stopOut = stopReason || (declared ? 'declared' : 'max_iters');
+  // P61-9: sur un arret en boucle ou une cible abandonnee, le texte generique
+  // "AUCUNE MODIFICATION" masquerait le vrai resultat : le constat de statut
+  // le remplace (il dit deja fait / reste).
+  if ((stopOut === 'loop' || stopOut === 'target_given_up') && !runEntry.aborted) {
+    const notice0 = statusNotice(verdict, run.calls, filesModified, stopOut);
+    if (notice0) {
+      // Le texte de secours produit par le modele (P39-d) est CONSERVE : on
+      // lui ajoute le constat de statut, on ne l'efface pas. Seul le texte
+      // generique "AUCUNE MODIFICATION" est remplace (il masquerait le vrai
+      // resultat, exigence P61-9).
+      const cur = String(finalText || '').trim();
+      if (!answerFromModel) {
+        // Texte ecrit par l'agent : on remplace le generique, sinon on ajoute
+        // le constat (fait / reste) s'il n'y est pas deja.
+        const generic = !cur || /^AUCUNE MODIFICATION/.test(cur);
+        finalText = generic ? notice0 : (cur.indexOf(notice0) !== -1 ? cur : cur + '\n\n' + notice0);
+      }
+      try {
+        store.update(sessionId, (st) => {
+          const arr = st.messages || [];
+          const i = arr.length - 1;
+          if (arr[i] && arr[i].role === 'assistant') arr[i].content = finalText;
+          else arr.push({ role: 'assistant', content: finalText });
+        });
+      } catch (_) {}
+    }
+  }
+  // P61-9: le statut est TOUJOURS lisible par l'utilisateur (et stocke).
+  if (!runEntry.aborted) {
+    const notice = statusNotice(verdict, run.calls, filesModified, stopOut);
+    if (notice && !answerFromModel && String(finalText || '').indexOf('Reste :') === -1) {
+      // Si le texte porte DEJA la meme raison (bloc "PARTIEL : ..." de P53-3),
+      // on n'ajoute que le detail fait/reste : pas de raison en double.
+      const curTxt = String(finalText || '').trim();
+      const sameReason = curTxt.indexOf('Statut : ') === -1 && verdict.reason && curTxt.indexOf(String(verdict.reason).slice(0, 40)) !== -1;
+      const add = sameReason
+        ? notice.split('\n').filter((l) => /^(Fait|Reste) :/.test(l)).join('\n')
+        : notice;
+      finalText = (curTxt ? curTxt + '\n\n' : '') + add;
+      try {
+        const msgsNow = (store.get(sessionId) || { messages: [] }).messages;
+        const lastM = msgsNow[msgsNow.length - 1];
+        if (lastM && lastM.role === 'assistant') {
+          store.update(sessionId, (st) => { const arr = st.messages || []; const i = arr.length - 1; if (arr[i] && arr[i].role === 'assistant') arr[i].content = finalText; });
+        } else {
+          store.append(sessionId, { role: 'assistant', content: finalText });
+        }
+      } catch (_) {}
+    }
+  }
   // P49-2: the combined tool diffs ride along (bounded) for honest review.
   const runDiff = run.calls.filter((c) => c.diff).map((c) => '[' + c.tool + ' ' + String(c.target || '').slice(0, 120) + ']\n' + String(c.diff)).join('\n').slice(0, 8000);
   saveRunSidecar(tctx);
@@ -2231,6 +2683,22 @@ async function toolsTurn(base, session, toolsCtx) {
       s.meta.lastRun = { at: new Date().toISOString(), status: verdict.status, reason: verdict.reason, filesModified, stopReason: stopOut, mode, profile, diff: runDiff || null,
         calls: run.calls.map((c) => ({ tool: c.tool, target: c.target, ok: c.ok, code: c.code })) };
     });
+  } catch (_) {}
+  // P61-9: la reponse finale est TOUJOURS dans le transcript (un modele qui
+  // termine par l'outil `done` n'ecrit aucun message assistant : l'utilisateur
+  // voyait alors un tour "TERMINE" sans texte).
+  try {
+    const arr = (store.get(sessionId) || { messages: [] }).messages;
+    const txt = String(finalText || '').trim();
+    const has = txt && arr.some((m) => m && m.role === 'assistant' && String(m.content || '').trim() === txt);
+    if (txt && !has) store.append(sessionId, { role: 'assistant', content: txt });
+    else if (!txt) {
+      const okN = run.calls.filter((c) => c.ok && c.code !== 'skipped').length;
+      const fallbackTxt = verdict.status === 'TERMINE'
+        ? 'Tache terminee (' + okN + ' appel(s) abouti(s)).'
+        : statusNotice(verdict, run.calls, filesModified, stopOut);
+      if (fallbackTxt) { finalText = fallbackTxt; store.append(sessionId, { role: 'assistant', content: fallbackTxt }); }
+    }
   } catch (_) {}
   try { onEvent({ type: 'message.done', text: finalText, aborted: false }); } catch (_) {}
   const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
@@ -2243,19 +2711,27 @@ async function toolsTurn(base, session, toolsCtx) {
   return { status: 'done', model, messageCount, runStatus: verdict.status };
 
   function finishAborted() {
-    try { onEvent({ type: 'message.done', text: finalText, aborted: true }); } catch (_) {}
+    // P61-9: un abandon dit QUI a annule (bouton, delai, erreur interne).
+    const why = runEntry.abortReason || 'annule';
+    const txt = 'Demande interrompue : ' + why + '.\n' +
+      'Fait : ' + (run.calls.filter((c) => c.ok).length) + ' appel(s) abouti(s)' +
+      (currentFilesModified().length ? ', ' + currentFilesModified().length + ' fichier(s) modifie(s) (conserves)' : '') + '.\n' +
+      'Reste : la demande n\'est pas terminee ; relancez-la pour continuer.';
+    try { onEvent({ type: 'message.done', text: txt, aborted: true }); } catch (_) {}
+    try { store.append(sessionId, { role: 'assistant', content: txt, aborted: true }); } catch (_) {}
     const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
-    try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: true, status: 'PARTIEL', reason: 'aborted', filesModified: [], stopReason: 'aborted' }); } catch (_) {}
-    journal('info', 'turn aborted');
+    try { onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: true, status: 'PARTIEL', reason: 'interrompu : ' + why, filesModified: currentFilesModified(), stopReason: 'aborted' }); } catch (_) {}
+    journal('info', 'turn aborted', { reason: why });
     if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
     return { status: 'aborted', model };
   }
 }
 
-function abortRun(runs, sessionId) {
+function abortRun(runs, sessionId, reason) {
   if (!runs || !runs.has(sessionId)) return false;
   const run = runs.get(sessionId);
   run.aborted = true;
+  if (!run.abortReason) run.abortReason = reason || 'arrete par l\'operateur (bouton Annuler)';
   try { if (typeof run.destroy === 'function') run.destroy(); } catch (_) {}
   if (Array.isArray(run.killFns)) {
     for (const k of run.killFns) { try { k(); } catch (_) {} }

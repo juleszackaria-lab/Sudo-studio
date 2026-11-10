@@ -60,10 +60,19 @@ jobs:
             echo '[FAIL] au moins une suite est rouge'
             exit 1
           fi
-          grep -q 'TOTAL: 49 suites, 0 failed' /tmp/suite.log || {
+          # P61-D: le compte de suites augmente (49 -> 51 avec P61). On exige
+          # "0 failed" ET un minimum, pour qu'une suite supprimee du compositeur
+          # ne passe pas pour un vert.
+          grep -qE 'TOTAL: [0-9]+ suites, 0 failed' /tmp/suite.log || {
             echo '[FAIL] le compositeur n annonce pas 0 echec'
             exit 1
           }
+          suites=$(grep -oE 'TOTAL: [0-9]+ suites' /tmp/suite.log | grep -oE '[0-9]+' | tail -1)
+          echo "suites executees : $suites (minimum exige : 51)"
+          if [ "$suites" -lt 51 ]; then
+            echo '[FAIL] moins de suites que le minimum attendu'
+            exit 1
+          fi
           exit $rc
 
       - name: No SKIP hidden as a pass
@@ -86,3 +95,34 @@ jobs:
           path: /tmp/suite.log
           if-no-files-found: warn
           retention-days: 30
+
+  # P61-D: le script de preuve utilisateur (scripts/agent-e2e.ps1) doit etre
+  # ANALYSE syntaxiquement par la CI, pas seulement ecrit sur un PC Windows.
+  # pwsh est present sur les runners Linux : aucun modele, aucun runtime.
+  powershell-syntax:
+    name: PowerShell syntax (scripts/*.ps1)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse every script with the PowerShell parser
+        shell: pwsh
+        run: |
+          $bad = 0
+          $files = Get-ChildItem -Path scripts -Filter *.ps1 -Recurse
+          if (-not $files) { Write-Error 'aucun script .ps1 trouve'; exit 1 }
+          foreach ($f in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors -and $errors.Count -gt 0) {
+              $bad++
+              Write-Host ("[FAIL] " + $f.Name)
+              $errors | ForEach-Object { Write-Host ("       ligne " + $_.Extent.StartLineNumber + " : " + $_.Message) }
+            } else {
+              Write-Host ("[PASS] " + $f.Name)
+            }
+          }
+          if ($bad -gt 0) { Write-Error ("scripts .ps1 invalides : " + $bad); exit 1 }
+          Write-Host 'Tous les scripts .ps1 sont syntaxiquement valides.'

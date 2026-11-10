@@ -5,12 +5,13 @@
   Il demarre le serveur d'agent du paquet INSTALLE, joue 9 scenarios reels et
   ecrit PASS/FAIL avec, pour chaque etape, LA LIGNE DE JOURNAL qui le prouve.
 
-  9 etapes :
-    1 lecture de structure            6 journaux ERROR
-    2 changement de couleur           7 appel d une extension
-    3 ajout de tests + execution      8 dix questions a la suite
-    4 corrige les failles (avant/apres) 9 coupure du runtime en cours de tache
-    5 regarde le DevOps
+  12 etapes :
+    1 lecture de structure            7 appel d une extension
+    2 changement de couleur           8 dix questions a la suite
+    3 ajout de tests + execution      9 coupure du runtime en cours de tache
+    4 corrige les failles (avant/apres) 10 aucun secret dans le journal
+    5 regarde le DevOps               11 suppression d un fichier jamais lu (P61)
+    6 journaux ERROR                  12 vingt demandes a la suite (P61)
 
   Usage :
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\agent-e2e.ps1 `
@@ -328,6 +329,46 @@ try {
     -Proof $(if ($proof) { $proof } else { 'aucune ligne runtime dans le journal' }) `
     -Note $(if (-not $killed) { 'runtime introuvable : coupe-le a la main pendant l etape, puis relance' } elseif (-not $graceful) { 'le tour ninclut pas de verdict : voir la reponse brute' } else { '' })
 } catch { Write-Step -Name '9 coupure du runtime en cours de tache' -Ok $false -Proof $_.Exception.Message }
+
+# ------------------------------------- 11 suppression d un fichier jamais lu
+# P61-5 : le modele oubliait de lire avant de supprimer et la tache echouait
+# ("n a pas ete lu"). L'agent doit lire lui-meme, puis supprimer UNE fois.
+try {
+  $s11 = New-Session -Root $copy
+  $probe = Join-Path $copy ('p61-probe-' + [guid]::NewGuid().ToString('N').Substring(0, 6) + '.txt')
+  Set-Content -Path $probe -Value 'contenu de preuve' -Encoding utf8
+  $relProbe = [System.IO.Path]::GetFileName($probe)
+  $r = Invoke-Turn -SessionId $s11 -Prompt ('Supprime le fichier ' + $relProbe + ' du projet.') -TimeoutSec 180
+  $gone = -not (Test-Path $probe)
+  $oneDel = $true
+  if ($script:AgentLog -and (Test-Path $script:AgentLog)) {
+    $delLines = @(Select-String -Path $script:AgentLog -Pattern 'tool ok delete|tool fail delete' -AllMatches)
+    $oneDel = ($delLines.Count -le 1)
+  }
+  $readProof = Get-LogProof -Pattern 'lecture automatique avant action'
+  Write-Step -Name '11 suppression d un fichier jamais lu' -Ok ([bool]$gone -and [bool]$oneDel -and [bool]$readProof) `
+    -Proof ($(if ($readProof) { $readProof } else { 'aucune ligne lecture automatique' }) + ' || fichier supprime : ' + $gone) `
+    -Note $(if (-not $oneDel) { 'plusieurs executions de delete : doublon' } else { '' })
+} catch { Write-Step -Name '11 suppression d un fichier jamais lu' -Ok $false -Proof $_.Exception.Message }
+
+# ------------------------------------------ 12 vingt demandes a la suite
+try {
+  $s12 = New-Session -Root $copy
+  $rs = @('0','1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16','17','18','19') | ForEach-Object {
+    'Question numero ' + $_ + ' : reponds en une phrase sur ce projet.'
+  }
+  $ok12 = 0
+  $bad12 = ''
+  $t12 = Get-Date
+  foreach ($q in $rs) {
+    $r = Invoke-Turn -SessionId $s12 -Prompt $q -TimeoutSec 180
+    if ($r.ok) { $ok12++ } else { $bad12 = $q + ' -> ' + $r.error; break }
+  }
+  $secs12 = [int]((Get-Date) - $t12).TotalSeconds
+  $leak = Get-LogProof -Pattern 'un tour est deja en cours'
+  Write-Step -Name '12 vingt demandes a la suite' -Ok (($ok12 -eq 20) -and -not $leak) `
+    -Proof ("$ok12/20 tours termines en $secs12 s") -Note $bad12
+} catch { Write-Step -Name '12 vingt demandes a la suite' -Ok $false -Proof $_.Exception.Message }
 
 # -------------------------------------------------------------- 10 secrets
 try {

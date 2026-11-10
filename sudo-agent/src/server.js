@@ -117,12 +117,18 @@ function createApp(opts) {
     const p = url.pathname || '/';
     // P53-6: approval polling is a heartbeat, not an event: it lands in
     // DEBUG (off by default) so ten idle minutes write a handful of lines.
+    // P61-13: le journal ne doit pas etre noye par l'interrogation de l'UI.
+    // Approbations, jobs, extensions, sante et sessions sont des POLLS :
+    // niveau debug (visibles avec SUDO_AGENT_LOG_LEVEL=debug), jamais info.
     const isApprovalPoll = req.method === 'GET' && /^\/sessions\/[A-Za-z0-9_-]{1,64}\/approvals$/.test(p);
+    const isPoll = isApprovalPoll ||
+      (req.method === 'GET' && (/^\/jobs(\?|$)/.test(p) || /^\/extensions\//.test(p) ||
+        p === '/health' || p === '/sessions' || p === '/permissions' || p === '/providers' || p === '/tools'));
     const done = (code) => {
       if (!log) return;
       try {
         const f = { method: req.method, path: p, code, ms: Date.now() - t0 };
-        if (isApprovalPoll) log.debug('http', f, corr);
+        if (isPoll) log.debug('http', f, corr);
         else log.info('http', f, corr);
       } catch (_) {}
     };

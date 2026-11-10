@@ -252,15 +252,22 @@ t('B5 suppression lue -> TERMINE + fichier parti', async () => {
   assert(!fs.existsSync(path.join(proj, 'notes.txt')), 'fichier parti');
   assert(r.end.meta.lastRun.filesModified.join(',') === '-notes.txt', 'lastRun: ' + JSON.stringify(r.end.meta.lastRun.filesModified));
 }),
-t('B6 suppression aveugle refusee puis reparee', async () => {
+// P61-5 (supersede P49-B6): la lecture avant suppression n'est plus une
+// exigence faite au MODELE (il oubliait, et la tache echouait). L'AGENT lit
+// le fichier lui-meme, puis rejoue la suppression : une seule execution, une
+// seule approbation, aucun aller-retour. Le verrou reste applique cote agent
+// (meta.readFiles + ligne de journal).
+t('B6 suppression directe: lecture automatique par l agent (P61-5)', async () => {
   const proj = fixtureProject();
   const r = await driveTurn(proj, 'supprime notes.txt',
-    [call('delete', { file: 'notes.txt' }), call('read', { file: 'notes.txt' }),
-     call('delete', { file: 'notes.txt' }), call('done', {})],
+    [call('delete', { file: 'notes.txt' }), call('done', {})],
     { rules: ['delete|file|notes.txt'] });
-  assert(toolTexts(r.chats[1]).indexOf('pas ete lu') !== -1, 'verrou lecture: ' + toolTexts(r.chats[1]).slice(0, 120));
-  assert(r.out.runStatus === 'TERMINE', 'runStatus: ' + JSON.stringify(r.out));
   assert(!fs.existsSync(path.join(proj, 'notes.txt')), 'fichier parti');
+  assert(r.out.runStatus === 'TERMINE', 'runStatus: ' + JSON.stringify(r.out));
+  const lr = r.end.meta.lastRun;
+  const dels = (lr.calls || []).filter((c) => c.tool === 'delete');
+  assert(dels.length === 1 && dels[0].ok, 'un seul delete, abouti : ' + JSON.stringify(dels));
+  assert(String(r.journal || '').indexOf('lecture automatique avant action') !== -1, 'journal lecture auto');
 }),
 t('B7 renommage lu -> TERMINE + deplace', async () => {
   const proj = fixtureProject();

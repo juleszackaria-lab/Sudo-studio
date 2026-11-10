@@ -989,6 +989,39 @@ async function hDone(ctx, args) {
 }
 
 // ---------------------------------------------------------------------------
+// P61-7: cibles DANGEREUSES. Supprimer/modifier dans .git, node_modules, ou
+// hors du dossier du projet exige une confirmation explicite DISTINCTE, avec
+// un avertissement en francais - meme si une approbation generale (session /
+// projet) existe deja. Un garde-fou qui peut etre memorise n'en est pas un.
+// ---------------------------------------------------------------------------
+const DANGER_DIRS = ['.git', 'node_modules'];
+
+function dangerousTarget(ctx, toolName, resolved) {
+  if (!resolved || !resolved.ok || !resolved.rel) return null;
+  const MUT = ['write', 'edit', 'patch', 'append', 'delete', 'rename', 'mkdir'];
+  if (MUT.indexOf(toolName) === -1) return null;
+  const rel = String(resolved.rel).replace(/\\/g, '/');
+  const segs = rel.split('/').map((x) => x.toLowerCase());
+  for (const d of DANGER_DIRS) {
+    if (segs.indexOf(d) !== -1) {
+      return { kind: d, warning: 'ATTENTION : ' + toolName + ' sur ' + rel + ' - ce chemin est DANS ' + d +
+        ', que l\'agent ne doit pas toucher sans votre accord explicite. Une approbation generale ne suffit pas.' };
+    }
+  }
+  // Hors du dossier du projet (le boundary le refuse deja ; si une resolution
+  // permissive l'a laisse passer, on demande quand meme).
+  try {
+    const abs = require('path').resolve(resolved.abs);
+    const rootAbs = require('path').resolve(ctx.root);
+    if (abs !== rootAbs && abs.indexOf(rootAbs + require('path').sep) !== 0) {
+      return { kind: 'hors-projet', warning: 'ATTENTION : ' + toolName + ' sur ' + abs +
+        ' - ce chemin est HORS du dossier du projet. Confirmation explicite requise.' };
+    }
+  } catch (_) {}
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Tool table: metadata + arg path (for boundary) + handler.
 // ---------------------------------------------------------------------------
 const TOOLS = {
@@ -1484,6 +1517,13 @@ async function executeTool(ctx, toolName, args, opts) {
   const sessionRules = ctx.sessionRules || new Set();
   const projectRules = ctx.projectRules || new Set();
   const chk = perm.check({ tool: toolName, pattern, p8verdict, denyList: denyHit, sessionRules, projectRules });
+  // P61-7: une cible dangereuse ignore les regles memorisees et redemande.
+  const danger = dangerousTarget(ctx, toolName, resolved);
+  if (danger && chk.decision === 'allow') {
+    chk.decision = 'ask';
+    chk.reason = danger.warning;
+    chk.rule = 'danger';
+  }
   if (chk.decision === 'deny') {
     recordCall(ctx, toolName, args, false, 'denied', Date.now() - t0);
     return { status: 'denied', reason: chk.reason, code: 'denied' };
@@ -1508,6 +1548,8 @@ async function executeTool(ctx, toolName, args, opts) {
       summary: (isDeploy ? '[DEPLOIEMENT] ' : '') + toolName + ' : ' + (pattern.text || '?').slice(0, 160),
       diff: null, args: cappedArgs(toolName, args),
       deploy: isDeploy === true,
+      danger: danger ? danger.kind : undefined,
+      warning: danger ? danger.warning : undefined,
     };
     // Overwrite diff preview: show it BEFORE the operator decides (P25-c).
     if ((toolName === 'write' || toolName === 'edit') && resolved.ok) {
