@@ -261,6 +261,33 @@ async function main() {
         check('13-c: git statut avant/apres journalise', /git statut avant/.test(r.journal) && /git statut apres/.test(r.journal));
     }
 
+    // ------------------------------------------- 5: ecriture apres approbation
+    // Defaut mesure sur le PAQUET INSTALLE (runs 42955250962 / 42956495322,
+    // job ubuntu-22.04) : apres approbation, l ecriture n etait pas tracee
+    // (tool.result ok=false / code="ok" / resume vide), la memoire
+    // d idempotence retenait un echec, le modele redemandait la meme
+    // ecriture et le tour finissait en PARTIEL.
+    {
+        const w = createWorld({ files: { 'README.md': '# p61\n' } });
+        const r = await w.turn('cree hello.txt avec bonjour', [
+            call('write', { file: 'hello.txt', content: 'bonjour' }),
+            call('done', { summary: 'fichier cree' }),
+        ], { maxIt: 4, autoApprove: 'once' });
+        const ev = (r.events || []).filter((e) => e.type === 'tool.start' && e.tool === 'write');
+        const res = (r.events || []).filter((e) => e.type === 'tool.result' && e.tool === 'write');
+        check('5-a: le fichier est ecrit apres approbation', w.exists('hello.txt') && w.read('hello.txt') === 'bonjour',
+            'exists=' + w.exists('hello.txt'));
+        check('5-b: la re-execution apres approbation est TRACEE dans les appels du tour',
+            r.calls.some((c) => c.tool === 'write' && c.ok === true),
+            'calls=' + JSON.stringify(r.calls.map((c) => c.tool + ':' + c.code)));
+        check('5-c: le resultat diffuse n est jamais ok=false + code=ok + resume vide',
+            res.length > 0 && !res.some((x) => x.ok === false && (x.code || 'ok') === 'ok' && !x.summary),
+            JSON.stringify(res.map((x) => ({ ok: x.ok, code: x.code, s: x.summary }))));
+        check('5-d: le tour d une ecriture approuvee et reussie se termine en FAIT',
+            ['TERMINE', 'FAIT'].indexOf(String((r.lastRun || {}).status || '')) !== -1,
+            'status=' + String((r.lastRun || {}).status) + ' calls=' + ev.length);
+    }
+
     // ------------------------------------------------- secrets dans le journal
     {
         const w = createWorld({ files: Object.assign({ '.env': 'API_KEY=sk-live-0123456789abcdef\n' }, FILES) });

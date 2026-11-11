@@ -2148,8 +2148,31 @@ async function toolsTurn(base, session, toolsCtx) {
             content = JSON.stringify({ ok: false, code: 'denied', error: 'refuse par l\'operateur. Adapte (autre outil, autre chemin) ou termine via reply/done.', detail: 'refuse par l\'operateur.' });
           } else {
             // Approved (once/session/project): re-execute, THIS turn continues.
+            // P61-5: la re-execution APRES approbation doit laisser la meme
+            // trace qu'un appel ordinaire. tools.recordCall l'ecrit quand le
+            // contexte porte le tour ; si ce n'est pas le cas, le journal du
+            // tour restait vide (ok=false, code="ok", resume vide), la memoire
+            // d'idempotence retenait un ECHEC la ou l'outil avait reussi, et le
+            // modele relancait la meme ecriture jusqu'au PARTIEL (paquet
+            // installe, runs 42955250962 / 42956495322). On ne pousse une
+            // entree QUE si l'outil ne l'a pas deja fait : jamais de doublon.
+            const beforeCalls = run.calls.length;
             const r2 = await executeTool(tctx, first.name, first.args, { preApproved: true });
-            if (r2.status === 'done') content = doneContent(r2);
+            if (r2.status === 'done') {
+              if (run.calls.length === beforeCalls) {
+                const c2 = (r2 && r2.call) || {};
+                run.calls.push({
+                  tool: first.name,
+                  target: String((first.args && (first.args.file || first.args.from)) || '').slice(0, 200),
+                  ok: c2.ok !== false,
+                  code: c2.ok === false ? String(c2.code || 'tool_fail') : 'ok',
+                  ms: c2.ms || 0,
+                  at: new Date().toISOString(),
+                  summary: String(c2.summary || '').slice(0, 300),
+                });
+              }
+              content = doneContent(r2);
+            }
             else if (r2.status === 'need-approval') content = legacyNeedApproval(r2); // state changed mid-pause: honest stop, no re-pause loop.
             else content = errContent(r2);
           }
