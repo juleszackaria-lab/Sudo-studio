@@ -2158,21 +2158,22 @@ async function toolsTurn(base, session, toolsCtx) {
             // entree QUE si l'outil ne l'a pas deja fait : jamais de doublon.
             const beforeCalls = run.calls.length;
             const r2 = await executeTool(tctx, first.name, first.args, { preApproved: true });
-            if (r2.status === 'done') {
-              if (run.calls.length === beforeCalls) {
-                const c2 = (r2 && r2.call) || {};
-                run.calls.push({
-                  tool: first.name,
-                  target: String((first.args && (first.args.file || first.args.from)) || '').slice(0, 200),
-                  ok: c2.ok !== false,
-                  code: c2.ok === false ? String(c2.code || 'tool_fail') : 'ok',
-                  ms: c2.ms || 0,
-                  at: new Date().toISOString(),
-                  summary: String(c2.summary || '').slice(0, 300),
-                });
-              }
-              content = doneContent(r2);
+            const okR2 = r2.status === 'done';
+            if (run.calls.length === beforeCalls) {
+              const c2 = (r2 && r2.call) || {};
+              run.calls.push({
+                tool: first.name,
+                target: String((first.args && (first.args.file || first.args.from)) || '').slice(0, 200),
+                ok: okR2 && c2.ok !== false,
+                code: okR2 ? (c2.ok === false ? String(c2.code || 'tool_fail') : 'ok') : String((r2 && r2.code) || 'error'),
+                ms: c2.ms || 0,
+                at: new Date().toISOString(),
+                summary: String(c2.summary || c2.error || (r2 && r2.reason) || '').slice(0, 300),
+              });
             }
+            // P61: une re-execution approuvee qui echoue doit DIRE pourquoi.
+            if (!okR2) journal('warn', 'appel approuve en echec', { tool: first.name, code: String((r2 && r2.code) || 'error'), reason: String((r2 && r2.reason) || '').slice(0, 200) });
+            if (okR2) content = doneContent(r2);
             else if (r2.status === 'need-approval') content = legacyNeedApproval(r2); // state changed mid-pause: honest stop, no re-pause loop.
             else content = errContent(r2);
           }
