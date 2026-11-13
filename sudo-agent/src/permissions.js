@@ -21,6 +21,9 @@ const MUTATING_ASK = ['write', 'edit', 'patch', 'bash', 'undo', 'mcp', 'delete',
   // P57-6: un appel MCP demande la validation operateur (les sous-agents,
   // eux, heritent des permissions de leurs propres appels).
   'mcp_call'];
+// P62-D5: copier le projet vers un dossier voisin est une ECRITURE hors du
+// projet ouvert : elle demande toujours une approbation explicite.
+MUTATING_ASK.push('copy_project');
 const KNOWN_TOOLS = READONLY_AUTO.concat(MUTATING_ASK);
 
 // ---------------------------------------------------------------------------

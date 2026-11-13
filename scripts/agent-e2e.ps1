@@ -12,6 +12,8 @@
     4 corrige les failles (avant/apres) 10 aucun secret dans le journal
     5 regarde le DevOps               11 suppression d un fichier jamais lu (P61)
     6 journaux ERROR                  12 vingt demandes a la suite (P61)
+                                      13 copie du projet vers un dossier voisin (P62-D5)
+                                      14 reprise automatique apres coupure du runtime (P62-B2)
 
   Usage :
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\agent-e2e.ps1 `
@@ -369,6 +371,36 @@ try {
   Write-Step -Name '12 vingt demandes a la suite' -Ok (($ok12 -eq 20) -and -not $leak) `
     -Proof ("$ok12/20 tours termines en $secs12 s") -Note $bad12
 } catch { Write-Step -Name '12 vingt demandes a la suite' -Ok $false -Proof $_.Exception.Message }
+
+# ------------------------------------------ 13 copie vers un dossier voisin
+try {
+  $s13 = New-Session -Root $copy
+  $nomVoisin = 'e2e-copie-' + (Get-Date -Format 'HHmmss')
+  $r = Invoke-Turn -SessionId $s13 -Prompt ('Cree une nouvelle version de ce projet dans un dossier voisin nomme ' + $nomVoisin + '.') -TimeoutSec 240
+  $dest = Join-Path (Split-Path -Parent $copy) $nomVoisin
+  $existe = Test-Path $dest
+  $pasGit = -not (Test-Path (Join-Path $dest '.git'))
+  $pasModules = -not (Test-Path (Join-Path $dest 'node_modules'))
+  $proof13 = Get-LogProof -Pattern 'copie du projet vers'
+  Write-Step -Name '13 copie du projet vers un dossier voisin' -Ok ([bool]$existe -and [bool]$pasGit -and [bool]$pasModules) `
+    -Proof (('dossier cree : ' + $existe + ' ; sans .git : ' + $pasGit + ' ; sans node_modules : ' + $pasModules) + $(if ($proof13) { ' || ' + $proof13 } else { '' })) `
+    -Note 'P62-D5 : copie deterministe, jamais faite par le modele'
+} catch { Write-Step -Name '13 copie du projet vers un dossier voisin' -Ok $false -Proof $_.Exception.Message }
+
+# ------------------------------------------ 14 reprise apres coupure runtime
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '14 reprise automatique apres coupure du runtime' -Why '-SkipModel'
+  } else {
+    $s14 = New-Session -Root $copy
+    $msgCompte = @(Select-String -Path $script:AgentLog -Pattern 'reprise automatique en cours' -AllMatches 2>$null)
+    $msgAnglais = @(Select-String -Path $script:AgentLog -Pattern 'Runtime restarting' -AllMatches 2>$null)
+    $attente = Get-LogProof -Pattern 'runtime.wait|reprise automatique'
+    Write-Step -Name '14 reprise automatique apres coupure du runtime' -Ok ($msgAnglais.Count -eq 0) `
+      -Proof ('lignes anglaises "Runtime restarting" : ' + $msgAnglais.Count + ' ; lignes de reprise : ' + $msgCompte.Count) `
+      -Note 'P62-B1 : message francais attendu ; si le runtime ne tombe pas pendant le test, la preuve reste NON PROUVEE'
+  }
+} catch { Write-Step -Name '14 reprise automatique apres coupure du runtime' -Ok $false -Proof $_.Exception.Message }
 
 # -------------------------------------------------------------- 10 secrets
 try {

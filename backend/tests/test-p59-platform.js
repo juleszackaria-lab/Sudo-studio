@@ -214,7 +214,7 @@ function stubBackend(opts) {
   // ====================================================== B12 surface outil
   const full = toolsMod.toOpenAISchema('full', 8192);
   const fullNames = full.map((x) => x.function.name);
-  check('B12 profil complet (>=8192) : toujours 35 outils par defaut', full.length === 35, full.length);
+  check('B12 profil complet (>=8192) : 36 outils par defaut (copy_project ajoute en P62-D5)', full.length === 36, full.length);
   check('B13 aucun outil plateforme dans la surface par defaut',
     fullNames.filter((n) => platform.isPlatformTool(n)).length === 0);
   const routed = toolsMod.toOpenAISchema('full', 8192, { platformTools: r1.tools });

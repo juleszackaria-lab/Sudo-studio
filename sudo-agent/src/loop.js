@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { probeProvider, streamChat, chatOnce, waitForRuntime } = require('./providers');
+const { probeProvider, streamChat, chatOnce, waitForRuntime, runtimeDeadline } = require('./providers');
 const { classifyAction } = require('./intent');
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
 const routerMod = require('./router'); // P59-B: routeur d intention deterministe
@@ -77,18 +77,48 @@ function homeOf(toolsCtx) {
 // { attempts, delayMs, probeTimeoutMs } (tests use short waits; production
 // uses the waitForRuntime defaults: 5 x 10s, always <= 60s).
 async function waitAndRetry(ctx) {
-  const w = await waitForRuntime(ctx.provider, {
-    // P56-stab: a refused port is a dead endpoint, not a restart in progress.
-    quickRefusedFail: true,
-    attempts: ctx.waitOpts && ctx.waitOpts.attempts,
-    delayMs: ctx.waitOpts && ctx.waitOpts.delayMs,
-    probeTimeoutMs: ctx.waitOpts && ctx.waitOpts.probeTimeoutMs,
+  const wo = ctx.waitOpts || {};
+  // P62-B1: la fenetre d attente est basee sur le TEMPS (180 s par defaut),
+  // avec une echeance PARTAGEE par tout le tour. Seuls les harnais qui
+  // epinglent `attempts` gardent l ancien compteur, pour rester rapides.
+  const pinned = Number(wo.attempts) > 0;
+  const common = {
+    probeTimeoutMs: wo.probeTimeoutMs,
     shouldAbort: ctx.shouldAbort,
     onProgress: (n, max, message) => {
       try { ctx.onEvent({ type: 'runtime.wait', attempt: n, maxAttempts: max, message }); } catch (_) {}
     },
-  });
-  return { retry: !!(w.recovered && w.probe && w.probe.ok) };
+  };
+  const w = await waitForRuntime(ctx.provider, pinned
+    ? Object.assign({}, common, { attempts: wo.attempts, delayMs: wo.delayMs, quickRefusedFail: true })
+    : Object.assign({}, common, { budgetMs: wo.budgetMs || 180000, deadline: wo.deadline }));
+  return { retry: !!(w.recovered && w.probe && w.probe.ok), wait: w };
+}
+
+// P62-B1: fenetre d attente par defaut = 180 s (contrat produit). Les tests
+// et harnais peuvent la reduire par variable d environnement, sans jamais
+// changer le comportement livre.
+function runtimeBudgetMs() {
+  const v = Number(process.env.SUDO_AGENT_RUNTIME_WAIT_MS);
+  return (v > 0 ? v : 180000);
+}
+
+// P62-B2: apres la fenetre d attente, on demande UNE relance au superviseur
+// avant d annoncer l echec. Le superviseur vit dans le backend (processus
+// separe) : il n est donc pas ralenti par le masquage de la fenetre.
+// Jamais bloquant : un backend absent rend { attempted: false }.
+async function relanceSuperviseur(ctx) {
+  let platform = null;
+  try { platform = require('./platform'); } catch (_) { platform = null; }
+  if (!platform || typeof platform.backendCall !== 'function') return { attempted: false, outcome: 'module absent' };
+  let r = null;
+  try { r = await platform.backendCall({}, 'POST', '/api/supervisor/runtime-restart', {}, 15000); }
+  catch (e) { r = { ok: false, error: String((e && e.message) || e) }; }
+  const outcome = r && r.ok ? 'relance demandee (' + Number((r.body && r.body.status) || 0) + ')'
+    : 'relance impossible (' + String((r && (r.error || r.status)) || 'backend injoignable') + ')';
+  try { if (ctx.journal) ctx.journal(r && r.ok ? 'info' : 'warn', 'relance superviseur', { outcome: outcome.slice(0, 160) }); } catch (_) {}
+  try { if (ctx.onEvent) ctx.onEvent({ type: 'runtime.restart', attempted: !!(r && r.ok), outcome: outcome.slice(0, 200) }); } catch (_) {}
+  return { attempted: !!(r && r.ok), outcome };
 }
 
 // P52 item 1: an approval PAUSES the turn (resumable). Registers the
@@ -271,7 +301,11 @@ async function runTurn(opts) {
 
 
 
-  const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, maxIt: opts.maxIt, subDepth: opts.subDepth };
+  // P62-B1: une seule echeance monotone pour TOUT le tour. Le compteur ne
+  // repart jamais a zero entre deux points d attente.
+  const rwDeadline = (opts.runtimeWait && opts.runtimeWait.deadline) ||
+    runtimeDeadline((opts.runtimeWait && opts.runtimeWait.budgetMs) || runtimeBudgetMs());
+  const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, rwDeadline, maxIt: opts.maxIt, subDepth: opts.subDepth };
   if (useTools) return _after(await toolsTurn(base, sessionNow, opts.toolsCtx));
   return _after(await legacyTurn(base, sessionNow));
 }
@@ -693,6 +727,7 @@ function probeNctx(preProbe, model) {
 async function toolsTurn(base, session, toolsCtx) {
   const { store, provider, sessionId, corr, log, runs, onEvent, model } = base;
   const runtimeWait = base.runtimeWait || null;
+  const rwDeadline = base.rwDeadline || null; // P62-B1: echeance partagee du tour
   const turnId = corr;
   const home = homeOf(toolsCtx);
   const cloud = provider.type === 'cloud';
@@ -1356,8 +1391,29 @@ async function toolsTurn(base, session, toolsCtx) {
     ? { toolChoice: 'required', sampling: { temperature: 0.15, topP: 0.9, topK: 40, repeatPenalty: 1.12, maxTokens: 1200 } }
     : {};
   const onReq = (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; };
-  const roundRaw = (toolsUsed) => chatOnce(provider, Object.assign({ model, messages: modelMessages(), tools: toolsUsed,
-    onRequest: onReq }, chatOpts));
+  // P62-E1: une ligne de mesures par appel au modele (aucune estimation :
+  // uniquement ce que le runtime renvoie). Alimente l analyse de vitesse
+  // sans jamais inventer de chiffre.
+  const perf = { calls: 0, promptTokens: 0, genTokens: 0, genMs: 0, waitMs: 0 };
+  const notePerf = (usage, ms) => {
+    const u = usage || {};
+    const pt = Number(u.prompt_tokens || u.promptTokens || 0);
+    const ct = Number(u.completion_tokens || u.completionTokens || 0);
+    perf.calls += 1;
+    perf.promptTokens += pt;
+    perf.genTokens += ct;
+    perf.genMs += Math.max(0, ms || 0);
+    const tps = (ct > 0 && ms > 0) ? Math.round((ct / (ms / 1000)) * 10) / 10 : 0;
+    journal('info', 'appel modele', { n: perf.calls, jetonsPrompt: pt, jetonsGeneres: ct, ms: Math.round(ms || 0), jetonsParSeconde: tps });
+  };
+  const roundRaw = (toolsUsed) => {
+    const t0r = Date.now();
+    return chatOnce(provider, Object.assign({ model, messages: modelMessages(), tools: toolsUsed,
+      onRequest: onReq }, chatOpts)).then((r) => {
+      notePerf(r && r.usage, Date.now() - t0r);
+      return r;
+    });
+  };
   // P55-3: une panne du fournisseur (500, delai, appel d'outil invalide) est
   // RECUPERABLE : jusqu'a 3 essais avec un schema reduit, puis le format de
   // secours "FICHIER: chemin". On ne renonce qu'apres avoir epuise les voies.
@@ -1406,25 +1462,51 @@ async function toolsTurn(base, session, toolsCtx) {
         // des que /health repond (120 s max, message clair a chaque essai).
         // Un port ferme n'est pas une fin de tour, c'est un redemarrage.
         if (e && e.code === 'runtime_offline') {
-          const w = await waitForRuntime(provider, {
-            // 12 x 10 s = 120 s (budget P61). Les essais rapides ci-dessus
-            // couvrent deja les coupures de moins d'une seconde.
-            attempts: (runtimeWait && runtimeWait.attempts) || 12,
-            delayMs: (runtimeWait && runtimeWait.delayMs) || 10000,
-            probeTimeoutMs: (runtimeWait && runtimeWait.probeTimeoutMs) || 2000,
+          // P62-B1: fenetre de 180 s mesuree a l horloge MONOTONE, echeance
+          // partagee par le tour : aucun compteur ne repart a zero.
+          const pinned = Number(runtimeWait && runtimeWait.attempts) > 0;
+          const wOpts = pinned
+            ? { attempts: runtimeWait.attempts, delayMs: runtimeWait.delayMs || 10000,
+                probeTimeoutMs: runtimeWait.probeTimeoutMs || 2000 }
+            : { budgetMs: (runtimeWait && runtimeWait.budgetMs) || runtimeBudgetMs(),
+                deadline: (runtimeWait && runtimeWait.deadline) || rwDeadline,
+                probeTimeoutMs: (runtimeWait && runtimeWait.probeTimeoutMs) || 2000 };
+          const w = await waitForRuntime(provider, Object.assign({}, wOpts, {
             shouldAbort: () => runEntry.aborted,
-            onProgress: (n, max) => {
+            onProgress: (n, max, message) => {
               try { onEvent({ type: 'runtime.wait', attempt: n, maxAttempts: max,
-                message: 'Runtime en redemarrage... (tentative ' + n + '/' + max + ', le travail est conserve)' }); } catch (_) {}
+                message: message || 'Runtime indisponible, reprise automatique en cours (ecoule : ' +
+                  Math.round((w && w.elapsedMs ? w.elapsedMs : 0) / 1000) + ' s sur 180 s)' }); } catch (_) {}
             },
-          });
+          }));
           if (w.recovered) {
-            journal('info', 'runtime retabli, requete rejouee', { attempts: w.attemptsMade });
+            journal('info', 'runtime retabli, requete rejouee', { elapsedMs: w.elapsedMs || 0, probes: w.attemptsMade });
             continue;
           }
-          journal('warn', 'runtime indisponible apres 120 s', { attempts: w.attemptsMade });
-          const err = new Error('Runtime local indisponible apres ' + (w.attemptsMade || 0) +
-            ' tentatives (~120 s). La demande est conservee : relancez-la quand le runtime est revenu.');
+          // P62-B2: l echec n est annonce qu APRES une tentative de relance
+          // par le superviseur, puis une derniere fenetre courte.
+          const rel = await relanceSuperviseur({ onEvent, journal, shouldAbort: () => runEntry.aborted });
+          if (rel.attempted && !runEntry.aborted) {
+            const w2 = await waitForRuntime(provider, Object.assign({}, wOpts, {
+              budgetMs: 60000, deadline: runtimeDeadline(60000),
+              shouldAbort: () => runEntry.aborted,
+              onProgress: (n, max, message) => {
+                try { onEvent({ type: 'runtime.wait', attempt: n, maxAttempts: max,
+                  message: message || 'Runtime relance par le superviseur, reprise en cours (ecoule : ' +
+                    Math.round((w2 && w2.elapsedMs ? w2.elapsedMs : 0) / 1000) + ' s sur 60 s)' }); } catch (_) {}
+              },
+            }));
+            if (w2.recovered) {
+              journal('info', 'runtime relance par le superviseur puis retabli', { probes: w2.attemptsMade });
+              continue;
+            }
+          }
+          journal('warn', 'runtime indisponible apres la fenetre', {
+            elapsedMs: w.elapsedMs || 0, probes: w.attemptsMade, relance: rel.outcome || 'aucune' });
+          const sec = Math.round((w.elapsedMs || 0) / 1000);
+          const err = new Error('Runtime local hors ligne : indisponible apres ' + sec + ' s (fenetre de 180 s)' +
+            (rel.attempted ? ' et une relance du superviseur' : '') +
+            '. La demande et le travail deja fait sont conserves : la reprise continuera depuis le dernier point de controle des que le runtime repond.');
           err.code = 'runtime_offline';
           throw err;
         }
@@ -1541,6 +1623,7 @@ async function toolsTurn(base, session, toolsCtx) {
   const listedTargets = new Set(); // cibles dont la liste des fichiers a deja ete donnee
   const INVALIDATABLE = ['write', 'edit', 'patch', 'append', 'delete', 'rename', 'mkdir'];
   let loopStop = false;
+  let runtimeStop = false; // P62: arret propre sur fenetre runtime epuisee
   let pauseAborted = false;
   let orchVerdict = null;
   let attempt = 0;
@@ -1690,13 +1773,29 @@ async function toolsTurn(base, session, toolsCtx) {
         // then retry this round once. The failed round produced no model
         // response, so history is unchanged and the retry is safe.
         if (!e || e.code !== 'runtime_offline' || runEntry.aborted) throw e;
+        // P62-B1: meme echeance partagee que le reste du tour.
         const wT = await waitAndRetry({ provider, onEvent,
-          shouldAbort: () => runEntry.aborted, waitOpts: runtimeWait });
-        if (!wT.retry || runEntry.aborted) throw e;
+          shouldAbort: () => runEntry.aborted,
+          waitOpts: Object.assign({}, runtimeWait, { deadline: (runtimeWait && runtimeWait.deadline) || rwDeadline }) });
+        if (!wT.retry || runEntry.aborted) {
+          // P62-B2/B6: la fenetre est epuisee. On ne rend pas une erreur nue :
+          // le tour s'arrete avec une raison en francais, et le travail deja
+          // fait reste. Aucun statut muet.
+          stopReason = 'runtime_offline';
+          stopDetail = String((e && e.message) || 'runtime local indisponible.');
+          finalText = String((e && e.message) || 'Runtime local indisponible.');
+          answerFromModel = true;
+          store.append(sessionId, { role: 'assistant', content: finalText });
+          try { onEvent({ type: 'message.done', text: finalText, aborted: false }); } catch (_) {}
+          journal('warn', 'tour arrete : runtime indisponible', { reason: stopDetail.slice(0, 160) });
+          runtimeStop = true;
+          break;
+        }
         reply = await roundOnce();
       } finally {
         runEntry.destroy = null;
       }
+      if (runtimeStop) break; // P62: sortie propre, deja expliquee
       let calls = Array.isArray(reply.toolCalls) ? reply.toolCalls : [];
       // P57-3: task(agent, consigne) est le raccourci nomme de subagent : meme
       // chemin (profondeur 1 max, memes garde-fous), un seul enfant.
@@ -2526,6 +2625,14 @@ async function toolsTurn(base, session, toolsCtx) {
     }
   }
 
+  // P62-E1: une seule ligne de synthese en fin de tour (mesures reelles).
+  try {
+    const totTps = (perf.genTokens > 0 && perf.genMs > 0) ? Math.round((perf.genTokens / (perf.genMs / 1000)) * 10) / 10 : 0;
+    journal('info', 'mesures du tour', { appelsModele: perf.calls, jetonsPrompt: perf.promptTokens,
+      jetonsGeneres: perf.genTokens, msGeneration: Math.round(perf.genMs), jetonsParSeconde: totTps,
+      appelsOutils: run.calls.length });
+  } catch (_) {}
+
   // Honest status (P25-g + P26 stops).
   const filesModified = currentFilesModified();
   let verdict = computeRunStatus(declared, run.calls, { files: currentFilesModified(), verifyNote, lang: convLang });
@@ -2541,6 +2648,17 @@ async function toolsTurn(base, session, toolsCtx) {
   if (declared && filesModified.length > 0) {
     const app = 'Modifications verifiees (' + filesModified.length + ') : ' + filesModified.join(', ');
     finalText = (finalText.trim() ? finalText.trim() + '\n\n' : '') + app;
+  }
+  // P62-D5: une action REUSSIE hors du projet (copie vers un dossier voisin)
+  // n'apparait dans aucun diff du projet. Sans cette ligne, l utilisateur
+  // lisait "copie faite" sans savoir OU. Le fait vient du resultat d outil,
+  // jamais du texte du modele.
+  {
+    const outs = run.calls.filter((c) => c.ok && c.code === 'ok' && c.tool === 'copy_project');
+    if (outs.length) {
+      const txt = outs.map((c) => String(c.summary || '')).filter(Boolean).join(' | ');
+      if (txt) finalText = (finalText.trim() ? finalText.trim() + '\n\n' : '') + 'Copie hors projet : ' + txt;
+    }
   }
   // P52: engine-plan honesty appendix (verified X/Y + remaining steps).
   if (declared) {

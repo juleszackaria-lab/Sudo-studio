@@ -239,7 +239,10 @@ function createApp(opts) {
         req.on('close', () => { abortRun(runs, id); finish(); });
         if (!pre.ok) {
           const w = await waitForRuntime(provider, {
-            quickRefusedFail: true, // P56-stab: port ferme => verdict en ~2 s
+            // P62-B1: fenetre de TEMPS (180 s par defaut, reduite par
+            // SUDO_AGENT_RUNTIME_WAIT_MS dans les tests). Un port ferme n est
+            // plus un verdict immediat : le superviseur peut relancer.
+            budgetMs: (Number(process.env.SUDO_AGENT_RUNTIME_WAIT_MS) > 0 ? Number(process.env.SUDO_AGENT_RUNTIME_WAIT_MS) : 180000),
             shouldAbort: () => finished,
             onProgress: (n, max, message) => emit('runtime.wait',
               { type: 'runtime.wait', attempt: n, maxAttempts: max, message }),

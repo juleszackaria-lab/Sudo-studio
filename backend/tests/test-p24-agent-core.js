@@ -513,13 +513,16 @@ function isRefused(port) {
 // endpoint, not a supervised restart: verdict in ~2s instead of 50s), the
 // message names the outage, and NOTHING is persisted as if the model had
 // answered. This test asserts exactly that (it used to expect a 502).
-t('F1', 'runtime offline: clear, fast runtime_offline, never fake success', async () => {
+t('F1', 'runtime offline: fenetre de temps, runtime_offline honnete, jamais de faux succes', async () => {
   // The "dead" port must really be dead: ephemeral reuse could hand it to our
   // own server or a leftover. Verify, retry with a fresh port if taken.
   let a = null;
   let hs = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const dead = await closedPort();
+    // P62-B1: la fenetre est un TEMPS (180 s en production) ; on la reduit ici
+    // pour que le test reste rapide sans changer le contrat livre.
+    process.env.SUDO_AGENT_RUNTIME_WAIT_MS = '1500';
     a = spawnAgent({ provider: { type: 'local', baseUrl: 'http://' + HOST + ':' + dead, model: '' } });
     try {
       hs = await waitHandshake(a.child);
@@ -547,12 +550,13 @@ t('F1', 'runtime offline: clear, fast runtime_offline, never fake success', asyn
     assert(err.code === 'runtime_offline', 'expected runtime_offline, got ' + err.code);
     const msg = String((err.body && err.body.error) || err.message || '');
     assert(/hors ligne|injoignable/.test(msg), 'unclear error: ' + msg);
-    // 3. fast: a dead port must not cost the 50s restart budget
-    assert(ms < 5000, 'too slow: ' + ms + 'ms');
+    // 3. P62-B1: la fenetre demandee (1,5 s ici) est respectee : ni verdict
+    // instantane sans laisser sa chance au superviseur, ni attente infinie.
+    assert(ms >= 1000 && ms < 20000, 'fenetre non respectee: ' + ms + 'ms');
     // 4. never a fake answer in the session
     const g = await httpJson(hs.port, a.token, 'GET', '/sessions/' + c.body.id);
     assert(g.body.messages.length === 0, 'fake message persisted');
-  } finally { killChild(a.child); }
+  } finally { killChild(a.child); delete process.env.SUDO_AGENT_RUNTIME_WAIT_MS; }
 });
 
 t('F2', 'empty model list: clear no-model 502', async () => {
@@ -588,7 +592,7 @@ t('G1', 'tools registered (P25), permissions ask-mutating', async () => {
     // (13 small / 30 at 4096 / 35 full at >=8192) is asserted by P25/P26 and
     // is UNCHANGED: platform tools are never in the default surface, the
     // pre-router (router.js) exposes at most six of them per turn.
-    const expected = ['analyze', 'append', 'bash', 'ci', 'delete', 'devops_generate', 'devops_read',
+    const expected = ['analyze', 'append', 'bash', 'ci', 'copy_project', 'delete', 'devops_generate', 'devops_read',
       'doctor', 'doctor_read', 'doctor_run', 'done', 'edit', 'environment_read', 'exec_poll',
       'exec_start', 'exec_stop', 'extensions_describe', 'extensions_list', 'gen_check', 'gen_phase',
       'gen_report', 'gen_restore', 'gen_start', 'glob', 'grep', 'license_status', 'list', 'logs_read',
@@ -596,7 +600,7 @@ t('G1', 'tools registered (P25), permissions ask-mutating', async () => {
       'read', 'rename', 'reply', 'runtime_status', 'sdk', 'secaudit', 'security_audit_read',
       'security_audit_run', 'skill', 'skill_load', 'subagent', 'task', 'todo', 'write'];
     assert(JSON.stringify(names) === JSON.stringify(expected), 'tool names: ' + names.join(','));
-    assert(names.length === 48, 'registry size: ' + names.length);
+    assert(names.length === 49, 'registry size: ' + names.length);
     for (const x of tl.body.tools) assert(!('handler' in x), 'handler leaked');
     const pm = await httpJson(hs.port, a.token, 'GET', '/permissions');
     assert(pm.status === 200 && pm.body.mode === 'ask-mutating', 'permissions mode');

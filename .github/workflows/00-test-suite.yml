@@ -60,7 +60,7 @@ jobs:
             echo '[FAIL] au moins une suite est rouge'
             exit 1
           fi
-          # P61-D: le compte de suites augmente (49 -> 51 avec P61). On exige
+          # P61-D/P62: le compte de suites augmente (49 -> 51 avec P61, 54 avec P62). On exige
           # "0 failed" ET un minimum, pour qu'une suite supprimee du compositeur
           # ne passe pas pour un vert.
           grep -qE 'TOTAL: [0-9]+ suites, 0 failed' /tmp/suite.log || {
@@ -68,8 +68,8 @@ jobs:
             exit 1
           }
           suites=$(grep -oE 'TOTAL: [0-9]+ suites' /tmp/suite.log | grep -oE '[0-9]+' | tail -1)
-          echo "suites executees : $suites (minimum exige : 51)"
-          if [ "$suites" -lt 51 ]; then
+          echo "suites executees : $suites (minimum exige : 54)"
+          if [ "$suites" -lt 54 ]; then
             echo '[FAIL] moins de suites que le minimum attendu'
             exit 1
           fi

@@ -402,6 +402,80 @@ async function hMkdir(ctx, args, resolved) {
   return { ok: true, data: { rel: r.rel, existed: false }, summary: 'cree dossier ' + r.rel + '.' };
 }
 
+// P62-D5 (F3): "code une nouvelle version du projet dans un dossier
+// voisin". Le modele n a pas a deviner : l agent COPIE lui-meme le projet,
+// de facon deterministe, vers un dossier de MEME NIVEAU. Exclusions fixes
+// (.git, node_modules, build, dist, .dart_tool) pour ne pas copier des
+// dizaines de milliers de fichiers. L ecriture hors du dossier ouvert est
+// toujours soumise a une approbation explicite (dangerousTarget renvoie
+// 'hors-projet' pour cet outil).
+const COPY_EXCLUDE = ['.git', 'node_modules', 'build', 'dist', '.dart_tool'];
+const COPY_MAX_FILES = 20000;
+
+function copyProjectTree(fromRoot, toRoot, opts) {
+  const exclude = (opts && opts.exclude) || COPY_EXCLUDE;
+  const maxFiles = (opts && opts.maxFiles) || COPY_MAX_FILES;
+  let files = 0, dirs = 0, bytes = 0, skipped = 0, truncated = false;
+  const walk = (rel) => {
+    const src = rel ? path.join(fromRoot, rel) : fromRoot;
+    let entries = [];
+    try { entries = fs.readdirSync(src, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of entries) {
+      const childRel = rel ? path.join(rel, e.name) : e.name;
+      if (exclude.indexOf(e.name) !== -1) { skipped += 1; continue; }
+      const s2 = path.join(fromRoot, childRel);
+      const d2 = path.join(toRoot, childRel);
+      if (e.isDirectory()) {
+        try { fs.mkdirSync(d2, { recursive: true }); } catch (_) { return; }
+        dirs += 1;
+        walk(childRel);
+      } else if (e.isFile()) {
+        if (files >= maxFiles) { truncated = true; return; }
+        try {
+          fs.mkdirSync(path.dirname(d2), { recursive: true });
+          fs.copyFileSync(s2, d2);
+          files += 1;
+          try { bytes += fs.statSync(d2).size; } catch (_) {}
+        } catch (_) { /* un fichier illisible n arrete pas la copie */ }
+      }
+    }
+  };
+  walk('');
+  return { files, dirs, bytes, skipped, truncated };
+}
+
+async function hCopyProject(ctx, args, resolved) {
+  args = args || {};
+  const rootAbs = path.resolve(ctx.root);
+  const parent = path.dirname(rootAbs);
+  const base = path.basename(rootAbs);
+  const name = String(args.nom || args.name || (base + '-v2')).replace(/[\\/:*?"<>|]/g, '-').replace(/^\.+/, '').slice(0, 80);
+  if (!name) return { ok: false, code: 'bad_args', error: 'copy_project : nom de dossier invalide.' };
+  const target = path.resolve(parent, name);
+  // Jamais dans le projet lui-meme, jamais sur un dossier existant non vide.
+  if (target === rootAbs || target.indexOf(rootAbs + path.sep) === 0) {
+    return { ok: false, code: 'bad_target', error: 'copy_project refuse : la cible est dans le projet ouvert (' + target + ').' };
+  }
+  let exists = false;
+  try { exists = fs.readdirSync(target).length > 0; } catch (_) { exists = false; }
+  if (exists && args.ecraser !== true) {
+    return { ok: false, code: 'exists', error: 'copy_project refuse : ' + target + ' existe deja et n est pas vide (choisis un autre nom ou ecraser=true).' };
+  }
+  let snap = null;
+  try { snap = ckpt.snapshotProject(rootAbs, {}); } catch (_) { snap = null; }
+  const r = copyProjectTree(rootAbs, target, { exclude: COPY_EXCLUDE, maxFiles: COPY_MAX_FILES });
+  const mb = Math.round((r.bytes / (1024 * 1024)) * 10) / 10;
+  const skippedTxt = r.skipped ? ' (' + r.skipped + ' dossier(s) exclu(s) : ' + COPY_EXCLUDE.join(', ') + ')' : '';
+  return {
+    ok: true,
+    data: { from: rootAbs, to: target, nom: name, files: r.files, dirs: r.dirs, bytes: r.bytes,
+      excluded: COPY_EXCLUDE, skipped: r.skipped, truncated: r.truncated, snapshot: snap ? Object.keys(snap.files || {}).length : 0 },
+    created: [name + '/'],
+    summary: 'copie du projet vers ' + target + ' : ' + r.files + ' fichier(s), ' + mb + ' Mo' + skippedTxt +
+      (r.truncated ? ' - COPIE PARTIELLE (limite de ' + COPY_MAX_FILES + ' fichiers atteinte).' : '.'),
+  };
+}
+
 async function hWrite(ctx, args, resolved) {
   if (typeof args.content !== 'string') return { ok: false, code: 'bad_args', error: 'write: content (string) requis.' };
   if (args.content.length > 2 * 1024 * 1024) return { ok: false, code: 'too_big', error: 'write: contenu trop volumineux.' };
@@ -997,6 +1071,12 @@ async function hDone(ctx, args) {
 const DANGER_DIRS = ['.git', 'node_modules'];
 
 function dangerousTarget(ctx, toolName, resolved) {
+  // P62-D5: copy_project ecrit un dossier VOISIN (hors du projet ouvert).
+  // L approbation est donc toujours demandee, avec un avertissement clair.
+  if (toolName === 'copy_project') {
+    return { kind: 'hors-projet', warning: 'ATTENTION : copy_project ecrit un NOUVEAU dossier a cote du projet ouvert (' +
+      String((resolved && resolved.abs) || '') + '). Rien n est modifie dans le projet ouvert, mais des fichiers sont ecrits hors de lui : confirmation explicite requise.' };
+  }
   if (!resolved || !resolved.ok || !resolved.rel) return null;
   const MUT = ['write', 'edit', 'patch', 'append', 'delete', 'rename', 'mkdir'];
   if (MUT.indexOf(toolName) === -1) return null;
@@ -1059,6 +1139,7 @@ const TOOLS = {
   rename: { description: 'Renomme/deplace un fichier (lecture prealable requise, cible neuve, confirmation, annulable).', danger: 'write', mutating: true, pathArg: 'from', defDir: null, handler: hRename },
   append: { description: 'Ajoute du texte a la fin d\'un fichier (cree le fichier si absent).', danger: 'write', mutating: true, pathArg: 'file', defDir: null, handler: hAppend },
   mkdir: { description: 'Cree un dossier (parents inclus, idempotent).', danger: 'write', mutating: true, pathArg: 'dir', defDir: null, handler: hMkdir },
+  copy_project: { description: 'Copie tout le projet vers un dossier voisin (meme niveau), sans .git/node_modules/build/dist. Reponse a "nouvelle version du projet dans un dossier different".', danger: 'write', mutating: true, pathArg: null, defDir: null, handler: hCopyProject, outside: true },
   reply: { description: 'Reponse finale (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hReply },
   done: { description: 'Tache terminee (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hDone },
   // P59-A: platform tools. Registered here (so /tools, the registry and the

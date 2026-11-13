@@ -121,8 +121,11 @@ async function main() {
         ], { maxIt: 8, runtimeWait: { attempts: 8, delayMs: 300, probeTimeoutMs: 200 } });
         const waits = r.events.filter((e) => e.type === 'runtime.wait');
         check('E4-a: le tour survit a une coupure du runtime', r.out.runStatus === 'TERMINE', r.out.runStatus);
-        check('E4-b: l utilisateur voit "Runtime en redemarrage"',
-            waits.length > 0 && /Runtime en redemarrage/.test(String(waits[0].message || '')),
+        // P62-B1/B6: le message doit etre en FRANCAIS et dire que la reprise
+        // est automatique (l ancien texte "Runtime restarting, attempt" etait
+        // exactement le defaut signale par l utilisateur).
+        check('E4-b: l utilisateur voit une reprise automatique annoncee en francais',
+            waits.length > 0 && /reprise automatique/i.test(String(waits[0].message || '')),
             JSON.stringify(waits.map((x) => x.message).slice(0, 2)));
         check('E4-c: la requete est rejouee, pas perdue',
             r.calls.some((c) => c.tool === 'read' && c.ok), 'aucun read abouti');

@@ -80,13 +80,11 @@ async function main() {
             probeFn: async () => (++n < 3 ? OFFLINE : { ok: true, models: ['m'], details: [] }),
             onProgress: (a, m, msg) => msgs.push(msg),
         });
-        check('D1: recovers mid-wait with exact attempt messages',
-            r.recovered === true && r.attemptsMade === 3 &&
-            JSON.stringify(msgs) === JSON.stringify([
-                'Runtime restarting, attempt 1/5',
-                'Runtime restarting, attempt 2/5',
-                'Runtime restarting, attempt 3/5',
-            ]), JSON.stringify(msgs));
+        // P62-B6: les messages visibles sont en FRANCAIS (defaut R4 corrige).
+        check('D1: recovers mid-wait with exact french attempt messages',
+            r.recovered === true && r.attemptsMade === 3 && msgs.length === 3 &&
+            msgs.every((m) => /Runtime indisponible, reprise automatique en cours \(essai \d+ sur 5\)/.test(m)),
+            JSON.stringify(msgs));
     }
     // D2: persistent outage -> 5 attempts, 50s sleep budget (<= 60s total).
     {
@@ -184,7 +182,8 @@ async function main() {
             corr: 'p48e1', log: null, runs: new Map(),
             runtimeWait: { attempts: 5, delayMs: 100, probeTimeoutMs: 200 },
             onEvent: (e) => evts.push(e.type + (e.message ? ':' + e.message : '')) });
-        const waits = evts.filter((e) => e.indexOf('runtime.wait:Runtime restarting, attempt ') === 0);
+        const waits = evts.filter((e) => e.indexOf('runtime.wait:Runtime indisponible, reprise automatique') === 0
+            || e.indexOf('runtime.wait:Runtime en redemarrage') === 0);
         check('E1: turn waits on runtime.wait events then resumes',
             r.status === 'done' && waits.length >= 1 &&
             evts.indexOf('turn.start') !== -1 && evts.indexOf('turn.done') !== -1 &&
@@ -217,10 +216,10 @@ async function main() {
         const steps = [];
         eng.on('step', (d) => steps.push(d));
         eng._onSse('s1', 'runtime.wait',
-            { attempt: 2, maxAttempts: 5, message: 'Runtime restarting, attempt 2/5' }, () => {});
+            { attempt: 2, maxAttempts: 5, message: 'Runtime indisponible, reprise automatique en cours (ecoule : 20 s sur 180 s)' }, () => {});
         check('F1: runtime.wait becomes a runtime-restart step with the exact text',
             steps.length === 1 && steps[0].phase === 'runtime-restart' &&
-            steps[0].message === 'Runtime restarting, attempt 2/5',
+            steps[0].message === 'Runtime indisponible, reprise automatique en cours (ecoule : 20 s sur 180 s)',
             JSON.stringify(steps));
     }
 

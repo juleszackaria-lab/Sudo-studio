@@ -209,7 +209,9 @@ function streamChat(cfg, messages, opts) {
   });
 }
 
-module.exports = { normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime, samplingPayload };
+module.exports = {
+  monoMs,
+  runtimeDeadline, normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime, samplingPayload };
 
 // Non-streaming chat, optional tools (P25). opts: { model, messages, tools?,
 // toolChoice?, temperature?, topP?, topK?, repeatPenalty?, maxTokens?,
@@ -296,8 +298,85 @@ function chatOnce(cfg, opts) {
 // opts: { attempts, delayMs, probeTimeoutMs, probeFn, sleep, onProgress,
 // shouldAbort }. Resolves { recovered, probe, attemptsMade, aborted }.
 // Never waits for cloud configs.
+// P62-B1: horloge MONOTONE. Date.now() saute quand Windows se met en veille
+// ou quand l heure systeme est ajustee : une fenetre d attente calculee avec
+// Date.now() peut donc se terminer instantanement au reveil. hrtime ne bouge
+// pas avec l heure systeme.
+function monoMs() {
+  try { return Number(process.hrtime.bigint() / 1000000n); } catch (_) { return Date.now(); }
+}
+
+// P62-B1: une fenetre d attente PARTAGEE. Le compteur ne repart jamais a
+// zero : tous les appelants d un meme tour lisent la meme echeance.
+function runtimeDeadline(budgetMs) {
+  const now = monoMs();
+  const budget = Number(budgetMs) > 0 ? Number(budgetMs) : 180000;
+  return { start: now, end: now + budget, budgetMs: budget };
+}
+
+// P62-B1: attente pilotee par le TEMPS (et non par un nombre d essais).
+// Sondages progressifs 1 s, 2 s, 4 s puis 5 s. Message unique en francais,
+// avec le temps ecoule, pour que l utilisateur voie une progression reelle.
+async function waitForRuntimeTimed(cfg, opts) {
+  opts = opts || {};
+  const probeFn = typeof opts.probeFn === 'function' ? opts.probeFn : probeProvider;
+  const sleep = typeof opts.sleep === 'function' ? opts.sleep : ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const shouldAbort = typeof opts.shouldAbort === 'function' ? opts.shouldAbort : null;
+  const probeTimeoutMs = Number(opts.probeTimeoutMs) > 0 ? Number(opts.probeTimeoutMs) : 2000;
+  const dl = opts.deadline && opts.deadline.end ? opts.deadline : runtimeDeadline(opts.budgetMs);
+  if (!cfg || cfg.type !== 'local') {
+    return { recovered: false, probe: null, attemptsMade: 0, aborted: false, elapsedMs: 0 };
+  }
+  const maxProbes = Number(opts.maxProbes) > 0 ? Number(opts.maxProbes) : 400;
+  let lastProbe = null;
+  let made = 0;
+  let idx = 0;
+  for (;;) {
+    if (shouldAbort && shouldAbort()) {
+      return { recovered: false, probe: lastProbe, attemptsMade: made, aborted: true, elapsedMs: monoMs() - dl.start };
+    }
+    const elapsedMs = monoMs() - dl.start;
+    const leftMs = dl.end - monoMs();
+    if (leftMs <= 0 || made >= maxProbes) break;
+    if (onProgress) {
+      const sec = Math.round(elapsedMs / 1000);
+      const tot = Math.round(dl.budgetMs / 1000);
+      try { onProgress(made + 1, null, 'Runtime indisponible, reprise automatique en cours (ecoule : ' + sec + ' s sur ' + tot + ' s)'); } catch (_) {}
+    }
+    // Sondage progressif : 1 s, 2 s, 4 s, puis 5 s au maximum.
+    const step = idx === 0 ? 1000 : (idx === 1 ? 2000 : (idx === 2 ? 4000 : 5000));
+    await sleep(Math.max(0, Math.min(step, leftMs)));
+    idx += 1;
+    if (shouldAbort && shouldAbort()) {
+      return { recovered: false, probe: lastProbe, attemptsMade: made, aborted: true, elapsedMs: monoMs() - dl.start };
+    }
+    made += 1;
+    let p = null;
+    try { p = await probeFn(cfg, { timeoutMs: probeTimeoutMs }); }
+    catch (e) { p = { ok: false, code: 'provider_error', error: String((e && e.message) || e) }; }
+    lastProbe = p;
+    if (p && p.ok) return { recovered: true, probe: p, attemptsMade: made, aborted: false, elapsedMs: monoMs() - dl.start };
+    const code = (p && p.code) || 'provider_error';
+    // Seul un redemarrage merite d attendre : "aucun modele charge" est un
+    // progres (le superviseur recharge), tout le reste est un verdict.
+    if (code !== 'runtime_offline' && code !== 'no_model') {
+      return { recovered: false, probe: p, attemptsMade: made, aborted: false, elapsedMs: monoMs() - dl.start, verdict: code };
+    }
+  }
+  return { recovered: false, probe: lastProbe, attemptsMade: made, aborted: false,
+    elapsedMs: monoMs() - dl.start, timedOut: true };
+}
+
 function waitForRuntime(cfg, opts) {
   opts = opts || {};
+  // P62-B1: chemin TEMPS quand un budget (ou une echeance) est fourni, ou
+  // quand l appelant le demande explicitement (timed: true). Les autres
+  // appelants - harnais, tests historiques - gardent le chemin a compteur
+  // d essais, pour rester deterministes et rapides.
+  if (opts.timed === true || opts.budgetMs !== undefined || opts.deadline) {
+    return waitForRuntimeTimed(cfg, opts);
+  }
   const max = Number(opts.attempts) > 0 ? Math.floor(Number(opts.attempts)) : 5;
   const delayMs = Number(opts.delayMs) >= 0 ? Number(opts.delayMs) : 10000;
   const probeTimeoutMs = Number(opts.probeTimeoutMs) > 0 ? Number(opts.probeTimeoutMs) : 2000;
@@ -328,7 +407,7 @@ function waitForRuntime(cfg, opts) {
         return { recovered: false, probe: lastProbe, attemptsMade: n - 1, aborted: true };
       }
       if (onProgress) {
-        try { onProgress(n, max, 'Runtime restarting, attempt ' + n + '/' + max); } catch (_) {}
+        try { onProgress(n, max, 'Runtime indisponible, reprise automatique en cours (essai ' + n + ' sur ' + max + ')'); } catch (_) {}
       }
       // First probe is immediate; after a refusal the next one comes fast.
       const waitMs = (quickRefused && n === 1) ? 0
