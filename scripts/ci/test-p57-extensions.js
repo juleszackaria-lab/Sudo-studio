@@ -260,10 +260,11 @@ const ctx = {
     check('schemas full/8192 : mcp_call avec parametres requis', schemas.some((s) => s.function.name === 'mcp_call'
         && s.function.parameters.required.join(',') === 'serveur,outil'), schemas.find((s) => s.function.name === 'mcp_call'));
     // P57-1: meme profil complet, contexte court -> les schemas d'extensions
-    // sont retires (le jeu revient a celui d'avant P57, 30 outils).
+    // sont retires. P62-D5 ajoute copy_project (outil deterministe) : le jeu
+    // court passe donc de 30 a 31 outils, sans aucun outil d'extension.
     const tight = toolsMod.toOpenAISchema('full', 4096).map((s) => s.function.name);
     check('schemas full/4096 : extensions retirees (budget)',
-        extTools.every((n) => tight.indexOf(n) === -1) && tight.length === 30, tight.length);
+        extTools.every((n) => tight.indexOf(n) === -1) && tight.length === 31, tight.length);
     check('schemas full/8192 : tool_choice contraint reste raisonnable', names.length <= 36, names.length);
 
     console.log('\n== ' + pass + ' PASS, ' + fail + ' FAIL ==');
