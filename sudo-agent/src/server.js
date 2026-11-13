@@ -258,6 +258,20 @@ function createApp(opts) {
           }
           pre = w.probe;
         }
+        // P62-B3: le tour protege la machine contre la veille, et signale les
+        // veilles qui passent quand meme (ecran verrouille, capot ferme).
+        const keep = require('./powerkeep').createPowerKeep({
+          log: (lvl, msg, f) => { if (log) { try { log[lvl === 'warn' ? 'warn' : 'info'](msg, f || {}, corr); } catch (_) {} } },
+        });
+        keep.start('tour ' + id);
+        const keepTimer = setInterval(() => {
+          const t = keep.tick();
+          if (t.suspended) {
+            emit('runtime.wait', { type: 'runtime.wait', attempt: 0, maxAttempts: 0,
+              message: 'Veille detectee (' + t.seconds + ' s) : reprise automatique en cours.' });
+          }
+        }, 15000);
+        if (keepTimer.unref) keepTimer.unref();
         try {
           await runTurn({
             store, provider, sessionId: id, prompt, corr, log, runs, preProbe: pre,
@@ -267,6 +281,9 @@ function createApp(opts) {
         } catch (e) {
           emit('turn.error', { type: 'turn.error', code: 'internal', error: 'erreur interne.' });
           if (log) { try { log.error('turn exception', { session: id, error: maskSecrets(String((e && e.message) || e)).slice(0, 200) }, corr); } catch (_) {} }
+        } finally {
+          try { clearInterval(keepTimer); } catch (_) {}
+          keep.stop('fin du tour ' + id);
         }
         finish();
         return;

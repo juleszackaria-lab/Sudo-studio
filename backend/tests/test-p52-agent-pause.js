@@ -173,8 +173,12 @@ t('P2 refus operateur : PARTIEL honnete AUCUNE MODIFICATION (pas d ECHEC)', asyn
     call('reply', { text: 'J abandonne proprement.' }),
   ], { autoApprove: 'deny' });
   assert(r.out.runStatus === 'PARTIEL', 'PARTIEL honnete, recu ' + r.out.runStatus);
-  assert(r.last.content.indexOf('AUCUNE MODIFICATION') !== -1, 'mention honnete');
-  assert(r.last.content.indexOf("action refusee par l'operateur (write)") !== -1, 'cause refus citee');
+  // P62-F2: le refus n'est plus noye dans un "AUCUNE MODIFICATION : lecture
+  // seule" (defaut mesure sur le paquet installe). Le message dit REFUSE, le
+  // tour s'arrete, et la raison reste citee mot pour mot.
+  assert(/REFUS/i.test(r.last.content), 'mention honnete (REFUSE) : ' + String(r.last.content).slice(0, 120));
+  assert(/Aucune modification/i.test(r.last.content), 'dit qu aucune modification n a ete faite');
+  assert(r.last.content.indexOf('write') !== -1, 'outil refuse cite');
   assert(!fs.existsSync(path.join(w.proj, 'r.txt')), 'rien ecrit');
   const tools = r.end.messages.filter((m) => m.role === 'tool').map((m) => m.content).join('\n');
   assert(tools.indexOf('refuse par l\'operateur') !== -1, 'modele informe du refus');

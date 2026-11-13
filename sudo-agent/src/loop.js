@@ -857,6 +857,8 @@ async function toolsTurn(base, session, toolsCtx) {
   const profile = profiles.selectProfile({ modelId: model, providerType: provider.type, override: provider.profile || process.env.SUDO_AGENT_PROFILE });
   // P50-6: sub-turns cap their rounds via base.maxIt (1..10).
   let maxIt = profiles.maxIters(profile);
+  // P62-F2: refus d'approbation -> arret immediat et raison explicite.
+  let operatorDenied = null;
   if (base.maxIt !== undefined && base.maxIt !== null) {
     const m = parseInt(base.maxIt, 10);
     if (Number.isFinite(m)) maxIt = Math.min(10, Math.max(1, m));
@@ -1694,7 +1696,10 @@ async function toolsTurn(base, session, toolsCtx) {
     } catch (_) { /* le fichier n'existe pas : c'est bien un chemin */ }
     const n = (targetFails.get(target) || 0) + 1;
     targetFails.set(target, n);
-    if (n > 2) return { giveUp: true };
+    // P62-F4: arret apres 2 echecs sur la MEME cible (la video montrait 4
+    // lectures identiques jusqu'a max_iters). Le 1er echec sert a resoudre ou
+    // a lister ; le 2e echec ferme la cible avec sa raison.
+    if (n >= 2) return { giveUp: true };
     const hit = resolvePath.resolveClosest(root, target);
     // P61-8: compare la forme BRUTE (readme.md != README.md) : la casse est
     // justement ce qu'on corrige.
@@ -2243,8 +2248,19 @@ async function toolsTurn(base, session, toolsCtx) {
           } else if (paused.legacy) {
             content = legacyNeedApproval(r);
           } else if (paused.decision === 'deny') {
+            // P62-F2: un refus est un VERDICT, pas une invitation a tourner en
+            // rond. Avant, le modele continuait (not_read x4) pour finir sur un
+            // "AUCUNE MODIFICATION" incomprehensible. On s'arrete ici, en
+            // francais, en disant quel outil a ete refuse et que rien n'a ete
+            // modifie. Aucun message trompeur, aucun compteur gonfle.
             run.calls.push({ tool: first.name, target: String((r.request.pattern && r.request.pattern.text) || ''), ok: false, code: 'denied', ms: 0, at: new Date().toISOString(), summary: 'refuse par l\'operateur.' });
-            content = JSON.stringify({ ok: false, code: 'denied', error: 'refuse par l\'operateur. Adapte (autre outil, autre chemin) ou termine via reply/done.', detail: 'refuse par l\'operateur.' });
+            content = JSON.stringify({ ok: false, code: 'denied', error: 'refuse par l\'operateur : le tour s arrete, aucune modification.', detail: 'refuse par l\'operateur.' });
+            operatorDenied = { tool: String(first.name || '?'), summary: String((r.request && r.request.summary) || '').slice(0, 200) };
+            stopReason = 'approval_denied';
+            stopDetail = 'action refusee par l operateur : ' + operatorDenied.tool +
+              (operatorDenied.summary ? ' (' + operatorDenied.summary + ')' : '') +
+              '. Aucune modification effectuee.';
+            journal('warn', 'approbation refusee, tour arrete', { tool: operatorDenied.tool });
           } else {
             // Approved (once/session/project): re-execute, THIS turn continues.
             // P61-5: la re-execution APRES approbation doit laisser la meme
@@ -2371,6 +2387,8 @@ async function toolsTurn(base, session, toolsCtx) {
           store.append(sessionId, { role: 'tool', tool_call_id: xid, name: extra.name, content: JSON.stringify({ ok: false, code: 'skipped', error: 'une seule action par pas : cet appel est ignore, repose-le au pas suivant.', detail: 'une seule action par pas.' }) });
         try { onEvent({ type: 'tool.result', callId: xid, tool: extra.name, ok: false, code: 'skipped', ms: 0, summary: 'ignore : une seule action par pas.' }); } catch (_) {}
       }
+      // P62-F2: un refus d'approbation arrete le tour ICI (raison explicite).
+      if (operatorDenied) { loopStop = true; }
       if (pauseAborted || loopStop || buildFixStop) break; // P50-3 + P52: extras closed above, transcript valid.
     }
     // P49-2: the model claimed done with no verified files: constrained
@@ -2444,7 +2462,9 @@ async function toolsTurn(base, session, toolsCtx) {
             try {
               if (e && (e.type === 'turn.paused' || (typeof e.type === 'string' && e.type.indexOf('tool.') === 0) || e.type === 'runtime.wait')) onEvent(e);
             } catch (_) {}
-          }, maxIt: ctx.callBudget, runtimeWait });
+          }, maxIt: ctx.callBudget, runtimeWait,
+          // P62-F7: une etape de cahier ne voit que son sous-ensemble d'outils.
+          allowedTools: Array.isArray(ctx.toolSubset) ? ctx.toolSubset : undefined });
         cres = await Promise.race([
           childTurn,
           new Promise((resolve) => {
@@ -2698,6 +2718,16 @@ async function toolsTurn(base, session, toolsCtx) {
         'Verification non executee : relancez la demande des que le modele repond.';
       verdict = { status: 'PARTIEL', reason: 'fournisseur indisponible', unresolved: verdict.unresolved };
       store.append(sessionId, { role: 'assistant', content: finalText });
+    } else if (operatorDenied) {
+      // P62-F2: message clair, statut motive, aucune ambiguite sur ce qui a
+      // (ou n'a pas) ete fait. Le tour s'arrete au lieu de tourner en rond.
+      const quoi = operatorDenied.summary ? ' (' + operatorDenied.summary + ')' : '';
+      finalText = 'REFUSE : l\'action "' + operatorDenied.tool + '"' + quoi +
+        ' a ete refusee par l\'operateur. Aucune modification n\'a ete effectuee. ' +
+        'Relancez la demande avec une autre formulation, ou approuvez cette action pour continuer.';
+      verdict = { status: 'PARTIEL', reason: 'action refusee par l operateur : ' + operatorDenied.tool, unresolved: verdict.unresolved };
+      store.append(sessionId, { role: 'assistant', content: finalText });
+      journal('warn', 'verdict refus', { tool: operatorDenied.tool });
     } else if (!declared && (filesModified.length > 0 || finalText.trim())) {
       // Undeclared but real: modified files without a declaration, or an
       // answer already produced (context/loop rescue): keep the verdict.
@@ -2708,7 +2738,7 @@ async function toolsTurn(base, session, toolsCtx) {
       const totalCalls = run.calls.filter((c) => c.code !== 'skipped').length;
       let raison = '';
       if (mode === 'plan') raison = 'mode PLAN : les modifications sont refusees (basculez en BUILD pour modifier).';
-      else if (stopReason === 'no_tool' || stopReason === 'build_fix') raison = stopDetail;
+      else if (stopReason === 'no_tool' || stopReason === 'build_fix' || stopReason === 'target_given_up') raison = stopDetail;
       else if (!totalCalls) raison = 'aucun appel d\'outil emis.';
       else if (!okCalls) {
         const errs = run.calls.filter((c) => !c.ok).slice(0, 3).map((c) => c.tool + '/' + (c.code || 'error'));

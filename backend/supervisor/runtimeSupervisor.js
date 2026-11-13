@@ -132,6 +132,10 @@ class RuntimeSupervisor {
     this.now = opts.now || (() => Date.now());
     this.log = opts.log || ((m) => { try { console.log(m); } catch (_) { /* ignore */ } });
     this.tech = opts.tech || null; // P21-f: TechLogger (structured journal), optional
+    // P62-B3: renseigne par server.js (RAM libre, temps depuis la derniere
+    // requete, veille detectee). Injecte pour rester testable sans process.
+    this.diagFn = typeof opts.diagFn === 'function' ? opts.diagFn : null;
+    this.lastRequestAt = 0;
 
     this.running = false;
     this.timer = null;
@@ -159,6 +163,21 @@ class RuntimeSupervisor {
       const fn = this.tech[level] ? this.tech[level].bind(this.tech) : this.tech.info.bind(this.tech);
       fn(msg, fields || {});
     } catch (_) { /* never break supervision */ }
+  }
+
+  // P62-B3: pourquoi on relance, avec la RAM libre et le silence du client.
+  diag(extra) {
+    let d = { ramFreeMB: null, sinceLastRequestS: null, suspend: null };
+    try { d.ramFreeMB = Math.round(require('os').freemem() / (1024 * 1024)); } catch (_) {}
+    if (this.lastRequestAt) d.sinceLastRequestS = Math.round((this.now() - this.lastRequestAt) / 1000);
+    if (this.diagFn) {
+      try { const x = this.diagFn() || {}; d = Object.assign(d, x); } catch (_) {}
+    }
+    return Object.assign(d, extra || {});
+  }
+
+  noteRequest(atMs) { // P62-B3: appele a chaque requete recue
+    this.lastRequestAt = Number(atMs) || this.now();
   }
 
   exeExists() {
@@ -250,9 +269,15 @@ class RuntimeSupervisor {
     const backoff = this.backoffsMs[Math.min(this.consecutiveRestarts, this.backoffsMs.length - 1)];
     this.restartAttempts.push(nowTs);
     const attemptNo = this.restartAttempts.length;
+    // P62-B3: la CAUSE est journalisee avec la RAM libre et le temps depuis
+    // la derniere requete (une veille ressemble a un long silence).
+    const dg = this.diag({ attempt: attemptNo });
     this.audit('RESTART attempt#' + attemptNo + ' in window, backoff=' + backoff +
-      'ms, reason=' + reason);
-    this.tlog('warn', 'restart attempt', { attempt: attemptNo, backoffMs: backoff, reason });
+      'ms, reason=' + reason + ' ram_free_mb=' + dg.ramFreeMB +
+      ' since_last_req_s=' + dg.sinceLastRequestS);
+    this.tlog('warn', 'restart attempt', { attempt: attemptNo, backoffMs: backoff, reason,
+      ramLibreMo: dg.ramFreeMB, secondesDepuisDerniereRequete: dg.sinceLastRequestS,
+      veille: dg.suspend || null });
     let ok = false;
     let detail = '';
     let killResult = null;
@@ -295,7 +320,9 @@ class RuntimeSupervisor {
     if (this.restarts.length > 20) this.restarts = this.restarts.slice(-20);
     this.audit('RESTART done ok=' + ok + ' at=' + rec.atHHMM +
       ' reason=' + reason + ' detail=' + detail);
+    const dg2 = this.diag();
     this.tlog(ok ? 'info' : 'error', 'restart done', { ok, reason, detail,
+      ramLibreMo: dg2.ramFreeMB, secondesDepuisDerniereRequete: dg2.sinceLastRequestS,
       killResult: killResult === null || killResult === undefined ? null : String(killResult).slice(0, 200),
       spawnOk, exitCode });
     this.restarting = false;

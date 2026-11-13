@@ -139,6 +139,164 @@ def auto_n_ctx(model_id, weights_gb, avail_gb):
 
 
 # ---------------------------------------------------------------------------
+# P62-C: RAM faible. Choisir n_ctx / n_threads / n_batch, AVEC une explication.
+# La video de test montrait 8052 Mo au total et 427 Mo libres : a ce niveau un
+# contexte de 4096 fait planter le runtime. On decide donc, et on le DIT.
+P62_CTX_LADDER = (8192, 4096, 2048, 1024, 512)
+P62_SAFE_SHARE = 0.70       # au plus 70 % de la RAM libre
+P62_MARGIN_GB = 0.25        # marge fixe (allocateur, pile, OS)
+P62_WARN_FREE_GB = 0.8      # sous ce seuil, on le dit et on reduit
+P62_KV_GB_PER_KTOK = 0.15   # KV cache ~0,15 Go par 1000 jetons (1,5B Q4)
+
+
+def estimate_need_gb(weights_gb, n_ctx):
+    """Memoire estimee pour un contexte donne (poids + KV + marge)."""
+    try:
+        w = float(weights_gb)
+    except (TypeError, ValueError):
+        w = 1.1
+    try:
+        n = int(n_ctx)
+    except (TypeError, ValueError):
+        n = 2048
+    return w + (n / 1000.0) * P62_KV_GB_PER_KTOK + P62_MARGIN_GB
+
+
+def low_ram_profile(model_id, weights_gb, avail_gb, cpus=None):
+    """Profil sur pour la RAM libre reelle. Pure, jamais d exception.
+
+    Returns {'ok', 'fits', 'n_ctx', 'n_threads', 'n_batch', 'message', 'reason'}.
+    ok=False (n_ctx None) quand meme le plus petit contexte ne tient pas : on
+    refuse proprement en francais plutot que de planter en silence.
+    """
+    try:
+        avail = float(avail_gb)
+    except (TypeError, ValueError):
+        avail = 0.0
+    if cpus is None:
+        try:
+            import multiprocessing
+            cpus = multiprocessing.cpu_count()
+        except Exception:
+            cpus = 2
+    try:
+        cpus = max(1, int(cpus))
+    except (TypeError, ValueError):
+        cpus = 2
+    budget = avail * P62_SAFE_SHARE
+
+    chosen = None
+    for n in P62_CTX_LADDER:
+        if estimate_need_gb(weights_gb, n) <= budget:
+            chosen = n
+            break
+
+    if chosen is None:
+        need_min = estimate_need_gb(weights_gb, P62_CTX_LADDER[-1])
+        return {
+            'ok': False, 'fits': False, 'n_ctx': None,
+            'n_threads': 1, 'n_batch': 64,
+            'avail_gb': round(avail, 2), 'budget_gb': round(budget, 2),
+            'needed_gb': round(need_min, 2), 'model_id': model_id,
+            'reason': 'libre %.2f Go < besoin minimal %.2f Go (70 %% de securite)'
+                      % (avail, need_min),
+            'message': ("RAM libre insuffisante : %.2f Go libres, il en faut au moins "
+                        "%.2f Go pour charger ce modele. Ferme d autres applications "
+                        "ou choisis un modele plus leger." % (avail, need_min)),
+        }
+
+    n_threads = max(1, min(cpus - 1 if cpus > 1 else 1, 4 if avail < 2.0 else cpus))
+    n_batch = 128 if avail < 1.5 else 512
+    tight = avail < P62_WARN_FREE_GB
+    msg = ("Profil choisi automatiquement : contexte %d jetons, %d fil(s), lot %d "
+           "- RAM libre %.2f Go (estimation %.2f Go necessaires, budget %.2f Go)."
+           % (chosen, n_threads, n_batch, avail,
+              estimate_need_gb(weights_gb, chosen), budget))
+    if tight:
+        msg += (" ATTENTION : moins de %.1f Go libres, le contexte a ete reduit "
+                "au minimum sur." % P62_WARN_FREE_GB)
+    return {
+        'ok': True, 'fits': True, 'n_ctx': chosen,
+        'n_threads': n_threads, 'n_batch': n_batch,
+        'avail_gb': round(avail, 2), 'budget_gb': round(budget, 2),
+        'needed_gb': round(estimate_need_gb(weights_gb, chosen), 2),
+        'model_id': model_id, 'tight': tight,
+        'reduced': chosen < P62_CTX_LADDER[0],
+        'reason': 'libre %.2f Go, budget 70 %% = %.2f Go, estimation %.2f Go'
+                  % (avail, budget, estimate_need_gb(weights_gb, chosen)),
+        'message': msg,
+    }
+
+
+def context_budget_tokens(n_ctx):
+    """60 % du contexte au maximum par appel (le reste = reponse + marge)."""
+    try:
+        n = int(n_ctx)
+    except (TypeError, ValueError):
+        n = 2048
+    return max(256, int(n * 0.60))
+
+
+def context_under_pressure(n_ctx, avail_gb):
+    """Sous pression : le prochain appel divise le contexte. Jamais silencieux."""
+    try:
+        n = int(n_ctx)
+    except (TypeError, ValueError):
+        n = 2048
+    try:
+        avail = float(avail_gb)
+    except (TypeError, ValueError):
+        avail = 1.0
+    if avail >= P62_WARN_FREE_GB:
+        return {'changed': False, 'n_ctx': n, 'message': ''}
+    nxt = max(512, int(n // 2))
+    return {
+        'changed': nxt != n, 'n_ctx': nxt,
+        'message': ("RAM libre faible (%.2f Go) : le contexte du prochain appel "
+                    "passe de %d a %d jetons pour eviter un plantage."
+                    % (avail, n, nxt)),
+    }
+
+
+def trim_messages_to_budget(messages, budget_tokens):
+    """Garde le systeme + les derniers messages dans le budget (en caracteres).
+
+    Estimation 4 caracteres par jeton : on retire les messages les plus anciens
+    (jamais le systeme, jamais le dernier). Pure. Retourne une nouvelle liste.
+    """
+    try:
+        msgs = list(messages or [])
+    except TypeError:
+        return []
+    if not msgs:
+        return []
+    try:
+        budget = max(512, int(budget_tokens)) * 4
+    except (TypeError, ValueError):
+        budget = 4096
+    head = [m for m in msgs[:1] if isinstance(m, dict) and m.get('role') == 'system']
+    rest = msgs[len(head):]
+    if not rest:
+        return head
+
+    def size(m):
+        try:
+            return len(str(m.get('content', '')))
+        except Exception:
+            return 0
+
+    kept = [rest[-1]]
+    total = size(rest[-1]) + sum(size(m) for m in head)
+    for m in reversed(rest[:-1]):
+        s = size(m)
+        if total + s > budget:
+            break
+        kept.insert(0, m)
+        total += s
+    return head + kept
+
+
+# ---------------------------------------------------------------------------
 # Tool-call helpers (P1-a)
 # ---------------------------------------------------------------------------
 def build_toolcall_json_schema(tools):
@@ -504,7 +662,32 @@ def register_openai_routes(app, ctx):
                     "Available functions: " + tool_defs_for_prompt(tools))
         aug = [{"role": "system", "content": sys_note}] + list(messages)
 
+        # P62-F5: decodage contraint (GBNF). Le modele ne PEUT produire que
+        # {"name": "<outil connu>", "arguments": <objet JSON>}. Si la version
+        # installee de llama-cpp-python ne l'accepte pas, on repart sans
+        # contrainte (le pipeline de reparation P55 reste en place).
+        _gram = None
+        try:
+            import grammar as _grammar_mod
+            _gbnf = _grammar_mod.toolcall_grammar(tools)
+            _gram = _grammar_mod.to_llama_grammar(_gbnf, logger=dlog)
+            dlog("[GRAMMAR] contrainte %s (%s)"
+                 % ("active" if _gram is not None else "indisponible",
+                    _grammar_mod.grammar_stats(_gbnf)))
+        except Exception as _e:
+            dlog("[GRAMMAR] construction impossible : %s" % _e)
+
         def _attempt(msgs):
+            if _gram is not None:
+                try:
+                    return llm.create_chat_completion(
+                        messages=msgs, temperature=temperature,
+                        max_tokens=max_tokens, stop=stop, **sampling,
+                        grammar=_gram)
+                except TypeError:
+                    dlog("[OPENAI] grammar unsupported by this llama version")
+                except Exception as e:
+                    dlog("[OPENAI] grammar attempt failed (%s), plain attempt" % e)
             try:
                 return llm.create_chat_completion(
                     messages=msgs, temperature=temperature,
@@ -602,6 +785,8 @@ def register_openai_routes(app, ctx):
 
         if repairs_log:
             dlog("[OPENAI] tool repairs: %s" % ", ".join(repairs_log[:8]))
+        dlog("[OPENAI] decodage contraint : %s"
+             % ("GBNF actif" if _gram is not None else "sans grammaire (repli)"))
 
         if not res.get("ok"):
             # Jamais 500 : 200 + erreur structuree (le moteur la renvoie au

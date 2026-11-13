@@ -143,8 +143,15 @@ check('E4: la consigne reste bornee (jamais le document entier)', ctxPrompt.leng
     calls.push({ n: c.n, model: c.model, section: (c.section || '').slice(0, 20), prev: !!c.prev });
     if (step.reqs.indexOf('R2') !== -1) return { calls: 1, ok: false, error: 'echec volontaire' };
     const f = ['src/step' + c.n + '.js'];
-    f.forEach((x) => produced.push(x));
-    return { calls: 2, ok: true, files: f, test: 'node --test (ok)', declared: true };
+    // P62-F4: le moteur VERIFIE desormais que le fichier annonce existe et que
+    // sa syntaxe tient. Le harnais doit donc ecrire de vrais fichiers.
+    f.forEach((x) => {
+      const abs = path.join(ROOT, x);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, 'const etape = ' + c.n + ';\n');
+      produced.push(x);
+    });
+    return { calls: 2, ok: true, files: f, declared: true };
   };
   const res = await job.run({ root: ROOT, state: st, runStep, availableModels: ['tiny', 'big'] });
   check('H1: le projet s execute etape par etape', res.done > 0 && calls.length > 0, { done: res.done, appels: calls.length });
@@ -167,8 +174,14 @@ check('E4: la consigne reste bornee (jamais le document entier)', ctxPrompt.leng
   // ---------------------------------------------------------- I. reprise
   const st2 = job.create(ROOT2, after, spec.planSteps(after), {});
   let stops = 0;
+  const writeReal = (root, rel, n) => {
+    const abs = path.join(root, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, 'const etape = ' + n + ';\n');
+  };
   const runStepStop = async (step, c) => {
     if (c.n === 3 && stops === 0) { stops += 1; return { calls: 1, aborted: true, error: 'serveur arrete' }; }
+    writeReal(ROOT2, 'src/r' + c.n + '.js', c.n);
     return { calls: 1, ok: true, files: ['src/r' + c.n + '.js'], declared: true };
   };
   const first = await job.run({ root: ROOT2, state: st2, runStep: runStepStop });
@@ -179,7 +192,11 @@ check('E4: la consigne reste bornee (jamais le document entier)', ctxPrompt.leng
   const afterCrash = job.load(ROOT2, st2.id);
   const alreadyDone = afterCrash.steps.filter((s) => s.status === 'done').map((s) => s.i);
   const replay = [];
-  const runStepResume = async (step, c) => { replay.push(c.n); return { calls: 1, ok: true, files: ['src/r' + c.n + '.js'], declared: true }; };
+  const runStepResume = async (step, c) => {
+    replay.push(c.n);
+    writeReal(ROOT2, 'src/r' + c.n + '.js', c.n);
+    return { calls: 1, ok: true, files: ['src/r' + c.n + '.js'], declared: true };
+  };
   const second = await job.run({ root: ROOT2, state: afterCrash, runStep: runStepResume });
   check('I2: la reprise ne rejoue pas les etapes deja faites',
     alreadyDone.every((i) => replay.indexOf(i + 1) === -1), { deja: alreadyDone, rejoue: replay });
@@ -196,8 +213,11 @@ check('E4: la consigne reste bornee (jamais le document entier)', ctxPrompt.leng
   check('J1: une ligne de couverture par exigence', cov.length === after.requirements.length, cov.length);
   check('J2: chaque ligne porte fichiers + test + etat',
     cov.every((r) => Array.isArray(r.files) && typeof r.status === 'string' && 'test' in r), cov[0]);
-  check('J3: les exigences realisees ont des fichiers et un test',
-    cov.filter((r) => r.done).every((r) => r.files.length > 0 && r.test), cov.filter((r) => r.done).slice(0, 2));
+  // P62-F4/F6: une exigence n'est "faite" que si le moteur a une PREUVE :
+  // fichiers reels + verification deterministe (ou sortie de test).
+  check('J3: les exigences realisees ont des fichiers ET une preuve verifiee',
+    cov.filter((r) => r.done).every((r) => r.files.length > 0 && (r.test || r.proof)),
+    cov.filter((r) => r.done).slice(0, 2));
   check('J4: les exigences non realisees sont marquees telles quelles',
     cov.some((r) => r.status === 'non fait' || r.status === 'echec'), cov.map((r) => r.status).slice(0, 8));
   check('J5: le tableau texte est lisible et compte le total',

@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const spec = require('./spec');
+const stepcheck = require('./stepcheck');
 
 const VERSION = 1;
 const DEFAULT_STEP_ATTEMPTS = 2;
@@ -42,6 +43,47 @@ function budgets() {
     stepMs: intEnv('SUDO_AGENT_STEP_MS', 120000),
     jobMs: intEnv('SUDO_AGENT_JOB_MS', 1800000),
     attempts: intEnv('SUDO_AGENT_STEP_ATTEMPTS', DEFAULT_STEP_ATTEMPTS),
+    // P62-F2: jamais plus de 60 % de n_ctx par appel sur un cahier des charges.
+    ctxShare: 0.60,
+    // P62-F7: 6 outils exposes au maximum par etape (petits modeles).
+    toolsLimit: intEnv('SUDO_AGENT_SPEC_TOOLS', 6),
+  };
+}
+
+// P62-F1: un cahier est estime en jetons AVANT tout envoi. S'il depasse la
+// moitie du contexte, il n'est JAMAIS transmis en entier : seules les
+// sections utiles le sont (deja le cas), et on le journalise.
+function estimateTokens(text) {
+  return Math.ceil(String(text || '').length / 4);
+}
+
+// P62-F7: petits modeles, peu d'outils. Une etape de cahier des charges ne
+// voit qu'un jeu COURTE (6 au plus) choisi par ce qu'elle doit faire, au lieu
+// des 31 outils de la surface complete. reply/done restent toujours la (le
+// moteur les ajoute) : un tour peut donc toujours se terminer honnetement.
+const STEP_TOOLS_BASE = ['read', 'list', 'grep'];
+const STEP_TOOLS_WRITE = ['write', 'edit', 'exec_start'];
+
+function toolSubsetFor(step, limit) {
+  const max = Number(limit) > 0 ? Number(limit) : 6;
+  const wantsWrite = !step || step.kind !== 'verify';
+  const list = STEP_TOOLS_BASE.concat(wantsWrite ? STEP_TOOLS_WRITE : []);
+  const out = [];
+  for (const t of list) { if (out.indexOf(t) === -1) out.push(t); }
+  return out.slice(0, Math.max(3, max));
+}
+
+function specPolicy(specMeta, nCtx) {
+  const ctx = Number(nCtx) > 0 ? Number(nCtx) : 8192;
+  const toks = estimateTokens(specMeta && (specMeta.chars ? ' '.repeat(specMeta.chars) : ''));
+  const specTokens = Number(specMeta && specMeta.chars) > 0 ? Math.ceil(Number(specMeta.chars) / 4) : toks;
+  const share = specTokens / ctx;
+  return {
+    nCtx: ctx,
+    specTokens,
+    share: Math.round(share * 1000) / 1000,
+    wholeDocumentForbidden: share > 0.5,
+    callBudgetChars: Math.floor(ctx * 0.60 * 4),
   };
 }
 
@@ -74,6 +116,7 @@ function freshState(id, specMeta, steps, opts) {
     runs: 0,
     status: 'proposed', // proposed -> running -> done | partial | failed | stopped
     budgets: budgets(),
+    specPolicy: o.specPolicy || null, // P62-F1 : estimation + interdiction du document entier
     modelPolicy: o.modelPolicy || null,
     steps: steps.map((s) => ({
       i: s.i, text: s.text, reqs: s.reqs || [], section: s.section || 1,
@@ -175,7 +218,10 @@ function stepPrompt(ctx) {
   }
   L.push('');
   L.push('UNE seule action par pas. Termine par done avec un court resume.');
-  return L.join('\n').slice(0, 12000);
+  // P62-F2: budget strict (60 % de n_ctx, 4 caracteres par jeton au plus).
+  const cap = Number(ctx.budgetChars) > 0 ? Number(ctx.budgetChars) : 12000;
+  const txt = L.join('\n');
+  return txt.length > cap ? (txt.slice(0, Math.max(0, cap - 40)) + '\n[contexte tronque au budget]') : txt;
 }
 
 function filesHint(state) {
@@ -226,51 +272,90 @@ async function run(opts) {
       log(state, s.i, 'budget', 'budget global depasse, arret honnete');
       break;
     }
-    s.status = 'running';
-    s.attempts += 1;
-    save(root, state); // checkpoint BEFORE the step: a crash still resumes here
-    emit('job.step', { jobId: state.id, n: s.i + 1, N, status: 'start', text: s.text.slice(0, 200), reqs: s.reqs });
-    log(state, s.i, 'start', 'essai ' + s.attempts);
-    const t0 = Date.now();
-    const ctx = {
-      n: s.i + 1, N,
-      step: s,
-      title: state.title,
-      section: spec.readSection(root, state.specId, s.section),
-      prev: prevSummary(state, s.i),
-      filesHint: filesHint(state),
-      callBudget: b.stepCalls,
-      msBudget: b.stepMs,
-      model: s.model || pickModel(s, state.modelPolicy, opts.availableModels),
-    };
+    // P62-F4: jusqu'a `attempts` essais DANS la meme execution, chacun avec
+    // l'erreur REELLE du precedent. Une etape n'est "faite" qu'apres
+    // verification deterministe (fichiers reels + syntaxe + test si detecte).
+    let ok = false;
     let res = null;
-    try { res = await runStep(s, ctx); }
-    catch (e) { res = { calls: 0, ok: false, error: 'etape: ' + String((e && e.message) || e).slice(0, 200) }; }
-    s.ms = Date.now() - t0;
-    s.calls = (res && res.calls) || 0;
-    if (res && res.aborted) {
-      s.status = 'pending';
-      s.detail = 'interrompue : ' + String(res.error || 'arret demande').slice(0, 160);
-      log(state, s.i, 'aborted', s.detail);
-      save(root, state);
-      emit('job.step', { jobId: state.id, n: s.i + 1, N, status: 'pending', detail: s.detail });
-      aborted = true;
-      break;
+    let files = [];
+    let check = null;
+    let abortedHere = false;
+    const maxAtt = Math.max(1, b.attempts);
+    for (let att = 0; att < maxAtt; att++) {
+      s.status = 'running';
+      s.attempts += 1;
+      save(root, state); // checkpoint BEFORE the step: a crash still resumes here
+      emit('job.step', { jobId: state.id, n: s.i + 1, N, status: 'start', text: s.text.slice(0, 200), reqs: s.reqs });
+      log(state, s.i, 'start', 'essai ' + s.attempts);
+      const t0 = Date.now();
+      const ctx = {
+        n: s.i + 1, N,
+        step: s,
+        title: state.title,
+        section: spec.readSection(root, state.specId, s.section),
+        prev: prevSummary(state, s.i),
+        filesHint: filesHint(state),
+        callBudget: b.stepCalls,
+        msBudget: b.stepMs,
+        model: s.model || pickModel(s, state.modelPolicy, opts.availableModels),
+        // P62-F2/F7: budget de contexte et surface d outils de CETTE etape.
+        budgetChars: (state.specPolicy && state.specPolicy.callBudgetChars) || Math.floor(8192 * 0.60 * 4),
+        toolsLimit: b.toolsLimit,
+        // P62-F7: sous-ensemble d'outils de cette etape (6 au plus).
+        toolSubset: toolSubsetFor(s, b.toolsLimit),
+        // P62-F4: a partir du 2e essai, le modele recoit l'erreur REELLE.
+        lastError: att > 0 ? String(s.detail || '').slice(0, 300) : '',
+        attempt: att + 1,
+        attempts: maxAtt,
+      };
+      res = null;
+      try { res = await runStep(s, ctx); }
+      catch (e) { res = { calls: 0, ok: false, error: 'etape: ' + String((e && e.message) || e).slice(0, 200) }; }
+      s.ms = Date.now() - t0;
+      s.calls = (res && res.calls) || 0;
+      if (res && res.aborted) {
+        s.status = 'pending';
+        s.detail = 'interrompue : ' + String(res.error || 'arret demande').slice(0, 160);
+        log(state, s.i, 'aborted', s.detail);
+        save(root, state);
+        emit('job.step', { jobId: state.id, n: s.i + 1, N, status: 'pending', detail: s.detail });
+        aborted = true;
+        abortedHere = true;
+        break;
+      }
+      files = (res && Array.isArray(res.files)) ? res.files.slice(0, 40) : [];
+      files.forEach((f) => { if (s.files.indexOf(f) === -1) s.files.push(f); });
+      const test = (res && res.test) || null;
+      const declared = !!(res && res.ok) && (files.length > 0 || !!test || !!(res && res.declared));
+      check = null;
+      if (declared) {
+        try {
+          check = stepcheck.verifyStep(root, files, { testCommand: (test && test.command) || null });
+        } catch (e) {
+          check = { ok: false, detail: 'verification impossible : ' + String((e && e.message) || e).slice(0, 160), checks: [], failed: [] };
+        }
+      }
+      s.check = check ? { ok: check.ok, detail: String(check.detail || '').slice(0, 300),
+        files: (check.checks || []).map((c) => ({ f: c.file, ok: c.ok, partial: c.partial, why: String(c.detail || '').slice(0, 160) })) } : null;
+      ok = declared && !!check && check.ok !== false;
+      s.test = test || (check && check.test ? { command: check.test.command, ok: check.test.ok, detail: check.test.detail } : null);
+      s.detail = String((res && (res.detail || res.error)) || (ok ? 'executee verifiee' : 'echec sans detail')).slice(0, 200);
+      if (!ok && check && check.detail) {
+        s.detail = ('verification deterministe en echec : ' + String(check.detail || '')).slice(0, 300);
+      }
+      if (s.ms > b.stepMs && !ok) s.detail = ('budget temps depasse (' + Math.round(s.ms / 1000) + 's) ' + s.detail).slice(0, 300);
+      if (ok) break;
+      log(state, s.i, 'retry', 'essai ' + s.attempts + ' en echec, on rejoue avec l erreur reelle');
     }
-    const files = (res && Array.isArray(res.files)) ? res.files.slice(0, 40) : [];
-    files.forEach((f) => { if (s.files.indexOf(f) === -1) s.files.push(f); });
-    const test = (res && res.test) || null;
-    const ok = !!(res && res.ok) && (files.length > 0 || !!test || !!(res && res.declared));
+    if (abortedHere) break;
     s.status = ok ? 'done' : 'failed';
-    s.test = test;
-    s.detail = String((res && (res.detail || res.error)) || (ok ? 'executee' : 'echec sans detail')).slice(0, 300);
-    if (s.ms > b.stepMs && !ok) s.detail = ('budget temps depasse (' + Math.round(s.ms / 1000) + 's) ' + s.detail).slice(0, 300);
     // Coverage: each covered requirement inherits the step outcome.
     s.reqs.forEach((rid) => {
       const c = state.coverage.find((x) => x.req === rid);
       if (!c) return;
       files.forEach((f) => { if (c.files.indexOf(f) === -1) c.files.push(f); });
-      if (test) c.test = test;
+      if (s.test) c.test = s.test;
+      c.proof = (s.check && s.check.detail ? s.check.detail : '').slice(0, 240);
       if (ok) c.status = 'fait';
       else c.status = (s.attempts >= b.attempts) ? 'non fait' : 'echec';
     });
@@ -310,6 +395,7 @@ function coverageTable(state) {
     section: c.section,
     files: c.files,
     test: c.test,
+    proof: c.proof || '',
     status: c.status,
     done: c.status === 'fait',
   }));
@@ -322,7 +408,7 @@ function coverageText(state) {
   rows.forEach((r) => {
     if (r.done) fait++;
     L.push('  ' + r.req + ' [' + r.status + '] ' + (r.files.length ? r.files.slice(0, 4).join(', ') : '-') +
-      ' | test: ' + (r.test || '-') + ' | ' + r.text.slice(0, 90));
+      ' | test: ' + (r.test || '-') + ' | preuve: ' + ((r.proof || '-').slice(0, 80)) + ' | ' + r.text.slice(0, 90));
   });
   L.push('  Total : ' + fait + '/' + rows.length + ' exigence(s) couverte(s).');
   return L.join('\n');
@@ -355,7 +441,7 @@ function reportText(state, opts) {
 }
 
 module.exports = {
-  VERSION, jobsDir, jobPath, budgets, pickModel,
+  VERSION, jobsDir, jobPath, budgets, pickModel, estimateTokens, specPolicy, toolSubsetFor,
   create, load, save, list, resumable, freshState,
   run, stepPrompt, prevSummary, filesHint,
   countSteps, coverageTable, coverageText, reportText, log,

@@ -223,6 +223,8 @@ app.use((req, res, next) => {
       catch (_) { req.corrId = 'req-' + Date.now(); }
     }
     res.setHeader('x-correlation-id', req.corrId);
+    // P62-B3: le superviseur sait depuis quand le client s'est tu.
+    if (global.__sudoPowerGuard) { try { global.__sudoPowerGuard.noteRequest(); } catch (_) {} }
   } catch (_) { /* never break requests */ }
   next();
 });
@@ -331,4 +333,22 @@ try {
   supTech.sessionHeader(techLog.gatherSessionInfo({ build, model: 'see runtime health', ports: { backend: PORT, runtime: 6000 }, policies }));
   require('./supervisor/runtimeSupervisor').getSupervisor({ tech: supTech }).start();
   earlyLog('Runtime supervisor started (P1-d)');
+  // P62-B3/C: verrou anti-veille + surveillance de veille + profil RAM, dans
+  // le BACKEND (processus separe de la page : une fenetre masquee ne peut plus
+  // suspendre la surveillance). Jamais bloquant, jamais fatal.
+  try {
+    const guard = require('./supervisor/powerGuard').createPowerGuard({
+      supervisor: require('./supervisor/runtimeSupervisor').getSupervisor(),
+      tech: supTech,
+      log: (lvl, msg, f) => earlyLog('[POWER] ' + lvl + ' ' + msg + ' ' + JSON.stringify(f || {})),
+      runtimeUrl: process.env.SUDO_RUNTIME_URL || 'http://127.0.0.1:6000',
+    });
+    global.__sudoPowerGuard = guard;
+    // La surveillance de veille tourne en permanence : elle ne coute qu'une
+    // comparaison d'horloges toutes les 15 s.
+    guard.beginRun('surveillance permanente du runtime');
+    const prof = guard.profile();
+    earlyLog('[POWER] ' + prof.message);
+    earlyLog('Power guard started (P62-B3/C)');
+  } catch (e) { earlyLog('WARNING power guard start failed: ' + e.message); }
 } catch (e) { earlyLog('WARNING supervisor start failed: ' + e.message); }

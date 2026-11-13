@@ -1395,6 +1395,10 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                     import multiprocessing
                     n_threads = max(2, multiprocessing.cpu_count() - 1)
                     dlog(f"[GGUF] n_threads={n_threads}")
+                    # P62-C: profil RAM faible (n_ctx / n_threads / n_batch) avec
+                    # un message en francais qui dit POURQUOI. Le profil ne peut
+                    # que REDUIRE (jamais augmenter) un contexte demande.
+                    _p62 = None
                     # P1-c: configurable n_ctx, prudent default from free RAM.
                     # P39-e: report free RAM with the choice (memory before/after
                     # is logged around the load: search [RAM] Before/After).
@@ -1419,19 +1423,65 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                     dlog(f"[GGUF] policy: {_pol}")
                     logger.info(f"[GGUF] policy: {_pol}")
 
+                    # P62-C: le profil RAM faible decide des fils, du lot et du
+                    # plafond de contexte, et l'annonce en francais.
+                    _p62_n_batch = None
+                    try:
+                        _wgb = 0.0
+                        try:
+                            _wgb = os.path.getsize(gguf_path) / 1e9
+                        except Exception:
+                            _wgb = 0.0
+                        _p62 = openai_compat.low_ram_profile(
+                            model_id, _wgb if _wgb > 0 else 1.1,
+                            get_available_ram_gb())
+                        dlog("[RAM62] " + str(_p62.get("message", "")))
+                        logger.info("[RAM62] " + str(_p62.get("message", "")))
+                        if _p62.get("ok"):
+                            n_threads = int(_p62["n_threads"])
+                            _p62_n_batch = int(_p62["n_batch"])
+                            if (not _req) and int(_p62["n_ctx"]) < int(eff_n_ctx):
+                                dlog("[RAM62] contexte reduit par la politique RAM : "
+                                     + str(eff_n_ctx) + " -> " + str(_p62["n_ctx"]))
+                                eff_n_ctx = int(_p62["n_ctx"])
+                            state.ram_profile = _p62
+                        else:
+                            # C2: avertissement explicite, on ne plante pas en
+                            # silence. Le garde-fou RAM existant reste l'arbitre.
+                            _msg = str(_p62.get("message", ""))
+                            state.ram_profile = _p62
+                            state.ram_warning = _msg
+                            dlog("[RAM62-AVERTISSEMENT] " + _msg)
+                            logger.warning("[RAM62-AVERTISSEMENT] " + _msg)
+                    except Exception as _e62:
+                        dlog("[RAM62] profil indisponible : " + str(_e62))
+
                     _wd = _RamWatchdog(model_id)
                     _wd.start()
                     try:
-                        llm = Llama(
+                        _load_kw = dict(
                             model_path=gguf_path,
                             n_ctx=eff_n_ctx,
                             n_threads=n_threads,
                             n_gpu_layers=0,   # CPU only (no CUDA required)
                             verbose=False,
+                            use_mmap=True,    # P62-C: modele mappe, RAM partagee
                             use_mlock=False,  # don't lock RAM - safer on low-RAM machines
                         )
+                        if _p62_n_batch:
+                            _load_kw["n_batch"] = int(_p62_n_batch)
+                        _t_load = time.time()
+                        llm = Llama(**_load_kw)
                     finally:
                         _wd.disarm()
+                    # P62-C: temps de chargement mesure et journalise (mmap, mlock off).
+                    try:
+                        _ms62 = int((time.time() - _t_load) * 1000)
+                        state.model_load_ms = _ms62
+                        dlog("[RAM62] modele charge en " + str(_ms62) + " ms (mmap oui, mlock non)")
+                        logger.info("[RAM62] modele charge en " + str(_ms62) + " ms")
+                    except Exception:
+                        pass
                     state.download_progress = 90
 
                     # -- Watchdog trip check: never report success after critical RAM --
@@ -2240,6 +2290,12 @@ def health():
             "error":              state.error,
             "from_local_cache":   state.detected_local,
             "n_ctx":              state.n_ctx,
+            # P62-C: ce que la politique RAM a decide, et le temps de chargement.
+            "n_batch":            getattr(state, "ram_profile", {}).get("n_batch") if isinstance(getattr(state, "ram_profile", None), dict) else None,
+            "n_threads":          getattr(state, "ram_profile", {}).get("n_threads") if isinstance(getattr(state, "ram_profile", None), dict) else None,
+            "ram_profile_message": (getattr(state, "ram_profile", {}) or {}).get("message") if isinstance(getattr(state, "ram_profile", None), dict) else None,
+            "ram_warning":        getattr(state, "ram_warning", None),
+            "load_ms":            getattr(state, "model_load_ms", None),
         },
         "system": {
             "ram_available_gb":  round(avail_ram, 2),
