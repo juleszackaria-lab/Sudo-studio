@@ -161,7 +161,14 @@ check('E4: la consigne reste bornee (jamais le document entier)', ctxPrompt.leng
   check('H1: le projet s execute etape par etape', res.done > 0 && calls.length > 0, { done: res.done, appels: calls.length });
   check('H2: une etape en echec est marquee non realisee, les autres continuent',
     res.failed >= 1 && res.done >= 1, { done: res.done, failed: res.failed });
-  check('H3: chaque etape a recu un resume des precedentes (sauf la 1re)', calls.slice(1).every((c) => c.prev === true), calls.slice(0, 3));
+  // P63-B: l assertion precedente (`calls.slice(1).every(prev)`) etait fausse :
+  // la 1re etape est retentee (jusqu a `attempts`) et une TENTATIVE de la 1re
+  // etape n a, par definition, aucune precedente a resumer. On verifie donc ce
+  // que le produit garantit reellement : toute etape n>1 recoit un resume, et
+  // aucune tentative de la 1re etape n en recoit.
+  const laterSteps = calls.filter((c) => c.n > 1);
+  check('H3: chaque etape a recu un resume des precedentes (sauf la 1re)', laterSteps.length > 0 && laterSteps.every((c) => c.prev === true), laterSteps.slice(0, 3));
+  check('H3b: les tentatives repetees de la 1re etape ne portent pas de resume', calls.filter((c) => c.n === 1).every((c) => c.prev === false), calls.filter((c) => c.n === 1).length);
   check('H4: le rapport annonce honnetement le non realise', /NON REALISE/.test(res.report) && /ECHOUE/.test(res.report),
     res.report.split('\n').slice(0, 3));
   check('H5: checkpoint apres chaque etape (fichier a jour sur disque)',
