@@ -1162,14 +1162,18 @@ function renderJobResume(m) {
   row.className = "jobacts";
   var rb = document.createElement("button");
   rb.className = "btn sm";
-  rb.textContent = "Reprendre";
+  // P63-C : le libelle est "Reprendre le travail" et le message envoye est le
+  // MOT CLE de reprise ("reprendre"), donc le chemin deterministe du moteur :
+  // registre relu sur disque, aucun appel au modele, reprise a la premiere
+  // etape non faite.
+  rb.textContent = "Reprendre le travail";
   rb.addEventListener("click", function() {
     if (row.parentNode) row.parentNode.removeChild(row);
     var ok = document.createElement("div");
     ok.className = "stepline";
-    ok.textContent = "Reprise du projet demandee.";
+    ok.textContent = "Reprise du travail demandee.";
     card.appendChild(ok);
-    jobSend("reprendre le projet");
+    jobSend("reprendre");
   });
   row.appendChild(rb);
   card.appendChild(row);
