@@ -1,6 +1,7 @@
 # P63-B - Correction du rapport P63 : installateur perdu, non-regression, preuves
 
-Branche `p60-linux`, tete **`a56713f`**. `main` reste **`e6c3d48`** : **aucune
+Branche `p60-linux`, tete de code **`a56713f`** (tete de branche, apres ce
+rapport : `5dcc624`). `main` reste **`e6c3d48`** : **aucune
 fusion n a ete faite** (interdiction explicite du prompt 63-B).
 Depot de packaging : `juleszackaria-lab/sudo-studio-packager`, `main`
 **`ddba778`** (les runs cites utilisent `ead23c9` pour 04 et `ddba778` pour 05).
@@ -280,10 +281,10 @@ propre. Le reste des scenarios P63 sur le paquet installe releve du PC (section
 
 ## 4. Preuve d) - ecart avec `main`, aucune fusion
 
-    git rev-list --left-right --count main...p60-linux   ->   0   24
+    git rev-list --left-right --count main...p60-linux   ->   0   24 (25 avec ce rapport)
     git diff --stat main..HEAD                           ->   91 files changed, 8953 insertions(+), 418 deletions(-)
 
-`main` = `e6c3d48` (inchange), `p60-linux` = `a56713f`. `main` n a **aucun**
+`main` = `e6c3d48` (inchange), `p60-linux` = `a56713f` (code) / `5dcc624` (rapport). `main` n a **aucun**
 commit en avance : la fusion serait un simple `--ff`, elle n a **pas** ete
 faite. Les 18 commits P63/P63-B :
 
