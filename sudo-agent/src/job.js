@@ -40,6 +40,14 @@ function intEnv(name, def) {
   const v = parseInt(process.env[name], 10);
   return Number.isFinite(v) && v > 0 ? v : def;
 }
+// P63-B/P4: variante qui accepte 0 comme valeur SIGNIFICATIVE (0 = illimite
+// pour le budget total). Une variable absente ou illisible garde le defaut.
+function intEnvZero(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === '') return def;
+  const v = parseInt(raw, 10);
+  return Number.isFinite(v) && v >= 0 ? v : def;
+}
 // P63-B: trois delais, un seul endroit, des invariants verifiables.
 //   runtimeWaitMs : attente maximale du runtime quand il tombe (180 s) ;
 //   stepActiveMs  : duree ACTIVE d'une etape, temps de panne runtime EXCLU ;
@@ -51,7 +59,9 @@ function intEnv(name, def) {
 const DELAYS = {
   runtimeWaitMs: 180000,
   stepActiveMs: 300000,
-  jobTotalMs: 3600000,
+  // P63-B/P4: 6 h par defaut (un cahier de 60 etapes sur un i5-6200U peut
+  // depasser une heure). Reglable par SUDO_AGENT_JOB_TOTAL_MS ; 0 = illimite.
+  jobTotalMs: 21600000,
   attempts: 3,
 };
 
@@ -59,13 +69,16 @@ function delays() {
   const d = {
     runtimeWaitMs: intEnv('SUDO_AGENT_RUNTIME_WAIT_MS', DELAYS.runtimeWaitMs),
     stepActiveMs: intEnv('SUDO_AGENT_STEP_ACTIVE_MS', DELAYS.stepActiveMs),
-    jobTotalMs: intEnv('SUDO_AGENT_JOB_TOTAL_MS', DELAYS.jobTotalMs),
+    jobTotalMs: intEnvZero('SUDO_AGENT_JOB_TOTAL_MS', DELAYS.jobTotalMs),
     attempts: intEnv('SUDO_AGENT_STEP_ATTEMPTS', DELAYS.attempts),
   };
   // Invariants : on CORRIGE vers le haut, jamais vers le bas (aucune etape ne
   // peut etre plus courte que l'attente runtime qu'elle est censee couvrir).
   if (d.stepActiveMs < d.runtimeWaitMs) d.stepActiveMs = d.runtimeWaitMs;
-  if (d.jobTotalMs < d.stepActiveMs) d.jobTotalMs = d.stepActiveMs;
+  // P63-B/P4: 0 (ou une valeur negative) = AUCUNE limite totale, reglage
+  // explicite pour un cahier de 60 etapes sur une machine lente.
+  if (d.jobTotalMs !== 0 && d.jobTotalMs < d.stepActiveMs) d.jobTotalMs = d.stepActiveMs;
+  d.unlimited = d.jobTotalMs === 0;
   d.coherent = true;
   return d;
 }
@@ -80,6 +93,7 @@ function budgets() {
     stepActiveMs: d.stepActiveMs,
     runtimeWaitMs: d.runtimeWaitMs,
     jobTotalMs: d.jobTotalMs,
+    jobMsUnlimited: d.jobTotalMs === 0,
     attempts: d.attempts,
     // P62-F2: jamais plus de 60 % de n_ctx par appel sur un cahier des charges.
     ctxShare: 0.60,
@@ -217,7 +231,7 @@ function resumable(root) {
   const all = list(root);
   const open = all.find((j) => j.status === 'running' || j.status === 'proposed' ||
     j.status === 'stopped' || j.status === 'partial' || j.status === 'failed' ||
-    j.status === 'interrupted');
+    j.status === 'interrupted' || j.status === 'incomplete');
   if (!open) return null;
   const st = load(root, open.id);
   if (!st) return null;
@@ -311,7 +325,20 @@ async function run(opts) {
   log(state, -1, resumed ? 'resume' : 'start', (resumed ? 'reprise' : 'demarrage') + ' execution ' + state.runs);
   save(root, state);
   const b = state.budgets || budgets();
-  const jobStart = Date.now();
+  // P63-B/P4 : le budget TOTAL est relu a CHAQUE execution (variable
+  // d'environnement) : un travail cree avant le reglage en profite, et un
+  // arret sur budget n'est jamais definitif (il se reprend par "continu").
+  try {
+    const live = budgets();
+    b.jobMs = live.jobMs;
+    b.jobTotalMs = live.jobTotalMs;
+    b.jobMsUnlimited = live.jobMsUnlimited;
+  } catch (_) {}
+  // P63-B/P4: horloge INJECTABLE (test a horloge simulee), jamais un delai
+  // cache. opts.now permet de simuler une heure en quelques millisecondes.
+  const now = (typeof opts.now === 'function') ? opts.now : Date.now;
+  const jobStart = now();
+  let budgetHit = false;
   const N = state.steps.length;
   let aborted = false;
 
@@ -339,11 +366,17 @@ async function run(opts) {
       emit('job.step', { jobId: state.id, n: s.i + 1, N, status: s.status, detail: 'deja ' + s.status });
       continue;
     }
-    if (Date.now() - jobStart > b.jobMs) {
+    // P63-B/P4: budget TOTAL atteint -> le travail s'ARRETE proprement en
+    // laissant les etapes non tentees EN PLACE (jamais "echouee", jamais
+    // perdues) : INCOMPLET (x/N) et reprise possible.
+    if (!b.jobMsUnlimited && (now() - jobStart) > b.jobMs) {
+      budgetHit = true;
       state.steps.forEach((r) => {
-        if (r.status === 'pending') { r.status = 'skipped'; r.detail = 'budget global depasse'; }
+        if (r.status === 'pending') { r.detail = 'budget total atteint (non tentee, reprise possible)'; }
       });
-      log(state, s.i, 'budget', 'budget global depasse, arret honnete');
+      log(state, s.i, 'budget', 'budget total atteint (' + Math.round(b.jobMs / 1000) + 's), arret propre, reprise possible');
+      emit('job.budget', { jobId: state.id, n: s.i + 1, N, budgetMs: b.jobMs,
+        detail: 'budget total atteint : reprise possible' });
       break;
     }
     // P62-F4: jusqu'a `attempts` essais DANS la meme execution, chacun avec
@@ -469,13 +502,15 @@ async function run(opts) {
   // une etape non realisee ; 'failed' = rien de fait.
   if (aborted) state.status = 'stopped';
   else if (counted.done + counted.outOfScope === counted.total) state.status = 'done';
+  else if (budgetHit) state.status = 'incomplete'; // P63-B/P4 : jamais un echec
   else if (counted.interrupted > 0) state.status = 'interrupted';
   else if (counted.done === 0) state.status = 'failed';
   else state.status = 'partial';
+  state.budgetHit = !!budgetHit;
   state.progress = progressLine(state);
   log(state, -1, aborted ? 'stopped' : 'done', JSON.stringify(counted));
   save(root, state);
-  const report = reportText(state, { aborted });
+  const report = reportText(state, { aborted: aborted, budgetHit: budgetHit });
   emit('job.done', { jobId: state.id, report: report.slice(0, 4000), ...counted, aborted });
   return { state, report, aborted, ...counted };
 }
@@ -504,7 +539,8 @@ function progressLine(state) {
 function unfinished(root) {
   const all = list(root);
   const open = all.find((j) => j.status === 'running' || j.status === 'proposed' || j.status === 'stopped' ||
-    j.status === 'partial' || j.status === 'failed');
+    j.status === 'partial' || j.status === 'failed' || j.status === 'incomplete' ||
+    j.status === 'interrupted');
   if (!open) return null;
   const st = load(root, open.id);
   if (!st) return null;
@@ -560,11 +596,16 @@ function reportText(state, opts) {
   L.push('Etapes : ' + c.done + ' faite(s), ' + c.failed + ' echouee(s), ' + c.interrupted +
     ' interrompue(s), ' + c.skipped + ' non tentee(s)' +
     (c.outOfScope ? ', ' + c.outOfScope + ' hors perimetre' : '') + '.' +
-    (o.aborted ? ' (interrompu : reprise possible)' : ''));
+    (o.aborted ? ' (interrompu : reprise possible)' : '') +
+    (o.budgetHit ? ' (budget total atteint : reprise possible)' : ''));
   if (reste > 0) {
     const list = state.steps.filter((s) => s.status !== 'done' && s.status !== 'out_of_scope')
       .slice(0, 20).map((s) => (s.i + 1) + ' (' + s.status + ')');
     L.push('Reste a faire : ' + list.join(', ') + (reste > 20 ? ' ...' : ''));
+    if (o.budgetHit) {
+      L.push('Budget total atteint (SUDO_AGENT_JOB_TOTAL_MS, 0 = illimite). ' +
+        'Relancez le travail par "continu" : il reprend a la premiere etape non faite.');
+    }
   }
   state.steps.forEach((s) => {
     const tag = s.status === 'done' ? 'FAIT'

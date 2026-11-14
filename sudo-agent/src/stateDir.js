@@ -36,25 +36,24 @@ function fingerprint(projectRoot) {
   return crypto.createHash('sha256').update(norm).digest('hex').slice(0, 16);
 }
 
-// Dossier historique (versions precedentes) : ~/.sudo_studio/agent. Il est
-// TOUJOURS hors du projet, donc conforme a P63-D ; s'il existe deja on
-// continue de l'utiliser pour ne perdre aucune session, permission ni point de
-// retour d'une installation existante. Rien n'est deplace sans accord.
+// Ancien emplacement (versions precedentes) : ~/.sudo_studio/agent.
+// P63-B/P5 : ce dossier n'est PLUS utilise en lecture ni en ecriture. Il est
+// seulement DETECTE, puis migre vers l'emplacement unique si l'utilisateur
+// donne son accord explicite (migrateHome(true)). Aucun etat ne vit donc a
+// deux endroits a la fois.
 function legacyHome(opts) {
   const o = opts || {};
   const home = o.home || (() => { try { return os.homedir(); } catch (_) { return '.'; } })();
   return path.join(String(home), '.sudo_studio', 'agent');
 }
 
+// Chemin UNIQUE de l'etat global de l'agent (hors projet).
 function agentHome(opts) {
   const o = opts || {};
   const env = o.env || process.env;
   const platform = o.platform || process.platform;
   if (o.base) return o.base;
   if (env.SUDO_AGENT_HOME) return env.SUDO_AGENT_HOME; // tests + support
-  // 1) une installation existante garde ses donnees (aucune migration muette)
-  const old = legacyHome(o);
-  try { if (fs.existsSync(old)) return old; } catch (_) {}
   if (platform === 'win32') {
     const local = env.LOCALAPPDATA || path.join(env.USERPROFILE || os.homedir(), 'AppData', 'Local');
     return path.join(local, 'SudoStudio', 'agent');
@@ -64,6 +63,47 @@ function agentHome(opts) {
   }
   const data = env.XDG_DATA_HOME || path.join(o.home || os.homedir(), '.local', 'share');
   return path.join(data, 'SudoStudio', 'agent');
+}
+
+// P63-B/P5/P6 : l'ancien dossier global a-t-il des donnees a reprendre ?
+function detectLegacyHome(opts) {
+  const o = opts || {};
+  const dir = legacyHome(o);
+  const target = agentHome(o);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { names = []; }
+  const same = path.resolve(dir) === path.resolve(target);
+  return { present: !same && names.length > 0, dir, target, entries: names.slice(0, 40) };
+}
+
+// Migration de l'ancien dossier global vers l'emplacement unique.
+// N'agit QUE si `approved === true` (accord explicite de l'utilisateur).
+function migrateHome(approved, opts) {
+  const o = opts || {};
+  const det = detectLegacyHome(o);
+  if (!det.present) return { ok: true, skipped: true, reason: 'aucun ancien dossier a migrer', target: det.target };
+  if (approved !== true) {
+    return { ok: false, needsApproval: true, plan: { from: det.dir, to: det.target, entries: det.entries },
+      message: "L'ancien dossier " + det.dir + " contient " + det.entries.length +
+        ' element(s) (sessions, regles, points de retour). Je peux le deplacer vers ' + det.target +
+        ' (emplacement unique). Approuve pour continuer.', target: det.target };
+  }
+  ensureDir(det.target);
+  let moved = 0;
+  const failed = [];
+  for (const name of det.entries) {
+    const src = path.join(det.dir, name);
+    const dst = path.join(det.target, name);
+    try {
+      if (fs.existsSync(dst)) { failed.push(name + ' : deja present a destination'); continue; }
+      try { fs.renameSync(src, dst); } catch (_) { fs.cpSync(src, dst, { recursive: true }); fs.rmSync(src, { recursive: true, force: true }); }
+      moved += 1;
+    } catch (e) { failed.push(name + ' : ' + String((e && e.message) || e).slice(0, 80)); }
+  }
+  // Le dossier historique est retire s'il est vide (jamais s'il reste quelque chose).
+  let removed = false;
+  try { if (!fs.readdirSync(det.dir).length) { fs.rmdirSync(det.dir); removed = true; } } catch (_) {}
+  return { ok: failed.length === 0, moved, failed, removed, target: det.target };
 }
 
 function workspaceDir(projectRoot, opts) {
@@ -188,6 +228,7 @@ function isAgentPathInProject(relPath) {
 }
 
 module.exports = {
-  LEGACY_DIR, fingerprint, agentHome, legacyHome, workspaceDir, paths, ensureWorkspace,
+  LEGACY_DIR, fingerprint, agentHome, legacyHome, detectLegacyHome, migrateHome,
+  workspaceDir, paths, ensureWorkspace,
   legacyDir, detectLegacy, listLegacy, migrateLegacy, isAgentPathInProject,
 };

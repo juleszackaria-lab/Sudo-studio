@@ -97,6 +97,24 @@ def main():
     check("G4-8: une troncature declaree relance avec un budget double",
           "finish_reason" in src and "length"in src and "max_tokens" in src, "retry budget")
 
+    # 8. P63-B/P3 : une ligne de journal par appel REJETE, avec tout ce qu'il
+    #    faut pour prouver la cause sur un vrai modele.
+    txt = TRUNCATED_1
+    line = oc.reject_line("essai1", "stop", {"completion_tokens": 37}, txt,
+                          {"code": "invalid_tool_call", "field": "json",
+                           "detail": "accolade manquante"})
+    for part in ("finish_reason=stop", "jetons_generes=37", "longueur=" + str(len(txt)),
+                 "debut=", "fin=", "raison=invalid_tool_call / json / accolade manquante"):
+        check("P3-a: la ligne de rejet contient '%s'" % part.split("=")[0], part in line, line[:160])
+    check("P3-b: les 80 premiers et 80 derniers caracteres sont bornes",
+          line.count("debut=") == 1 and line.count("fin=") == 1, line[:120])
+    leak = oc.reject_line("essai1", "stop", {}, "ghp_ABCDEFGH12345678 " + txt, {"code": "x"})
+    check("P3-c: aucun jeton en clair dans la ligne de journal", "ghp_ABCDEFGH" not in leak,
+          leak[:160])
+    check("P3-d: la ligne est produite aussi quand le modele renvoie une sortie vide",
+          "longueur=0" in oc.reject_line("final", "length", {}, "", {"code": "invalid_tool_call"}),
+          "sortie vide")
+
     print("")
     if FAILS:
         print("P63-F: %d FAILED" % len(FAILS))

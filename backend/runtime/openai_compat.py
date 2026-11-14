@@ -352,6 +352,44 @@ def repair_tool_output(text, tools, finish_reason=None):
             "detail": err or "", "example": {}, "repairs": []}
 
 
+_SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{8,}|sk-[A-Za-z0-9]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|"
+                         r"AKIA[0-9A-Z]{8,})")
+
+
+def mask_secrets(text):
+    """Masque tout jeton visible avant d'ecrire une sortie de modele au journal."""
+    try:
+        return _SECRET_RE.sub("[MASQUE]", str(text or ""))
+    except Exception:
+        return ""
+
+
+def reject_line(tag, finish_reason, usage, text, res):
+    """P63-B/P3 : UNE ligne par appel d'outil rejete.
+
+    Elle contient tout ce qu'il faut pour prouver la cause sur un vrai modele :
+    la raison d'arret, le nombre de jetons generes, la longueur de la sortie
+    brute, ses 80 premiers et 80 derniers caracteres (masques) et la raison
+    exacte du rejet. Sans ces quatre mesures, "JSON illisible" ne prouve rien.
+    """
+    gen = 0
+    try:
+        gen = int((usage or {}).get("completion_tokens") or 0)
+    except Exception:
+        gen = 0
+    raw = str(text or "")
+    r = res or {}
+    reason = " / ".join([x for x in [
+        str(r.get("code") or ""),
+        str(r.get("field") or ""),
+        str(r.get("detail") or r.get("message") or ""),
+    ] if x])
+    return ("[OPENAI] tool rejete %s: finish_reason=%s jetons_generes=%d longueur=%d "
+            "debut=%r fin=%r raison=%s"
+            % (tag, finish_reason or "?", gen, len(raw),
+               mask_secrets(raw[:80]), mask_secrets(raw[-80:]), reason[:240]))
+
+
 def _close_truncated_text(text):
     """Repli local quand toolcall_repair est absent (meme regle de fermeture)."""
     s = str(text or "")
@@ -785,11 +823,15 @@ def register_openai_routes(app, ctx):
         repairs_log = []
         usage = {}
         res = None
+        # P63-B/P3 : derniere sortie brute observee (pour la ligne de rejet).
+        last_text = ""
+        last_finish = "?"
         try:
             out1 = _attempt(aug)
             if isinstance(out1, dict) and out1.get("usage"):
                 usage = out1["usage"]
             text1 = _text_of(out1)
+            last_text, last_finish = text1, _finish_of(out1)
             # P63-F: le journal montrait 200 caracteres et faisait croire a un
             # JSON valide. On journalise la LONGUEUR, la raison d'arret et la
             # FIN du texte : c'est la que se voit une troncature.
@@ -808,6 +850,7 @@ def register_openai_routes(app, ctx):
                 try:
                     out1b = _attempt(aug, big)
                     text1b = _text_of(out1b)
+                    last_text, last_finish = text1b, _finish_of(out1b)
                     if isinstance(out1b, dict) and out1b.get("usage"):
                         usage = out1b["usage"]
                     res = _repair_or_none(text1b, truncated=(_finish_of(out1b) == "length"))
@@ -824,8 +867,7 @@ def register_openai_routes(app, ctx):
 
         if not res.get("ok"):
             # 2e passe : message de reparation explicite (message + exemple).
-            dlog("[OPENAI] tool attempt1 invalid (%s), repair prompt" %
-                 (res.get("detail") or res.get("field")))
+            dlog(reject_line("essai1", _finish_of(out1), usage, text1, res))
             aug2 = (aug + [{"role": "assistant", "content": text1 or ""}] +
                     [{"role": "user", "content":
                       (toolcall_repair.repair_prompt(res) if toolcall_repair
@@ -835,6 +877,7 @@ def register_openai_routes(app, ctx):
                 if isinstance(out2, dict) and out2.get("usage"):
                     usage = out2["usage"]
                 text2 = _text_of(out2)
+                last_text, last_finish = text2, _finish_of(out2)
                 dlog("[OPENAI] tool attempt2 raw: len=%d finish=%s head=%s tail=%s"
                      % (len(text2 or ""), _finish_of(out2), (text2 or "")[:200],
                         (text2 or "")[-120:]))
@@ -850,8 +893,7 @@ def register_openai_routes(app, ctx):
         if not res.get("ok"):
             # 3e passe (derniere) : on redemande en format TRES simple, sans
             # schema, pour laisser une chance a un petit modele.
-            dlog("[OPENAI] tool attempt2 invalid (%s), last simple pass" %
-                 (res.get("detail") or res.get("field")))
+            dlog(reject_line("essai2", _finish_of(out2), usage, text2, res))
             ex = (res.get("example") or {})
             simple = (aug + [{"role": "assistant", "content": text1 or ""},
                              {"role": "user", "content":
@@ -861,7 +903,8 @@ def register_openai_routes(app, ctx):
                 out3 = _attempt(simple)
                 if isinstance(out3, dict) and out3.get("usage"):
                     usage = out3["usage"]
-                res3 = _repair_or_none(_text_of(out3), truncated=(_finish_of(out3) == "length"))
+                last_text, last_finish = _text_of(out3), _finish_of(out3)
+                res3 = _repair_or_none(last_text, truncated=(last_finish == "length"))
                 repairs_log.extend(res3.get("repairs") or [])
                 if res3.get("ok"):
                     res = res3
@@ -876,8 +919,7 @@ def register_openai_routes(app, ctx):
         if not res.get("ok"):
             # Jamais 500 : 200 + erreur structuree (le moteur la renvoie au
             # modele et tente une autre voie).
-            dlog("[OPENAI] tool call unusable after repairs (%s)" %
-                 (res.get("detail") or res.get("field")))
+            dlog(reject_line("final", last_finish, usage, last_text, res))
             instr = (toolcall_repair.describe_error(res) if toolcall_repair
                      else "Appel invalide. Reponds par {tool, args}.")
             req_id_bad = "chatcmpl-" + uuid.uuid4().hex[:12]

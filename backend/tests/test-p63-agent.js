@@ -423,6 +423,89 @@ async function main() {
       !resume.isResumeIntent('reprends le fichier a.txt'), 'faux positif');
   }
 
+  // ============================================ P4 budget total (horloge simulee)
+  {
+    const proj = tmp('p63budget');
+    const meta = { id: 'spec-bud', title: 'Budget', lines: 3, sections: [{ n: 1, title: 'B' }],
+      requirements: [1, 2, 3, 4, 5].map((n) => ({ id: 'R' + n, text: 'e' + n, section: 1 })) };
+    const steps = [0, 1, 2, 3, 4].map((i) => ({ i, section: 1, reqs: ['R' + (i + 1)],
+      text: 'Creer b' + i + '.txt', complex: false }));
+    const st = job.create(proj, meta, steps, {});
+    // Horloge SIMULEE : 1 h par etape, budget total 2 h -> arret apres 3 etapes.
+    let clock = 1000000;
+    const before = process.env.SUDO_AGENT_JOB_TOTAL_MS;
+    process.env.SUDO_AGENT_JOB_TOTAL_MS = String(2 * 3600 * 1000);
+    const res = await job.run({ root: proj, state: st, now: () => clock,
+      runStep: async (step, ctx) => {
+        clock += 3600 * 1000;
+        const rel = 'b' + ctx.n + '.txt';
+        fs.writeFileSync(path.join(proj, rel), 'B' + ctx.n + '\n');
+        return { ok: true, files: [rel], declared: true };
+      } });
+    const stB = job.load(proj, st.id);
+    const rep = String(res.report || '');
+    check('P4-a: budget total atteint -> arret PROPRE, aucune etape comptee en echec',
+      res.failed === 0 && res.done === 3 && res.skipped === 2,
+      JSON.stringify({ done: res.done, failed: res.failed, skipped: res.skipped }));
+    check('P4-b: le bilan dit INCOMPLET (x/N), jamais un echec',
+      /^INCOMPLET \(travail 3\/5\)/.test(rep) && /budget total atteint/i.test(rep), rep.split('\n')[0]);
+    check('P4-c: le statut du travail est resumable (incomplete)',
+      stB.status === 'incomplete' && stB.budgetHit === true, String(stB.status));
+    check('P4-d: les etapes non tentees restent EN PLACE et la reprise est possible',
+      stB.steps[3].status === 'pending' && !!job.unfinished(proj) && job.unfinished(proj).next === 3,
+      JSON.stringify({ s4: stB.steps[3].status, next: job.unfinished(proj) && job.unfinished(proj).next }));
+    check('P4-e: le delai total est configurable (defaut 6 h, 0 = illimite)',
+      job.DELAYS.jobTotalMs === 21600000, String(job.DELAYS.jobTotalMs));
+    if (before === undefined) delete process.env.SUDO_AGENT_JOB_TOTAL_MS;
+    else process.env.SUDO_AGENT_JOB_TOTAL_MS = before;
+    const d0 = job.delays();
+    process.env.SUDO_AGENT_JOB_TOTAL_MS = '0';
+    const dz = job.delays();
+    if (before === undefined) delete process.env.SUDO_AGENT_JOB_TOTAL_MS;
+    else process.env.SUDO_AGENT_JOB_TOTAL_MS = before;
+    check('P4-f: 0 = aucune limite totale (reglage explicite)',
+      dz.jobTotalMs === 0 && dz.unlimited === true && d0.jobTotalMs === 21600000,
+      JSON.stringify({ zero: dz.jobTotalMs, defaut: d0.jobTotalMs }));
+    // Reprise reelle apres l arret budget : "continu" finit le travail.
+    const w = createWorld(proj);
+    w.allow(...[1, 2, 3, 4, 5].map((i) => 'write|file|b' + i + '.txt'));
+    const r4 = await w.turn('continu', [], { respond: (promptText) => {
+      const m = /(?:execute l etape|etape)\s+(\d+)\s*\/\s*(\d+)/i.exec(promptText);
+      if (!m) return null;
+      const n = Number(m[1]);
+      return call('write', { file: 'b' + n + '.txt', content: 'B' + n + '\n' });
+    } });
+    check('P4-g: "continu" apres un arret budget reprend a la 1re etape non faite',
+      /Redemarrage a l etape 4/.test(String(r4.end.messages.map((m) => m.content).join('\n'))),
+      String(r4.last.content || '').slice(0, 80));
+  }
+
+  // ===================== P5/P6 emplacement UNIQUE de l etat + migration
+  {
+    const h = tmp('p63home2');
+    const canon = stateDir.agentHome({ home: h });
+    fs.mkdirSync(path.join(h, '.sudo_studio', 'agent', 'sessions'), { recursive: true });
+    fs.writeFileSync(path.join(h, '.sudo_studio', 'agent', 'sessions', 'vieux.json'), '{}');
+    check('P6-a: un ancien dossier present ne change PLUS l emplacement utilise',
+      stateDir.agentHome({ home: h }) === canon && canon.indexOf('.sudo_studio') === -1, canon);
+    const det = stateDir.detectLegacyHome({ home: h });
+    check('P6-b: l ancien dossier est DETECTE (pour proposer la migration)',
+      det.present === true && det.entries.indexOf('sessions') !== -1, JSON.stringify(det.entries));
+    const no = stateDir.migrateHome(false, { home: h });
+    check('P6-c: sans accord explicite, rien n est deplace',
+      no.ok === false && no.needsApproval === true &&
+      fs.existsSync(path.join(h, '.sudo_studio', 'agent', 'sessions', 'vieux.json')),
+      JSON.stringify(no).slice(0, 120));
+    const yes = stateDir.migrateHome(true, { home: h });
+    check('P6-d: avec accord, l ancien emplacement est migre vers l emplacement unique',
+      yes.ok === true && yes.moved >= 1 &&
+      fs.existsSync(path.join(canon, 'sessions', 'vieux.json')),
+      JSON.stringify(yes).slice(0, 160));
+    check('P6-e: le dossier historique vide est retire (plus deux emplacements)',
+      yes.removed === true && !fs.existsSync(path.join(h, '.sudo_studio', 'agent')),
+      String(yes.removed));
+  }
+
   // ============================================================ F-18 calcul
   {
     check('F18-a: "2 + 298" est calcule sans modele (resultat 300)',
