@@ -1,0 +1,116 @@
+name: 06 - Smoke test du paquet INSTALLE
+
+# P63-B (prouve c) : installe reellement l'installateur produit par le
+# workflow 03 (installation silencieuse dans Program Files), puis verifie sur
+# le PAQUET INSTALLE :
+#   - backend  /health  (port 5000)
+#   - runtime  /health  (port 6000)
+#   - ecriture du journal dans %LOCALAPPDATA%\SudoStudio\logs
+#   - fichiers critiques + manifeste de build
+#   - arret propre (0 processus restant) et desinstallation
+# Aucun resultat n'est simule : le script scripts/smoke/smoke-install.ps1 sort
+# en code != 0 des qu'un controle echoue.
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_run_id:
+        description: 'Run id du workflow 03 qui a produit l installateur (vide = dernier 03 vert de la branche)'
+        required: false
+        default: ''
+      installer_name:
+        description: 'Nom exact de l artefact installateur (optionnel)'
+        required: false
+        default: ''
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resoudre le run du paquet
+        id: resolve
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $repo = "${{ github.repository }}"
+          $hdr = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json" }
+          $rid = "${{ github.event.inputs.package_run_id }}"
+          if ([string]::IsNullOrEmpty($rid)) {
+            $br = "${{ github.ref_name }}"
+            $u = "https://api.github.com/repos/$repo/actions/workflows/03-package.yml/runs?status=completed&conclusion=success&branch=$br&per_page=1"
+            $r = Invoke-RestMethod -Uri $u -Headers $hdr
+            if ($r.workflow_runs.Count -eq 0) { Write-Error '[FAIL] aucun run 03 vert sur cette branche'; exit 1 }
+            $rid = [string]$r.workflow_runs[0].id
+          }
+          Write-Host "[INFO] run du paquet : $rid"
+          "run_id=$rid" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Telecharger l installateur (artefact du run 03)
+        uses: actions/download-artifact@v4
+        with:
+          name: sudo-studio-installer
+          path: installer
+          run-id: ${{ steps.resolve.outputs.run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+
+      - name: Lister et hasher l installateur
+        shell: powershell
+        run: |
+          Get-ChildItem installer -Recurse -File | ForEach-Object {
+            $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            Write-Host ("[ARTEFACT] {0} {1} octets sha256={2}" -f $_.Name, $_.Length, $h)
+          }
+          $setup = Get-ChildItem installer -Recurse -Filter 'SudoStudio-Setup-*.exe' | Select-Object -First 1
+          if (-not $setup) { Write-Error '[FAIL] installateur introuvable dans l artefact'; exit 1 }
+          "setup=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+        id: setup
+
+      - name: Installer et tester le PAQUET INSTALLE (smoke)
+        shell: powershell
+        run: |
+          $out = Join-Path $env:GITHUB_WORKSPACE 'smoke-out'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke\smoke-install.ps1 `
+            -InstallerPath "${{ steps.setup.outputs.setup }}" `
+            -OutDir $out
+          $code = $LASTEXITCODE
+          Write-Host "[SMOKE] code de sortie : $code"
+          if (Test-Path (Join-Path $out 'summary.txt')) {
+            Get-Content (Join-Path $out 'summary.txt') | Write-Host
+          }
+          if ($code -ne 0) { exit $code }
+
+      - name: Verifier le journal au bon endroit
+        if: always()
+        shell: powershell
+        run: |
+          $base = Join-Path $env:LOCALAPPDATA 'SudoStudio\logs'
+          if (Test-Path $base) {
+            Get-ChildItem $base -File | ForEach-Object {
+              Write-Host ("[JOURNAL] {0} {1} octets" -f $_.FullName, $_.Length)
+            }
+            $bad = @(Get-ChildItem $base -File | Where-Object { $_.Length -eq 0 })
+            if ($bad.Count -gt 0) { Write-Host '[WARN] journaux vides : ' + ($bad -join ', ') }
+          } else {
+            Write-Host "[WARN] $base absent (le paquet n a peut-etre pas demarre)"
+          }
+
+      - name: Publier les preuves
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p63-smoke-installed
+          path: |
+            smoke-out/**
+            installer/**
+          if-no-files-found: warn
+          retention-days: 30
