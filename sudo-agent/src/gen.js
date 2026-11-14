@@ -22,7 +22,8 @@ const MAX_RESTORE_DELETES = 200;
 const MAX_CHECK_TAIL = 4000;
 
 function validId(id) { return typeof id === 'string' && ID_RE.test(id); }
-function genRoot(root) { return path.join(String(root), '.sudo_studio', 'gen'); }
+// P63-D: les artefacts de generation vivent hors du projet.
+function genRoot(root) { return path.join(require('./stateDir').paths(root).root, 'gen'); }
 function runDir(root, id) { return path.join(genRoot(root), id); }
 
 function readRun(root, id) {

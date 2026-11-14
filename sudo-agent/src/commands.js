@@ -26,11 +26,12 @@ const MAX_ARGS = 32;
 
 function agentDir(home) {
   const h = home || process.env.SUDO_STUDIO_HOME || (function () { try { return os.homedir(); } catch (_) { return process.cwd(); } })();
-  return path.join(String(h), '.sudo_studio', 'agent');
+  return require('./stateDir').agentHome({ home: String(h) }); // P63-D : hors projet
 }
 
 function globalDir(home) { return path.join(agentDir(home), 'commands'); }
-function projectDir(root) { return path.join(String(root), '.sudo_studio', 'commands'); }
+// P63-D: les commandes projet vivent dans le workspace, pas dans le projet.
+function projectDir(root) { return path.join(require('./stateDir').paths(root).root, 'commands'); }
 
 function scopeDir(home, root, scope) {
   if (scope === 'global') return globalDir(home);

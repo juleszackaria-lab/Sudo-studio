@@ -22,9 +22,14 @@ const os = require('os');
 const path = require('path');
 
 const SRC = path.join(__dirname, '..', '..', 'sudo-agent', 'src');
+// P63-D: l'etat de l'agent vit HORS du projet ; les tests l'isolent dans un
+// dossier temporaire au lieu du vrai dossier utilisateur.
+process.env.SUDO_AGENT_HOME = process.env.SUDO_AGENT_HOME ||
+  fs.mkdtempSync(path.join(os.tmpdir(), 'p63-agent-home-'));
 const spec = require(path.join(SRC, 'spec'));
 const job = require(path.join(SRC, 'job'));
 const stepcheck = require(path.join(SRC, 'stepcheck'));
+const stateDir = require(path.join(SRC, 'stateDir'));
 
 let pass = 0;
 const fails = [];
@@ -70,9 +75,11 @@ async function main() {
     // ------------------------------------------------ F-1 : jamais en entier
     {
         const { meta, pol, root } = await runBrief('f1', 40, 300, 2048);
-        check('F-1a: le cahier est ecrit sur disque',
-            fs.existsSync(path.join(root, '.sudo-agent', 'specs', meta.id + '.md')),
-            path.join(root, '.sudo-agent', 'specs'));
+        check('F-1a: le cahier est ecrit sur disque, HORS du projet (P63-D)',
+            fs.existsSync(path.join(stateDir.paths(root).specs, meta.id + '.md')),
+            stateDir.paths(root).specs);
+        check('F-1a2: aucun dossier d agent n est cree dans le projet (P63-D)',
+            !fs.existsSync(path.join(root, '.sudo-agent')), path.join(root, '.sudo-agent'));
         check('F-1b: il est estime en jetons et compare a n_ctx',
             pol.specTokens > 0 && pol.nCtx === 2048 && pol.share > 0.5,
             JSON.stringify(pol));
@@ -169,8 +176,12 @@ async function main() {
         check('F-4a: un fichier a la syntaxe invalide n est jamais declare fait',
             bad.done === 0 && bad.failed === badState.steps.length,
             JSON.stringify({ done: bad.done, failed: bad.failed }));
-        check('F-4b: chaque etape a bien eu 2 essais avant d echouer',
-            badState.steps.every((s) => s.attempts === 2), badState.steps.map((s) => s.attempts));
+        // P63-C7: le nombre d'essais est un reglage documente (3 par defaut,
+        // "3 tentatives sans progres -> echouee"). On verifie l EGALITE avec la
+        // valeur du produit, jamais un nombre en dur.
+        check('F-4b: chaque etape a eu exactement le nombre d essais configure avant d echouer',
+            badState.steps.every((s) => s.attempts === job.delays().attempts),
+            JSON.stringify({ attempts: badState.steps.map((s) => s.attempts), configure: job.delays().attempts }));
         check('F-4c: la raison reelle (syntaxe) est enregistree',
             /syntaxe|verification|invalide/i.test(String(badState.steps[0].detail || '')),
             String(badState.steps[0].detail || '').slice(0, 160));

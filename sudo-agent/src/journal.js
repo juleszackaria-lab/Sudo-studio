@@ -34,7 +34,8 @@ function resolveLogsDir(opts) {
   opts = opts || {};
   if (opts.logsDir) return String(opts.logsDir);
   if (process.env.SUDO_STUDIO_LOGS) return String(process.env.SUDO_STUDIO_LOGS);
-  return path.join(resolveHome(opts), '.sudo_studio', 'logs');
+  // P63-D: journaux hors projet, dans le dossier produit.
+  return path.join(require('./stateDir').agentHome({ home: resolveHome(opts) }), 'logs');
 }
 
 function ensureDir(dir) {

@@ -138,7 +138,7 @@ function check(opts) {
 function rulesFile(home, root) {
   const h = home || process.env.SUDO_STUDIO_HOME || (function () { try { return os.homedir(); } catch (_) { return process.cwd(); } })();
   const digest = crypto.createHash('sha1').update(String(root)).digest('hex');
-  return path.join(String(h), '.sudo_studio', 'agent', 'rules', digest + '.json');
+  return path.join(require('./stateDir').agentHome({ home: String(h) }), 'rules', digest + '.json'); // P63-D
 }
 
 function loadProjectRules(home, root) {

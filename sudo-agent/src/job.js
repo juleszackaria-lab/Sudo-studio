@@ -8,7 +8,7 @@
  *     the files already touched + a TWO LINE summary of previous steps;
  *   - coverage is accumulated per requirement (files / test / status) and
  *     turned into the final honest table;
- *   - the state file (.sudo-agent/jobs/job-<id>.json) records attempts,
+ *   - the state file (<workspace hors projet>/jobs/job-<id>.json) records attempts,
  *     calls, duration, status, files, tests and a journal, so a stop, a crash,
  *     a runtime restart or a panel close resumes EXACTLY where it stopped;
  *   - per-step and global budgets (calls + time) bound the run;
@@ -24,11 +24,14 @@ const fs = require('fs');
 const path = require('path');
 const spec = require('./spec');
 const stepcheck = require('./stepcheck');
+const stateDir = require('./stateDir'); // P63-D : etat hors du projet
 
 const VERSION = 1;
 const DEFAULT_STEP_ATTEMPTS = 2;
 
-function jobsDir(root) { return path.join(root, '.sudo-agent', 'jobs'); }
+// P63-D: plus AUCUN fichier de l'agent dans le projet. Les travaux vivent
+// dans le workspace hors projet (stateDir), comme les cahiers des charges.
+function jobsDir(root) { return stateDir.paths(root).jobs; }
 function jobPath(root, id) {
   return path.join(jobsDir(root), 'job-' + String(id || '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80) + '.json');
 }
@@ -37,12 +40,47 @@ function intEnv(name, def) {
   const v = parseInt(process.env[name], 10);
   return Number.isFinite(v) && v > 0 ? v : def;
 }
+// P63-B: trois delais, un seul endroit, des invariants verifiables.
+//   runtimeWaitMs : attente maximale du runtime quand il tombe (180 s) ;
+//   stepActiveMs  : duree ACTIVE d'une etape, temps de panne runtime EXCLU ;
+//   jobTotalMs    : duree totale du travail (toutes etapes).
+// Regle : aucun delai interne ne peut etre plus court que celui qu'il couvre.
+//   stepActiveMs >= runtimeWaitMs (une etape interrompue par le runtime doit
+//   pouvoir attendre sa reprise sans etre declaree "depassee").
+//   jobTotalMs >= stepActiveMs.
+const DELAYS = {
+  runtimeWaitMs: 180000,
+  stepActiveMs: 300000,
+  jobTotalMs: 3600000,
+  attempts: 3,
+};
+
+function delays() {
+  const d = {
+    runtimeWaitMs: intEnv('SUDO_AGENT_RUNTIME_WAIT_MS', DELAYS.runtimeWaitMs),
+    stepActiveMs: intEnv('SUDO_AGENT_STEP_ACTIVE_MS', DELAYS.stepActiveMs),
+    jobTotalMs: intEnv('SUDO_AGENT_JOB_TOTAL_MS', DELAYS.jobTotalMs),
+    attempts: intEnv('SUDO_AGENT_STEP_ATTEMPTS', DELAYS.attempts),
+  };
+  // Invariants : on CORRIGE vers le haut, jamais vers le bas (aucune etape ne
+  // peut etre plus courte que l'attente runtime qu'elle est censee couvrir).
+  if (d.stepActiveMs < d.runtimeWaitMs) d.stepActiveMs = d.runtimeWaitMs;
+  if (d.jobTotalMs < d.stepActiveMs) d.jobTotalMs = d.stepActiveMs;
+  d.coherent = true;
+  return d;
+}
+
 function budgets() {
+  const d = delays();
   return {
     stepCalls: intEnv('SUDO_AGENT_STEP_CALLS', 8),
-    stepMs: intEnv('SUDO_AGENT_STEP_MS', 120000),
-    jobMs: intEnv('SUDO_AGENT_JOB_MS', 1800000),
-    attempts: intEnv('SUDO_AGENT_STEP_ATTEMPTS', DEFAULT_STEP_ATTEMPTS),
+    // compat : les appelants historiques lisent stepMs/jobMs.
+    stepMs: d.stepActiveMs,
+    jobMs: d.jobTotalMs,
+    stepActiveMs: d.stepActiveMs,
+    runtimeWaitMs: d.runtimeWaitMs,
+    jobTotalMs: d.jobTotalMs,
+    attempts: d.attempts,
     // P62-F2: jamais plus de 60 % de n_ctx par appel sur un cahier des charges.
     ctxShare: 0.60,
     // P62-F7: 6 outils exposes au maximum par etape (petits modeles).
@@ -121,6 +159,7 @@ function freshState(id, specMeta, steps, opts) {
     steps: steps.map((s) => ({
       i: s.i, text: s.text, reqs: s.reqs || [], section: s.section || 1,
       complex: !!s.complex, model: s.model || null,
+      kind: s.kind || 'work', // P63-E14 : 'out-of-scope' n'est pas executee
       status: 'pending', attempts: 0, calls: 0, ms: 0, detail: '', files: [], test: null,
     })),
     coverage: (specMeta.requirements || []).map((r) => ({
@@ -172,9 +211,22 @@ function list(root) {
 }
 
 // Latest job that is not finished (what the "Reprendre" button resumes).
+// P63-C1: tout travail INACHEVE est repris, quel que soit son statut
+// d'arret (coupure, panne runtime, veille, fermeture de fenetre, echec).
 function resumable(root) {
   const all = list(root);
-  return all.find((j) => j.status === 'running' || j.status === 'proposed' || j.status === 'stopped') || null;
+  const open = all.find((j) => j.status === 'running' || j.status === 'proposed' ||
+    j.status === 'stopped' || j.status === 'partial' || j.status === 'failed' ||
+    j.status === 'interrupted');
+  if (!open) return null;
+  const st = load(root, open.id);
+  if (!st) return null;
+  const c = countSteps(st);
+  // Un travail dont toutes les etapes sont faites (ou hors perimetre) n'est
+  // pas repris : il n'y a rien a reprendre.
+  if (c.done + c.outOfScope >= c.total) return null;
+  return { id: st.id, steps: c.total, done: c.done, failed: c.failed,
+    interrupted: c.interrupted, skipped: c.skipped, next: firstOpenStep(st) };
 }
 
 function create(root, specMeta, steps, opts) {
@@ -251,6 +303,11 @@ async function run(opts) {
   }
   state.runs += 1;
   state.status = 'running';
+  // P63-C8: aucun statut mensonger a la reprise.
+  state.steps.forEach((s) => {
+    if (s.status === 'out_of_scope') return;
+    if (s.status === 'interrupted_runtime') { s.detail = s.detail || 'interrompue par une panne du runtime'; }
+  });
   log(state, -1, resumed ? 'resume' : 'start', (resumed ? 'reprise' : 'demarrage') + ' execution ' + state.runs);
   save(root, state);
   const b = state.budgets || budgets();
@@ -258,7 +315,24 @@ async function run(opts) {
   const N = state.steps.length;
   let aborted = false;
 
-  for (const s of state.steps) {
+  // P63-C: ordre de reprise. 1) les etapes INTERROMPUES par le runtime (elles
+  // ont deja commence, elles passent en premier), 2) les autres dans l'ordre.
+  const order = state.steps.slice().sort((a, b) => {
+    const w = (x) => (x.status === 'interrupted_runtime' ? 0 : 1);
+    return w(a) - w(b) || a.i - b.i;
+  });
+  for (const s of order) {
+    // P63-E14: une exigence hors perimetre n'est pas executee, elle est DITE.
+    if (s.kind === 'out-of-scope' || s.status === 'out_of_scope') {
+      s.status = 'out_of_scope';
+      s.detail = 'hors perimetre - a faire par l utilisateur';
+      (s.reqs || []).forEach((rid) => {
+        const c = state.coverage.find((x) => x.req === rid);
+        if (c) { c.status = 'hors perimetre'; c.proof = s.detail; }
+      });
+      log(state, s.i, 'out_of_scope', s.detail);
+      continue;
+    }
     if (opts.shouldStop && opts.shouldStop()) { aborted = true; break; }
     const retryable = s.status === 'pending' || (s.status === 'failed' && s.attempts < b.attempts);
     if (!retryable) {
@@ -280,6 +354,7 @@ async function run(opts) {
     let files = [];
     let check = null;
     let abortedHere = false;
+    let interruptedHere = false; // P63-B3 : panne runtime, pas un echec
     const maxAtt = Math.max(1, b.attempts);
     for (let att = 0; att < maxAtt; att++) {
       s.status = 'running';
@@ -311,8 +386,27 @@ async function run(opts) {
       res = null;
       try { res = await runStep(s, ctx); }
       catch (e) { res = { calls: 0, ok: false, error: 'etape: ' + String((e && e.message) || e).slice(0, 200) }; }
-      s.ms = Date.now() - t0;
+      const wallMs = Date.now() - t0;
+      // P63-B3: le temps ou le runtime etait INDISPONIBLE n'est jamais decompte
+      // du budget de l'etape. `runtimeDownMs` vient du moteur (horloge
+      // monotone) ; a defaut on prend 0 et on garde le mur.
+      const downMs = Math.max(0, Number(res && res.runtimeDownMs) || 0);
+      s.ms = wallMs;
+      s.activeMs = Math.max(0, wallMs - downMs);
+      s.runtimeDownMs = downMs;
       s.calls = (res && res.calls) || 0;
+      if (res && res.interruptedByRuntime) {
+        // P63-B3: statut dedie, jamais "NON REALISEE" : ce n'est pas la faute
+        // du travail, et l'etape reprendra EN PREMIER.
+        s.status = 'interrupted_runtime';
+        s.detail = ('INTERROMPUE (runtime) apres ' + Math.round(s.activeMs / 1000) +
+          's de travail actif ; le runtime est reste indisponible ' + Math.round(downMs / 1000) + 's. Reprise automatique.');
+        log(state, s.i, 'interrupted_runtime', s.detail);
+        save(root, state);
+        emit('job.step', { jobId: state.id, n: s.i + 1, N, status: 'interrupted_runtime', detail: s.detail });
+        interruptedHere = true;
+        break; // sort de la boucle d'essais : ce n'est PAS un echec
+      }
       if (res && res.aborted) {
         s.status = 'pending';
         s.detail = 'interrompue : ' + String(res.error || 'arret demande').slice(0, 160);
@@ -343,11 +437,16 @@ async function run(opts) {
       if (!ok && check && check.detail) {
         s.detail = ('verification deterministe en echec : ' + String(check.detail || '')).slice(0, 300);
       }
-      if (s.ms > b.stepMs && !ok) s.detail = ('budget temps depasse (' + Math.round(s.ms / 1000) + 's) ' + s.detail).slice(0, 300);
+      if (s.activeMs > b.stepActiveMs && !ok) {
+        s.detail = ('budget temps ACTIF depasse (' + Math.round(s.activeMs / 1000) + 's sur ' +
+          Math.round(b.stepActiveMs / 1000) + 's, hors panne runtime ' + Math.round(s.runtimeDownMs / 1000) +
+          's) ' + s.detail).slice(0, 300);
+      }
       if (ok) break;
       log(state, s.i, 'retry', 'essai ' + s.attempts + ' en echec, on rejoue avec l erreur reelle');
     }
     if (abortedHere) break;
+    if (interruptedHere) continue; // statut deja pose, reprise en premier
     s.status = ok ? 'done' : 'failed';
     // Coverage: each covered requirement inherits the step outcome.
     s.reqs.forEach((rid) => {
@@ -365,12 +464,15 @@ async function run(opts) {
   }
 
   const counted = countSteps(state);
-  // Statut final sans ambiguite : 'done' = tout fait, 'partial' = au moins une
-  // etape non realisee (les autres sont faites), 'failed' = rien de fait.
+  // Statut final sans ambiguite : 'done' = tout fait ; 'interrupted' = une
+  // panne runtime a laisse du travail (reprise possible) ; 'partial' = au moins
+  // une etape non realisee ; 'failed' = rien de fait.
   if (aborted) state.status = 'stopped';
-  else if (counted.failed === 0 && counted.skipped === 0) state.status = 'done';
+  else if (counted.done + counted.outOfScope === counted.total) state.status = 'done';
+  else if (counted.interrupted > 0) state.status = 'interrupted';
   else if (counted.done === 0) state.status = 'failed';
   else state.status = 'partial';
+  state.progress = progressLine(state);
   log(state, -1, aborted ? 'stopped' : 'done', JSON.stringify(counted));
   save(root, state);
   const report = reportText(state, { aborted });
@@ -379,13 +481,42 @@ async function run(opts) {
 }
 
 function countSteps(state) {
-  let done = 0; let failed = 0; let skipped = 0;
+  let done = 0; let failed = 0; let skipped = 0; let interrupted = 0; let outOfScope = 0;
   state.steps.forEach((s) => {
     if (s.status === 'done') done++;
     else if (s.status === 'failed') failed++;
+    else if (s.status === 'interrupted_runtime') interrupted++;
+    else if (s.status === 'out_of_scope') outOfScope++;
     else skipped++;
   });
-  return { done, failed, skipped, total: state.steps.length };
+  return { done, failed, skipped, interrupted, outOfScope, total: state.steps.length };
+}
+
+// P63-C: ligne de progression demandee mot pour mot dans le prompt.
+function progressLine(state) {
+  const c = countSteps(state);
+  return c.done + ' faite(s), ' + c.failed + ' echouee(s), ' + c.interrupted +
+    ' interrompue(s), ' + c.skipped + ' non tentee(s)' +
+    (c.outOfScope ? ', ' + c.outOfScope + ' hors perimetre' : '') + ' sur ' + c.total + '.';
+}
+
+// P63-C5: le travail le plus recent INACHEVE (rien a voir avec le modele).
+function unfinished(root) {
+  const all = list(root);
+  const open = all.find((j) => j.status === 'running' || j.status === 'proposed' || j.status === 'stopped' ||
+    j.status === 'partial' || j.status === 'failed');
+  if (!open) return null;
+  const st = load(root, open.id);
+  if (!st) return null;
+  const c = countSteps(st);
+  if (c.done >= c.total) return null; // tout est fait : rien a reprendre
+  return { id: st.id, state: st, counts: c, line: progressLine(st),
+    next: firstOpenStep(st) };
+}
+
+function firstOpenStep(state) {
+  const st = (state.steps || []).find((s) => s.status !== 'done' && s.status !== 'out_of_scope');
+  return st ? st.i : -1;
 }
 
 function coverageTable(state) {
@@ -418,11 +549,30 @@ function reportText(state, opts) {
   const o = opts || {};
   const c = countSteps(state);
   const L = [];
-  L.push('PROJET "' + state.title + '" - ' + c.total + ' etape(s).');
-  L.push('Etapes : ' + c.done + ' faite(s), ' + c.failed + ' echouee(s), ' + c.skipped + ' non tentee(s).' +
+  const travail = c.total - c.outOfScope;
+  const reste = travail - c.done;
+  // P63-C6: JAMAIS "termine" s'il reste une etape non faite. Le titre dit
+  // INCOMPLET (x/N) et la liste suit. Les nombres sont ceux du plan :
+  // travail x/N, hors perimetre annonce a part (jamais compte en echec).
+  const entete = (reste > 0 ? 'INCOMPLET' : 'TERMINE') + ' (travail ' + c.done + '/' + travail + ')' +
+    (c.outOfScope ? ', ' + c.outOfScope + ' hors perimetre' : '');
+  L.push(entete + ' - PROJET "' + state.title + '" - ' + c.total + ' etape(s) au plan.');
+  L.push('Etapes : ' + c.done + ' faite(s), ' + c.failed + ' echouee(s), ' + c.interrupted +
+    ' interrompue(s), ' + c.skipped + ' non tentee(s)' +
+    (c.outOfScope ? ', ' + c.outOfScope + ' hors perimetre' : '') + '.' +
     (o.aborted ? ' (interrompu : reprise possible)' : ''));
+  if (reste > 0) {
+    const list = state.steps.filter((s) => s.status !== 'done' && s.status !== 'out_of_scope')
+      .slice(0, 20).map((s) => (s.i + 1) + ' (' + s.status + ')');
+    L.push('Reste a faire : ' + list.join(', ') + (reste > 20 ? ' ...' : ''));
+  }
   state.steps.forEach((s) => {
-    L.push('  ' + (s.i + 1) + '/' + c.total + ' [' + (s.status === 'done' ? 'FAIT' : (s.status === 'failed' ? 'ECHOUE' : s.status.toUpperCase())) + '] ' +
+    const tag = s.status === 'done' ? 'FAIT'
+      : s.status === 'failed' ? 'ECHOUE'
+      : s.status === 'interrupted_runtime' ? 'INTERROMPUE (runtime)'
+      : s.status === 'out_of_scope' ? 'HORS PERIMETRE (a faire par l utilisateur)'
+      : s.status.toUpperCase();
+    L.push('  ' + (s.i + 1) + '/' + c.total + ' [' + tag + '] ' +
       (s.reqs.length ? '(' + s.reqs.join(',') + ') ' : '') + String(s.text).slice(0, 120) +
       (s.files.length ? ' -> ' + s.files.slice(0, 3).join(', ') : '') + (s.detail ? ' :: ' + s.detail.slice(0, 120) : ''));
   });
@@ -442,7 +592,8 @@ function reportText(state, opts) {
 
 module.exports = {
   VERSION, jobsDir, jobPath, budgets, pickModel, estimateTokens, specPolicy, toolSubsetFor,
-  create, load, save, list, resumable, freshState,
+  create, load, save, list, resumable, freshState, delays, DELAYS,
+  progressLine, unfinished, firstOpenStep,
   run, stepPrompt, prevSummary, filesHint,
   countSteps, coverageTable, coverageText, reportText, log,
 };

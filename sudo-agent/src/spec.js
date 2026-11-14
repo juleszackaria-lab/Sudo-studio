@@ -2,7 +2,7 @@
  * spec.js - P56: long specifications (cahiers des charges) become projects.
  *
  * A 50/60/1000 line brief is NEVER pasted whole into the model context.
- * It is stored as a document on disk (<root>/.sudo-agent/specs/spec-<id>.md)
+ * It is stored as a document OUTSIDE the project (workspace P63-D, spec-<id>.md)
  * and the engine extracts, DETERMINISTICALLY first:
  *   - a plan of SECTIONS (markdown headings, numbered titles, or one block);
  *   - a numbered list of REQUIREMENTS (R1..Rn) with their section.
@@ -13,7 +13,7 @@
  * ids they cover, so the final coverage table ("exigence -> fichiers -> test
  * -> fait / non fait / echec") is checkable and honest.
  *
- * Everything is pure Node + files under .sudo-agent/specs, ASCII-only source,
+ * Everything is pure Node + files in the agent workspace (hors projet),
  * never throws at the caller (errors come back in { error }).
  */
 'use strict';
@@ -21,17 +21,22 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const stateDir = require('./stateDir'); // P63-D : etat hors du projet
 
 const VERSION = 1;
 // Above these thresholds a prompt is treated as a document, not as a message.
 const THRESHOLD_LINES = 40;
 const THRESHOLD_CHARS = 3000;
 const MAX_REQUIREMENTS = 400;
-const MAX_STEPS = 60;
+// P63-E: 200 etapes couvrent 400 exigences (3 par etape). Si la borne est
+// atteinte, c'est DIT (planWithMeta) et repris dans le rapport : plus d'ecart
+// entre le plan annonce et le travail execute.
+const MAX_STEPS = 200;
 const SECTION_READ_CHARS = 6000;
 const REQS_PER_STEP = 3;
 
-function specsDir(root) { return path.join(root, '.sudo-agent', 'specs'); }
+// P63-D: le cahier des charges n'est plus ecrit dans le projet.
+function specsDir(root) { return stateDir.paths(root).specs; }
 function specPath(root, id) { return path.join(specsDir(root), safeId(id) + '.md'); }
 function metaPath(root, id) { return path.join(specsDir(root), safeId(id) + '.json'); }
 function safeId(id) { return String(id || '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80); }
@@ -138,9 +143,41 @@ function extractRequirements(text, sections) {
 }
 
 // ---------------------------------------------------------------------------
+// P63-E14: ce que l'agent ne PEUT PAS faire depuis cette machine (CI distante,
+// installateur Windows, tests sur materiel reel, publication de magasin...) est
+// marque "hors perimetre - a faire par l'utilisateur" et ne compte PAS comme
+// etape echouee. Detection par mots-cles, deterministe et explicable.
+const OUT_OF_SCOPE_PATTERNS = [
+  /\bci\s+(distante?|github|gitlab|serveur)\b/i,
+  /\bpipeline\s+(ci|cd|distant)/i,
+  /\bgithub\s+actions\b/i,
+  /\binstallateur\s+(windows|signe|signature)/i,
+  /\bsignature?\s+(de\s+code|certificat)/i,
+  /\bmateriel\s+reel\b/i,
+  /\bsur\s+(un\s+)?(vrai\s+)?telephone/i,
+  /\bappareil\s+physique/i,
+  /\bpubli(er|cation|ez|e)\b[^.]{0,40}\b(magasin|store|play\s?store|app\s?store|appstore)\b/i,
+  /\bdeploiement\s+(en\s+)?production\b/i,
+  /\bacces\s+(au\s+)?serveur\s+distant/i,
+  /\bcompte\s+(de\s+)?developpeur\b/i,
+];
+
+function outOfScopeReason(text) {
+  const t = String(text || '');
+  for (const re of OUT_OF_SCOPE_PATTERNS) {
+    if (re.test(t)) return 'hors perimetre - a faire par l utilisateur';
+  }
+  return '';
+}
+
+// ---------------------------------------------------------------------------
 // Plan of steps: requirements grouped, each step CITES the ids it covers.
 // ---------------------------------------------------------------------------
 function planSteps(spec) {
+  return planWithMeta(spec).steps;
+}
+
+function planWithMeta(spec) {
   const reqs = (spec && spec.requirements) || [];
   const sections = (spec && spec.sections) || [];
   const steps = [];
@@ -157,10 +194,11 @@ function planSteps(spec) {
   if (!keys.length) {
     // No requirement at all: one step per section (still runnable and honest).
     const use = sections.length ? sections : [{ n: 1, title: 'Document' }];
-    use.slice(0, MAX_STEPS).forEach((s, i) => {
-      steps.push({ i, text: 'Traiter la section "' + s.title + '" du cahier des charges', reqs: [], section: s.n, complex: false });
+    use.slice(0, MAX_STEPS).forEach((s2, i) => {
+      steps.push({ i, text: 'Traiter la section "' + s2.title + '" du cahier des charges', reqs: [], section: s2.n, complex: false });
     });
-    return steps;
+    return { steps, planned: use.length, kept: steps.length, total: steps.length,
+      truncated: use.length > steps.length, totalRequirements: reqs.length, outOfScope: [] };
   }
   for (const k of keys) {
     const list = bySection[k];
@@ -173,15 +211,49 @@ function planSteps(spec) {
         section: k,
         reqs: ids,
         text: 'Section "' + secTitle(k) + '" : realiser ' + ids.join(', ') + ' (' + head + ')',
+        head,
         complex: false,
       });
     }
   }
+  const planned = steps.length;
   if (steps.length > MAX_STEPS) steps.length = MAX_STEPS;
+  // P63-E14: une exigence hors perimetre ne devient pas une etape de travail :
+  // elle est regroupee dans UNE etape "hors perimetre", listee et expliquee.
+  const oos = [];
+  steps.forEach((st) => {
+    const keep = [];
+    (st.reqs || []).forEach((rid) => {
+      const r = reqs.find((x) => x.id === rid);
+      const why = r ? outOfScopeReason(r.text) : '';
+      if (why) { r.outOfScope = why; oos.push(rid); } else keep.push(rid);
+    });
+    st.reqs = keep;
+    // Le TEXTE de l'etape doit suivre ses exigences : sinon il annonce encore
+    // une exigence retiree (ecart plan / travail, exactement le defaut G5).
+    if (st.head !== undefined) {
+      if (st.reqs.length) st.text = 'Section "' + secTitle(st.section) + '" : realiser ' + st.reqs.join(', ') + ' (' + st.head + ')';
+      delete st.head;
+    }
+  });
+  const finalSteps = steps.filter((st) => st.reqs.length);
+  finalSteps.forEach((st, i) => { st.i = i; });
+  if (oos.length) {
+    finalSteps.push({
+      i: finalSteps.length,
+      text: 'Hors perimetre : ' + oos.join(', ') + ' (a faire par l utilisateur)',
+      reqs: oos, section: (reqs.find((r) => r.id === oos[0]) || {}).section || 1,
+      complex: false, kind: 'out-of-scope',
+    });
+  }
+  // `planned` = etapes de TRAVAIL calculees ; `kept` = celles retenues ;
+  // `total` = tout ce que le plan contient (travail + hors perimetre).
+  const kept = finalSteps.filter((s) => s.kind !== 'out-of-scope').length;
   // "complex" = the widest steps; the model policy may route them elsewhere.
-  const maxReqs = steps.reduce((m, s) => Math.max(m, s.reqs.length), 1);
-  steps.forEach((s) => { s.complex = s.reqs.length >= maxReqs && maxReqs > 1; });
-  return steps;
+  const maxReqs = finalSteps.reduce((m, s) => Math.max(m, s.reqs.length), 1);
+  finalSteps.forEach((s) => { s.complex = s.reqs.length >= maxReqs && maxReqs > 1; });
+  return { steps: finalSteps, planned, kept, truncated: planned > kept, total: finalSteps.length,
+    totalRequirements: reqs.length, outOfScope: oos };
 }
 
 // ---------------------------------------------------------------------------
@@ -305,12 +377,26 @@ async function refineWithModel(opts) {
 }
 
 // Human-facing plan (what the user validates before anything runs).
-function planText(spec, steps) {
-  const st = steps || planSteps(spec);
+function planText(spec, steps, meta) {
+  const pm = meta || planWithMeta(spec);
+  const st = steps || pm.steps;
   const L = [];
   L.push('PLAN DU CAHIER DES CHARGES : ' + spec.title);
+  // P63-E13: le plan annonce EXACTEMENT ce qui sera execute. Les nombres
+  // viennent de la meme source que le moteur (planWithMeta), plus d'ecart
+  // entre "63 etapes" affichees et "60" executees.
+  const workN = st.filter((x) => x.kind !== 'out-of-scope').length;
+  const oosN = st.length - workN;
   L.push(spec.lines + ' ligne(s), ' + (spec.sections || []).length + ' section(s), ' +
-    (spec.requirements || []).length + ' exigence(s) numerotee(s), ' + st.length + ' etape(s).');
+    (spec.requirements || []).length + ' exigence(s) numerotee(s) : ' + workN + ' etape(s) a executer' +
+    (oosN ? ' + ' + oosN + ' hors perimetre' : '') + ' (' + st.length + ' au total).');
+  if (pm.outOfScope && pm.outOfScope.length) {
+    L.push(pm.outOfScope.length + ' exigence(s) HORS PERIMETRE (a faire par l utilisateur) : ' + pm.outOfScope.join(', '));
+  }
+  if (pm.truncated) {
+    L.push('ATTENTION : ' + pm.planned + ' etape(s) calculee(s), ' + pm.kept +
+      ' retenue(s) (limite ' + MAX_STEPS + '). Les exigences non couvertes resteront non faites et seront listees a la fin.');
+  }
   L.push('');
   L.push('SECTIONS');
   (spec.sections || []).slice(0, 20).forEach((s) => L.push('  ' + s.n + '. ' + s.title));
@@ -329,6 +415,7 @@ function planText(spec, steps) {
 
 module.exports = {
   VERSION, THRESHOLD_LINES, THRESHOLD_CHARS, MAX_REQUIREMENTS, MAX_STEPS, SECTION_READ_CHARS, REQS_PER_STEP,
+  planWithMeta, outOfScopeReason, OUT_OF_SCOPE_PATTERNS,
   specsDir, specPath, metaPath,
   isLongSpec, extractSections, extractRequirements, planSteps,
   ingest, load, save, documentText, readSection,

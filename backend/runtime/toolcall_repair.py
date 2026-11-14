@@ -114,6 +114,46 @@ def _try_json(chunk):
     return None
 
 
+def close_truncated(text):
+    """Referme une sortie COUPEE (troncature max_tokens), sans deviner.
+
+    P63-F: le modele s'arrete au milieu de son JSON quand la limite de jetons
+    tombe la. On ne peut pas inventer la suite, mais on peut refermer une
+    chaine ouverte et les accolades manquantes : le debut de l'appel est
+    souvent complet et exploitable (nom + premiers arguments).
+
+    Retourne (texte_referme, modifie: bool).
+    """
+    s = str(text or "")
+    in_str = False
+    esc = False
+    depth = 0
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    out = s
+    changed = False
+    if in_str:
+        out += '"'
+        changed = True
+    if depth > 0:
+        out += "}" * depth
+        changed = True
+    return out, changed
+
+
 def _norm_name(s):
     return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
 
@@ -239,7 +279,7 @@ def _call_from_obj(obj):
     return name, args
 
 
-def repair_toolcall(text, tools):
+def repair_toolcall(text, tools, truncated=False):
     """Repare une sortie de modele en une liste d'appels.
 
     Renvoie un dict :
@@ -259,6 +299,13 @@ def repair_toolcall(text, tools):
     body, had_fence = strip_fences(text)
     if had_fence:
         repairs.append("cloture-markdown-retiree")
+    # P63-F: une generation coupee par max_tokens n'est pas une "sortie
+    # illisible" : on tente de la refermer AVANT de la declarer invalide.
+    if truncated:
+        closed, changed = close_truncated(body)
+        if changed:
+            body = closed
+            repairs.append("troncature-refermee")
     blobs = _balanced_objects(body)
     if not blobs:
         return _fail("json", "aucun objet JSON trouve", tools, repairs)

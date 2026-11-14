@@ -7,6 +7,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const stateDir = require(path.join(__dirname, '..', '..', 'sudo-agent', 'src', 'stateDir'));
 const http = require('http');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -31,7 +32,8 @@ function assert(cond, msg) { if (!cond) throw new Error(msg || 'assert'); }
 function tmp(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix + '-')); }
 
 function writeMcpHome(home, servers, allowed) {
-  const dir = path.join(home, '.sudo_studio', 'agent');
+  // P63-D: dossier de l'agent hors du projet (dossier produit).
+  const dir = stateDir.agentHome({ home: home });
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'mcp.json'), JSON.stringify({ servers }), 'utf8');
   fs.writeFileSync(path.join(dir, 'mcp_policy.json'), JSON.stringify({ allowed }), 'utf8');
@@ -316,7 +318,8 @@ t('C1 import local : apercu sans installation, puis activation globale', async (
 t('C2 skill projet : decouverte + activation explicite', async () => {
   const home = tmp('p50sk');
   const root = tmp('p50proj');
-  const dir = path.join(root, '.sudo_studio', 'skills', 'normes');
+  // P63-D: les skills projet vivent dans le workspace hors projet.
+  const dir = path.join(stateDir.workspaceDir(root, { agentHome: stateDir.agentHome({ home: home }) }), 'skills', 'normes');
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'SKILL.md'), '# Normes\nMARQUEUR-NORMES\n', 'utf8');
   let listed = skills.listSkills(home, root);

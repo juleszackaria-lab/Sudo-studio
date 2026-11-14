@@ -88,7 +88,7 @@ function detectDeploy(command) {
 function netPolicyFile(home) {
   if (process.env.SUDO_AGENT_NET_POLICY) return String(process.env.SUDO_AGENT_NET_POLICY);
   const h = home || process.env.SUDO_STUDIO_HOME || (function () { try { return os.homedir(); } catch (_) { return process.cwd(); } })();
-  return path.join(String(h), '.sudo_studio', 'agent', 'net_policy.json');
+  return path.join(require('./stateDir').agentHome({ home: String(h) }), 'net_policy.json'); // P63-D
 }
 
 function deployAllowed(home) {

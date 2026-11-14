@@ -20,6 +20,10 @@
 'use strict';
 
 const fs = require('fs');
+// P63-D: etat hors projet -> dossier temporaire dedie pour les tests.
+if (!process.env.SUDO_AGENT_HOME) {
+  process.env.SUDO_AGENT_HOME = require('path').join(require('os').tmpdir(), 'p63-p56-home-' + process.pid);
+}
 const os = require('os');
 const path = require('path');
 
