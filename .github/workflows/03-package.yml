@@ -476,6 +476,17 @@ jobs:
           if (Test-Path "data")        { Copy-Item "data"    "build\SudoStudio\data"    -Recurse -Force }
           if (Test-Path "logs")        { Copy-Item "logs"    "build\SudoStudio\logs"    -Recurse -Force }
           if (Test-Path "installer.iss") { Copy-Item "installer.iss" "build\SudoStudio\installer.iss" -Force }
+          # P63-B: installer.iss [Files] reference launch_hidden.vbs a la RACINE
+          # du dossier de build. Le workflow supprime en 1c3b8a9 ne le copiait
+          # pas : ISCC echouait alors avec "Source file ... does not exist".
+          if (-not (Test-Path "launch_hidden.vbs")) {
+            Write-Error "[FAIL] launch_hidden.vbs manquant dans le depot Sudo-studio"; exit 1
+          }
+          Copy-Item "launch_hidden.vbs" "build\SudoStudio\launch_hidden.vbs" -Force
+          if (-not (Test-Path "build\SudoStudio\launch_hidden.vbs")) {
+            Write-Error "[FAIL] build\SudoStudio\launch_hidden.vbs absent apres copie"; exit 1
+          }
+          Write-Host "[OK] launch_hidden.vbs copie a la racine du paquet"
 
           # Copy the Sudo AI extension
           if (Test-Path "sudo-ai-extension") {
