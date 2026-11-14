@@ -1,190 +1,420 @@
-# P63 - Reprise reelle, delais coherents, etat hors projet, JSON non rejete
+# P63-B - Correction du rapport P63 : installateur perdu, non-regression, preuves
 
-Commit : `285f6fc` (branche `p60-linux`), construit sur `e6c3d48`.
-Tests : `backend/tests/test-p63-agent.js` (G1, G2, G3, G5, F-18, C-UI) et
-`backend/tests/test-p63-json.js` -> `backend/tests/test_p63_json.py` (G4).
+Branche `p60-linux`, tete **`a56713f`**. `main` reste **`e6c3d48`** : **aucune
+fusion n a ete faite** (interdiction explicite du prompt 63-B).
+Depot de packaging : `juleszackaria-lab/sudo-studio-packager`, `main`
+**`ddba778`** (les runs cites utilisent `ead23c9` pour 04 et `ddba778` pour 05).
 
-Regle appliquee : chaque test a ete joue AVANT (code de `e6c3d48`, worktree
-`/tmp/p63-before`) et APRES. La sortie "avant" est dans
-`docs/p63/preuve-avant.txt`, reproductible avec :
+Regles d etiquette appliquees dans tout ce document :
 
-    git worktree add /tmp/p63-before e6c3d48
-    P63_REPO=/tmp/p63-before node scripts/ci/p63-reproduction-avant.js
-
----
-
-## 1. Ce que disaient les 5 echecs et ce qui a change
-
-### G1 - "continu" ne reprenait rien (cause racine trouvee)
-
-Cause : `sudo-agent/src/loop.js`, detection de reprise `/reprend/i` seulement
-(l. ~931 de `e6c3d48`). "continu" ne correspondait pas : le tour partait dans
-la boucle modele normale, qui repondait "Mode build / Termine / TERMINE (build)"
-sans jamais lire le registre. Les 60 etapes restaient "pending".
-
-Correction :
-- nouveau module pur `sudo-agent/src/resume.js` : `isResumeIntent()` reconnait
-  `continu|continue|reprends|poursuis|vas-y|on continue|ok continue|resume`
-  (message entier, ponctuation et accents toleres ; une phrase comme
-  "continue d ecrire le rapport" ne declenche PAS la reprise) ;
-- `loop.js` : chemin de reprise DETERMINISTE place avant la boucle modele -
-  il relit `job.unfinished()` sur disque, annonce les 4 nombres
-  (`x faites, y echouees, z interrompues, w non tentees`), redemarre a la
-  premiere etape non faite et n'appelle JAMAIS le modele pour cela ;
-- `job.js` : `resumable()` reprend tout travail inacheve (`running`,
-  `proposed`, `stopped`, `partial`, `failed`, `interrupted`), `unfinished()`,
-  `firstOpenStep()`, `progressLine()` ;
-- `job.reportText()` : entete `INCOMPLET (travail x/N)` tant qu'une etape n'est
-  ni faite ni explicitement hors perimetre -> plus de faux "TERMINE" ;
-- `AgentPanel.js` : bouton "Reprendre le travail" qui envoie le MOT CLE
-  `reprendre` (donc le chemin deterministe), plus la phrase "reprendre le
-  projet" qui, elle, repartait dans le modele.
-
-### G2 - 121 s contre 180 s : le temps de panne etait decompte
-
-Cause : `job.js` comparait `s.ms` (temps MURAL) a `b.stepMs = 120000`, alors
-que l'attente runtime peut durer 180 s. Une panne de 150 s faisait donc
-depasser le budget.
-
-Correction :
-- `job.delays()` : un seul endroit, trois delais documentes
-  (`runtimeWaitMs` 180 s, `stepActiveMs` 300 s, `jobTotalMs` 3600 s,
-  `attempts` 3) avec invariants appliques vers le HAUT : aucun delai interne
-  plus court que celui qu'il couvre ;
-- `job.run()` : l'etape mesure `ms` (mural), `activeMs` (mural moins
-  `runtimeDownMs`) et `runtimeDownMs` ; le budget se juge sur `activeMs` ;
-- statut dedie `interrupted_runtime` + texte `INTERROMPUE (runtime) ... Reprise
-  automatique.` ; l'etape reprend EN PREMIER (tri explicite) ;
-- `loop.js` : `runEntry.runtimeDownMs` cumule les attentes mesurees a l'horloge
-  monotone, evenements `runtime.down` / `runtime.up`, et le minuteur d'etape du
-  tour enfant est un `setInterval` qui compare le temps ACTIF (suspendu pendant
-  la panne), y compris pour le watchdog de secours.
-
-### G3 - `.sudo-agent` cree DANS le projet
-
-Cause : 4 chemins codes en dur (`job.js:31`, `spec.js:37`, `orch.js:23`,
-`loop.js:1581`) + `store.js`, `checkpoints.js`, `journal.js`, `skills.js`,
-`commands.js`, `gen.js`, `extensions.js`, `agents.js`, `mcp.js`,
-`permissions.js`, `verify.js` qui ecrivaient sous `~/.sudo_studio/agent` ou
-dans le projet.
-
-Correction : nouveau module `sudo-agent/src/stateDir.js`
-(`fingerprint()` sha256 du chemin absolu, 16 caracteres, minuscule sous
-Windows) ; tout l'etat vit dans
-`%LOCALAPPDATA%\SudoStudio\agent\workspaces\<empreinte>\` (Linux/macOS :
-`XDG_DATA_HOME` / `~` equivalents). Sous-dossiers : `jobs`, `specs`,
-`sessions`, `checkpoints`, `logs`, `registry = advancement.json`.
-
-Compatibilite : si l'installation possede deja `~/.sudo_studio/agent`
-(hors projet, donc deja conforme), il est conserve - aucune session, regle ni
-point de retour perdu. Un `.sudo-agent` deja present DANS un projet est
-detecte ; `migrateLegacy(root, approved)` ne le deplace qu'avec un accord
-explicite et retire le dossier du projet s'il devient vide.
-
-### G4 - "JSON illisible" sur des sorties qui paraissaient valides
-
-Cause (tranchee) : ce n'etait ni le validateur ni un caractere invisible, mais
-la TRONCATURE au budget `max_tok=512` : la chaine JSON etait coupee en plein
-milieu, `_try_json` echouait, et le message affiche etait "JSON illisible".
-
-Correction (`backend/runtime/openai_compat.py`, `toolcall_repair.py`) :
-- `max_tok` par type d'appel (`_attempt(msgs, max_tok=None)`) ;
-- si `finish_reason == "length"` et reparation impossible, un 2e essai est
-  rejoue avec `max_tokens` double (borne 768..2048) ;
-- `close_truncated()` referme la chaine et les accolades ouvertes ;
-- `repair_tool_output()` au niveau module (la route et le test utilisent la
-  MEME fonction : plus de copie divergente) ;
-- un JSON reellement invalide reste rejete (`bonjour, pas de json`, `{}`),
-  meme avec `finish_reason=length` ;
-- (F-18) `sudo-agent/src/calc.js` : calcul deterministe, `2 + 298` -> `300`
-  sans aucun appel modele.
-
-### G5 - 327 exigences / 63 etapes annoncees contre 60 executees
-
-Cause : deux sources de nombres (le plan affiche et le plan execute).
-
-Correction (`spec.js`) : `MAX_STEPS` 200, `planWithMeta()` est la SEULE source
-(`{steps, planned, kept, total, truncated, totalRequirements, outOfScope}`),
-`planText()` affiche exactement le travail execute :
-`N etape(s) a executer + M hors perimetre (K au total)` ; une exigence hors
-perimetre (CI distante, installateur Windows, materiel reel, publication) est
-marquee "a faire par l utilisateur" et n'est NI executee NI comptee en echec ;
-`job.reportText()` affiche `TERMINE (travail x/N)` et le hors perimetre a part.
-
----
-
-## 2. Preuves a-h
-
-| Preuve | Attendu | Resultat | Statut |
-|---|---|---|---|
-| a. reproduction avant correction | G1/G2/G3/G5 reproduits sur `e6c3d48` | `docs/p63/preuve-avant.txt` : statut `TERMINE`, "Mode build / Termine / TERMINE (build)", 1 appel modele parent, etapes 5..12 non executees, `.sudo-agent` dans le projet, pas de ligne hors perimetre | PROUVE (local) |
-| b. cause racine fichier + ligne | oui | `loop.js` l.931 (`/reprend/i`), `job.js` l.31 (`jobsDir`), `spec.js` l.37 (`specsDir`), `orch.js` l.23, `loop.js` l.1581 ; `job.js` `s.ms > b.stepMs` ; `max_tok=512` | PROUVE |
-| c. test G1-G5 echouant avant, vert apres | 5 tests | avant : G1 = `TERMINE` + 0 reprise ; apres : 37 checks verts (`test-p63-agent.js`) + 10 verts (`test_p63_json.py`) | PROUVE (local) |
-| d. panne runtime 150 s jamais decomptee | oui | G2-d/e/g/h : `activeMs = 0`, `runtimeDownMs = 150000`, statut `interrupted_runtime`, `failed = 0` ; 121 s murales dont 120 s de panne -> etape FAITE | PROUVE (test) |
-| e. `continu` deterministe (0 appel modele) | oui | G1-a : 0 appel parent ; G1-b : "Redemarrage a l etape 5" ; G1-i/j : sans travail inacheve, 0 appel et message clair | PROUVE (test) |
-| f. aucun fichier d'agent dans le projet | oui | G3-a/b/c/d/e + `test-p62-spec-cahiers` F-1a2 : repertoire projet inchange, etat sous `<workspace>/<empreinte>` | PROUVE (test) |
-| g. JSON : deux sorties brutes passent, JSON invalide rejete | oui | G4-1..G4-6 verts | PROUVE (local) |
-| h. plan coherent (memes nombres) | oui | G5-a/b/c/d/e verts | PROUVE (test) |
-
-### Statut global
-
-| Element | Statut |
+| Etiquette | Sens |
 |---|---|
-| Correctifs G1, G2, G3, G4, G5 (code) | PROUVE (tests locaux + CI ci-dessous) |
-| Suite complete locale `backend/tests/run-all.js` | PROUVE : 60 suites, 0 failed |
-| CI 00 sur `285f6fc` | PROUVE : run `43615131711` -> `TOTAL: 60 suites, 0 failed`, PowerShell syntax OK |
-| CI 00 sur `834f086` (tete de branche) | PROUVE : run `43617277049` -> `TOTAL: 60 suites, 0 failed`, `P63: 37 checks`, `P63-F: all green` |
-| Binaires Windows du paquet (01 + 02) | PROUVE : `backend-exe` 31,9 Mo + `runtime-exe` 244,2 Mo construits sur `285f6fc` |
-| Paquet Windows installe (G1-G5 rejoues sur le binaire) | NON PROUVE ICI -> commande PC section 4 |
-| Linux (conteneurs, XDG) | NON FAIT (demande explicite : plus tard) |
-| Run 03 precedent `43482333015` | INTROUVABLE (404 API) -> rien a conclure |
-| G4 sur un vrai modele local (troncature reelle) | PARTIEL : la troncature est reproduite en test, pas sur un modele 1.5B installe |
+| PROUVE | log CI reel (URL de run + sortie collee) ou paquet INSTALLE |
+| PROUVE EN CI (moteur seul) | test unitaire execute par la CI, sans paquet installe |
+| PARTIEL | une partie seulement est demontree |
+| NON FAIT | non execute |
+| NON PROUVE ICI | necessite un PC Windows, un modele reel ou un service absent de la sandbox |
+
+Aucune ligne de ce rapport ne porte la mention "demande explicite" sans une
+citation litterale.
 
 ---
 
-## 3. CI
+## 1. Preuve a) - les workflows disparus : quand, par quel commit, pourquoi
 
-- 00 tests (tete de branche `834f086`) : run `43617277049` ->
-  `TOTAL: 60 suites, 0 failed` ; `P63: 37 checks passed` ; `P63-F: all green`.
-- 00 tests (commit de code `285f6fc`) : run `43615131711` ->
-  `TOTAL: 60 suites, 0 failed`, plus `P63: 37 checks passed` et
-  `P63-F: all green` dans le meme journal ; job "PowerShell syntax" : success.
-- 01 backend : run `43615839230` (285f6fc) -> success, artefact
-  `backend-exe` 31,9 Mo.
-- 02 runtime : run `43615841096` (285f6fc) -> success, artefact
-  `runtime-exe` 244,2 Mo.
-- Assemblage installateur ("03") : le workflow d assemblage n existe PLUS dans
-  le depot (seuls 00, 01 et 02 sont presents) ; le run 03 `43482333015`
-  invoque precedemment repond 404. L installateur Windows est donc
-  NON PROUVE ICI ; les deux binaires qui le composent sont construits par
-  01 et 02.
+Commandes utilisees (toutes branches des deux depots) :
+
+    git log --all --diff-filter=D --name-only -- .github/workflows/
+    git log --all --oneline -- .github/workflows/
+    gh api /repos/juleszackaria-lab/Sudo-studio/actions/workflows
+
+Resultat pour `Sudo-studio` : **un seul** workflow a disparu.
+
+| Fichier | Commit | Auteur | Date (UTC) | Message | Effet |
+|---|---|---|---|---|---|
+| `.github/workflows/03-package.yml` | `1c3b8a9` | `arena-agent` | 2026-10-29 14:23:29 | `allgreen: drop legacy 03-package (packaging vit dans sudo-studio-packager)` | -573 lignes |
+
+Aucun workflow Linux n a **jamais** existe dans `Sudo-studio` (`--diff-filter=D`
+sur toutes les branches ne renvoie rien d autre). Les workflows Linux vivent
+dans l autre depot :
+
+| Workflow | Depot | id GitHub | Etat |
+|---|---|---|---|
+| `03-package.yml` (Windows, Inno Setup) | `sudo-studio-packager` | 238260318 | actif |
+| `04-package-linux.yml` | `sudo-studio-packager` | 410562824 | actif, **rejoue dans ce prompt** |
+| `05-linux-smoke.yml` | `sudo-studio-packager` | 414102697 | actif |
+
+### Restauration et remise en etat
+
+| Commit | Contenu |
+|---|---|
+| `bed7d65` | restauration de `03-package.yml` depuis `1c3b8a9^` + `branch=${{ github.ref_name }}` |
+| `b2ce046` | copie de `launch_hidden.vbs` (voir ci-dessous) |
+| `4487a8d` | nouveau `06-smoke-installed.yml` (smoke du paquet installe) |
+
+Note : `06-smoke-installed.yml` n a pas pu etre declenche dans ce prompt
+(`POST .../workflows/06-smoke-installed.yml/dispatches` -> HTTP 404). GitHub n
+accepte un `workflow_dispatch` que pour un fichier present sur la branche par
+defaut ; le mettre sur `main` exigerait la fusion interdite. La fumee du
+paquet installe est donc prouvee par le job `P29+P31 smoke` du packager
+(section 3), qui installe reellement l installateur et interroge `/health`.
+
+Le workflow restaure **n etait pas fonctionnel tel quel** : le premier run
+`43625538795` (commit `4487a8d`) a echoue en 5 min avec
+
+    Error on line 95 in ...\build\SudoStudio\installer.iss: Source file
+    "...\build\SudoStudio\launch_hidden.vbs" does not exist.
+    Compile aborted.
+    [FAIL] Inno Setup (ISCC) failed with exit code 2 - no installer produced
+
+Cause : `installer.iss` exige `launch_hidden.vbs` a la racine du paquet, et le
+workflow supprime en `1c3b8a9` ne le copiait pas (le fichier a evolue apres la
+suppression du workflow). Correction `b2ce046` : copie + verification d
+existence avant ISCC. C est **la** raison pour laquelle l installateur etait
+"perdu" : ce n etait pas seulement le fichier YAML, c etait aussi un
+assemblage desynchronise.
 
 ---
 
-## 4. Commande PC (paquet installe)
+## 2. Preuve b) - runs sur la tete de branche, artefacts et SHA256
+
+### 2.1 Tests et binaires (depot `Sudo-studio`)
+
+| Run | Workflow | Commit | Statut | Duree | Sortie verifiee |
+|---|---|---|---|---|---|
+| `43639628419` | 00 tests | `a56713f` (tete) | success | 3 min | `TOTAL: 60 suites, 0 failed`, `P63: 49 checks passed`, `P63-F: all green` |
+| `43630708739` | 00 tests | `84e4a88` | success | 3 min | `TOTAL: 60 suites, 0 failed`, `P63: 49 checks passed`, `P63-F: all green` |
+| `43639603148` | 01 backend | `a56713f` (tete) | success | 1 min | artefact `backend-exe` |
+| `43639606603` | 02 runtime | `a56713f` (tete) | success | 11 min | artefact `runtime-exe` |
+| `43634398830` | 01 backend | `46f0759` | success | 1 min | artefact `backend-exe` |
+| `43634400791` | 02 runtime | `46f0759` | success | 12 min | artefact `runtime-exe` |
+| `43628890594` | 01 backend | `84e4a88` | success | 1 min | artefact `backend-exe` 31,9 Mo |
+| `43628892143` | 02 runtime | `84e4a88` | success | 13 min | artefact `runtime-exe` 244,2 Mo |
+| `43624495103` | 00 tests | `bed7d65` | success | 3 min | `TOTAL: 60 suites, 0 failed` |
+| `43624496713` | 01 backend | `bed7d65` | success | 1 min | artefact `backend-exe` |
+| `43624498463` | 02 runtime | `bed7d65` | success | 10 min | artefact `runtime-exe` |
+| `43615839230` | 01 backend | `285f6fc` | success | 1 min | binaires de `285f6fc` (paquet precedent) |
+| `43615841096` | 02 runtime | `285f6fc` | success | 12 min | binaires de `285f6fc` (paquet precedent) |
+
+Les deux jeux de binaires demandes existent donc en CI : celui de `285f6fc`
+(`43615839230` / `43615841096`) et celui de la tete (`43634398830` /
+`43634400791`).
+
+### 2.2 Installateur Windows construit par le workflow **restaure** (03 de `Sudo-studio`)
+
+| Element | Valeur |
+|---|---|
+| Run | `43627384576` (03 - Package Sudo Studio), commit `b2ce046`, **success**, 10 min |
+| Binaires utilises | 01 `43628890594` + 02 `43628892143` (`84e4a88`) |
+| Artefact | `sudo-studio-installer` (424,0 Mo) |
+| Fichier | `SudoStudio-Setup-5.0.0.exe`, **445 022 372 octets** |
+| **SHA256** | `78c8601c34eb8a82587def17ca0216027f46c5f30430fd82842f18fe99bcaea9` |
+| Autre artefact | `sudo-studio-build` 955,06 Mo |
+
+### 2.3 Paquet livre (03 du depot `sudo-studio-packager`)
+
+| Element | Valeur |
+|---|---|
+| Run | `43630677463` (`SudoStudio Stable Build`), `main` `dcf3e2d`, **success**, 28 min |
+| Pins utilises | 01 `43628890594` + 02 `43628892143`, `SUDO_STUDIO_REF=84e4a88` |
+| Jobs | `build` success, `P29+P31 smoke (Windows install + agent e2e)` **success**, `P32 screenshots` success, `P35 panel render` success |
+| Artefact installateur | `SudoStudio-Installer` 359,05 Mo |
+| Fichier | `SudoStudio-Setup.exe`, **376 882 235 octets** |
+| **SHA256** | `4188cec51af75e352df606b2dae5cba5e5eedad539e419baedcce3d9fcfa2007` |
+| Autres artefacts | `SudoStudio-Portable` 415,89 Mo, `smoke-logs` 0,15 Mo, `panel-render` 2,7 Mo, `p32-screenshots` 0,11 Mo |
+
+Le manifeste embarque dans le paquet installe confirme les pins :
+`build-manifest commit=84e4a88489efa84044109a69d9ca5ddd70d3977a components=5`.
+
+### 2.4 Linux (04 du depot `sudo-studio-packager`)
+
+| Run | Packager | Statut | Constat |
+|---|---|---|---|
+| `43625587488` | `51b276a` | failure | garde-fou : pins `bed7d65` contre `p60-linux` = `4487a8d` -> refus correct |
+| `43627388506` | `c7e4eb3` | failure | `linux-total-test` : **H3** (assertion fausse, voir 2.5) |
+| `43630679621` | `dcf3e2d` | failure | `Assemble SudoStudio-Linux` : **2 assertions perimees** du panneau (voir 2.6) |
+| `43636691500` | `6da9226` | failure | `scripts/ci/test-p57-extensions.js` : **20 echecs** -> vraie regression P63 (voir 2.7) |
+| `43641720911` | `ead23c9` | **failure** | tout passe jusqu au paquet installe, puis **smoke conteneurs : 23 PASS, 1 FAIL** par image (voir 2.8) |
+| `43648790493` (05) | `ddba778` | **failure** | meme image, meme rouge : 6 conteneurs en echec sur le meme controle |
+
+Detail du run `43641720911` (65 min), jobs :
+
+    Guard - pins are green and agree                         success
+    Build backend (linux-x64)                                success
+    Build runtime (linux-x64)                                success
+    Assemble SudoStudio-Linux                                success
+    P29+P31 Linux delivery gate                              success
+    Linux total functionality (installed bundle)             success
+    Smoke rockylinux-9 / fedora-40 / debian-12 /
+          ubuntu-24.04 / ubuntu-22.04 / debian-12-slim       failure (23 PASS, 1 FAIL)
+    P60 Linux delivery decision                              skipped
+
+### 2.7 Regression trouvee par la CI Linux : suites P57 (`scripts/ci/test-p57-extensions.js`)
+
+    a la tete :  == 32 PASS, 20 FAIL ==
+    sur e6c3d48: == 52 PASS, 0 FAIL ==   (worktree du commit de base)
+
+Cause : le test creait toutes ses fixtures (skills, `mcp_policy.json`, commandes)
+dans l ANCIEN dossier `~/.sudo_studio/agent`, que le produit ne lit plus
+(point 6). Le produit est conforme ; c est le test qui decrivait l ancien
+emplacement. Correction : fixtures placees via le seam documente
+`SUDO_AGENT_HOME` (+ garde-fou interdisant `agentHome == legacyHome`), et le cas
+"aucune extension" bascule temporairement ce seam sur un dossier vide.
+Resultat : `== 52 PASS, 0 FAIL ==`, exactement le total d avant.
+
+### 2.8 ROUGE OUVERT : le smoke conteneurs (05) - agent sans appel d outil sur modele reel
+
+Etat : **6 images sur 6 en echec**, 23 PASS / 1 FAIL par image, sur le meme
+controle :
+
+    PASS session agent creee
+    ...
+    FAIL l agent cree le fichier demande :: fichier absent ou vide (approbations=0)
+    == RESULTAT : 23 PASS, 1 FAIL ==
+
+Le paquet installe repond, il ne fait pas semblant :
+
+    event: turn.start   {"model":"Qwen2.5-Coder-1.5B-Q4_K_M (GGUF)"}
+    event: turn.done    {"status":"PARTIEL","stopReason":"no_tool",
+                         "toolCalls":0,"reason":"AUCUNE MODIFICATION : le modele
+                         n'emet aucun appel d'outil (reparations contraintes
+                         espacees)"}
+
+Non-regression (meme controle, pins P62) : run `43468866095`
+(`4ff41c94`) ->
+
+    PASS l agent a cree hello-linux.txt avec le bon contenu (approbation accordee)
+
+en 47 s. Ce n est donc **pas** un probleme de lenteur : une seconde execution
+avec une fenetre portee de 300 a 900 s (run `43648790493`, `ddba778`) donne
+exactement le meme resultat apres 10 min.
+
+Conclusion honnete : **regression du chemin "appel d outil" du runtime avec un
+vrai modele 1.5B sur le paquet Linux installe**, apparue dans le train P63/P63-B.
+**Cause NON PROUVEE** : le journal du runtime (`[OPENAI] tool attemptN raw ...`)
+n est pas collecte par le harnais ; il faut l ajouter au prochain passage.
+Consequence : conformement a la regle "un seul rouge = aucun artefact
+livrable", **aucun artefact Linux n est declare livrable dans ce prompt**.
+
+### 2.5 Defaut trouve par la CI Linux : H3 (`scripts/ci/test-p56-spec.js`)
+
+    FAIL H3: chaque etape a recu un resume des precedentes (sauf la 1re)
+    :: [{"n":1,...,"prev":false},{"n":1,...,"prev":false},
+        {"n":1,...,"prev":false},{"n":2,...,"prev":true}, ...]
+
+Cette assertion echouait **deja sur `e6c3d48`** (verifie sur un worktree du
+commit de base : `== 47 PASS, 1 FAIL ==`, meme message). Ce n est donc **pas**
+une regression P63. L assertion etait fausse : la 1re etape est retentee (jusqu
+a `attempts`), et une tentative de la 1re etape n a par definition aucune
+precedente a resumer. Correction (assertion, pas produit) :
+
+- `H3` : toute etape `n>1` recoit un resume ; il existe au moins une telle etape.
+- `H3b` (nouveau) : aucune tentative de la 1re etape ne porte de resume.
+
+Resultat local apres correction : `== 49 PASS, 0 FAIL ==`.
+
+### 2.6 Defaut trouve par la CI Linux : panneau (`scripts/ci/test-p56-panel.js`)
+
+    FAIL un seul bouton : Reprendre :: ["Reprendre le travail"]
+    FAIL Reprendre : envoie "reprendre le projet" :: {"type":"send","text":"reprendre"}
+    == 32 PASS, 2 FAIL ==
+
+Ce sont **deux assertions perimees** : le P63 (G1) a volontairement change le
+libelle (`Reprendre le travail`) et le contenu envoye (le MOT CLE deterministe
+`reprendre`, chemin de reprise a 0 appel modele). L assertion decrivait l
+ancien comportement. Correction des deux assertions (avec commentaire
+explicite) : `== 34 PASS, 0 FAIL ==`.
+
+Ces deux defauts sont des **assertions de test**, pas des comportements de l
+agent : aucun point de code produit n a ete modifie pour les faire passer.
+
+---
+
+## 3. Preuve c) - fumee sur le PAQUET INSTALLE
+
+Source : artefact `smoke-logs` du run `43630677463` (`smoke-out/summary.txt`),
+ecrit par `scripts/smoke/smoke-install.ps1` apres installation **silencieuse**
+reelle.
+
+    [PASS] pre-port-5000-free
+    [PASS] pre-port-6000-free
+    [PASS] pre-installdir-absent
+    [PASS] silent-install exit=0 dir=C:\Program Files\Sudo Studio
+    [PASS] expected-files 17 files
+    [PASS] build-manifest commit=84e4a88489efa84044109a69d9ca5ddd70d3977a components=5 brand=P20-OK
+    [PASS] brand-product.json nameShort=Sudo Studio
+    [PASS] backend-health HTTP 200
+    [PASS] runtime-health status=healthy
+    [PASS] runtime-p21-journal C:\Users\runneradmin\AppData\Local\SudoStudio\logs\runtime.log
+    [PASS] agent-handshake port=63594
+    [PASS] editor-close-cleanup 0 processes remain
+    [PASS] logs-single-dir agent.jsonl, agent.log, backend.jsonl, backend.log,
+           enterprise.log, extension.jsonl, extension.log, runtime-supervisor.log,
+           runtime.jsonl, runtime.log, runtime_debug.log, startup.log,
+           supervisor.jsonl, supervisor.log
+    [PASS] clean-uninstall exit=0 leftover-items=1 (logs/data accepted)
+
+    FAIL=0 SKIP=0
+
+Le job `P29+P31 smoke (Windows install + agent e2e)` enchaine ensuite un agent
+e2e sur le produit **installe** (`e2e-out/e2e-summary.txt`) :
+
+    [PASS] install exit=0 dir=C:\Users\RUNNER~1\AppData\Local\Temp\SudoE2E
+    [PASS] e2e-handshake port=63672
+    [PASS] e2e-health ok
+    [PASS] e2e-session 8427cb8b033fac85
+    [PASS] e2e-turn1 paused, nothing written
+    [PASS] e2e-approve resumed, scripted content
+    [PASS] e2e-turn2 TERMINE
+    [PASS] e2e-only-file hello.txt only
+    [PASS] uninstall exit=0
+    FAIL=0
+
+Ce que cela prouve exactement : installation silencieuse, `backend /health`
+HTTP 200, `runtime /health` `healthy`, **journal ecrit au bon endroit**
+(`%LOCALAPPDATA%\SudoStudio\logs`, un seul dossier), arret propre, desinstallation
+propre. Le reste des scenarios P63 sur le paquet installe releve du PC (section
+8).
+
+---
+
+## 4. Preuve d) - ecart avec `main`, aucune fusion
+
+    git rev-list --left-right --count main...p60-linux   ->   0   24
+    git diff --stat main..HEAD                           ->   91 files changed, 8953 insertions(+), 418 deletions(-)
+
+`main` = `e6c3d48` (inchange), `p60-linux` = `a56713f`. `main` n a **aucun**
+commit en avance : la fusion serait un simple `--ff`, elle n a **pas** ete
+faite. Les 18 commits P63/P63-B :
+
+    285f6fc c443365 95d96ff 834f086 856d064 4d77fce bed7d65 4487a8d
+    b2ce046 84e4a88 46f0759 a56713f (+ commits de rapport)
+
+Depot `sudo-studio-packager` : `main` `cc0d344` -> `6da9226` (3 commits, tous
+des pins et garde-fous, aucun code produit).
+
+---
+
+## 5. Preuve e) - une ligne de journal par appel d outil rejete
+
+Code : `backend/runtime/openai_compat.py`, fonction `reject_line()` (l.367).
+Sortie reelle (executee, secrets masques avant ecriture) :
+
+    [OPENAI] tool rejete essai1: finish_reason=length jetons_generes=512
+    longueur=87 debut='{"name":"read_file","arguments":{"path":"a.txt","token":"[MASQUE]'
+    fin=':"read_file","arguments":{"path":"a.txt","token":"[MASQUE]"}' 
+    raison=invalid_tool_call / json / troncature
+
+Elle contient les quatre mesures exigees : `finish_reason`, jetons generes,
+longueur de la sortie brute, 80 premiers et 80 derniers caracteres (masques),
+plus la raison exacte du rejet. Tests : `P3-a..d` dans `test_p63_json.py`
+-> `P63-F: all green` (execute dans le run `43630708739`).
+
+---
+
+## 6. Preuve f) - delai total : INCOMPLET, jamais un echec, configurable
+
+`sudo-agent/src/job.js` : `SUDO_AGENT_JOB_TOTAL_MS` (defaut `21600000` = 6 h,
+`0` = illimite), budget relu a **chaque** execution de `run()` (les valeurs
+figees dans l etat par `create()` ne sont plus utilisees), statut `incomplete`,
+evenement `job.budget`, rapport `INCOMPLET (x/N)`, `unfinished()` reprend
+`incomplete` et `interrupted`.
+
+Test a **horloge simulee** (`backend/tests/test-p63-agent.js`, option `opts.now`,
+1 h simulee par etape, budget total 2 h) :
+
+    ok - P4-a: budget total atteint -> arret PROPRE, aucune etape comptee en echec
+    ok - P4-b: le bilan dit INCOMPLET (x/N), jamais un echec
+    ok - P4-c: le statut du travail est resumable (incomplete)
+    ok - P4-d: les etapes non tentees restent EN PLACE et la reprise est possible
+    ok - P4-e: le delai total est configurable (defaut 6 h, 0 = illimite)
+    ok - P4-f: 0 = aucune limite totale (reglage explicite)
+    ok - P4-g: "continu" apres un arret budget reprend a la 1re etape non faite
+
+`P63: 49 checks passed (all green)`, et ces memes checks sont rejoues par la CI
+(run `43630708739`). Ce qui n est **pas** prouve ici : un arret budget reel sur
+un modele local (latence reelle), voir section 8.
+
+---
+
+## 7. Preuve g) - chemins d etat reels et migration
+
+`node scripts/ci/p63-state-paths.js` (HOME isole) -> `P63-PATHS: OK`.
+
+Emplacement unique : `%LOCALAPPDATA%\SudoStudio\agent\workspaces\<empreinte>`
+(Linux/macOS : `XDG_DATA_HOME` soit `~/.local/share/SudoStudio/agent`).
+
+14 fichiers reels, **14/14** sous l emplacement unique, **0** dans le projet :
+
+    agents.json, audit.jsonl, mcp.json, net_policy.json, skills.json,
+    skills/normes/SKILL.md, logs/agent.jsonl, logs/agent.log,
+    checkpoints/..., sessions/*.json,
+    workspaces/<id>/jobs/*.json, workspaces/<id>/orch-*.json,
+    workspaces/<id>/specs/*.{json,md}
+
+Migration (`sudo-agent/src/stateDir.js`, `detectLegacyHome()` l.69,
+`migrateHome()` l.81, branchee dans `server.js` apres `log.sessionHeader`) :
+
+| Situation | Resultat observe |
+|---|---|
+| ancien dossier present (`sessions/`) | `detecte: true`, `entries: ['sessions']` |
+| sans accord | `ok: false, needsApproval: true`, ancien dossier **intact** |
+| avec accord (`SUDO_AGENT_MIGRATE_HOME=approve`) | `ok: true, moved: 1, removed: true` |
+
+Aucune donnee n est deplacee sans accord explicite.
+
+---
+
+## 8. Preuve h) - tableau final
+
+| Point | Etat | Preuve |
+|---|---|---|
+| 1. historique des workflows disparus (commit, auteur, date, message) | PROUVE | section 1 (`git log --diff-filter=D`) |
+| 1. restauration du 03 Windows | PROUVE | `bed7d65` + run `43627384576` success |
+| 1. workflows Linux | PROUVE (existants, dans le packager) | ids 410562824 / 414102697, run `43641720911` (04) et `43648790493` (05) |
+| 2. installateur Windows (workflow restaure) | PROUVE | run `43627384576`, 445 022 372 o, SHA256 `78c8601c...` |
+| 2. installateur Windows (packager, paquet livre) | PROUVE | run `43630677463`, 376 882 235 o, SHA256 `4188cec5...` |
+| 2. fumee du paquet INSTALLE (/health backend + runtime, journal) | PROUVE | section 3 (`summary.txt`, `FAIL=0`) |
+| 2. binaires `285f6fc` et tete | PROUVE | `43615839230`/`43615841096` et `43634398830`/`43634400791` |
+| 2. Linux : workflow 04, assemblage, paquet installe | PROUVE | run `43641720911` : assemble + gate + total fonctionnel installe = success |
+| 2. Linux : smoke conteneurs (agent cree un fichier) | **ROUGE / NON PROUVE** | 6/6 images, 23 PASS 1 FAIL, `stopReason=no_tool`, cause NON PROUVEE (section 2.8) |
+| 3. ecart `p60-linux` vs `main`, aucune fusion | PROUVE | section 4 (0/18, 91 fichiers) |
+| 3. pins a jour | PROUVE | `ead23c9` puis `ddba778` (packager), sections 2.2/2.3/2.4 |
+| 4. G4 : cause NON PROUVEE sur modele reel | NON PROUVE ICI | troncature reproduite en test, pas sur un modele 1.5B installe |
+| 4. ligne de journal par appel rejete | PROUVE EN CI (moteur seul) | section 5, `P3-a..d` verts |
+| 5. delai total INCOMPLET/resumable/configurable | PROUVE EN CI (moteur seul) | section 6, `P4-a..g` |
+| 6. chemins d etat uniques + migration sur accord | PROUVE EN CI (moteur seul) | section 7, `P63-PATHS: OK` |
+| 7. etiquetage du tableau de preuves | PROUVE | ce document |
+| G1..G5 sur le paquet installe (scenarios 15 a 20) | NON PROUVE ICI | commande PC section 9 |
+| Defauts de test trouves et corriges (H3, panneau, P57 extensions) | PROUVE | sections 2.5, 2.6 et 2.7 : rouge avant / vert apres, totaux identiques |
+
+---
+
+## 9. Ce qui reste a faire
+
+1. **Rouge ouvert (priorite 1)** : le smoke conteneurs Linux (section 2.8). Le
+   modele 1.5B ne produit aucun appel d outil sur le paquet installe. Prochain
+   pas : collecter `[OPENAI] tool attemptN raw...` du runtime dans le harnais
+   `linux/container-test.sh`, puis corriger la brique fautive (reparation
+   d appel d outil ou invite d outil), **sans** assouplir le controle.
+2. G4 sur un vrai modele : la ligne `tool rejete` existe, mais aucune
+   troncature n a encore ete constatee sur un modele reel.
+
+Sur un PC Windows :
 
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\agent-e2e.ps1 `
-      -InstallDir "C:\SudoStudio" -ProjectPath "C:\mon\projet" `
+      -InstallDir "C:\Program Files\Sudo Studio" -ProjectPath "C:\mon\projet" `
       -OutDir "C:\p63-preuves"
 
-Scenarios P63 ajoutes (15 a 20), chacun avec sa ligne de journal :
+Avec `SudoStudio-Setup.exe` (SHA256 `4188cec5...`) : scenarios 15 a 20 de la
+section 4 du rapport P63 (cahier de 300 lignes, panne runtime 150 s puis
+`continu`, `continu` sans travail inacheve, redemarrage du serveur puis
+`continu`, `git status` propre, trois echecs d etape), plus un arret budget
+reel et une vraie troncature de modele pour G4.
 
-- 15 cahier de 300 lignes : plan annonce = etapes executees, aucun
-  `.sudo-agent` dans le projet, etat dans
-  `%LOCALAPPDATA%\SudoStudio\agent\workspaces\<empreinte>` ;
-- 16 panne runtime de 150 s puis `continu` : etape `INTERROMPUE (runtime)`,
-  reprise, aucune ligne "budget temps depasse" ;
-- 17 `continu` sans travail inacheve : reponse deterministe, 0 appel modele ;
-- 18 redemarrage du serveur d'agent puis `continu` : reprise depuis le registre ;
-- 19 `git status` propre : aucun fichier de l'agent vu par git ;
-- 20 trois echecs sur une etape puis passage a la suivante.
+## 10. Rappels
 
-Rapport ecrit dans `<OutDir>\agent-e2e-report.txt` (PASS/FAIL/SKIP + preuve).
-
----
-
-## 5. Rappels
-
-- Le jeton GitHub utilise pour pousser doit etre REVOQUE apres usage.
-- Aucun dossier `.sudo-agent` ne doit reapparaitre dans un projet : si un
-  ancien projet en contient un, l'agent propose la migration (accord explicite).
+- Le jeton GitHub personnel utilise pour pousser **doit etre revoque** apres
+  usage ; il n a jamais ete ecrit sur disque ni dans ce rapport.
+- Aucune fusion dans `main` n a ete faite : elle reste interdite sans ordre
+  explicite.
