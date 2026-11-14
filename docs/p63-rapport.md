@@ -133,6 +133,7 @@ marquee "a faire par l utilisateur" et n'est NI executee NI comptee en echec ;
 | Correctifs G1, G2, G3, G4, G5 (code) | PROUVE (tests locaux + CI ci-dessous) |
 | Suite complete locale `backend/tests/run-all.js` | PROUVE : 60 suites, 0 failed |
 | CI 00 sur `285f6fc` | PROUVE : run `43615131711` -> `TOTAL: 60 suites, 0 failed`, PowerShell syntax OK |
+| CI 00 sur `834f086` (tete de branche) | PROUVE : run `43617277049` -> `TOTAL: 60 suites, 0 failed`, `P63: 37 checks`, `P63-F: all green` |
 | Binaires Windows du paquet (01 + 02) | PROUVE : `backend-exe` 31,9 Mo + `runtime-exe` 244,2 Mo construits sur `285f6fc` |
 | Paquet Windows installe (G1-G5 rejoues sur le binaire) | NON PROUVE ICI -> commande PC section 4 |
 | Linux (conteneurs, XDG) | NON FAIT (demande explicite : plus tard) |
@@ -143,7 +144,9 @@ marquee "a faire par l utilisateur" et n'est NI executee NI comptee en echec ;
 
 ## 3. CI
 
-- 00 tests : run `43615131711` sur `285f6fc` (p60-linux) ->
+- 00 tests (tete de branche `834f086`) : run `43617277049` ->
+  `TOTAL: 60 suites, 0 failed` ; `P63: 37 checks passed` ; `P63-F: all green`.
+- 00 tests (commit de code `285f6fc`) : run `43615131711` ->
   `TOTAL: 60 suites, 0 failed`, plus `P63: 37 checks passed` et
   `P63-F: all green` dans le meme journal ; job "PowerShell syntax" : success.
 - 01 backend : run `43615839230` (285f6fc) -> success, artefact
