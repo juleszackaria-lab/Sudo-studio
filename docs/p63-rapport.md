@@ -133,6 +133,7 @@ marquee "a faire par l utilisateur" et n'est NI executee NI comptee en echec ;
 | Correctifs G1, G2, G3, G4, G5 (code) | PROUVE (tests locaux + CI ci-dessous) |
 | Suite complete locale `backend/tests/run-all.js` | PROUVE : 60 suites, 0 failed |
 | CI 00 sur `285f6fc` | PROUVE : run `43615131711` -> `TOTAL: 60 suites, 0 failed`, PowerShell syntax OK |
+| Binaires Windows du paquet (01 + 02) | PROUVE : `backend-exe` 31,9 Mo + `runtime-exe` 244,2 Mo construits sur `285f6fc` |
 | Paquet Windows installe (G1-G5 rejoues sur le binaire) | NON PROUVE ICI -> commande PC section 4 |
 | Linux (conteneurs, XDG) | NON FAIT (demande explicite : plus tard) |
 | Run 03 precedent `43482333015` | INTROUVABLE (404 API) -> rien a conclure |
@@ -145,8 +146,10 @@ marquee "a faire par l utilisateur" et n'est NI executee NI comptee en echec ;
 - 00 tests : run `43615131711` sur `285f6fc` (p60-linux) ->
   `TOTAL: 60 suites, 0 failed`, plus `P63: 37 checks passed` et
   `P63-F: all green` dans le meme journal ; job "PowerShell syntax" : success.
-- 01 backend : run `43615839230` (285f6fc).
-- 02 runtime : run `43615841096` (285f6fc).
+- 01 backend : run `43615839230` (285f6fc) -> success, artefact
+  `backend-exe` 31,9 Mo.
+- 02 runtime : run `43615841096` (285f6fc) -> success, artefact
+  `runtime-exe` 244,2 Mo.
 - Assemblage installateur ("03") : le workflow d assemblage n existe PLUS dans
   le depot (seuls 00, 01 et 02 sont presents) ; le run 03 `43482333015`
   invoque precedemment repond 404. L installateur Windows est donc
