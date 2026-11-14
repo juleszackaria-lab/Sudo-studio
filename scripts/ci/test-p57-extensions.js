@@ -57,7 +57,17 @@ write(root, 'package.json', JSON.stringify({ name: 'demo', scripts: { build: 'no
 write(root, 'README.md', '# demo\n');
 write(root, 'AGENTS.md', 'Regle projet : ne jamais deploiyer sans build vert.\n');
 
-const agentHome = path.join(home, '.sudo_studio', 'agent');
+// P63-B/P5-P6 : l etat de l agent n a plus qu UN emplacement, et l ancien
+// dossier ~/.sudo_studio/agent n est plus lu. Le test utilisait cet ancien
+// chemin : ses fixtures n etaient donc plus vues par le produit (52 -> 20
+// echecs). On passe par le seam documente SUDO_AGENT_HOME, ce qui garde le
+// test isole et verifie au passage l emplacement reellement utilise.
+const stateDirMod = require(path.join(SRC, 'stateDir.js'));
+const agentHome = path.join(home, 'agent-state');
+process.env.SUDO_AGENT_HOME = agentHome;
+if (path.resolve(agentHome) === path.resolve(stateDirMod.legacyHome({ home }))) {
+    throw new Error('agentHome ne doit jamais etre l ancien dossier');
+}
 // 1. skill render-deploy (livre avec le produit) copie puis active
 fs.mkdirSync(path.join(agentHome, 'skills', 'render-deploy'), { recursive: true });
 fs.copyFileSync(SKILL_SRC, path.join(agentHome, 'skills', 'render-deploy', 'SKILL.md'));
@@ -122,7 +132,13 @@ const ctx = {
     const sum = extMod.summary(home, root);
     check('resume en-tete "N MCP, N skills actifs"', sum.mcp === 3 && sum.mcpEnabled === 2
         && sum.skillsActive === 1 && sum.label === '2 MCP, 1 skill actif', sum);
+    // Le cas "aucune extension" exige un etat VIDE : avec SUDO_AGENT_HOME pose,
+    // le produit lit l etat pointe par l environnement, pas le home passe en
+    // argument. On bascule donc le seam sur un dossier vide le temps du check.
+    const prevStateHome = process.env.SUDO_AGENT_HOME;
+    process.env.SUDO_AGENT_HOME = path.join(tmp('p57empty'), 'agent-state');
     const sumEmpty = extMod.summary(tmp('p57empty'), null);
+    process.env.SUDO_AGENT_HOME = prevStateHome;
     check('resume sans extension = 0', sumEmpty.label === '0 MCP, 0 skill actif', sumEmpty.label);
 
     const digest = extMod.digest(home, root);
