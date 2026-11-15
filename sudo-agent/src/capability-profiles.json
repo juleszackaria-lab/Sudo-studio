@@ -18,7 +18,7 @@
   },
   "unknown": {
     "id": "prudent",
-    "warning": "Modele inconnu du manifeste : profil PRUDENT applique (peu d'outils, pas de plan long, temperature basse). Ajoutez une entree dans capability-profiles.json pour l'optimiser.",
+    "warning": "Modele inconnu du manifeste : profil PRUDENT. Les reglages par defaut du moteur sont CONSERVES (aucune modification a l'aveugle : ni temperature, ni plafond de jetons, ni nombre d'outils) et un avertissement est journalise. Ajoutez une entree dans capability-profiles.json pour optimiser ce modele.",
     "toolMode": "json-grammar",
     "temperature": 0.1,
     "topP": 0.9,
