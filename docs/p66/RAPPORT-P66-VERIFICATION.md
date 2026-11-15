@@ -388,3 +388,29 @@ Rien n'a ete corrige : ces defauts sont decrits, pas modifies.
 | Defauts trouves | 10 (2 BLOQUANT, 2 ELEVE, 2 MOYEN, 3 FAIBLE, 1 INFO) |
 | Fusion dans main | **NON FAIT (interdit)** - `main` = `e6c3d48` |
 | Linux | **NON TRAITE (decision de l'utilisateur)** |
+
+
+---
+
+## H. CORRECTIONS APPORTEES APRES REMARQUE DE L'UTILISATEUR (paquet)
+
+L'utilisateur a indique la chaine reelle : **backend et runtime sont construits dans
+`Sudo-studio`, le PAQUET est construit dans `sudo-studio-packager`** (workflow
+« SudoStudio Stable Build »). Le workflow `.github/workflows/03-package.yml` de ce depot etait
+donc un **doublon degrade**, et il a ete supprime (commit `af42630`, ordre explicite de
+l'utilisateur : `git rm .github/workflows/03-package.yml`).
+
+Trois conclusions de ce rapport doivent etre corrigees, sans effacer l'erreur :
+
+| Point du rapport | Ce que j'avais ecrit | Correction |
+|---|---|---|
+| Defaut n°1 (BLOQUANT) « aucun build-manifest.json » | presente comme un defaut produit | **VRAI pour le doublon**, **FAUX pour la chaine reelle** : le workflow du packager appelle `scripts/ci/build-manifest.ps1 -BuildDir build/SudoStudio -SudoStudioCommit $ssCommit -BackendRunId ... -RuntimeRunId ...` (ligne 571 du fichier du packager). Le manifeste n'etait absent que parce que le doublon supprime ne l'appelait pas. |
+| Defaut n°4 (ELEVE) « verify-installed.ps1 absent du paquet » | presente comme un defaut produit | **VRAI pour le doublon**, **FAUX pour la chaine reelle** : le packager copie `scripts/verify/verify-installed.ps1` a la RACINE du build (lignes 467-469) et refuse le paquet s'il manque (lignes 549-553). |
+| Defaut n°2 (BLOQUANT) « run 43648790493 = 404 » | j'ai conclu que la preuve de P63-B n'existait plus | **ERREUR DE MA PART** : ce run existe, mais dans le depot **`sudo-studio-packager`** — c'est « 05 - Linux smoke test (clean containers) », `conclusion: failure`, sur `main` du packager. Je l'avais cherche dans `Sudo-studio`. Il reste rouge, et comme il concerne Linux il releve de **NON TRAITE (decision de l'utilisateur)**. Le workflow `06-smoke-installed.yml` de ce depot, lui, reste non declenchable (absent de `main` de Sudo-studio) : c'est cette partie-la qui est un vrai blocage, et elle depend maintenant du packager puisque le workflow 03 local n'existe plus. |
+
+Ce qui reste vrai apres correction : defauts n°3 (marque Microsoft, 25 chaines), n°5 (149 chaines
+anglaises), n°6 (dossier `scripts/verify/` piege), n°7 (nom de job CI perime), n°8 (nom du moteur
+d'origine dans des docs internes), n°9 (controle anglais partiel de mon script), n°10 (INFO).
+
+Le paquet de reference est desormais celui du packager : run **`43746055054`** (branche
+`p66-pins`, commit de pins `531caf2`, tete Sudo-studio `af42630`).
