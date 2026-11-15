@@ -20,7 +20,8 @@ function hashContent(buf) {
 
 function checkpointsDir(home) {
   const h = home || process.env.SUDO_STUDIO_HOME || (function () { try { return os.homedir(); } catch (_) { return process.cwd(); } })();
-  return path.join(String(h), '.sudo_studio', 'agent', 'checkpoints');
+  // P63-D: hors du projet, dans le dossier produit.
+  return path.join(require('./stateDir').agentHome({ home: String(h) }), 'checkpoints');
 }
 
 function sessionDir(home, sessionId) {

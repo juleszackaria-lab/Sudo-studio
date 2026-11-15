@@ -1,0 +1,238 @@
+{
+ "hosts": {
+  "huggingface.co": 6,
+  "ocalhost": 13,
+  "27.0.0.1": 56,
+  "sh.rustup.rs": 4,
+  "nodejs.org": 6,
+  "python.org": 4,
+  "git-scm.com": 3,
+  "docker.com": 2,
+  "osv.dev": 2,
+  "storage.googleapis.com": 4,
+  "www.python.org": 2,
+  "github.com": 3,
+  "download.oracle.com": 3,
+  "services.gradle.org": 1,
+  "dlcdn.apache.org": 1,
+  "desktop.docker.com": 2,
+  "dl.google.com": 3,
+  "download.visualstudio.microsoft.com": 3,
+  "go.dev": 5,
+  "": 9,
+  "flutter.dev": 2,
+  "adoptium.net": 2,
+  "rustup.rs": 2,
+  "get.docker.com": 2,
+  "www.docker.com": 1,
+  "pip.pypa.io": 1,
+  "download.pytorch.org": 2,
+  "developer.android.com": 1,
+  "api.openai.com": 1,
+  "docs.npmjs.com": 1
+ },
+ "where": {
+  "huggingface.co": [
+   "backend/aiModelsManager.js:32",
+   "backend/aiModelsManager.js:37",
+   "backend/download-models.js:45"
+  ],
+  "ocalhost": [
+   "backend/server.js:183",
+   "backend/server.js:200",
+   "backend/server.js:309"
+  ],
+  "27.0.0.1": [
+   "backend/server.js:200",
+   "backend/server.js:344",
+   "backend/runtime/manager.enterprise.py:450"
+  ],
+  "sh.rustup.rs": [
+   "backend/routes/sdk.routes.js:100",
+   "backend/routes/sdk.routes.js:101",
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:315"
+  ],
+  "nodejs.org": [
+   "backend/routes/system.routes.js:193",
+   "backend/installers/sdkInstaller.enterprise.js:100",
+   "backend/installers/sdkInstaller.enterprise.js:101"
+  ],
+  "python.org": [
+   "backend/routes/system.routes.js:194",
+   "sudo-ai-extension/extension.js:574",
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:31"
+  ],
+  "git-scm.com": [
+   "backend/routes/system.routes.js:195",
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:33",
+   "sudo-ai-extension/src/panels/SDKPanel.js:89"
+  ],
+  "docker.com": [
+   "backend/routes/system.routes.js:196",
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:34"
+  ],
+  "osv.dev": [
+   "backend/tools/build-advisory-db.js:6",
+   "backend/tools/build-advisory-db.js:63"
+  ],
+  "storage.googleapis.com": [
+   "backend/tools/build-advisory-db.js:51",
+   "backend/installers/sdkInstaller.enterprise.js:133",
+   "backend/installers/sdkInstaller.enterprise.js:134"
+  ],
+  "www.python.org": [
+   "backend/installers/sdkInstaller.enterprise.js:111",
+   "backend/installers/sdkInstaller.enterprise.js:112"
+  ],
+  "github.com": [
+   "backend/installers/sdkInstaller.enterprise.js:122",
+   "sudo-ai-extension/media/vendor/highlight.min.js:184",
+   "sudo-ai-extension/media/vendor/highlight.min.js:267"
+  ],
+  "download.oracle.com": [
+   "backend/installers/sdkInstaller.enterprise.js:144",
+   "backend/installers/sdkInstaller.enterprise.js:145",
+   "backend/installers/sdkInstaller.enterprise.js:146"
+  ],
+  "services.gradle.org": [
+   "backend/installers/sdkInstaller.enterprise.js:158"
+  ],
+  "dlcdn.apache.org": [
+   "backend/installers/sdkInstaller.enterprise.js:167"
+  ],
+  "desktop.docker.com": [
+   "backend/installers/sdkInstaller.enterprise.js:176",
+   "backend/installers/sdkInstaller.enterprise.js:177"
+  ],
+  "dl.google.com": [
+   "backend/installers/sdkInstaller.enterprise.js:187",
+   "backend/installers/sdkInstaller.enterprise.js:188",
+   "backend/installers/sdkInstaller.enterprise.js:189"
+  ],
+  "download.visualstudio.microsoft.com": [
+   "backend/installers/sdkInstaller.enterprise.js:201",
+   "backend/installers/sdkInstaller.enterprise.js:202",
+   "backend/installers/sdkInstaller.enterprise.js:203"
+  ],
+  "go.dev": [
+   "backend/installers/sdkInstaller.enterprise.js:212",
+   "backend/installers/sdkInstaller.enterprise.js:213",
+   "backend/installers/sdkInstaller.enterprise.js:214"
+  ],
+  "": [
+   "sudo-agent/scripts/measure-toolcalls.js:55",
+   "sudo-agent/src/server.js:116",
+   "scripts/ci/bisect-p55-toolchoice.js:59"
+  ],
+  "flutter.dev": [
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:35",
+   "sudo-ai-extension/src/panels/SDKPanel.js:135"
+  ],
+  "adoptium.net": [
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:36",
+   "sudo-ai-extension/src/panels/SDKPanel.js:158"
+  ],
+  "rustup.rs": [
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:37",
+   "sudo-ai-extension/src/panels/SDKPanel.js:173"
+  ],
+  "get.docker.com": [
+   "sudo-ai-extension/src/panels/EnvironmentPanel.js:312",
+   "sudo-ai-extension/src/panels/SDKPanel.js:101"
+  ],
+  "www.docker.com": [
+   "sudo-ai-extension/src/panels/SDKPanel.js:112"
+  ],
+  "pip.pypa.io": [
+   "sudo-ai-extension/src/panels/SDKPanel.js:211"
+  ],
+  "download.pytorch.org": [
+   "sudo-ai-extension/src/panels/SDKPanel.js:222",
+   "sudo-ai-extension/src/panels/SDKPanel.js:223"
+  ],
+  "developer.android.com": [
+   "sudo-ai-extension/src/panels/SDKPanel.js:255"
+  ],
+  "api.openai.com": [
+   "sudo-ai-extension/src/panels/ProvidersPanel.js:169"
+  ],
+  "docs.npmjs.com": [
+   "sudo-ai-extension/src/panels/SecurityPanel.js:832"
+  ]
+ },
+ "client_calls": [
+  "backend/runtime/server.enterprise.py:1067: resp = requests.get(url, stream=True, timeout=60)",
+  "backend/runtime/manager.enterprise.py:452: with urllib.request.urlopen(url, timeout=5) as response:",
+  "backend/routes/models.routes.js:124: const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 2000 });",
+  "backend/routes/models.routes.js:200: const r = await axios.post('http://127.0.0.1:6000/download',",
+  "backend/routes/models.routes.js:255: const r = await axios.post('http://127.0.0.1:6000/reload',",
+  "backend/routes/system.routes.js:138: await axios.get('http://127.0.0.1:6000/health', { timeout: 2000 });",
+  "backend/routes/system.routes.js:165: await axios.post('http://127.0.0.1:6000/download',",
+  "backend/routes/ai.routes.js:72: const response = await axios.get(checkUrl, {",
+  "backend/routes/ai.routes.js:222: response = await axios.post(modelConfig.url, requestData, {",
+  "backend/routes/ai.routes.js:429: const response = await axios.get(`${PYTHON_RUNTIME_URL}/health`, { timeout: 3000 });",
+  "sudo-agent/scripts/measure-toolcalls.js:98: const req = http.request({ host: HOST, port, path: p, method, timeout: timeoutMs || 30000,",
+  "sudo-agent/scripts/measure-toolcalls.js:124: const req = http.request({ host: HOST, port, path: '/sessions/' + sid + '/messages', method: 'POST',",
+  "sudo-agent/src/platform.js:433: const req = http.request({ host: '127.0.0.1', port: Number(port), path: '/health', method: 'GET', ti",
+  "sudo-ai-extension/extension.js:604: await axios.get(url, { timeout: timeoutMs });",
+  "sudo-ai-extension/extension.js:814: const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 2500 });",
+  "sudo-ai-extension/extension.js:859: const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });",
+  "sudo-ai-extension/extension.js:863: await axios.post('http://127.0.0.1:6000/download',",
+  "sudo-ai-extension/src/services/BackendService.js:46: const response = await axios.post(`${this.baseUrl}/api/auth/login`, {",
+  "sudo-ai-extension/src/services/BackendService.js:65: const response = await axios.get(`${this.baseUrl}/api/system/health`, {",
+  "sudo-ai-extension/src/services/BackendService.js:84: const response = await axios.get(url, {",
+  "sudo-ai-extension/src/services/BackendService.js:105: const response = await axios.post(`${this.baseUrl}/api/ai/chat`, {",
+  "sudo-ai-extension/src/services/BackendService.js:121: const response = await axios.get(`${this.baseUrl}/api/ai/models`, {",
+  "sudo-ai-extension/src/services/BackendService.js:136: const response = await axios.post(`${this.baseUrl}/api/system/doctor`, {}, {",
+  "sudo-ai-extension/src/services/BackendService.js:147: const response = await axios.post(`${this.baseUrl}/api/system/autofix`, {",
+  "sudo-ai-extension/src/services/BackendService.js:161: const response = await axios.post(`${this.baseUrl}/api/project/analyze`, {",
+  "sudo-ai-extension/src/services/BackendService.js:175: const response = await axios.get(`${this.baseUrl}/api/environment/status`, {",
+  "sudo-ai-extension/src/services/BackendService.js:186: const response = await axios.post(`${this.baseUrl}/api/environment/export`, {}, {",
+  "sudo-ai-extension/src/services/BackendService.js:198: const response = await axios.get(`${this.baseUrl}/api/sdk/list`, {",
+  "sudo-ai-extension/src/services/BackendService.js:226: const response = await axios.post(`${this.baseUrl}/api/sdk/install`, {",
+  "sudo-ai-extension/src/services/BackendService.js:240: const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {",
+  "sudo-ai-extension/src/services/BackendService.js:258: const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {",
+  "sudo-ai-extension/src/services/BackendService.js:273: const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {",
+  "sudo-ai-extension/src/services/BackendService.js:288: const response = await axios.post(`${this.baseUrl}/api/devops/generate`, {",
+  "sudo-ai-extension/src/services/BackendService.js:304: const response = await axios.get(`${this.runtimeUrl}/health`, {",
+  "sudo-ai-extension/src/panels/DoctorPanel.js:93: await axios.get('http://localhost:5000/api/system/health', { timeout: 2000 });",
+  "sudo-ai-extension/src/panels/DoctorPanel.js:101: const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 2000 });",
+  "sudo-ai-extension/src/panels/DoctorPanel.js:170: await axios.post('http://127.0.0.1:6000/download',",
+  "sudo-ai-extension/src/panels/DoctorPanel.js:180: const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });",
+  "sudo-ai-extension/src/panels/DevOpsPanel.js:674: const r = await axios.post('http://127.0.0.1:6000/infer', {",
+  "sudo-ai-extension/src/panels/ProjectAnalysisPanel.js:525: const r = await axios.post('http://127.0.0.1:6000/infer', {",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:125: const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:137: const rc = await axios.get('http://127.0.0.1:6000/models/catalogue', { timeout: 5000 });",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:160: const rs = await axios.get('http://localhost:5000/api/supervisor/runtime-status', { timeout: 2500 })",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:167: const rm = await axios.get('http://127.0.0.1:6000/models', { timeout: 3000 });",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:207: const r = await axios.post('http://127.0.0.1:6000/download',",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:241: const r = await axios.get('http://127.0.0.1:6000/models/download-status', { timeout: 3000 });",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:305: await axios.post('http://127.0.0.1:6000/reload',",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:322: const rc = await axios.get('http://127.0.0.1:6000/models/catalogue', { timeout: 5000 });",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:346: await axios.post('http://127.0.0.1:6000/reload', payload, { timeout: 5000 });",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:362: const r = await axios.post('http://localhost:5000/api/supervisor/runtime-restart', {}, { timeout: 15",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:377: const r = await axios.get('http://127.0.0.1:6000/health', { timeout: 3000 });",
+  "sudo-ai-extension/src/panels/RuntimePanel.js:408: const r = await axios.get('http://127.0.0.1:6000/scan', { timeout: 8000 });",
+  "sudo-ai-extension/src/agent/AgentServer.js:281: const req = http.request({ host: HOST, port, path: pathname, method, timeout: timeoutMs,",
+  "sudo-ai-extension/src/agent/AgentServer.js:312: const req = http.request({ host: HOST, port, path: pathname, method: 'POST', timeout: timeoutMs,",
+  "scripts/ci/measure-p55-raw.js:92: const req = http.request({ host: url.hostname, port: url.port || 80, path: url.pathname, method: 'GE",
+  "scripts/ci/measure-p55-raw.js:127: const req = http.request({ host: HOST, port, method, path: p,",
+  "scripts/ci/measure-p55-raw.js:147: const req = http.request({ host: HOST, port, method: 'POST', path: p,",
+  "scripts/ci/bisect-p55-toolchoice.js:148: const req = http.request({",
+  "scripts/ci/bisect-p55-toolchoice.js:173: const req = http.request({",
+  "scripts/ci/replay-p55-incident.js:171: const req = http.request({",
+  "scripts/ci/replay-p55-incident.js:195: const req = http.request({",
+  "scripts/ci/scenario-p56-project.js:203: const req = http.request({ host: HOST, port, method, path: p,",
+  "scripts/ci/scenario-p56-project.js:225: const req = http.request({ host: HOST, port, method: 'POST', path: p,",
+  "scripts/ci/linux-e2e-test.js:62: const req = http.request({ host: '127.0.0.1', port, method, path: p,",
+  "scripts/ci/linux-e2e-test.js:83: const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: p,",
+  "scripts/ci/tasks-p55.js:161: const req = http.request({ host: HOST, port, method, path: p,",
+  "scripts/ci/tasks-p55.js:181: const req = http.request({ host: HOST, port, method: 'POST', path: p,",
+  "scripts/ci/measure-p56-local.js:40: const req = http.request({ host: HOST, port, method, path: p,",
+  "scripts/ci/measure-p56-local.js:61: const req = http.request({ host: HOST, port, method: 'POST', path: p,",
+  "scripts/ci/scenario-p57-render.js:135: const req = http.request({ host: HOST, port, method, path: p,",
+  "scripts/ci/scenario-p57-render.js:155: const req = http.request({ host: HOST, port, method: 'POST', path: p,",
+  "scripts/smoke/agent-e2e.js:243: const req = http.request({ host: '127.0.0.1', port, path: pth, method, timeout: 30000,",
+  "scripts/smoke/agent-e2e.js:261: const req = http.request({ host: '127.0.0.1', port, path: pth, method: 'POST', timeout: 120000,"
+ ]
+}

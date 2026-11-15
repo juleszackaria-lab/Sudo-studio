@@ -211,10 +211,13 @@ try {
   const head = rc.children.find((c) => c.className === 'jobhead');
   check('la carte dit ou en est le projet (11/20)', /11\/20/.test(head.textContent), head.textContent);
   const btns = buttonsOf(rc);
-  check('un seul bouton : Reprendre', btns.length === 1 && btns[0].textContent === 'Reprendre', btns.map((b) => b.textContent));
+  // P63 (G1) : le bouton s appelle desormais "Reprendre le travail" et envoie
+  // le MOT CLE deterministe "reprendre" (chemin de reprise, 0 appel modele).
+  // L assertion precedente decrivait l ancien libelle et l ancienne phrase.
+  check('un seul bouton : Reprendre le travail', btns.length === 1 && btns[0].textContent === 'Reprendre le travail', btns.map((b) => b.textContent));
   btns[0]._listeners.click[0]();
   const last = dom.posted[dom.posted.length - 1] || {};
-  check('Reprendre : envoie "reprendre le projet"', last.type === 'send' && last.text === 'reprendre le projet', last);
+  check('Reprendre : envoie le mot cle deterministe "reprendre"', last.type === 'send' && last.text === 'reprendre', last);
   check('Reprendre : le bouton disparait (une seule reprise possible)', buttonsOf(rc).length === 0, buttonsOf(rc).length);
 } catch (e) {
   check('bouton Reprendre (comportement)', false, String((e && e.message) || e).slice(0, 300));

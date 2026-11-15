@@ -254,9 +254,13 @@ class AgentEngine extends EventEmitter {
             if (Array.isArray(rf)) filesRead = rf.slice();
         } catch (_) {}
         const ok = !!(turnDone && turnDone.status === 'TERMINE');
+        // P65-A1: "retryable" vient du moteur (tour sans reponse utilisable) :
+        // l'interface affiche alors un bouton Reessayer. Aucun statut n'est
+        // invente ici, on ne fait que transporter le fait.
         const d = { status: (turnDone && turnDone.status) || 'PARTIEL',
             reason: (turnDone && turnDone.reason) || '', reply: doneText != null ? doneText : fullText,
             sessionId: sid, filesModified, filesRead, turns: 1, mode,
+            retryable: !!(turnDone && turnDone.retryable),
             unresolved: (turnDone && turnDone.unresolvedErrors) || [] };
         this._raw('turn', { phase: 'end', sessionId: sid, mode, status: d.status });
         this._leg('step', { phase: 'end',

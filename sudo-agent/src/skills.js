@@ -24,11 +24,16 @@ const STAGE_TTL_MS = 24 * 3600 * 1000; // prune staging older than this
 
 function agentDir(home) {
   const h = home || process.env.SUDO_STUDIO_HOME || (function () { try { return os.homedir(); } catch (_) { return process.cwd(); } })();
-  return path.join(String(h), '.sudo_studio', 'agent');
+  return require('./stateDir').agentHome({ home: String(h) }); // P63-D
 }
 function globalDir(home) { return path.join(agentDir(home), 'skills'); }
 function stagingDir(home) { return path.join(agentDir(home), 'skills_staging'); }
-function projectDir(root) { return path.join(String(root), '.sudo_studio', 'skills'); }
+// P63-D: les skills projet vivent hors du projet, dans le workspace dont la
+// racine derive du MEME dossier agent que `home` (aucune divergence de chemin).
+function projectDir(root, home) {
+  const sd = require('./stateDir');
+  return path.join(sd.paths(root, { agentHome: agentDir(home) }).root, 'skills');
+}
 function stateFile(home) { return path.join(agentDir(home), 'skills.json'); }
 
 function validName(n) { return typeof n === 'string' && NAME_RE.test(n); }
@@ -90,7 +95,7 @@ function scopeDir(home, projectRoot, scope) {
   if (scope === 'global') return globalDir(home);
   if (scope === 'project') {
     if (!projectRoot || typeof projectRoot !== 'string') return null;
-    return projectDir(projectRoot);
+    return projectDir(projectRoot, home);
   }
   return null;
 }
@@ -99,7 +104,7 @@ function listSkills(home, projectRoot) {
   const state = loadState(home);
   const out = [];
   const scopes = [['global', globalDir(home)]];
-  if (projectRoot && typeof projectRoot === 'string') scopes.push(['project', projectDir(projectRoot)]);
+  if (projectRoot && typeof projectRoot === 'string') scopes.push(['project', projectDir(projectRoot, home)]);
   for (const [scope, dir] of scopes) {
     let entries = [];
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { continue; }

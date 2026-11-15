@@ -19,7 +19,7 @@ function spawner() { return spawnFn || childProcess.spawn; }
 
 function agentDir(home) {
   const h = home || process.env.SUDO_STUDIO_HOME || (function () { try { return os.homedir(); } catch (_) { return process.cwd(); } })();
-  return path.join(String(h), '.sudo_studio', 'agent');
+  return require('./stateDir').agentHome({ home: String(h) }); // P63-D
 }
 
 function readJsonFile(p) {

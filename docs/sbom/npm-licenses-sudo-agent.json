@@ -1,0 +1,9 @@
+{
+  "sudo-agent@1.0.0": {
+    "licenses": "UNLICENSED",
+    "private": true,
+    "path": "/home/user/Sudo-studio/sudo-agent",
+    "licenseFile": "/home/user/Sudo-studio/sudo-agent/README.md"
+  }
+}
+

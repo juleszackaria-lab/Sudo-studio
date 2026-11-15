@@ -21,6 +21,7 @@ const prereq = require('./prereq');
 const skillsMod = require('./skills');
 const extMod = require('./extensions');
 const msgs = require('./msgs');
+const stepcheck = require('./stepcheck'); // P65-D11: garde de syntaxe avant validation
 const profiles = require('./profiles');
 const verifyMod = require('./verify');
 const mcpMod = require('./mcp');
@@ -1057,6 +1058,18 @@ async function hReply(ctx, args) {
   return { ok: true, data: { chars: args.text.length }, summary: 'reponse finale (' + args.text.length + ' caracteres).' };
 }
 
+// P65-E: "delegate" est intercepte par le moteur (delegation deterministe :
+// orchestrateur -> executant -> verificateur). Arriver ici signifie que le
+// moteur n'a pas pu orchestrer : refus explicite, jamais un faux succes.
+async function hDelegate(ctx, args) {
+  const steps = Array.isArray(args.steps) ? args.steps : [];
+  if (!steps.length && typeof args.consigne !== 'string') {
+    return { ok: false, code: 'bad_args', error: 'delegate: consigne (une etape par ligne) ou steps[] requis.' };
+  }
+  return { ok: false, code: 'delegate_unavailable',
+    error: 'delegate: la delegation est orchestree par le moteur (hors de ce chemin). Aucune action effectuee.' };
+}
+
 async function hDone(ctx, args) {
   const s = typeof args.summary === 'string' ? args.summary.trim().slice(0, 2000) : '';
   return { ok: true, data: { chars: s.length }, summary: s || 'tache terminee.' };
@@ -1142,6 +1155,8 @@ const TOOLS = {
   copy_project: { description: 'Copie tout le projet vers un dossier voisin (meme niveau), sans .git/node_modules/build/dist. Reponse a "nouvelle version du projet dans un dossier different".', danger: 'write', mutating: true, pathArg: null, defDir: null, handler: hCopyProject, outside: true },
   reply: { description: 'Reponse finale (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hReply },
   done: { description: 'Tache terminee (termine le tour, sans modification).', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hDone },
+  // P65-E: delegation deterministe (orchestrateur -> executant -> verificateur).
+  delegate: { description: 'Delegue des etapes : executant (contexte isole) puis verificateur du diff avant application.', danger: 'read', mutating: false, pathArg: null, defDir: null, handler: hDelegate },
   // P59-A: platform tools. Registered here (so /tools, the registry and the
   // journal see them) but NEVER all exposed at once: toOpenAISchema adds only
   // the subset chosen by the pre-router (router.js), max 6 per turn.
@@ -1222,6 +1237,8 @@ function toOpenAISchema(profile, ctxTokens, opts) {
     mkdir: { dir: str('Project-relative directory to create.') },
     reply: { text: str('Final answer text (ends the turn).') },
     done: { summary: str('Short summary of what changed (optional, ends the turn).') },
+  delegate: { consigne: str('Etapes a deleguer, une par ligne (max 8).'),
+    steps: { type: 'array', description: 'Liste d etapes (alternative a consigne).', items: { type: 'string' } } },
   };
   // P59-A: platform tool schemas (same props the bridge documents).
   for (const pn of platformMod.TOOL_NAMES) {
@@ -1668,7 +1685,25 @@ async function executeTool(ctx, toolName, args, opts) {
     }
   }
 
-  // 7. Execute.
+  // 7. P65-D11: garde de syntaxe. On retient l'etat AVANT (contenu ou absence)
+  // des fichiers ecrits par write/edit/append/patch : si la verification de
+  // syntaxe echoue apres l'ecriture, le fichier est REMIS dans son etat
+  // precedent et l'erreur reelle (tronquee) repart vers le modele. Sans cela,
+  // un petit modele laissait un fichier casse sur le disque et le tour se
+  // declarait termine.
+  const SYNTAX_TOOLS = ['write', 'edit', 'append', 'patch'];
+  const guardOn = SYNTAX_TOOLS.indexOf(toolName) !== -1 && resolved && resolved.ok
+    && typeof resolved.abs === 'string' && resolved.rel;
+  let priorState = null;
+  if (guardOn) {
+    try {
+      const st = fs.statSync(resolved.abs);
+      if (st.isFile() && st.size <= 512 * 1024) priorState = { exists: true, text: fs.readFileSync(resolved.abs, 'utf8') };
+      else priorState = { exists: st.isFile(), text: null };
+    } catch (_) { priorState = { exists: false, text: null }; }
+  }
+
+  // 8. Execute.
   let res = null;
   // P57-6: le handler a besoin de savoir si l'operateur a deja approuve (un
   // appel MCP ne redemande pas). Le contexte est restaure juste apres.
@@ -1677,6 +1712,27 @@ async function executeTool(ctx, toolName, args, opts) {
   try { res = await def.handler(ctx, args, resolved); }
   catch (e) { res = { ok: false, code: 'exception', error: toolName + ': ' + String((e && e.message) || e).slice(0, 200) }; }
   finally { ctx.preApproved = prevPre; }
+  // P65-D11 (suite): controle de syntaxe + retour arriere automatique.
+  if (res && res.ok && guardOn) {
+    let v = null;
+    try { v = stepcheck.verifyFile(ctx.root, resolved.rel); } catch (_) { v = null; }
+    if (v && v.exists && v.ok === false && !v.partial) {
+      let restored = 'fichier precedent restaure';
+      try {
+        if (priorState && priorState.exists && priorState.text !== null) fs.writeFileSync(resolved.abs, priorState.text, 'utf8');
+        else if (!priorState || !priorState.exists) fs.rmSync(resolved.abs, { force: true });
+        else restored = 'contenu precedent non relisible : fichier laisse tel quel';
+      } catch (e) { restored = 'restauration impossible : ' + String((e && e.message) || e).slice(0, 120); }
+      const detail = String(v.detail || '').slice(0, 300);
+      if (ctx.log) { try { ctx.log.warn('syntaxe invalide, ecriture annulee', { session: ctx.sessionId, tool: toolName, file: resolved.rel, detail, rollback: restored }, ctx.corr); } catch (_) {} }
+      res = { ok: false, code: 'syntax_invalid',
+        error: toolName + ' ANNULE : ' + resolved.rel + ' ne passe pas la verification de syntaxe (' +
+          detail + '). ' + restored + '. Corrige le contenu et reessaie.',
+        data: { file: resolved.rel, detail, rollback: restored } };
+    } else if (v && v.exists && v.partial) {
+      if (ctx.log) { try { ctx.log.info('syntaxe non verifiable', { session: ctx.sessionId, file: resolved.rel, detail: String(v.detail || '').slice(0, 120) }, ctx.corr); } catch (_) {} }
+    }
+  }
   const ms = Date.now() - t0;
   if (res.markRead) markReadFiles(ctx, res.markRead);
   if (res.created && ctx.run) { for (const c of res.created) { if (ctx.run.created.indexOf(c) === -1) ctx.run.created.push(c); } }

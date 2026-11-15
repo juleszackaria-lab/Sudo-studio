@@ -17,6 +17,10 @@ const { execFileSync } = require('child_process');
 const { probeProvider, streamChat, chatOnce, waitForRuntime, runtimeDeadline } = require('./providers');
 const { classifyAction } = require('./intent');
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
+// P65-B: reglages HISTORIQUES du moteur, nommes. Un profil de capacite les
+// remplace quand le modele est CONNU du manifeste ; sinon ce sont ces valeurs
+// exactes qui partent (aucun changement de comportement a l'aveugle).
+const SAMPLING_DEFAUT = { temperature: 0.15, topP: 0.9, topK: 40, repeatPenalty: 1.12, maxTokens: 1200 };
 const routerMod = require('./router'); // P59-B: routeur d intention deterministe
 const platformMod = require('./platform'); // P59-A: pont plateforme (resultat pre-charge)
 const { loadProjectRules } = require('./permissions');
@@ -26,10 +30,14 @@ const plan = require('./plan');
 const orch = require('./orch');
 const specMod = require('./spec'); // P56: cahiers des charges longs
 const jobMod = require('./job');   // P56: projet = plan + etat sur disque + reprise
+const resumeMod = require('./resume'); // P63-C: reprise deterministe (sans modele)
+const calcMod = require('./calc');     // P63-F18: calcul deterministe (sans modele)
 const modes = require('./modes');
 const prereq = require('./prereq');
 const msgs = require('./msgs');
 const profiles = require('./profiles');
+const capabilities = require('./capabilities'); // P65-B: profils de capacite par modele (donnee)
+const delegationMod = require('./delegation'); // P65-E: delegation deterministe (executant + verificateur)
 
 // P57: en dessous de ce contexte, l'inventaire d'extensions n'est pas injecte
 // dans le prompt (il mangeait le budget des petits modeles) ; les outils
@@ -204,6 +212,192 @@ function gitStatusOf(root) {
   }
 }
 
+// P63-C: l'execution d'un travail projet est extraite pour pouvoir etre
+// appelee (1) apres la boucle modele historique et (2) DIRECTEMENT sur une
+// demande de reprise deterministe, sans aucun appel au modele.
+async function runProjectJob(c) {
+  const store = c.store;
+  const sessionId = c.sessionId;
+  const session = c.session;
+  const jobState = c.jobState;
+  const root = c.root;
+  const runEntry = c.runEntry;
+  const runs = c.runs;
+  const provider = c.provider;
+  const model = c.model;
+  const toolsCtx = c.toolsCtx;
+  const home = c.home;
+  const sessionRulesMap = c.sessionRulesMap;
+  const onEvent = c.onEvent;
+  const journal = c.journal;
+  const log = c.log;
+  const corr = c.corr;
+  const runtimeWait = c.runtimeWait;
+  const preProbe = c.preProbe;
+  let finalText = '';
+  let declared = false;
+  let jobVerdict = null;
+  journal('info', 'tour projet', { job: jobState.id, etapes: jobState.steps.length, execution: jobState.runs });
+  const waiters = (toolsCtx && toolsCtx.waiters) || null;
+  const stepRunner = async (step, ctx) => {
+    if (runEntry.aborted) return { calls: 0, aborted: true, error: 'tour abandonne.' };
+    const child = store.create({ title: 'etape ' + ctx.n + '/' + ctx.N + ': ' + String(step.text).slice(0, 50), projectRoot: session.projectRoot });
+    try { store.update(child.id, (x) => { x.meta.jobParent = sessionId; x.meta.job = jobState.id; }); } catch (_) {}
+    try { sessionRulesMap.set(child.id, sessionRulesMap.get(sessionId)); } catch (_) {}
+    const cprompt = jobMod.stepPrompt(ctx);
+    const t0 = Date.now();
+    let cres = null;
+    let timedOut = false;
+    // P63-B3: le minuteur d'etape est SUSPENDU pendant une panne du runtime.
+    // Il ne mesure que le temps ACTIF (monotone) : le temps ou le runtime
+    // etait indisponible n'est jamais impute a l'etape.
+    let downMs = 0;
+    let downSince = 0;
+    const activeMs = () => {
+      const pausedNow = downSince ? (Date.now() - downSince) : 0;
+      return Math.max(0, Date.now() - t0 - downMs - pausedNow);
+    };
+    const timer = setInterval(() => {
+      if (activeMs() <= ctx.msBudget) return;
+      timedOut = true;
+      try { clearInterval(timer); } catch (_) {}
+      journal('warn', 'etape projet budget ACTIF depasse', { n: ctx.n, actifMs: activeMs(), panneMs: downMs });
+      try { abortRun(runs, child.id); } catch (_) {}
+    }, 500);
+    if (timer.unref) { try { timer.unref(); } catch (_) {} }
+    const pabort = setInterval(() => { if (runEntry.aborted) { try { abortRun(runs, child.id); } catch (_) {} } }, 250);
+    if (pabort.unref) { try { pabort.unref(); } catch (_) {} }
+    // P56-4: un pas de projet ne peut JAMAIS bloquer le reste du projet.
+    // Le delai est double : 1) on demande l'arret du tour enfant, 2) si le
+    // tour ne rend pas la main (attente externe), on rend l'etape en echec
+    // au lieu de laisser le projet fige indefiniment.
+    let watchdog = null;
+    try {
+      const childTurn = runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.j' + ctx.n,
+        provider, modelOverride: ctx.model || undefined,
+        toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map(),
+          waiters: (toolsCtx && toolsCtx.waiters) || null,
+          parentSessionId: sessionId, noResume: true, noOrchPlan: true },
+        runs, log, onEvent: (e) => {
+          try {
+            // P63-B3: on suit la panne runtime pour suspendre le minuteur.
+            if (e && e.type === 'runtime.down' && !downSince) downSince = Date.now();
+            if (e && e.type === 'runtime.up' && downSince) { downMs += Date.now() - downSince; downSince = 0; }
+            if (e && (e.type === 'turn.paused' || (typeof e.type === 'string' && e.type.indexOf('tool.') === 0) ||
+                e.type === 'runtime.wait' || e.type === 'runtime.down' || e.type === 'runtime.up')) onEvent(e);
+          } catch (_) {}
+        }, maxIt: ctx.callBudget, runtimeWait,
+        // P62-F7: une etape de cahier ne voit que son sous-ensemble d'outils.
+        allowedTools: Array.isArray(ctx.toolSubset) ? ctx.toolSubset : undefined });
+      cres = await Promise.race([
+        childTurn,
+        new Promise((resolve) => {
+          watchdog = setTimeout(() => {
+            timedOut = true;
+            // Diagnostic : ce que le processus attend encore (socket modele,
+            // attente externe, processus enfant) au moment du depassement.
+            let pending = [];
+            try {
+              pending = process._getActiveHandles().map((h) => {
+                const n = (h && h.constructor && h.constructor.name) || '?';
+                return n + (h && h.remotePort ? ':' + h.remotePort : '');
+              });
+            } catch (_) {}
+            journal('warn', 'etape projet delai depasse', { n: ctx.n, handles: pending.slice(0, 8) });
+            try { abortRun(runs, child.id); } catch (_) {}
+            resolve({ status: 'error', error: 'delai etape depasse (tour enfant sans reponse).' });
+          }, ctx.msBudget + 15000 + downMs);
+          if (watchdog.unref) { try { watchdog.unref(); } catch (_) {} }
+        }),
+      ]);
+    } catch (e) {
+      journal('warn', 'etape projet erreur', { n: ctx.n, error: String((e && e.message) || e).slice(0, 160) });
+    } finally {
+      try { clearInterval(timer); } catch (_) {}
+      try { clearTimeout(timer); } catch (_) {}
+      try { clearTimeout(watchdog); } catch (_) {}
+      try { clearInterval(pabort); } catch (_) {}
+      if (downSince) { downMs += Date.now() - downSince; downSince = 0; }
+    }
+    const cs = store.get(child.id);
+    const cmeta = (cs && cs.meta && cs.meta.lastRun) || {};
+    // P63-B3: panne vue par le tour enfant (source de verite) ou par le
+    // suivi d'evenements du parent : on retient la plus grande.
+    const totalDownMs = Math.max(downMs, Math.max(0, Number(cmeta.runtimeDownMs) || 0));
+    const calls = Array.isArray(cmeta.calls) ? cmeta.calls : [];
+    // P63-F5: filesModified porte un marqueur de diff ('+' cree, '~' modifie,
+    // '-' supprime). La verification deterministe et le registre attendent des
+    // CHEMINS : sans ce nettoyage une etape qui vient de creer le fichier etait
+    // declaree en echec ("aucune modification verifiee") et le fichier
+    // apparait comme "+f1.txt". Un fichier supprime n'est pas une preuve.
+    const files = (Array.isArray(cmeta.filesModified) ? cmeta.filesModified : [])
+      .filter((f) => typeof f === 'string' && f.length > 1 && f.charAt(0) !== '-')
+      .map((f) => ((f.charAt(0) === '+' || f.charAt(0) === '~') ? f.slice(1) : f));
+    const testCall = calls.find((c) => c && c.ok && (c.tool === 'bash') && /test|spec|pytest|jest|npm run/.test(String(c.target || '')));
+    if (runEntry.aborted) return { calls: calls.length, aborted: true, error: 'tour abandonne.' };
+    if (timedOut) {
+      return { calls: calls.length, ok: false, runtimeDownMs: totalDownMs,
+        error: 'budget temps ACTIF depasse (' + Math.round(activeMs() / 1000) + 's, panne runtime ' +
+          Math.round(totalDownMs / 1000) + 's exclue).', files };
+    }
+    // P63-B3: une etape coupee par une panne du runtime n'est NI faite NI
+    // echouee : elle est INTERROMPUE et reprendra en premier.
+    if (cmeta.stopReason === 'runtime_offline') {
+      return { calls: calls.length, ok: false, interruptedByRuntime: true, runtimeDownMs: totalDownMs,
+        files, error: 'runtime indisponible pendant l etape' };
+    }
+    const childDeclared = cmeta.stopReason === 'declared';
+    const okChild = !cres || cres.status !== 'error';
+    return {
+      calls: calls.length,
+      runtimeDownMs: totalDownMs,
+      // Honnetete (P56-5) : "declare terminee" sans fichier modifie et sans
+      // test execute n'est PAS une preuve. L'etape est alors marquee en
+      // echec et le rapport la compte en "non realisee".
+      ok: okChild && (files.length > 0 || !!testCall),
+      declared: childDeclared,
+      files,
+      test: testCall ? String(testCall.target).slice(0, 160) : null,
+      detail: files.length ? files.slice(0, 4).join(', ')
+        : (testCall ? 'test execute : ' + String(testCall.target).slice(0, 100)
+          : (childDeclared ? 'declare terminee sans modification verifiee' : 'aucune modification verifiee')),
+      error: (cres && cres.status === 'error') ? String(cres.error || 'erreur enfant').slice(0, 200) : '',
+    };
+  };
+  try {
+    const res = await jobMod.run({
+      root, state: jobState, runStep: stepRunner,
+      shouldStop: () => runEntry.aborted,
+      availableModels: (preProbe && Array.isArray(preProbe.models)) ? preProbe.models : [],
+      emit: (t, o) => { try { onEvent(Object.assign({ type: t }, o)); } catch (_) {} },
+    });
+    finalText = res.report || '';
+    declared = true;
+    const failed = res.failed || 0;
+    const skipped = res.skipped || 0;
+    const total = res.total || jobState.steps.length;
+    const oos = res.outOfScope || 0;
+    const reste = total - (res.done || 0) - oos;
+    // P63-C6: "TERMINE" exige que CHAQUE etape soit faite (ou explicitement
+    // hors perimetre). Une etape interrompue, en echec ou non tentee donne
+    // INCOMPLET (x/N) et un statut PARTIEL/ECHEC, jamais un faux succes.
+    if (res.aborted) jobVerdict = { status: 'PARTIEL', reason: 'projet interrompu (bouton Reprendre ou "reprendre").', unresolved: [] };
+    else if (failed > 0 && res.done === 0) jobVerdict = { status: 'ECHEC', reason: 'INCOMPLET (0/' + total + ') : ' + failed + ' etape(s) non realisee(s).', unresolved: [] };
+    else if (failed > 0) jobVerdict = { status: 'PARTIEL', reason: 'INCOMPLET (' + (res.done || 0) + '/' + total + ') : ' + failed + ' etape(s) non realisee(s), les autres sont faites.', unresolved: [] };
+    else if ((res.interrupted || 0) > 0) jobVerdict = { status: 'PARTIEL', reason: 'INCOMPLET (' + (res.done || 0) + '/' + total + ') : ' + res.interrupted + ' etape(s) interrompue(s) par une panne du runtime ; reprise possible.', unresolved: [] };
+    else if (reste > 0) jobVerdict = { status: 'PARTIEL', reason: 'INCOMPLET (' + (res.done || 0) + '/' + total + ') : ' + reste + ' etape(s) non tentee(s) (budget).', unresolved: [] };
+    else jobVerdict = { status: 'TERMINE', reason: '', unresolved: [] };
+    journal('info', 'projet termine', { job: jobState.id, faites: res.done, echouees: failed, nontentees: skipped });
+  } catch (e) {
+    finalText = 'Projet interrompu : ' + String((e && e.message) || e).slice(0, 300);
+    declared = true;
+    jobVerdict = { status: 'ECHEC', reason: 'execution du projet interrompue.', unresolved: [] };
+    journal('warn', 'projet interrompu', { error: String((e && e.message) || e).slice(0, 160) });
+  }
+
+  return { finalText: finalText, declared: declared, jobVerdict: jobVerdict };
+}
+
 async function runTurn(opts) {
   opts = opts || {};
   const store = opts.store;
@@ -305,7 +499,28 @@ async function runTurn(opts) {
   // repart jamais a zero entre deux points d attente.
   const rwDeadline = (opts.runtimeWait && opts.runtimeWait.deadline) ||
     runtimeDeadline((opts.runtimeWait && opts.runtimeWait.budgetMs) || runtimeBudgetMs());
-  const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, rwDeadline, maxIt: opts.maxIt, subDepth: opts.subDepth };
+  // P63-F18 + P65-A4: CALCUL DETERMINISTE, sans modele, sur TOUS les chemins
+  // (question, action, plan, sans projet). "2+298" ne doit jamais dependre d'un
+  // modele qui peut se tromper (299 vu en photo), et la phrase "combien font
+  // 2+298 ?" ne doit pas non plus y echapper.
+  if (!(opts.toolsCtx && (opts.toolsCtx.noResume || opts.toolsCtx.noOrchPlan)) && calcMod.isCalc(turnPrompt)) {
+    const v = calcMod.answer(turnPrompt);
+    if (v !== null) {
+      const txt = 'Resultat : ' + String(turnPrompt).trim() + ' = ' + v;
+      if (log) { try { log.info('calcul deterministe', { session: sessionId, expression: String(turnPrompt).slice(0, 60), resultat: v }, corr); } catch (_) {} }
+      try { onEvent({ type: 'turn.start', turnId: corr, model }); } catch (_) {}
+      try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+      store.append(sessionId, { role: 'assistant', content: txt });
+      try { onEvent({ type: 'message.done', text: txt, aborted: false }); } catch (_) {}
+      try {
+        onEvent({ type: 'turn.done', turnId: corr, messageCount: (store.get(sessionId) || { messages: [] }).messages.length,
+          model: model, aborted: false, status: 'TERMINE', reason: '', filesModified: [],
+          stopReason: 'calc', declaredDone: true, toolCalls: 0, unresolvedErrors: [] });
+      } catch (_) {}
+      return _after({ status: 'done', model: model, runStatus: 'TERMINE', code: 'calc', result: v });
+    }
+  }
+  const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, rwDeadline, maxIt: opts.maxIt, subDepth: opts.subDepth, allowedTools: Array.isArray(opts.allowedTools) ? opts.allowedTools : null, forceTools: opts.forceTools === true, readonly: opts.readonly === true };
   if (useTools) return _after(await toolsTurn(base, sessionNow, opts.toolsCtx));
   return _after(await legacyTurn(base, sessionNow));
 }
@@ -403,7 +618,10 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
   const cloud = provider.type === 'cloud';
   const filter = (s) => (cloud ? maskSecrets(String(s === undefined || s === null ? '' : s)) : String(s === undefined || s === null ? '' : s));
   const journal = (level, event, fields) => { if (log) { try { log[level](event, Object.assign({ session: sessionId }, fields || {}), corr); } catch (_) {} } };
-  const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now() };
+  // P63-B: temps total ou le runtime a ete INDISPONIBLE pendant ce tour
+  // (horloge monotone, mesuree par les attentes). Il est exclu des budgets
+  // d'etape : une panne n'est pas du travail.
+  const runEntry = { aborted: false, destroy: null, killFns: [], corr, startedAt: Date.now(), runtimeDownMs: 0 };
   runs.set(sessionId, runEntry);
   try { onEvent({ type: 'turn.start', turnId, model }); } catch (_) {}
 
@@ -459,6 +677,13 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
   journal('info', 'question envoyee', { tokens: profiles.estimateTokens(messages, 0), files: qctx.files.join(','), history: tail.length });
 
   let full = '';
+  // P65-A1: on distingue deux causes de "aucun texte" :
+  //   - le FOURNISSEUR n'a pas repondu (panne, runtime coupe, HTTP) : le modele
+  //     n'a jamais eu la parole -> repli deterministe etiquete, statut PARTIEL
+  //     (comportement P43 conserve : ce n'est pas un defaut du modele).
+  //   - le fournisseur A repondu mais avec un texte vide : c'est un tour vide,
+  //     traite par la relance unique puis l'echec explicite de P65-A1.
+  let providerFailed = false;
   const streamOnce = () => streamChat(provider, messages, {
     model,
     shouldAbort: () => runEntry.aborted,
@@ -490,14 +715,17 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
         } catch (e2) {
           journal('warn', 'question echouee', { code: (e2 && e2.code) || 'provider_error' });
           full = '';
+          providerFailed = true;
         }
       } else {
         journal('warn', 'question echouee', { code: 'runtime_offline' });
         full = '';
+        providerFailed = true;
       }
     } else {
       journal('warn', 'question echouee', { code: (e && e.code) || 'provider_error' });
       full = '';
+      providerFailed = true;
     }
   } finally {
     runEntry.destroy = null;
@@ -516,11 +744,50 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
   }
   let runStatus = 'TERMINE';
   let reason = '';
-  if (!full && !runEntry.aborted) {
+  let retryable = false;
+  if (!full && !runEntry.aborted && providerFailed) {
+    // P43-3 conserve : le fournisseur n'a pas repondu du tout. Le repli
+    // deterministe est etiquete "[reponse generee sans IA]" et le tour reste
+    // PARTIEL - on n'accuse pas le modele d'un tour qu'il n'a pas joue.
     full = pmap.deterministicFallback({ root, map: mapInfo, calls: [], prompt: base.prompt, why: 'question' });
     runStatus = 'PARTIEL';
     reason = 'fournisseur sans reponse (un seul appel).';
     journal('warn', 'reponse secours deterministe', { chars: full.length, why: 'question' });
+  } else if (!full && !runEntry.aborted) {
+    // P65-A1: une question n'a pas de reponse fabriquee. Une seule relance en
+    // texte simple, sans outil ; si le modele ne produit toujours rien, le
+    // tour est un ECHEC explicite (bouton Reessayer), et le resume
+    // deterministe du projet n'est qu'une PIECE JOINTE clairement etiquetee.
+    let retryTxt = '';
+    try {
+      journal('info', 'relance question en texte simple', { why: 'reponse vide' });
+      let lang2 = 'fr';
+      try { lang2 = msgs.detectLang(String(base.prompt || ''), 'fr'); } catch (_) { lang2 = 'fr'; }
+      const msgs2 = messages.concat([{ role: 'user', content: lang2 === 'en'
+        ? 'Answer in plain text, briefly. No tool, no JSON.'
+        : 'Reponds en texte simple, brievement. Aucun outil, aucun JSON.' }]);
+      const res2 = await streamChat(provider, msgs2, {
+        model,
+        shouldAbort: () => runEntry.aborted,
+        onRequest: (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; },
+      });
+      retryTxt = String((res2 && res2.text) || '').trim();
+    } catch (e) {
+      retryTxt = '';
+      journal('warn', 'relance question echouee', { code: (e && e.code) || 'provider_error' });
+    } finally { runEntry.destroy = null; }
+    if (retryTxt) {
+      full = retryTxt;
+      journal('info', 'question repondue apres relance', { chars: retryTxt.length });
+    } else {
+      const det = pmap.deterministicFallback({ root, map: mapInfo, calls: [], prompt: base.prompt, why: 'question' });
+      full = 'ECHEC : Le modele n\'a pas produit de reponse utilisable (aucun texte, aucun resultat d\'outil). ' +
+        'Cliquez sur Reessayer.\n\nResume deterministe du projet (aucune reponse du modele) :\n' + det;
+      runStatus = 'ECHEC';
+      reason = 'Le modele n\'a pas produit de reponse utilisable';
+      retryable = true;
+      journal('warn', 'question sans reponse utilisable', { relance: 'vide', retryable: true });
+    }
   }
   store.append(sessionId, { role: 'assistant', content: full });
   if (!reason) journal('info', 'question repondue', { chars: full.length });
@@ -528,10 +795,10 @@ async function questionTurn(base, session, toolsCtx, root, mapText, mapInfo, pre
   const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
   try {
     onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: false, status: runStatus, reason, filesModified: [], stopReason: 'question',
-      declaredDone: true, toolCalls: 0, unresolvedErrors: [] });
+      declaredDone: true, toolCalls: 0, retryable, unresolvedErrors: [] });
   } catch (_) {}
   if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
-  return { status: 'done', model, messageCount, runStatus };
+  return { status: 'done', model, messageCount, runStatus, retryable };
 }
 
 // ---------------------------------------------------------------------------
@@ -686,12 +953,71 @@ function computeRunStatus(declared, calls, extra) {
   return { status: 'TERMINE', reason: '', unresolved, verifyNote };
 }
 
+// ---------------------------------------------------------------------------
+// P65-A1: PREUVE DE FIN DE TOUR.
+//
+// Un tour ne peut se declarer TERMINE que s'il a produit SOIT un texte de
+// reponse visible non vide, SOIT au moins un appel d'outil REELLEMENT execute
+// avec un resultat. Les appels reply/done ne sont pas des executions : ils ne
+// declarent rien par eux-memes (c'est justement le trou qui produisait la photo
+// du 14/11 : "Termine." / "TERMINE (plan)" sans aucune reponse).
+//
+// Les codes ci-dessous sont des REFUS de l'agent (rien n'a tourne) : ils ne
+// comptent pas comme preuve.
+const NON_EVIDENCE_CODES = ['skipped', 'denied', 'need_approval', 'asked',
+  'already_done', 'corrective', 'dup', 'plan_mode'];
+const FINISH_TOOLS = ['reply', 'done'];
+
+function executedEvidence(calls) {
+  return (calls || []).filter((c) => c && c.ok && NON_EVIDENCE_CODES.indexOf(c.code) === -1
+    && FINISH_TOOLS.indexOf(String(c.tool || '')) === -1).length;
+}
+
+// Textes fabriques par le moteur quand il n'y avait RIEN a montrer. Ils ne
+// sont jamais une reponse : les compter comme telle est exactement le defaut.
+const SYNTHETIC_ANSWER = /^(Tache terminee( \(\d+ appel\(s\) abouti\(s\)\))?\.?|Termine\.)$/;
+
+function isSyntheticAnswer(txt) {
+  return SYNTHETIC_ANSWER.test(String(txt || '').trim());
+}
+
+// P65-A1: un texte est une REPONSE s'il est non vide, s'il n'est pas un texte
+// fabrique par le moteur et s'il n'est pas un simple constat de statut.
+function usableAnswer(txt) {
+  const t = String(txt || '').trim();
+  if (!t) return false;
+  if (isSyntheticAnswer(t)) return false;
+  if (/^(Statut : (PARTIEL|ECHEC) - raison :|Fait : aucun appel abouti\.)/.test(t)) return false;
+  return true;
+}
+
+// P65-A2: un appel d'outil de fin dont les arguments sont illisibles peut
+// quand meme porter un resume lisible (troncature, guillemet manquant). On
+// extrait ce texte au lieu de le jeter : en mode plan ou question, la reponse
+// ne depend d'aucun outil, donc ce resume EST la reponse.
+function salvageReadableText(argsText) {
+  const s = String(argsText || '');
+  if (!s) return '';
+  const m = /"(?:summary|text|resume|reponse)"\s*:\s*"((?:[^"\\]|\\.){2,2000})"/.exec(s);
+  if (m) {
+    try { return String(JSON.parse('"' + m[1] + '"')).trim(); } catch (_) { return m[1].trim(); }
+  }
+  // JSON coupe en pleine chaine : on prend ce qui suit le champ, jusqu'a la
+  // fin du texte (aucune invention : seulement les caracteres recus).
+  const m2 = /"(?:summary|text|resume|reponse)"\s*:\s*"([^"]{2,2000})$/.exec(s);
+  if (m2) return m2[1].trim();
+  return '';
+}
+
 // P61-9: aucun statut (PARTIEL / ECHEC / abandonne) n'est pose sans un texte
 // visible qui dit POURQUOI, CE QUI EST FAIT et CE QUI RESTE. Fonction pure.
 function statusNotice(verdict, calls, filesModified, stopReason) {
   const v = verdict || {};
   if (v.status === 'TERMINE') return '';
-  const done = (calls || []).filter((c) => c.ok && c.code !== 'skipped');
+  // P65-A1: reply/done ne sont pas du travail : les lister dans "Fait"
+  // ferait croire que quelque chose a ete execute.
+  const done = (calls || []).filter((c) => c.ok && c.code !== 'skipped'
+    && FINISH_TOOLS.indexOf(String(c.tool || '')) === -1);
   const ko = (calls || []).filter((c) => !c.ok && c.code !== 'skipped' && GUIDANCE_CODES.indexOf(c.code) === -1);
   const lines = [];
   const why = String(v.reason || stopReason || 'non precisee').replace(/[.\s]+$/, '');
@@ -779,6 +1105,24 @@ async function toolsTurn(base, session, toolsCtx) {
     mapInfo = null;
   }
 
+  // P65-D10: FICHIERS PERTINENTS. La carte du depot dit l'arborescence ; elle
+  // ne dit pas OU se trouve ce que la demande concerne. Le moteur calcule donc,
+  // SANS modele (symboles + recouvrement lexical), les quelques fichiers de
+  // code qui meritent le contexte. Un petit modele lit alors 3 a 8 chemins
+  // utiles au lieu de deviner.
+  let relevantText = '';
+  let relevantFiles = [];
+  try {
+    const rb = pmap.relevantBlock(root, base.prompt);
+    if (rb && rb.text) {
+      relevantText = rb.text;
+      relevantFiles = rb.files;
+      journal('info', 'fichiers pertinents (carte sans modele)', { fichiers: rb.files.join(','), tokens: rb.tokens });
+    }
+  } catch (e) {
+    journal('warn', 'fichiers pertinents impossibles', { error: String((e && e.message) || e).slice(0, 120) });
+  }
+
   // P39-c: general questions get README + manifests + deterministic
   // mini-analysis in context before the first model call.
   let preloadText = '';
@@ -823,7 +1167,11 @@ async function toolsTurn(base, session, toolsCtx) {
   // P43-2: QUESTIONS take the single-call path (no free tool exploration).
   // The map + preload above are shared, so the journal keeps the same
   // proof lines ('carte projet injectee', 'contexte general precharge').
-  if (intent.kind === 'QUESTION') {
+  // P65-E: un sous-agent de delegation recoit un role EXPLICITE ("executant",
+  // "verificateur") : le routeur ne doit pas transformer ce role en question
+  // sans outil. forceTools vient du seul appelant interne (delegation), jamais
+  // de l'utilisateur.
+  if (intent.kind === 'QUESTION' && !base.forceTools) {
     return questionTurn(base, session, toolsCtx, root, mapText, mapInfo, preloadText);
   }
   // P52 item 4: ACTION turns with stale engine todos (open, from a
@@ -854,6 +1202,29 @@ async function toolsTurn(base, session, toolsCtx) {
 
   // P26-a/b: mode, size profile, context budget.
   const mode = modes.getMode(session);
+  // P65-B: le profil de CAPACITE vient d'un manifeste (donnee), pas du code.
+  // Un modele inconnu recoit le profil prudent + un avertissement visible au
+  // journal ; l'administrateur peut surcharger ou ajouter un modele dans
+  // <home>/capability-profiles.json sans reconstruire l'application.
+  let cap = null;
+  try {
+    cap = capabilities.resolve(model, { home: homeOf(toolsCtx),
+      override: process.env.SUDO_AGENT_CAPABILITY_PROFILE });
+  } catch (e) {
+    cap = null;
+  }
+  if (log) {
+    try {
+      log.info('profil de capacite', { session: sessionId, modele: model,
+        profil: cap ? cap.id : 'indisponible', source: cap ? cap.source : '-',
+        outilsMax: cap ? cap.profile.toolsMax : null, ctxSafe: cap ? cap.profile.ctxSafe : null,
+        modeAppelOutils: cap ? cap.profile.toolMode : null,
+        avertissement: cap && cap.warning ? cap.warning : '' }, corr);
+    } catch (_) {}
+  }
+  if (cap && cap.warning) {
+    try { onEvent({ type: 'capability.warning', message: cap.warning, profile: cap.id }); } catch (_) {}
+  }
   const profile = profiles.selectProfile({ modelId: model, providerType: provider.type, override: provider.profile || process.env.SUDO_AGENT_PROFILE });
   // P50-6: sub-turns cap their rounds via base.maxIt (1..10).
   let maxIt = profiles.maxIters(profile);
@@ -864,7 +1235,14 @@ async function toolsTurn(base, session, toolsCtx) {
     if (Number.isFinite(m)) maxIt = Math.min(10, Math.max(1, m));
   }
   const subDepth = base.subDepth || 0; // P50-6: spawn allowed only at depth 0
-  const ctxTokens = profiles.resolveCtxTokens({ override: process.env.SUDO_AGENT_CTX_TOKENS, probeNctx: probeNctx(base.preProbe, model), providerType: provider.type });
+  let ctxTokens = profiles.resolveCtxTokens({ override: process.env.SUDO_AGENT_CTX_TOKENS, probeNctx: probeNctx(base.preProbe, model), providerType: provider.type });
+  // P65-B: "contexte maximal sur" du manifeste. Applique UNIQUEMENT pour un
+  // modele connu du manifeste et sans surcharge explicite de l'operateur.
+  if (cap && (cap.source === 'manifeste' || cap.source === 'impose') && !process.env.SUDO_AGENT_CTX_TOKENS
+      && Number.isFinite(cap.profile.ctxSafe) && ctxTokens > cap.profile.ctxSafe) {
+    if (log) { try { log.info('contexte plafonne par le profil', { session: sessionId, profil: cap.id, de: ctxTokens, a: cap.profile.ctxSafe }, corr); } catch (_) {} }
+    ctxTokens = cap.profile.ctxSafe;
+  }
 
   // P59-B: pre-load the matching READ tool. Bounded (25% of n_ctx) and masked
   // by the bridge; a failure is journaled and never blocks the turn.
@@ -919,16 +1297,22 @@ async function toolsTurn(base, session, toolsCtx) {
   // the plan and STOPS for validation (Lancer / Modifier) before any action.
   // A later short "lancer" / "reprendre" resumes the stored job on disk.
   let jobState = null;
+  let deterministicJob = false;
   try {
     const rootP = session.projectRoot;
     const isChildTurn = !!(toolsCtx && (toolsCtx.noOrchPlan || toolsCtx.noResume));
     if (mode === 'build' && !isChildTurn && rootP && intent.kind !== 'QUESTION') {
       const short = String(base.prompt || '').trim();
       const wantsStart = short.length < 400 && /^\s*(lancer|lance|demarrer|demarre|valider|valide|go)\b/i.test(short);
-      const wantsResume = short.length < 400 && /reprend/i.test(short);
+      // P63-C: "continu|reprends|poursuis|vas-y|..." = chemin de reprise
+      // deterministe (message entier, ponctuation toleree), jamais une
+      // demande au modele.
+      const wantsResume = resumeMod.isResumeIntent(short);
       const resum = (wantsStart || wantsResume) ? jobMod.resumable(rootP) : null;
       if (resum) {
         jobState = jobMod.load(rootP, resum.id);
+        // P63-C: "lancer" / "continu" / "reprends" ... = reprise deterministe.
+        deterministicJob = !!jobState;
         if (log) { try { log.info('projet repris', { session: sessionId, job: resum.id, restant: resum.steps - resum.done }, corr); } catch (_) {} }
       } else if (specMod.isLongSpec(base.prompt)) {
         const meta = specMod.ingest(rootP, base.prompt, {});
@@ -1055,6 +1439,63 @@ async function toolsTurn(base, session, toolsCtx) {
   };
   tctx.checkpoint = () => ensureSeriesCheckpoint(tctx);
 
+  // P63-F18: CALCUL DETERMINISTE. "2 + 298" ne passe pas par le modele :
+  // le resultat est exact, reproductible, et ne depend d'aucun fournisseur.
+  // (P65-A4: le calcul deterministe est traite plus haut, dans runTurn, pour
+  // tous les chemins - question, action, sans projet.)
+
+  // P63-C: CHEMIN DE REPRISE DETERMINISTE ---------------------------------
+  // Le message n'est qu'un mot de reprise ("continu", "reprends", "vas-y"...)
+  // ou une validation de plan ("lancer"). Dans ce cas l'agent ne consulte NI
+  // l'historique NI le modele : il relit le registre d'avancement sur disque,
+  // annonce les 4 nombres et reprend a la premiere etape non faite. C'est ce
+  // qui rend la reprise insensible a la fermeture de la fenetre, au
+  // redemarrage de l'editeur, a celui du runtime et a la veille.
+  if (mode === 'build' && !runEntry.aborted && !(toolsCtx && (toolsCtx.noResume || toolsCtx.noOrchPlan)) &&
+      session.projectRoot && resumeMod.isResumeIntent(base.prompt)) {
+    if (!jobState) {
+      // (b) rien a reprendre : reponse deterministe, aucun appel modele.
+      const txt = resumeMod.nothingText();
+      journal('info', 'reprise sans travail inacheve', {});
+      try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+      store.append(sessionId, { role: 'assistant', content: txt });
+      try { onEvent({ type: 'message.done', text: txt, aborted: false }); } catch (_) {}
+      try {
+        onEvent({ type: 'turn.done', turnId: corr, model: model, aborted: false, status: 'TERMINE',
+          reason: '', filesModified: [], stopReason: 'resume_empty', declaredDone: true,
+          toolCalls: 0, unresolvedErrors: [] });
+      } catch (_) {}
+      if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
+      return { status: 'done', model: model, runStatus: 'TERMINE', code: 'resume_empty' };
+    }
+    const counts = jobMod.countSteps(jobState);
+    const banner = resumeMod.bannerText({ id: jobState.id, counts: counts,
+      next: jobMod.firstOpenStep(jobState) });
+    journal('info', 'reprise deterministe', { job: jobState.id, ligne: banner });
+    try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+    try { onEvent({ type: 'job.resume', jobId: jobState.id, done: counts.done, failed: counts.failed,
+      interrupted: counts.interrupted, skipped: counts.skipped, total: counts.total,
+      next: jobMod.firstOpenStep(jobState), text: banner }); } catch (_) {}
+    store.append(sessionId, { role: 'assistant', content: banner });
+    const jobOut = await runProjectJob({ store: store, sessionId: sessionId, session: session,
+      jobState: jobState, root: root, runEntry: runEntry, runs: runs, provider: provider,
+      model: model, toolsCtx: toolsCtx, home: home, sessionRulesMap: sessionRulesMap,
+      onEvent: onEvent, journal: journal, log: log, corr: corr, runtimeWait: runtimeWait,
+      preProbe: base.preProbe });
+    const txt = String(jobOut.finalText || banner);
+    store.append(sessionId, { role: 'assistant', content: txt });
+    try { onEvent({ type: 'message.done', text: txt, aborted: !!runEntry.aborted }); } catch (_) {}
+    const v = jobOut.jobVerdict || { status: 'PARTIEL', reason: 'reprise incomplete.', unresolved: [] };
+    try {
+      onEvent({ type: 'turn.done', turnId: corr, model: model, aborted: !!runEntry.aborted,
+        status: v.status, reason: v.reason, filesModified: [], stopReason: 'resume',
+        declaredDone: true, toolCalls: 0, unresolvedErrors: [] });
+    } catch (_) {}
+    if (runs.get(sessionId) === runEntry) runs.delete(sessionId);
+    return { status: 'done', model: model, runStatus: v.status, reason: v.reason, code: 'resume', job: jobState.id };
+  }
+
+
   // P26-b/e: tool schemas for the profile + (full only) policy-allowed MCP tools.
   // P57-1: les schemas d'extensions ne sont proposes que si le contexte les
   // porte (meme seuil que le digest) ; sinon l'agent garde son jeu d'avant.
@@ -1093,7 +1534,15 @@ async function toolsTurn(base, session, toolsCtx) {
       journal('info', 'outils restreints (agent)', { tools: filtered.length });
     }
   }
+  // P65-B: nombre d'outils exposes plafonne par le profil de capacite.
   let activeSchemas = schemas;
+  if (cap) {
+    const lim = (cap && cap.source !== 'inconnu') ? capabilities.limitTools(activeSchemas, cap) : activeSchemas;
+    if (lim.length !== activeSchemas.length) {
+      journal('info', 'outils plafonnes par le profil', { profil: cap.id, de: activeSchemas.length, a: lim.length });
+      activeSchemas = lim;
+    }
+  }
   let schemaChars = JSON.stringify(activeSchemas).length;
 
   // P53-5: the engine speaks the conversation language (French by default).
@@ -1126,6 +1575,8 @@ async function toolsTurn(base, session, toolsCtx) {
     if (preloadText) out.splice(1, 0, { role: 'system', content: preloadText });
     if (platformText) out.splice(1, 0, { role: 'system', content: filter(platformText) });
     if (mapText) out.splice(1, 0, { role: 'system', content: mapText });
+    // P65-D10: la liste des fichiers pertinents suit la carte du depot.
+    if (relevantText) out.splice(1 + (mapText ? 1 : 0), 0, { role: 'system', content: relevantText });
     // P50-2: skills after map/preload (counted by the context estimate).
     if (skillsText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0), 0, { role: 'system', content: filter(skillsText) });
     if (recipeText) out.splice(1 + (mapText ? 1 : 0) + (preloadText ? 1 : 0) + (skillsText ? 1 : 0), 0,
@@ -1387,11 +1838,31 @@ async function toolsTurn(base, session, toolsCtx) {
 
   // P49-1: strict ACTION regime. QUESTION/AMBIGUOUS keep their historical
   // behavior bit for bit (chatOpts empty => byte-identical payloads).
-  const strictAction = intent.kind === 'ACTION';
+  // P65-E: un sous-agent VERIFICATEUR est en LECTURE SEULE par role : exiger
+  // de lui une modification de fichier n'a aucun sens (c'etait une boucle de
+  // relances inutiles). Le regime strict reste celui du mode agent normal.
+  const strictAction = intent.kind === 'ACTION' && !base.readonly;
   const runOnly = strictAction && !intent.expectsChange;
+  // P65-B: les reglages (temperature, plafonds de jetons) viennent du profil
+  // de capacite du modele, pas d'une constante du moteur. Repli sur les
+  // valeurs historiques si le manifeste est illisible.
+  // P65-B: pour un modele INCONNU du manifeste, on n'applique PAS de reglage
+  // a l'aveugle : les valeurs historiques du moteur restent en place (le
+  // profil prudent se limite a l'avertissement). Un profil n'est applique que
+  // s'il vient d'une entree CONNUE (manifeste ou choix de l'administrateur).
+  const capKnown = !!(cap && cap.profile && cap.source !== 'inconnu');
+  const capSampling = (capKnown && cap.profile) || {};
+  const capMax = (capSampling.maxTokens && typeof capSampling.maxTokens === 'object') ? capSampling.maxTokens : {};
   const chatOpts = strictAction
-    ? { toolChoice: 'required', sampling: { temperature: 0.15, topP: 0.9, topK: 40, repeatPenalty: 1.12, maxTokens: 1200 } }
-    : {};
+    ? { toolChoice: 'required', sampling: {
+        temperature: Number.isFinite(capSampling.temperature) ? capSampling.temperature : SAMPLING_DEFAUT.temperature,
+        topP: Number.isFinite(capSampling.topP) ? capSampling.topP : SAMPLING_DEFAUT.topP,
+        topK: Number.isFinite(capSampling.topK) ? capSampling.topK : SAMPLING_DEFAUT.topK,
+        repeatPenalty: Number.isFinite(capSampling.repeatPenalty) ? capSampling.repeatPenalty : SAMPLING_DEFAUT.repeatPenalty,
+        maxTokens: Number.isFinite(capMax.tool) ? capMax.tool : SAMPLING_DEFAUT.maxTokens } }
+    : { sampling: {
+        temperature: Number.isFinite(capSampling.temperature) ? capSampling.temperature : 0.2,
+        maxTokens: Number.isFinite(capMax.chat) ? capMax.chat : 700 } };
   const onReq = (req) => { runEntry.destroy = () => { try { req.destroy(Object.assign(new Error('aborted'), { abortedByAgent: true })); } catch (_) {} }; };
   // P62-E1: une ligne de mesures par appel au modele (aucune estimation :
   // uniquement ce que le runtime renvoie). Alimente l analyse de vitesse
@@ -1464,6 +1935,8 @@ async function toolsTurn(base, session, toolsCtx) {
         // des que /health repond (120 s max, message clair a chaque essai).
         // Un port ferme n'est pas une fin de tour, c'est un redemarrage.
         if (e && e.code === 'runtime_offline') {
+          // P63-B: le minuteur d'etape doit SAVOIR que le runtime est tombe.
+          try { onEvent({ type: 'runtime.down', message: 'Runtime indisponible : le temps de panne n est pas decompte du budget de l etape.' }); } catch (_) {}
           // P62-B1: fenetre de 180 s mesuree a l horloge MONOTONE, echeance
           // partagee par le tour : aucun compteur ne repart a zero.
           const pinned = Number(runtimeWait && runtimeWait.attempts) > 0;
@@ -1481,8 +1954,10 @@ async function toolsTurn(base, session, toolsCtx) {
                   Math.round((w && w.elapsedMs ? w.elapsedMs : 0) / 1000) + ' s sur 180 s)' }); } catch (_) {}
             },
           }));
+          runEntry.runtimeDownMs += Math.max(0, Number(w.elapsedMs) || 0);
           if (w.recovered) {
             journal('info', 'runtime retabli, requete rejouee', { elapsedMs: w.elapsedMs || 0, probes: w.attemptsMade });
+            try { onEvent({ type: 'runtime.up', downMs: runEntry.runtimeDownMs }); } catch (_) {}
             continue;
           }
           // P62-B2: l echec n est annonce qu APRES une tentative de relance
@@ -1498,8 +1973,10 @@ async function toolsTurn(base, session, toolsCtx) {
                     Math.round((w2 && w2.elapsedMs ? w2.elapsedMs : 0) / 1000) + ' s sur 60 s)' }); } catch (_) {}
               },
             }));
+            runEntry.runtimeDownMs += Math.max(0, Number(w2.elapsedMs) || 0);
             if (w2.recovered) {
               journal('info', 'runtime relance par le superviseur puis retabli', { probes: w2.attemptsMade });
+              try { onEvent({ type: 'runtime.up', downMs: runEntry.runtimeDownMs }); } catch (_) {}
               continue;
             }
           }
@@ -1578,7 +2055,7 @@ async function toolsTurn(base, session, toolsCtx) {
   const ownOrchPlan = (session.meta && session.meta.orchPlan) || '';
   if (mode === 'build' && intent.kind !== 'QUESTION' && !(toolsCtx && toolsCtx.noResume) && /reprend|resume|continu/i.test(base.prompt)) {
     try {
-      const dir = path.join(root, '.sudo-agent');
+      const dir = require('./stateDir').paths(root).root; // P63-D : hors projet
       const files = fs.readdirSync(dir).filter((f) => f.indexOf('orch-') === 0 && f.slice(-5) === '.json').sort();
       for (let i = files.length - 1; i >= 0; i--) {
         const pid = files[i].slice(5, -5);
@@ -1607,6 +2084,9 @@ async function toolsTurn(base, session, toolsCtx) {
   // second porte toujours fait/reste ; le premier est stocke tel quel, le
   // statut restant lisible dans turn.done / lastRun.
   let answerFromModel = false;
+  // P65-A2: le texte affiche a ete EXTRAIT d'un appel tronque : le tour a une
+  // reponse, mais elle peut etre incomplete. Le statut doit le dire.
+  let answerSalvaged = false;
   let iters = 0;
   let subSpawns = 0;
   let childSeq = 0;
@@ -1981,10 +2461,22 @@ async function toolsTurn(base, session, toolsCtx) {
           store.append(sessionId, { role: 'tool', tool_call_id: callIdF, name: first.name, content: filter(JSON.stringify(body)).slice(0, 8000) });
           try { onEvent({ type: 'tool.result', callId: callIdF, tool: first.name, ok, code, ms: 0, summary: String(text || '').slice(0, 300) }); } catch (_) {}
         };
-        const argText = first.name === 'reply'
+        // P65-A2: en mode plan ou question, la reponse ne depend d'AUCUN
+        // appel d'outil. Trois textes sont donc acceptes, dans cet ordre :
+        // le resume de l'appel, le texte libre du modele dans le meme tour,
+        // et un resume lisible extrait d'arguments illisibles.
+        const rawArgText = first.name === 'reply'
           ? String((first.args && first.args.text) || '').trim()
           : String((first.args && first.args.summary) || '').trim();
-        if (first.parseError) {
+        const freeText = String(reply.text || '').trim();
+        const salvaged = rawArgText ? '' : (salvageReadableText(first.argsText)
+          || (first.parseError ? salvageReadableText(reply.text) : ''));
+        const argText = rawArgText || freeText || salvaged;
+        if (salvaged && !rawArgText) {
+          answerSalvaged = true;
+          journal('info', 'resume extrait d un appel illisible', { tool: first.name, chars: argText.length });
+        }
+        if (first.parseError && !argText) {
           finishIntercept(false, 'bad_args', T().badArgs(first.parseError));
           closeExtrasF();
           continue;
@@ -2020,6 +2512,107 @@ async function toolsTurn(base, session, toolsCtx) {
         finalText = argText;
         break;
       }
+      // P65-E: DELEGATION DETERMINISTE. L'orchestrateur (le moteur, pas un
+      // modele) confie chaque etape a un sous-agent EXECUTANT (contexte isole,
+      // outils restreints) puis a un sous-agent VERIFICATEUR (lecture seule)
+      // qui examine le diff. L'ecriture n'est conservee que si les controles
+      // deterministes passent et si le verificateur ne dit pas NON : sinon les
+      // fichiers sont remis dans leur etat precedent. Un seul modele charge,
+      // execution sequentielle.
+      if (first.name === 'delegate') {
+        const callIdD = first.id || ('call-' + run.calls.length);
+        const stepsD = (Array.isArray(first.args && first.args.steps) && first.args.steps.length)
+          ? first.args.steps.slice(0, delegationMod.MAX_STEPS)
+          : plan.parseSteps(String((first.args && first.args.consigne) || ''), []).slice(0, delegationMod.MAX_STEPS);
+        const finishD = (ok, code, body, summary) => {
+          run.calls.push({ tool: 'delegate', target: String(stepsD.length) + ' etape(s)', ok, code, ms: 0,
+            at: new Date().toISOString(), summary: String(summary).slice(0, 300) });
+          store.append(sessionId, { role: 'tool', tool_call_id: callIdD, name: 'delegate',
+            content: filter(JSON.stringify(body)).slice(0, 8000) });
+          try { onEvent({ type: 'tool.result', callId: callIdD, tool: 'delegate', ok, code, ms: 0,
+            summary: String(summary).slice(0, 300) }); } catch (_) {}
+        };
+        if (!stepsD.length) {
+          finishD(false, 'bad_args', { ok: false, code: 'bad_args',
+            error: 'delegate: aucune etape exploitable (consigne = une etape par ligne).' }, 'aucune etape.');
+          continue;
+        }
+        const spawnChild = async (spec) => {
+          childSeq += 1;
+          const n = childSeq;
+          const child = store.create({ title: 'deleg-' + spec.role + ': ' + String(spec.step).slice(0, 50),
+            projectRoot: session.projectRoot });
+          try { store.update(child.id, (x) => { x.meta.mode = 'build'; x.meta.parent = sessionId; x.meta.role = spec.role; }); } catch (_) {}
+          if (sessionRulesMap && !sessionRulesMap.has(child.id)) sessionRulesMap.set(child.id, new Set());
+          let prompt = '';
+          if (spec.role === 'executor') {
+            prompt = 'Tu es le sous-agent EXECUTANT (' + (spec.index + 1) + '/' + spec.total + '). ' +
+              'Contexte isole : tu ne vois que cette etape.\nETAPE : ' + String(spec.step).slice(0, 2000) + '\n' +
+              'Outils autorises : ' + spec.tools.join(', ') + '. Aucun acces bash/delete/rename. ' +
+              'Fais le travail sur disque puis termine par done avec un resume court.';
+          } else {
+            prompt = 'Tu es le sous-agent VERIFICATEUR (' + (spec.index + 1) + '/' + spec.total + '). ' +
+              'Lecture seule. Etape demandee : ' + String(spec.step).slice(0, 1000) + '\n' +
+              'Fichiers modifies : ' + (spec.files || []).join(', ') + '\n' +
+              'Verifie que ces modifications repondent bien a l etape (contenu reel, lis les fichiers). ' +
+              'Termine par reply ou done avec EXACTEMENT : VERDICT: OUI ou VERDICT: NON, suivi d une raison courte.';
+          }
+          journal('info', 'delegation sous-agent', { role: spec.role, child: child.id,
+            outils: spec.tools.length, listeOutils: spec.tools.join(','),
+            etape: String(spec.step).slice(0, 100) });
+          let res = null;
+          try {
+            res = await runTurn({ store, sessionId: child.id, prompt: prompt, corr: corr + '.d' + n,
+              provider,
+              // Les approbations du sous-agent passent par les MEMES cartes que
+              // l'operateur (aucun contournement) : une action sensible reste
+              // approuvee par l'humain, jamais par le sous-agent lui-meme.
+              toolsCtx: { home, pending: toolsCtx ? toolsCtx.pending : new Map(),
+                waiters: toolsCtx ? toolsCtx.waiters : new Map(),
+                noResume: true, noOrchPlan: true, sessionRules: sessionRulesMap,
+                root: root || session.projectRoot },
+              runs, log, onEvent: () => {}, subDepth: subDepth + 1, maxIt: 4, runtimeWait,
+              allowedTools: spec.tools, forceTools: true, readonly: spec.role === 'verifier' });
+          } catch (e) {
+            journal('warn', 'delegation sous-agent erreur', { role: spec.role, child: child.id,
+              error: String((e && e.message) || e).slice(0, 160) });
+            return { ok: false, childId: child.id, text: String((e && e.message) || e).slice(0, 300) };
+          }
+          let text = '';
+          try {
+            const cs = store.get(child.id);
+            const arr = (cs && cs.messages) || [];
+            for (let mi = arr.length - 1; mi >= 0 && !text; mi--) {
+              const tcs = (arr[mi] && arr[mi].tool_calls) || [];
+              for (const tc of tcs) {
+                if (tc.name === 'done' || tc.name === 'reply') {
+                  try { const a = JSON.parse(tc.argsText || '{}'); text = String(a.summary || a.text || ''); } catch (_) {}
+                  break;
+                }
+              }
+              if (!text && arr[mi] && arr[mi].role === 'assistant') text = String(arr[mi].content || '');
+            }
+          } catch (_) {}
+          const meta = (store.get(child.id) || {}).meta || {};
+          return { ok: res && res.runStatus === 'TERMINE', childId: child.id, text: text,
+            filesModified: (meta.lastRun && meta.lastRun.filesModified) || [] };
+        };
+        try { onEvent({ type: 'tool.start', callId: callIdD, tool: 'delegate',
+          args: { consigne: stepsD.join(' ; ').slice(0, 200) } }); } catch (_) {}
+        const dres = await delegationMod.run({
+          root: root || session.projectRoot, turnId: corr, steps: stepsD, spawn: spawnChild,
+          journal: journal, onEvent: onEvent, maxSteps: delegationMod.MAX_STEPS,
+        });
+        const okD = dres.steps.some((x) => x.applied);
+        finishD(okD, okD ? 'ok' : 'delegation_refusee', {
+          ok: okD, code: okD ? 'ok' : 'delegation_refusee',
+          report: dres.report, steps: dres.steps,
+          result: { report: dres.report },
+        }, dres.report);
+        journal('info', 'delegation terminee', { rapport: dres.report, etapes: dres.steps.length });
+        continue;
+      }
+
       // P50-6: sub-agents (one task or parallel fan-out). Spawn is free
       // (no privilege escalation: same root, same rules, depth<=1, all
       // capped) but journaled. Children run real turns on child sessions.
@@ -2432,115 +3025,14 @@ async function toolsTurn(base, session, toolsCtx) {
   // a crash, a runtime restart or a closed panel resumes at the same step.
   let jobVerdict = null;
   if (jobState && !runEntry.aborted) {
-    journal('info', 'tour projet', { job: jobState.id, etapes: jobState.steps.length, execution: jobState.runs });
-    const waiters = (toolsCtx && toolsCtx.waiters) || null;
-    const stepRunner = async (step, ctx) => {
-      if (runEntry.aborted) return { calls: 0, aborted: true, error: 'tour abandonne.' };
-      const child = store.create({ title: 'etape ' + ctx.n + '/' + ctx.N + ': ' + String(step.text).slice(0, 50), projectRoot: session.projectRoot });
-      try { store.update(child.id, (x) => { x.meta.jobParent = sessionId; x.meta.job = jobState.id; }); } catch (_) {}
-      try { sessionRulesMap.set(child.id, sessionRulesMap.get(sessionId)); } catch (_) {}
-      const cprompt = jobMod.stepPrompt(ctx);
-      const t0 = Date.now();
-      let cres = null;
-      let timedOut = false;
-      const timer = setTimeout(() => { timedOut = true; try { abortRun(runs, child.id); } catch (_) {} }, ctx.msBudget);
-      if (timer.unref) { try { timer.unref(); } catch (_) {} }
-      const pabort = setInterval(() => { if (runEntry.aborted) { try { abortRun(runs, child.id); } catch (_) {} } }, 250);
-      if (pabort.unref) { try { pabort.unref(); } catch (_) {} }
-      // P56-4: un pas de projet ne peut JAMAIS bloquer le reste du projet.
-      // Le delai est double : 1) on demande l'arret du tour enfant, 2) si le
-      // tour ne rend pas la main (attente externe), on rend l'etape en echec
-      // au lieu de laisser le projet fige indefiniment.
-      let watchdog = null;
-      try {
-        const childTurn = runTurn({ store, sessionId: child.id, prompt: cprompt, corr: corr + '.j' + ctx.n,
-          provider, modelOverride: ctx.model || undefined,
-          toolsCtx: { home, sessionRules: sessionRulesMap, pending: toolsCtx ? toolsCtx.pending : new Map(),
-            waiters: (toolsCtx && toolsCtx.waiters) || null,
-            parentSessionId: sessionId, noResume: true, noOrchPlan: true },
-          runs, log, onEvent: (e) => {
-            try {
-              if (e && (e.type === 'turn.paused' || (typeof e.type === 'string' && e.type.indexOf('tool.') === 0) || e.type === 'runtime.wait')) onEvent(e);
-            } catch (_) {}
-          }, maxIt: ctx.callBudget, runtimeWait,
-          // P62-F7: une etape de cahier ne voit que son sous-ensemble d'outils.
-          allowedTools: Array.isArray(ctx.toolSubset) ? ctx.toolSubset : undefined });
-        cres = await Promise.race([
-          childTurn,
-          new Promise((resolve) => {
-            watchdog = setTimeout(() => {
-              timedOut = true;
-              // Diagnostic : ce que le processus attend encore (socket modele,
-              // attente externe, processus enfant) au moment du depassement.
-              let pending = [];
-              try {
-                pending = process._getActiveHandles().map((h) => {
-                  const n = (h && h.constructor && h.constructor.name) || '?';
-                  return n + (h && h.remotePort ? ':' + h.remotePort : '');
-                });
-              } catch (_) {}
-              journal('warn', 'etape projet delai depasse', { n: ctx.n, handles: pending.slice(0, 8) });
-              try { abortRun(runs, child.id); } catch (_) {}
-              resolve({ status: 'error', error: 'delai etape depasse (tour enfant sans reponse).' });
-            }, ctx.msBudget + 15000);
-            if (watchdog.unref) { try { watchdog.unref(); } catch (_) {} }
-          }),
-        ]);
-      } catch (e) {
-        journal('warn', 'etape projet erreur', { n: ctx.n, error: String((e && e.message) || e).slice(0, 160) });
-      } finally {
-        try { clearTimeout(timer); } catch (_) {}
-        try { clearTimeout(watchdog); } catch (_) {}
-        try { clearInterval(pabort); } catch (_) {}
-      }
-      const cs = store.get(child.id);
-      const cmeta = (cs && cs.meta && cs.meta.lastRun) || {};
-      const calls = Array.isArray(cmeta.calls) ? cmeta.calls : [];
-      const files = Array.isArray(cmeta.filesModified) ? cmeta.filesModified : [];
-      const testCall = calls.find((c) => c && c.ok && (c.tool === 'bash') && /test|spec|pytest|jest|npm run/.test(String(c.target || '')));
-      if (runEntry.aborted) return { calls: calls.length, aborted: true, error: 'tour abandonne.' };
-      if (timedOut) return { calls: calls.length, ok: false, error: 'delai etape depasse (' + Math.round((Date.now() - t0) / 1000) + 's).', files };
-      const childDeclared = cmeta.stopReason === 'declared';
-      const okChild = !cres || cres.status !== 'error';
-      return {
-        calls: calls.length,
-        // Honnetete (P56-5) : "declare terminee" sans fichier modifie et sans
-        // test execute n'est PAS une preuve. L'etape est alors marquee en
-        // echec et le rapport la compte en "non realisee".
-        ok: okChild && (files.length > 0 || !!testCall),
-        declared: childDeclared,
-        files,
-        test: testCall ? String(testCall.target).slice(0, 160) : null,
-        detail: files.length ? files.slice(0, 4).join(', ')
-          : (testCall ? 'test execute : ' + String(testCall.target).slice(0, 100)
-            : (childDeclared ? 'declare terminee sans modification verifiee' : 'aucune modification verifiee')),
-        error: (cres && cres.status === 'error') ? String(cres.error || 'erreur enfant').slice(0, 200) : '',
-      };
-    };
-    try {
-      const res = await jobMod.run({
-        root, state: jobState, runStep: stepRunner,
-        shouldStop: () => runEntry.aborted,
-        availableModels: (base.preProbe && Array.isArray(base.preProbe.models)) ? base.preProbe.models : [],
-        emit: (t, o) => { try { onEvent(Object.assign({ type: t }, o)); } catch (_) {} },
-      });
-      finalText = res.report || '';
-      declared = true;
-      const failed = res.failed || 0;
-      const skipped = res.skipped || 0;
-      const total = res.total || jobState.steps.length;
-      if (res.aborted) jobVerdict = { status: 'PARTIEL', reason: 'projet interrompu (bouton Reprendre ou "reprendre").', unresolved: [] };
-      else if (failed > 0 && res.done === 0) jobVerdict = { status: 'ECHEC', reason: failed + ' etape(s) non realisee(s) sur ' + total + '.', unresolved: [] };
-      else if (failed > 0) jobVerdict = { status: 'PARTIEL', reason: failed + ' etape(s) non realisee(s) sur ' + total + ', les autres sont faites.', unresolved: [] };
-      else if (skipped > 0) jobVerdict = { status: 'PARTIEL', reason: skipped + ' etape(s) non tentee(s) (budget).', unresolved: [] };
-      else jobVerdict = { status: 'TERMINE', reason: '', unresolved: [] };
-      journal('info', 'projet termine', { job: jobState.id, faites: res.done, echouees: failed, nontentees: skipped });
-    } catch (e) {
-      finalText = 'Projet interrompu : ' + String((e && e.message) || e).slice(0, 300);
-      declared = true;
-      jobVerdict = { status: 'ECHEC', reason: 'execution du projet interrompue.', unresolved: [] };
-      journal('warn', 'projet interrompu', { error: String((e && e.message) || e).slice(0, 160) });
-    }
+    const jobOut = await runProjectJob({ store: store, sessionId: sessionId, session: session,
+      jobState: jobState, root: root, runEntry: runEntry, runs: runs, provider: provider,
+      model: model, toolsCtx: toolsCtx, home: home, sessionRulesMap: sessionRulesMap,
+      onEvent: onEvent, journal: journal, log: log, corr: corr, runtimeWait: runtimeWait,
+      preProbe: base.preProbe });
+    finalText = jobOut.finalText;
+    declared = jobOut.declared;
+    jobVerdict = jobOut.jobVerdict;
   }
 
   if ((orchResumeId || orchTexts.length) && !runEntry.aborted) {
@@ -2853,9 +3345,111 @@ async function toolsTurn(base, session, toolsCtx) {
     store.update(sessionId, (s) => {
       if (!s.meta) s.meta = {};
       s.meta.lastRun = { at: new Date().toISOString(), status: verdict.status, reason: verdict.reason, filesModified, stopReason: stopOut, mode, profile, diff: runDiff || null,
+        runtimeDownMs: Math.max(0, Number(runEntry.runtimeDownMs) || 0),
         calls: run.calls.map((c) => ({ tool: c.tool, target: c.target, ok: c.ok, code: c.code })) };
     });
   } catch (_) {}
+  // ---------------------------------------------------------------------
+  // P65-A1: INVARIANT DE FIN DE TOUR (le coeur de la correction de T1).
+  //
+  // Aucun tour ne peut se terminer "TERMINE" sans preuve : un texte de
+  // reponse visible, ou au moins un appel d'outil reellement execute. Si le
+  // modele n'a rien produit (done vide, appel inutilisable apres reparation,
+  // texte vide), on lui redonne UNE chance en texte simple, SANS AUCUN OUTIL,
+  // une seule fois ; s'il ne produit toujours rien, le tour est un ECHEC
+  // explicite, avec un bouton "Reessayer" cote interface.
+  // ---------------------------------------------------------------------
+  const plainTextAnswer = async () => {
+    if (runEntry.aborted) return '';
+    const hist = [];
+    try {
+      for (const m of (store.get(sessionId) || { messages: [] }).messages) {
+        if (m && (m.role === 'user' || m.role === 'assistant') && String(m.content || '').trim()) {
+          hist.push({ role: m.role, content: filter(String(m.content).slice(0, 4000)) });
+        }
+      }
+    } catch (_) {}
+    if (!hist.length) hist.push({ role: 'user', content: filter(base.prompt) });
+    const sys = convLang === 'en'
+      ? 'Answer in plain text, briefly. No tool, no JSON, no code block.'
+      : 'Reponds en texte simple, brievement. Aucun outil, aucun JSON.';
+    try {
+      journal('info', 'relance en texte simple', { why: 'aucune reponse utilisable', tools: 0 });
+      const r = await chatOnce(provider, {
+        model,
+        messages: [{ role: 'system', content: sys }].concat(hist.slice(-6)),
+        temperature: 0.2, maxTokens: 700, onRequest: onReq,
+      });
+      return String((r && r.text) || '').trim();
+    } catch (e) {
+      journal('warn', 'relance en texte simple echouee', { code: (e && e.code) || 'provider_error' });
+      return '';
+    } finally {
+      runEntry.destroy = null;
+    }
+  };
+  let retryable = false;
+  if (!runEntry.aborted && !usableAnswer(finalText) && !executedEvidence(run.calls)) {
+    const retryTxt = await plainTextAnswer();
+    if (usableAnswer(retryTxt)) {
+      finalText = retryTxt;
+      answerFromModel = true;
+      declared = true;
+      verdict = computeRunStatus(true, run.calls,
+        { files: filesModified, verifyNote, lang: convLang });
+      if (strongVerdict) verdict = strongVerdict;
+      journal('info', 'reponse obtenue en texte simple', { chars: retryTxt.length });
+    }
+  }
+  // P65-A2: reponse extraite d'un appel tronque -> le statut est PARTIEL (le
+  // contenu peut etre incomplet). Jamais un TERMINE complaisant.
+  if (answerSalvaged && verdict.status === 'TERMINE' && !runEntry.aborted) {
+    verdict = { status: 'PARTIEL',
+      reason: 'reponse extraite d\'un appel tronque (possiblement incomplete)',
+      unresolved: verdict.unresolved || [], verifyNote: verdict.verifyNote || '' };
+  }
+  const hitMaxIters = /max_iters/.test(String((verdict && verdict.reason) || '')) ||
+    /max_iters/.test(String(stopOut || ''));
+  if (!runEntry.aborted && !usableAnswer(finalText) && !executedEvidence(run.calls) && !hitMaxIters) {
+    retryable = true;
+    verdict = { status: 'ECHEC', reason: 'Le modele n\'a pas produit de reponse utilisable',
+      unresolved: (verdict && verdict.unresolved) || [], retryable: true };
+    // P62-F4: la cause CONCRETE (cible introuvable, permission refusee,
+    // commande en echec) ne doit jamais etre remplacee par le message generique.
+    // On l'ecrit en clair sous la ligne d'echec, en francais.
+    const named = (run.calls || []).filter((c) => c && c.ok === false &&
+      ['not_found', 'target_given_up', 'denied', 'permission_denied', 'syntax_error', 'failed'].indexOf(c.code) !== -1);
+    let causeLine = '';
+    if (named.length) {
+      const c0 = named[0];
+      const tgt = String(c0.target || '').slice(0, 120);
+      if (c0.code === 'not_found' || c0.code === 'target_given_up') {
+        causeLine = convLang === 'en'
+          ? 'Cause: the target "' + tgt + '" is missing (tool ' + String(c0.tool || '?') + ', ' + c0.code + ').'
+          : 'Cause : la cible "' + tgt + '" est introuvable (outil ' + String(c0.tool || '?') + ', code ' + c0.code + ').';
+      } else if (c0.code === 'denied' || c0.code === 'permission_denied') {
+        causeLine = convLang === 'en'
+          ? 'Cause: the action on "' + tgt + '" was refused by permissions.'
+          : 'Cause : l\'action sur "' + tgt + '" a ete refusee par les permissions.';
+      } else if (c0.code === 'syntax_error') {
+        causeLine = convLang === 'en'
+          ? 'Cause: the file "' + tgt + '" does not compile (syntax check).'
+          : 'Cause : le fichier "' + tgt + '" ne compile pas (controle de syntaxe).';
+      } else {
+        causeLine = convLang === 'en'
+          ? 'Cause: the tool ' + String(c0.tool || '?') + ' failed on "' + tgt + '".'
+          : 'Cause : l\'outil ' + String(c0.tool || '?') + ' a echoue sur "' + tgt + '".';
+      }
+    }
+    finalText = (convLang === 'en'
+      ? 'FAILED: the model produced no usable answer (no text, no tool result). Retry with the Retry button.'
+      : 'ECHEC : Le modele n\'a pas produit de reponse utilisable (aucun texte, aucun resultat d\'outil). ' +
+        'Cliquez sur Reessayer.')
+      + (causeLine ? '\n' + causeLine : '')
+      + '\n\n' + statusNotice(verdict, run.calls, filesModified, stopOut)
+        .split('\n').filter((l) => /^(Fait|Reste) :/.test(l)).join('\n');
+    journal('warn', 'tour sans reponse utilisable', { tools: (run.calls || []).length, retryable: true });
+  }
   // P61-9: la reponse finale est TOUJOURS dans le transcript (un modele qui
   // termine par l'outil `done` n'ecrit aucun message assistant : l'utilisateur
   // voyait alors un tour "TERMINE" sans texte).
@@ -2864,19 +3458,13 @@ async function toolsTurn(base, session, toolsCtx) {
     const txt = String(finalText || '').trim();
     const has = txt && arr.some((m) => m && m.role === 'assistant' && String(m.content || '').trim() === txt);
     if (txt && !has) store.append(sessionId, { role: 'assistant', content: txt });
-    else if (!txt) {
-      const okN = run.calls.filter((c) => c.ok && c.code !== 'skipped').length;
-      const fallbackTxt = verdict.status === 'TERMINE'
-        ? 'Tache terminee (' + okN + ' appel(s) abouti(s)).'
-        : statusNotice(verdict, run.calls, filesModified, stopOut);
-      if (fallbackTxt) { finalText = fallbackTxt; store.append(sessionId, { role: 'assistant', content: fallbackTxt }); }
-    }
   } catch (_) {}
   try { onEvent({ type: 'message.done', text: finalText, aborted: false }); } catch (_) {}
   const messageCount = (store.get(sessionId) || { messages: [] }).messages.length;
   try {
     onEvent({ type: 'turn.done', turnId, messageCount, model, aborted: false, status: verdict.status, reason: verdict.reason, filesModified, stopReason: stopOut,
-      declaredDone: declared, toolCalls: run.calls.length, unresolvedErrors: verdict.unresolved.map((c) => ({ tool: c.tool, target: c.target, code: c.code })) });
+      declaredDone: declared, toolCalls: run.calls.length, retryable: retryable || !!verdict.retryable,
+      unresolvedErrors: verdict.unresolved.map((c) => ({ tool: c.tool, target: c.target, code: c.code })) });
   } catch (_) {}
   journal('info', 'turn done', { status: verdict.status, tools: run.calls.length, files: filesModified.length, stopReason: stopOut });
   if (runs.get(sessionId) === runEntry) runs.delete(sessionId);

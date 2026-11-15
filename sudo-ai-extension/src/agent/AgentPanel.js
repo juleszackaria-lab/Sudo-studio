@@ -812,6 +812,22 @@ function renderDone(d) {
     r.textContent = d.reason;
     box.appendChild(r);
   }
+  // P65-A1: tour sans reponse utilisable -> le moteur l'a declare ECHEC et
+  // demande explicitement une relance. Le bouton renvoie la MEME demande
+  // (aucune nouvelle mecanique, aucun statut change).
+  if (d.retryable) {
+    var rrow = document.createElement("div");
+    rrow.className = "jobacts";
+    var rbt = document.createElement("button");
+    rbt.className = "btn sm";
+    rbt.textContent = "R\u00e9essayer";
+    rbt.addEventListener("click", function() {
+      rrow.parentNode.removeChild(rrow);
+      if (lastUserText) post({ type: "send", text: lastUserText });
+    });
+    rrow.appendChild(rbt);
+    box.appendChild(rrow);
+  }
   if (d.filesModified && d.filesModified.length) {
     var det = document.createElement("details");
     det.className = "changes";
@@ -1162,14 +1178,18 @@ function renderJobResume(m) {
   row.className = "jobacts";
   var rb = document.createElement("button");
   rb.className = "btn sm";
-  rb.textContent = "Reprendre";
+  // P63-C : le libelle est "Reprendre le travail" et le message envoye est le
+  // MOT CLE de reprise ("reprendre"), donc le chemin deterministe du moteur :
+  // registre relu sur disque, aucun appel au modele, reprise a la premiere
+  // etape non faite.
+  rb.textContent = "Reprendre le travail";
   rb.addEventListener("click", function() {
     if (row.parentNode) row.parentNode.removeChild(row);
     var ok = document.createElement("div");
     ok.className = "stepline";
-    ok.textContent = "Reprise du projet demandee.";
+    ok.textContent = "Reprise du travail demandee.";
     card.appendChild(ok);
-    jobSend("reprendre le projet");
+    jobSend("reprendre");
   });
   row.appendChild(rb);
   card.appendChild(row);
@@ -1509,6 +1529,7 @@ class AgentPanel {
         this._post({ type: 'done', status: d.status, reason, reply: d.reply || '',
             filesModified: d.filesModified || [], fileStats, sessionId: d.sessionId || null,
             mode: d.mode || this.mode, noModel, kind: d.kind || null,
+            retryable: !!d.retryable,
             filesRead: d.filesRead || [] });
         this._postRunState();
         this._drain();

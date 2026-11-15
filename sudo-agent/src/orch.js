@@ -20,7 +20,8 @@ function stepCallBudget() { return plan.intEnv('SUDO_AGENT_STEP_CALLS', 8); }
 function stepMsBudget() { return plan.intEnv('SUDO_AGENT_STEP_MS', 120000); }
 function orchMsBudget() { return plan.intEnv('SUDO_AGENT_ORCH_MS', 1800000); }
 
-function orchDir(root) { return path.join(root, '.sudo-agent'); }
+// P63-D: les plans orchestres vivent hors du projet, comme les travaux.
+function orchDir(root) { return require('./stateDir').paths(root).root; }
 function planPath(root, planId) {
   const safe = String(planId || '').replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 80);
   return path.join(orchDir(root), 'orch-' + safe + '.json');

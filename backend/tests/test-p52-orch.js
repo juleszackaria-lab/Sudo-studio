@@ -6,9 +6,15 @@
 'use strict';
 
 const fs = require('fs');
+// P63-D: l'etat (orch, jobs, specs) vit hors du projet.
+if (!process.env.SUDO_AGENT_HOME) {
+  process.env.SUDO_AGENT_HOME = require('path').join(require('os').tmpdir(), 'p63-orch-home-' + process.pid);
+}
 const os = require('os');
 const path = require('path');
 const http = require('http');
+// P63-D: l'etat vit hors du projet (workspace).
+const stateDir = require(path.join(__dirname, '..', '..', 'sudo-agent', 'src', 'stateDir'));
 
 const ROOT = path.join(__dirname, '..', '..');
 const AGENT_SRC = path.join(ROOT, 'sudo-agent', 'src');
@@ -192,7 +198,7 @@ t('O1 orchestre 6 etapes : TERMINE, fichiers, n/N, etat disque', async () => {
   }
   assert(r.events.some((e) => e.type === 'orch.done'), 'orch.done');
   assert(r.chats.length === 12, '12 appels enfants, 0 parent (recu ' + r.chats.length + ')');
-  const stFile = path.join(w.proj, '.sudo-agent', 'orch-o1plan.json');
+  const stFile = path.join(stateDir.paths(w.proj).root, 'orch-o1plan.json');
   assert(fs.existsSync(stFile), 'etat disque');
   const st = JSON.parse(fs.readFileSync(stFile, 'utf8'));
   assert(st.steps.length === 6 && st.steps.every((x) => x.status === 'done'), 'etat 6/6 done');
@@ -219,7 +225,7 @@ t('O3 crash (abort) puis reprise : PARTIEL interrompu puis TERMINE 6/6', async (
   const r1 = await w.turn(stepsPrompt(6, 'o'), stepsResponses(6, 'o'), { corr: 'o3plan', abortOnPaused: true });
   assert(r1.out.runStatus === 'PARTIEL', 'PARTIEL, recu ' + r1.out.runStatus);
   assert(r1.last.content.indexOf('interrompu') !== -1 || r1.last.content.indexOf('NON TENTE') !== -1, 'rapport interrompu');
-  const st1 = JSON.parse(fs.readFileSync(path.join(w.proj, '.sudo-agent', 'orch-o3plan.json'), 'utf8'));
+  const st1 = JSON.parse(fs.readFileSync(path.join(stateDir.paths(w.proj).root, 'orch-o3plan.json'), 'utf8'));
   assert(st1.steps[0].status === 'pending', 'etape 1 en attente (reprise possible)');
   assert(!fs.existsSync(path.join(w.proj, 'o01.txt')), 'rien de verifie');
   // Reprise : mots explicites + regles.
@@ -230,7 +236,7 @@ t('O3 crash (abort) puis reprise : PARTIEL interrompu puis TERMINE 6/6', async (
   for (let i = 1; i <= 6; i++) {
     assert(fs.existsSync(path.join(w.proj, 'o' + String(i).padStart(2, '0') + '.txt')), 'fichier ' + i);
   }
-  const st2 = JSON.parse(fs.readFileSync(path.join(w.proj, '.sudo-agent', 'orch-o3plan.json'), 'utf8'));
+  const st2 = JSON.parse(fs.readFileSync(path.join(stateDir.paths(w.proj).root, 'orch-o3plan.json'), 'utf8'));
   assert(st2.runs >= 1 && st2.steps.every((x) => x.status === 'done'), 'etat repris puis 6/6');
   assert(r2.journal.indexOf('reprise plan orchestre') !== -1, 'journal reprise');
 }),
@@ -293,7 +299,7 @@ t('O8 arret serveur simule a l etape 12 : reprise termine 30/30', async () => {
   // (abort landed mid-step) or 13 (step 12 just finished). Either way the
   // run stopped early and steps 1..11 are verified.
   assert(r1.events.some((e) => e.type === 'orch.step' && e.n >= 12), 'etape 12 atteinte');
-  const st1 = JSON.parse(fs.readFileSync(path.join(proj, '.sudo-agent', 'orch-o8plan.json'), 'utf8'));
+  const st1 = JSON.parse(fs.readFileSync(path.join(stateDir.paths(proj).root, 'orch-o8plan.json'), 'utf8'));
   const K = st1.steps.findIndex((x) => x.status !== 'done') + 1;
   assert(K >= 12 && K <= 13, 'point de chute K=' + K);
   for (let i = 1; i < K; i++) {
@@ -320,7 +326,7 @@ t('O8 arret serveur simule a l etape 12 : reprise termine 30/30', async () => {
   for (let i = 12; i <= 30; i++) {
     assert(fs.existsSync(path.join(proj, 'f' + String(i).padStart(2, '0') + '.txt')), 'etape ' + i + ' reprise');
   }
-  const st = JSON.parse(fs.readFileSync(path.join(proj, '.sudo-agent', 'orch-o8plan.json'), 'utf8'));
+  const st = JSON.parse(fs.readFileSync(path.join(stateDir.paths(proj).root, 'orch-o8plan.json'), 'utf8'));
   assert(st.steps.every((x) => x.status === 'done'), 'etat final 30/30');
 }),
 t('O9 budget global : arret honnete avec NON TENTE', async () => {

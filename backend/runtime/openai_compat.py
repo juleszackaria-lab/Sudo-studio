@@ -320,6 +320,101 @@ def build_toolcall_json_schema(tools):
     }
 
 
+def repair_tool_output(text, tools, finish_reason=None):
+    """Decide si une sortie de modele contient un appel d'outil exploitable.
+
+    P63-F: c'est LA fonction utilisee par la route /v1/chat/completions
+    (via _repair_or_none). Elle est exposee au niveau module pour etre testee
+    sans Flask ni modele.
+
+    `finish_reason == "length"` = generation COUPEE par max_tokens : le JSON
+    est alors referme proprement (close_truncated) au lieu d'etre declare
+    illisible. Un JSON reellement invalide reste refuse.
+
+    Returns {"ok": True, "calls": [...], "repairs": [...]} ou
+            {"ok": False, "code": "invalid_tool_call", ...}.
+    """
+    truncated = (finish_reason == "length")
+    if toolcall_repair is not None:
+        return toolcall_repair.repair_toolcall(text, tools, truncated=truncated)
+    if truncated:
+        try:
+            closed, changed = _close_truncated_text(text)
+            if changed:
+                text = closed
+        except Exception:
+            pass
+    p, err = parse_toolcall_json(text, tools)
+    if p:
+        return {"ok": True, "calls": [p], "repairs": []}
+    return {"ok": False, "code": "invalid_tool_call", "field": "json",
+            "message": "Appel invalide : JSON. Reponds par {tool, args}.",
+            "detail": err or "", "example": {}, "repairs": []}
+
+
+_SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{8,}|sk-[A-Za-z0-9]{8,}|Bearer\s+[A-Za-z0-9._-]{8,}|"
+                         r"AKIA[0-9A-Z]{8,})")
+
+
+def mask_secrets(text):
+    """Masque tout jeton visible avant d'ecrire une sortie de modele au journal."""
+    try:
+        return _SECRET_RE.sub("[MASQUE]", str(text or ""))
+    except Exception:
+        return ""
+
+
+def reject_line(tag, finish_reason, usage, text, res):
+    """P63-B/P3 : UNE ligne par appel d'outil rejete.
+
+    Elle contient tout ce qu'il faut pour prouver la cause sur un vrai modele :
+    la raison d'arret, le nombre de jetons generes, la longueur de la sortie
+    brute, ses 80 premiers et 80 derniers caracteres (masques) et la raison
+    exacte du rejet. Sans ces quatre mesures, "JSON illisible" ne prouve rien.
+    """
+    gen = 0
+    try:
+        gen = int((usage or {}).get("completion_tokens") or 0)
+    except Exception:
+        gen = 0
+    raw = str(text or "")
+    r = res or {}
+    reason = " / ".join([x for x in [
+        str(r.get("code") or ""),
+        str(r.get("field") or ""),
+        str(r.get("detail") or r.get("message") or ""),
+    ] if x])
+    return ("[OPENAI] tool rejete %s: finish_reason=%s jetons_generes=%d longueur=%d "
+            "debut=%r fin=%r raison=%s"
+            % (tag, finish_reason or "?", gen, len(raw),
+               mask_secrets(raw[:80]), mask_secrets(raw[-80:]), reason[:240]))
+
+
+def _close_truncated_text(text):
+    """Repli local quand toolcall_repair est absent (meme regle de fermeture)."""
+    s = str(text or "")
+    in_str = False
+    esc = False
+    depth = 0
+    for ch in s:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+    out = s + ('"' if in_str else "") + ("}" * max(0, depth))
+    return out, out != s
+
+
 def tool_defs_for_prompt(tools):
     """Compact JSON list of tool definitions, injected in the prompt."""
     compact = []
@@ -677,12 +772,13 @@ def register_openai_routes(app, ctx):
         except Exception as _e:
             dlog("[GRAMMAR] construction impossible : %s" % _e)
 
-        def _attempt(msgs):
+        def _attempt(msgs, max_tok=None):
+            _mt = int(max_tok) if max_tok else max_tokens
             if _gram is not None:
                 try:
                     return llm.create_chat_completion(
                         messages=msgs, temperature=temperature,
-                        max_tokens=max_tokens, stop=stop, **sampling,
+                        max_tokens=_mt, stop=stop, **sampling,
                         grammar=_gram)
                 except TypeError:
                     dlog("[OPENAI] grammar unsupported by this llama version")
@@ -691,14 +787,20 @@ def register_openai_routes(app, ctx):
             try:
                 return llm.create_chat_completion(
                     messages=msgs, temperature=temperature,
-                    max_tokens=max_tokens, stop=stop, **sampling,
+                    max_tokens=_mt, stop=stop, **sampling,
                     response_format={"type": "json_object"})
             except TypeError:
                 # Old llama without response_format: unconstrained attempt.
                 dlog("[OPENAI] response_format unsupported, plain attempt")
                 return llm.create_chat_completion(
                     messages=msgs, temperature=temperature,
-                    max_tokens=max_tokens, stop=stop, **sampling)
+                    max_tokens=_mt, stop=stop, **sampling)
+
+        def _finish_of(out):
+            try:
+                return ((out.get("choices") or [{}])[0] or {}).get("finish_reason")
+            except (AttributeError, TypeError, IndexError):
+                return None
 
         def _text_of(out):
             try:
@@ -712,27 +814,51 @@ def register_openai_routes(app, ctx):
         # valide, on repare encore ; si l'appel reste inutilisable, on
         # repond 200 avec une erreur structuree que le MOTEUR renvoie au
         # modele (la boucle de l'agent peut alors reprendre).
-        def _repair_or_none(txt):
-            if toolcall_repair is None:
-                p, err = parse_toolcall_json(txt, tools)
-                if p:
-                    return {"ok": True, "calls": [p], "repairs": []}
-                return {"ok": False, "code": "invalid_tool_call", "field": "json",
-                        "message": "Appel invalide : JSON. Reponds par {tool, args}.",
-                        "detail": err or "", "example": {}, "repairs": []}
-            return toolcall_repair.repair_toolcall(txt, tools)
+        def _repair_or_none(txt, truncated=False):
+            # P63-F: MEME fonction que celle testee par
+            # test-p63-json-tronque.js (aucune copie, aucun faux vert).
+            return repair_tool_output(txt, tools,
+                                      finish_reason=("length" if truncated else "stop"))
 
         repairs_log = []
         usage = {}
         res = None
+        # P63-B/P3 : derniere sortie brute observee (pour la ligne de rejet).
+        last_text = ""
+        last_finish = "?"
         try:
             out1 = _attempt(aug)
             if isinstance(out1, dict) and out1.get("usage"):
                 usage = out1["usage"]
             text1 = _text_of(out1)
-            dlog("[OPENAI] tool attempt1 raw: %.200s" % (text1 or "",))
-            res = _repair_or_none(text1)
+            last_text, last_finish = text1, _finish_of(out1)
+            # P63-F: le journal montrait 200 caracteres et faisait croire a un
+            # JSON valide. On journalise la LONGUEUR, la raison d'arret et la
+            # FIN du texte : c'est la que se voit une troncature.
+            dlog("[OPENAI] tool attempt1 raw: len=%d finish=%s head=%s tail=%s"
+                 % (len(text1 or ""), _finish_of(out1), (text1 or "")[:200],
+                    (text1 or "")[-120:]))
+            trunc1 = (_finish_of(out1) == "length")
+            res = _repair_or_none(text1, truncated=trunc1)
             repairs_log.extend(res.get("repairs") or [])
+            if not res.get("ok") and trunc1:
+                # Troncature confirmee : on redonne UNE chance avec un budget
+                # double (un appel d'outil court ne doit pas etre coupe par le
+                # budget d'un resume long), puis on referme ce qui peut l'etre.
+                big = min(2048, max(768, int(max_tokens) * 2))
+                dlog("[OPENAI] troncature (finish=length) : nouvel essai avec max_tokens=%d" % big)
+                try:
+                    out1b = _attempt(aug, big)
+                    text1b = _text_of(out1b)
+                    last_text, last_finish = text1b, _finish_of(out1b)
+                    if isinstance(out1b, dict) and out1b.get("usage"):
+                        usage = out1b["usage"]
+                    res = _repair_or_none(text1b, truncated=(_finish_of(out1b) == "length"))
+                    repairs_log.extend(res.get("repairs") or [])
+                    if res.get("ok"):
+                        repairs_log.append("troncature-recuperee-max_tokens:%d" % big)
+                except Exception as e:
+                    dlog("[OPENAI] essai apres troncature en echec : %s" % e)
         except Exception as e:
             # Une exception de llama n'est pas une sortie imparfaite : on la
             # signale comme erreur de service (503), jamais un faux succes.
@@ -741,8 +867,7 @@ def register_openai_routes(app, ctx):
 
         if not res.get("ok"):
             # 2e passe : message de reparation explicite (message + exemple).
-            dlog("[OPENAI] tool attempt1 invalid (%s), repair prompt" %
-                 (res.get("detail") or res.get("field")))
+            dlog(reject_line("essai1", _finish_of(out1), usage, text1, res))
             aug2 = (aug + [{"role": "assistant", "content": text1 or ""}] +
                     [{"role": "user", "content":
                       (toolcall_repair.repair_prompt(res) if toolcall_repair
@@ -752,8 +877,11 @@ def register_openai_routes(app, ctx):
                 if isinstance(out2, dict) and out2.get("usage"):
                     usage = out2["usage"]
                 text2 = _text_of(out2)
-                dlog("[OPENAI] tool attempt2 raw: %.200s" % (text2 or "",))
-                res2 = _repair_or_none(text2)
+                last_text, last_finish = text2, _finish_of(out2)
+                dlog("[OPENAI] tool attempt2 raw: len=%d finish=%s head=%s tail=%s"
+                     % (len(text2 or ""), _finish_of(out2), (text2 or "")[:200],
+                        (text2 or "")[-120:]))
+                res2 = _repair_or_none(text2, truncated=(_finish_of(out2) == "length"))
                 repairs_log.extend(res2.get("repairs") or [])
                 if res2.get("ok"):
                     res = res2
@@ -765,8 +893,7 @@ def register_openai_routes(app, ctx):
         if not res.get("ok"):
             # 3e passe (derniere) : on redemande en format TRES simple, sans
             # schema, pour laisser une chance a un petit modele.
-            dlog("[OPENAI] tool attempt2 invalid (%s), last simple pass" %
-                 (res.get("detail") or res.get("field")))
+            dlog(reject_line("essai2", _finish_of(out2), usage, text2, res))
             ex = (res.get("example") or {})
             simple = (aug + [{"role": "assistant", "content": text1 or ""},
                              {"role": "user", "content":
@@ -776,7 +903,8 @@ def register_openai_routes(app, ctx):
                 out3 = _attempt(simple)
                 if isinstance(out3, dict) and out3.get("usage"):
                     usage = out3["usage"]
-                res3 = _repair_or_none(_text_of(out3))
+                last_text, last_finish = _text_of(out3), _finish_of(out3)
+                res3 = _repair_or_none(last_text, truncated=(last_finish == "length"))
                 repairs_log.extend(res3.get("repairs") or [])
                 if res3.get("ok"):
                     res = res3
@@ -791,8 +919,7 @@ def register_openai_routes(app, ctx):
         if not res.get("ok"):
             # Jamais 500 : 200 + erreur structuree (le moteur la renvoie au
             # modele et tente une autre voie).
-            dlog("[OPENAI] tool call unusable after repairs (%s)" %
-                 (res.get("detail") or res.get("field")))
+            dlog(reject_line("final", last_finish, usage, last_text, res))
             instr = (toolcall_repair.describe_error(res) if toolcall_repair
                      else "Appel invalide. Reponds par {tool, args}.")
             req_id_bad = "chatcmpl-" + uuid.uuid4().hex[:12]

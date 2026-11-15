@@ -17,6 +17,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const stateDir = require(path.join(__dirname, '..', '..', 'sudo-agent', 'src', 'stateDir'));
 const http = require('http');
 const vm = require('vm');
 const Module = require('module');
@@ -180,7 +181,8 @@ function echoServer() {
 }
 
 function agentFile(home, name, obj) {
-  const d = path.join(home, '.sudo_studio', 'agent');
+  // P63-D: dossier de l'agent hors du projet (dossier produit).
+  const d = stateDir.agentHome({ home: home });
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, name), JSON.stringify(obj), 'utf8');
 }

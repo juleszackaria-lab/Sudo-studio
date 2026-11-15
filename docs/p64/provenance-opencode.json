@@ -1,0 +1,248 @@
+[
+ {
+  "fichier": "sudo-agent/src/resolvePath.js",
+  "n_shingles": 450,
+  "jaccard_max": 0.00779,
+  "proche": "opencode/packages/core/src/tool/plugin/read.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/registry.js",
+  "n_shingles": 186,
+  "jaccard_max": 0.00395,
+  "proche": "opencode/packages/session-ui/src/components/markdown-inline-code-kind.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/journal.js",
+  "n_shingles": 1154,
+  "jaccard_max": 0.00287,
+  "proche": "opencode/packages/app/src/session/commands/export.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/orch.js",
+  "n_shingles": 873,
+  "jaccard_max": 0.00199,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/tools/names.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/rules.js",
+  "n_shingles": 511,
+  "jaccard_max": 0.00152,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/claude/fork.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/checkpoints.js",
+  "n_shingles": 723,
+  "jaccard_max": 0.00115,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/claude/fork.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/skills.js",
+  "n_shingles": 1919,
+  "jaccard_max": 0.00113,
+  "proche": "opencode/packages/core/src/tool.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/stepcheck.js",
+  "n_shingles": 774,
+  "jaccard_max": 0.00109,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/claude/fork.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/prereq.js",
+  "n_shingles": 780,
+  "jaccard_max": 0.00108,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/claude/fork.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/commands.js",
+  "n_shingles": 894,
+  "jaccard_max": 0.00096,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/claude/fork.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/projectmap.js",
+  "n_shingles": 1821,
+  "jaccard_max": 0.00095,
+  "proche": "opencode/packages/session-ui/src/components/tool-count-label.tsx"
+ },
+ {
+  "fichier": "sudo-agent/src/msgs.js",
+  "n_shingles": 553,
+  "jaccard_max": 0.00094,
+  "proche": "opencode/packages/app/src/new-session/pin-board-machine.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/exec.js",
+  "n_shingles": 956,
+  "jaccard_max": 0.00087,
+  "proche": "opencode/packages/app/src/home/sessions/index.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/keyring.js",
+  "n_shingles": 926,
+  "jaccard_max": 0.00087,
+  "proche": "opencode/packages/session-ui/src/pierre/virtualizer.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/job.js",
+  "n_shingles": 2511,
+  "jaccard_max": 0.00076,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/tools/names.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/gen.js",
+  "n_shingles": 1311,
+  "jaccard_max": 0.00069,
+  "proche": "opencode/packages/core/src/plugin/provider/claude-agent/claude/fork.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/recovery.js",
+  "n_shingles": 574,
+  "jaccard_max": 0.00064,
+  "proche": "opencode/packages/ai/src/provider-error.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/agents.js",
+  "n_shingles": 594,
+  "jaccard_max": 0.00063,
+  "proche": "opencode/packages/ai/src/provider-error.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/resume.js",
+  "n_shingles": 221,
+  "jaccard_max": 0.00055,
+  "proche": "opencode/packages/app/src/session/composer/spring-height-machine.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/providers.js",
+  "n_shingles": 1763,
+  "jaccard_max": 0.00051,
+  "proche": "opencode/packages/app/src/providers/connect/go-upsell-hero-machine.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/permissions.js",
+  "n_shingles": 951,
+  "jaccard_max": 0.0005,
+  "proche": "opencode/packages/core/src/plugin/provider/opencode-watches.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/verify.js",
+  "n_shingles": 459,
+  "jaccard_max": 0.00048,
+  "proche": "opencode/packages/app/src/session/composer/spring-height-machine.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/extensions.js",
+  "n_shingles": 1821,
+  "jaccard_max": 0.00047,
+  "proche": "opencode/packages/core/src/session/subagent-completion.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/recipes.js",
+  "n_shingles": 1304,
+  "jaccard_max": 0.00044,
+  "proche": "opencode/packages/ai/src/provider-error.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/plan.js",
+  "n_shingles": 2412,
+  "jaccard_max": 0.00043,
+  "proche": "opencode/packages/app/src/new-session/brick-breaker.tsx"
+ },
+ {
+  "fichier": "sudo-agent/src/biz.js",
+  "n_shingles": 3358,
+  "jaccard_max": 0.0004,
+  "proche": "opencode/packages/session-ui/src/timeline/session-timeline-row.tsx"
+ },
+ {
+  "fichier": "sudo-agent/src/mcp.js",
+  "n_shingles": 2708,
+  "jaccard_max": 0.00039,
+  "proche": "opencode/packages/simulation/src/backend/simulated-provider.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/server.js",
+  "n_shingles": 4644,
+  "jaccard_max": 0.00037,
+  "proche": "opencode/packages/core/src/plugin/provider/digitalocean.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/platform.js",
+  "n_shingles": 2753,
+  "jaccard_max": 0.00032,
+  "proche": "opencode/packages/tui/src/util/collapse-tool-output.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/tools.js",
+  "n_shingles": 9563,
+  "jaccard_max": 0.0002,
+  "proche": "opencode/packages/session-ui/src/tools/run-machine.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/loop.js",
+  "n_shingles": 13678,
+  "jaccard_max": 0.00011,
+  "proche": "opencode/packages/ai/src/protocols/anthropic-messages.ts"
+ },
+ {
+  "fichier": "sudo-agent/src/calc.js",
+  "n_shingles": 387,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/compress.js",
+  "n_shingles": 335,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/profiles.js",
+  "n_shingles": 446,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/boundary.js",
+  "n_shingles": 529,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/powerkeep.js",
+  "n_shingles": 416,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/stateDir.js",
+  "n_shingles": 811,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/modes.js",
+  "n_shingles": 983,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/store.js",
+  "n_shingles": 594,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/router.js",
+  "n_shingles": 363,
+  "jaccard_max": 0.0,
+  "proche": null
+ },
+ {
+  "fichier": "sudo-agent/src/intent.js",
+  "n_shingles": 689,
+  "jaccard_max": 0.0,
+  "proche": null
+ }
+]

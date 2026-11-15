@@ -23,7 +23,9 @@ function resolveStoreDir(opts) {
   opts = opts || {};
   if (opts.storeDir) return String(opts.storeDir);
   if (process.env.SUDO_AGENT_STORE) return String(process.env.SUDO_AGENT_STORE);
-  return path.join(resolveHome(opts), '.sudo_studio', 'agent', 'sessions');
+  // P63-D: les sessions vivent hors du projet (dossier produit). Le chemin
+  // historique reste lu en repli (voir legacyStoreDirs) pour ne rien perdre.
+  return path.join(require('./stateDir').agentHome({ home: resolveHome(opts) }), 'sessions');
 }
 
 function newId() {

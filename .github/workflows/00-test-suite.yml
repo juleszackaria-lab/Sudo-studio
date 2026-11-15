@@ -96,6 +96,59 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  # P65-C7/C9: BANC D'ESSAI DE L'AGENT, BLOQUANT. Il execute 34 taches
+  # deterministes sur trois projets (Next.js, Flutter, Python) avec le FAUX
+  # fournisseur, et verifie le resultat sur le disque (fichiers, syntaxe,
+  # tests, git status). Aucun modele, aucun reseau, aucun artefact.
+  # Les mesures d'un vrai modele (jetons/s, RAM runtime) restent "NON MESURE
+  # ICI" : elles se font sur un PC via scripts/agent-bench.sh|ps1.
+  agent-bench:
+    name: Agent bench (faux fournisseur)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install backend deps (harnais)
+        working-directory: backend
+        run: npm ci --no-audit --no-fund
+
+      - name: Banc d essai (34 taches, verification automatique)
+        run: |
+          set -o pipefail
+          node scripts/ci/agent-bench.js --json /tmp/agent-bench-report.json 2>&1 | tee /tmp/agent-bench.log
+          rc=${PIPESTATUS[0]}
+          python3 - <<'PY'
+          import json, sys
+          with open('/tmp/agent-bench-report.json') as f:
+              rep = json.load(f)
+          m = rep['measures']
+          print('taches : %s/%s (%s%%)' % (m['ok'], m['tasks'], m['rate']))
+          if m['ok'] != m['tasks']:
+              print('[FAIL] toutes les taches du banc ne passent pas')
+              sys.exit(1)
+          if m['tokensPerSecond'] is not None:
+              print('[FAIL] jetons/seconde mesures avec un faux fournisseur : chiffre invente')
+              sys.exit(1)
+          PY
+          if [ $rc -ne 0 ]; then echo '[FAIL] banc rouge'; exit $rc; fi
+          exit 0
+
+      - name: Preuves (rapport JSON)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: P65-agent-bench
+          path: |
+            /tmp/agent-bench-report.json
+            /tmp/agent-bench.log
+          if-no-files-found: warn
+          retention-days: 30
+
   # P61-D: le script de preuve utilisateur (scripts/agent-e2e.ps1) doit etre
   # ANALYSE syntaxiquement par la CI, pas seulement ecrit sur un PC Windows.
   # pwsh est present sur les runners Linux : aucun modele, aucun runtime.

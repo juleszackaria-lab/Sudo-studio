@@ -7,6 +7,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const stateDir = require(path.join(__dirname, '..', '..', 'sudo-agent', 'src', 'stateDir'));
 const http = require('http');
 const crypto = require('crypto');
 const { spawn, execFileSync } = require('child_process');
@@ -527,7 +528,8 @@ t('C5', 'project rule persists outside project, applies to new session', async (
     const r = await callTool(port, token, sid, 'edit', { file: 'p.txt', old: '1\n', new: '1b\n' });
     const ap = await approve(port, token, sid, r.body.request.id, 'project');
     assert(ap.body.status === 'executed', 'project approve');
-    const rulesDir = path.join(a.home, '.sudo_studio', 'agent', 'rules');
+    // P63-D: l'etat vit hors du projet (dossier produit, plus .sudo_studio).
+    const rulesDir = path.join(stateDir.agentHome({ home: a.home }), 'rules');
     const files = fs.readdirSync(rulesDir);
     assert(files.length === 1 && files[0].endsWith('.json'), 'rule file outside project');
     const ruleBody = JSON.parse(fs.readFileSync(path.join(rulesDir, files[0]), 'utf8'));
@@ -720,7 +722,7 @@ t('D3', 'snapshots live outside the project', async () => {
   try {
     const sid = await newSession(port, token, proj);
     await approvedWrite(port, token, sid, 'x.txt', 'x\n');
-    const cdir = path.join(a.home, '.sudo_studio', 'agent', 'checkpoints', sid);
+    const cdir = path.join(stateDir.agentHome({ home: a.home }), 'checkpoints', sid);
     const files = fs.readdirSync(cdir);
     assert(files.some((f) => f.endsWith('.json') && !f.endsWith('.run.json')), 'snapshot file');
     assert(files.some((f) => f.endsWith('.run.json')), 'run sidecar');

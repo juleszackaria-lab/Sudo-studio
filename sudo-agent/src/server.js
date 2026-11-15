@@ -884,6 +884,32 @@ function startFromEnv() {
     const addr = app.server.address();
     const port = addr && addr.port ? addr.port : parsed.port;
     try { log.sessionHeader(gatherSessionInfo({ build: 'sudo-agent/' + ver, provider: publicProvider(parsed.provider), port })); } catch (_) {}
+    // P63-B/P5/P6 : UN SEUL emplacement d'etat. L'ancien dossier global
+    // (~/.sudo_studio/agent) n'est plus lu ni ecrit : il est DETECTE ici et
+    // migre seulement si l'utilisateur a donne son accord explicite
+    // (SUDO_AGENT_MIGRATE_HOME=approve au demarrage).
+    try {
+      const sd = require('./stateDir');
+      const det = sd.detectLegacyHome({});
+      if (det.present) {
+        const approved = String(process.env.SUDO_AGENT_MIGRATE_HOME || '') === 'approve';
+        const mig = sd.migrateHome(approved, {});
+        try {
+          log.warn('etat agent : ancien dossier detecte', {
+            from: det.dir, to: det.target, elements: det.entries.length,
+            migre: !!(mig && mig.ok && !mig.skipped), approuve: approved,
+          });
+          if (!approved) {
+            log.warn('etat agent : migration possible sur accord', {
+              commande: 'SUDO_AGENT_MIGRATE_HOME=approve puis redemarrer l agent',
+            });
+          }
+        } catch (_) {}
+      } else {
+        try { log.info('etat agent', { home: sd.agentHome({}) }); } catch (_) {}
+      }
+    } catch (_) {}
+
     try { log.info('tools ready', { count: toolMod.toolNames().length, p8: toolMod.p8Available() }); } catch (_) {}
     try { log.info('listen', { host: HOST, port, sessions: store.count(), provider: !!parsed.provider }); } catch (_) {}
     // Handshake for the supervising extension (stdout, single JSON line).

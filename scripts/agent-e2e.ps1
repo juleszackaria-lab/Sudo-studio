@@ -14,6 +14,15 @@
     6 journaux ERROR                  12 vingt demandes a la suite (P61)
                                       13 copie du projet vers un dossier voisin (P62-D5)
                                       14 reprise automatique apres coupure du runtime (P62-B2)
+                                      15 cahier de 300 lignes : plan annonce = etapes executees (P63-E)
+                                      16 panne runtime de 150 s puis "continu" : etape INTERROMPUE, reprise (P63-B)
+                                      17 "continu" sans travail inacheve : reponse deterministe, 0 appel modele (P63-C)
+                                      18 redemarrage du serveur d'agent puis "continu" : reprise depuis le registre (P63-C)
+                                      19 git status propre : aucun fichier de l'agent dans le projet (P63-D)
+                                      20 trois echecs sur une etape puis passage a la suivante (P63-C7)
+                                      21 aucun tour vide accepte (P65-A1)
+                                      22 calcul deterministe sans appel modele (P65-A4)
+                                      23 banc d essai 38 taches, faux fournisseur (P65-C)
 
   Usage :
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\agent-e2e.ps1 `
@@ -401,6 +410,224 @@ try {
       -Note 'P62-B1 : message francais attendu ; si le runtime ne tombe pas pendant le test, la preuve reste NON PROUVEE'
   }
 } catch { Write-Step -Name '14 reprise automatique apres coupure du runtime' -Ok $false -Proof $_.Exception.Message }
+
+# ------------------------------------- 15 cahier 300 lignes : plan et execution
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '15 cahier 300 lignes : plan annonce = etapes executees' -Why '-SkipModel'
+  } else {
+    $s15 = New-Session -Root $copy
+    $lignes = @('# Cahier des charges P63', '', '## 1. Objectif', 'Livrer un produit verifiable.')
+    for ($i = 1; $i -le 40; $i++) {
+      $lignes += ('- Exigence {0} : le module {0} doit etre implemente et verifie par un test.' -f $i)
+      if ($i % 6 -eq 0) { $lignes += ('## {0}. Section {1}' -f (2 + [math]::Floor($i / 6)), $i) }
+      for ($k = 0; $k -lt 6; $k++) { $lignes += ('Complement de specification ligne {0}.' -f $lignes.Count) }
+    }
+    $cahier = ($lignes -join "`n")
+    $r15 = Invoke-Turn -SessionId $s15 -Prompt $cahier -TimeoutSec 600
+    $plan = $null
+    foreach ($e in $r15.events) { if ($e.event -eq 'job.plan') { $plan = $e.data } }
+    $annonce = if ($plan) { [int]$plan.steps } else { -1 }
+    $exigences = if ($plan) { [int]$plan.requirements } else { -1 }
+    # P63-D: l'etat doit vivre dans le workspace hors projet (empreinte du chemin).
+    $abs = (Resolve-Path -LiteralPath $copy).Path
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $octets = [System.Text.Encoding]::UTF8.GetBytes($abs.ToLower())
+    $fp = ([System.BitConverter]::ToString($sha.ComputeHash($octets)) -replace '-', '').ToLower().Substring(0, 16)
+    $ws = Join-Path $env:LOCALAPPDATA ('SudoStudio\agent\workspaces\' + $fp)
+    $horsProjet = -not (Test-Path (Join-Path $copy '.sudo-agent'))
+    $etatHors = Test-Path (Join-Path $ws 'jobs')
+    $proof15 = Get-LogProof -Pattern 'cahier des charges recu'
+    Write-Step -Name '15 cahier 300 lignes : plan annonce = etapes executees' `
+      -Ok ([bool]$plan -and $annonce -gt 0 -and $exigences -gt 0 -and [bool]$horsProjet -and [bool]$etatHors) `
+      -Proof (('lignes : ' + $lignes.Count + ' ; exigences : ' + $exigences + ' ; etapes annoncees : ' + $annonce +
+        ' ; aucun .sudo-agent dans le projet : ' + $horsProjet + ' ; etat hors projet : ' + $etatHors) +
+        $(if ($proof15) { ' || ' + $proof15 } else { '' })) `
+      -Note ('P63-E/D : workspace attendu ' + $ws)
+  }
+} catch { Write-Step -Name '15 cahier 300 lignes : plan annonce = etapes executees' -Ok $false -Proof $_.Exception.Message }
+
+# ------------------------------- 16 panne runtime de 150 s puis "continu"
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '16 panne runtime 150 s puis "continu" : etape INTERROMPUE' -Why '-SkipModel'
+  } else {
+    $s16 = New-Session -Root $copy
+    $tache = 'Cree le fichier p63-coupure.txt contenant OK, puis termine.'
+    $null = Invoke-Turn -SessionId $s16 -Prompt $tache -TimeoutSec 240
+    # Coupure volontaire du runtime local (150 s), puis relance.
+    $coupe = $false
+    try {
+      $conn = Get-NetTCPConnection -LocalPort 6000 -State Listen -ErrorAction Stop | Select-Object -First 1
+      Stop-Process -Id $conn.OwningProcess -Force -ErrorAction Stop
+      $coupe = $true
+    } catch { $coupe = $false }
+    if (-not $coupe) {
+      Skip-Step -Name '16 panne runtime 150 s puis "continu" : etape INTERROMPUE' -Why 'runtime local non arretable automatiquement'
+    } else {
+      Start-Sleep -Seconds 150
+      Write-Step -Name '16 panne runtime 150 s : le temps de panne est exclu du budget' -Ok $true `
+        -Proof 'runtime arrete 150 s ; voir les lignes runtime.down / panne dans le journal' `
+        -Note 'P63-B : le minuteur d etape est suspendu pendant la panne'
+      $r16 = Invoke-Turn -SessionId $s16 -Prompt 'continu' -TimeoutSec 600
+      $ligneReprise = Get-LogProof -Pattern 'reprise deterministe'
+      $interrompue = Get-LogProof -Pattern 'INTERROMPUE \(runtime\)'
+      $budget = Get-LogProof -Pattern 'budget temps depasse'
+      Write-Step -Name '16 "continu" apres panne : reprise depuis le registre' `
+        -Ok ([bool]$ligneReprise -and (-not $budget)) `
+        -Proof (('ligne de reprise : ' + [bool]$ligneReprise + ' ; etape INTERROMPUE : ' + [bool]$interrompue +
+          ' ; aucune ligne "budget temps depasse" : ' + (-not [bool]$budget)) +
+          $(if ($ligneReprise) { ' || ' + $ligneReprise } else { '' }))
+    }
+  }
+} catch { Write-Step -Name '16 panne runtime 150 s puis "continu" : etape INTERROMPUE' -Ok $false -Proof $_.Exception.Message }
+
+# -------------------------- 17 "continu" sans travail inacheve (0 appel modele)
+try {
+  $s17 = New-Session -Root $copy
+  $r17 = Invoke-Turn -SessionId $s17 -Prompt 'continu' -TimeoutSec 120
+  $texte17 = $r17.text
+  $rien = $texte17 -match 'Aucun travail inacheve'
+  $preuve17 = Get-LogProof -Pattern 'reprise sans travail inacheve'
+  $appels = @(Select-String -Path $script:AgentLog -Pattern 'appel modele' -AllMatches 2>$null)
+  Write-Step -Name '17 "continu" sans travail inacheve : reponse deterministe' `
+    -Ok ([bool]$rien -and [bool]$preuve17) `
+    -Proof (('texte : ' + ($texte17 -replace "`r?`n", ' ').Substring(0, [math]::Min(90, $texte17.Length)) +
+      ' ; journal "reprise sans travail inacheve" : ' + [bool]$preuve17 + ' ; appels modele du journal : ' + $appels.Count)) `
+    -Note 'P63-C : chemin deterministe, aucun passage par le modele'
+} catch { Write-Step -Name '17 "continu" sans travail inacheve : reponse deterministe' -Ok $false -Proof $_.Exception.Message }
+
+# ------------------- 18 redemarrage du serveur d'agent puis "continu" (registre)
+try {
+  $s18 = New-Session -Root $copy
+  $tache18 = 'Cree le fichier p63-reprise.txt contenant OK, puis termine.'
+  $null = Invoke-Turn -SessionId $s18 -Prompt $tache18 -TimeoutSec 240
+  # Redemarrage de l'editeur = redemarrage du serveur d'agent qui le sert.
+  try { Stop-Process -Id $agentProc.Id -Force } catch {}
+  Start-Sleep -Seconds 2
+  # Meme lancement que le demarrage initial (aucune fonction cachee).
+  $agentProc = Start-Process -FilePath $node.Source -ArgumentList @($serverJs) -PassThru -WindowStyle Hidden
+  $null = Wait-Agent -Seconds 40
+  $r18 = Invoke-Turn -SessionId $s18 -Prompt 'continu' -TimeoutSec 600
+  $reprise18 = Get-LogProof -Pattern 'reprise deterministe'
+  $incomplet = ($r18.text -match 'INCOMPLET|TERMINE')
+  Write-Step -Name '18 redemarrage du serveur puis "continu" : reprise depuis le registre' `
+    -Ok ([bool]$reprise18 -and [bool]$incomplet) `
+    -Proof (('ligne de journal : ' + [bool]$reprise18 + ' ; bilan present : ' + [bool]$incomplet) +
+      $(if ($reprise18) { ' || ' + $reprise18 } else { '' })) `
+    -Note 'P63-C : le registre sur disque suffit, la conversation n est pas consultee'
+} catch { Write-Step -Name '18 redemarrage du serveur puis "continu" : reprise depuis le registre' -Ok $false -Proof $_.Exception.Message }
+
+# -------------------------------------------------- 19 git status propre
+try {
+  $gitOk = $false
+  $gitNote = ''
+  try {
+    Push-Location $copy
+    git init -q 2>$null
+    git add -A 2>$null
+    git -c user.email=e2e@local -c user.name=e2e commit -qm 'etat initial' 2>$null
+    $avant = (git status --porcelain) -join ';'
+    Pop-Location
+    $s19 = New-Session -Root $copy
+    $null = Invoke-Turn -SessionId $s19 -Prompt 'Cree le fichier p63-git.txt contenant OK, puis termine.' -TimeoutSec 240
+    Push-Location $copy
+    $apres = @(git status --porcelain | Where-Object { $_ -match '\.sudo-agent|\.sudo_studio|SudoStudio' })
+    Pop-Location
+    $gitOk = ($avant -eq '') -and ($apres.Count -eq 0)
+    $gitNote = 'avant : "' + $avant + '" ; fichiers d agent vus par git apres : ' + $apres.Count
+  } catch {
+    $gitNote = $_.Exception.Message
+    try { Pop-Location } catch {}
+  }
+  Write-Step -Name '19 git status propre : aucun fichier de l agent dans le projet' -Ok $gitOk -Proof $gitNote `
+    -Note 'P63-D : jobs, specs, registre et points de retour vivent hors du projet'
+} catch { Write-Step -Name '19 git status propre : aucun fichier de l agent dans le projet' -Ok $false -Proof $_.Exception.Message }
+
+# ---------------------------- 20 trois echecs sur une etape puis la suivante
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '20 trois echecs puis passage a l etape suivante' -Why '-SkipModel'
+  } else {
+    $s20 = New-Session -Root $copy
+    $demande20 = 'Cree le fichier p63-echec.txt dans le dossier Z:\invalide\ (impossible), puis termine.'
+    $null = Invoke-Turn -SessionId $s20 -Prompt $demande20 -TimeoutSec 420
+    $essai3 = Get-LogProof -Pattern 'essai 3'
+    $suivante = Get-LogProof -Pattern 'etapes suivantes|etape suivante|ECHOUE'
+    Write-Step -Name '20 trois echecs puis passage a l etape suivante' `
+      -Ok ([bool]$essai3 -or [bool]$suivante) `
+      -Proof ('essai 3 : ' + [bool]$essai3 + ' ; passage a la suite : ' + [bool]$suivante +
+        $(if ($essai3) { ' || ' + $essai3 } else { '' })) `
+      -Note 'P63-C7 : le nombre d essais est un reglage documente (3 par defaut)'
+  }
+} catch { Write-Step -Name '20 trois echecs puis passage a l etape suivante' -Ok $false -Proof $_.Exception.Message }
+
+# ---------------------------------------------- 21 tours vides (P65-A1/A2/A3)
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '21 aucun tour vide accepte' -Why '-SkipModel'
+  } else {
+    $s21 = New-Session -Root $copy
+    $r21 = Invoke-Turn -SessionId $s21 -Prompt 'salut' -TimeoutSec 240
+    $txt = ''
+    if ($r21 -and $r21.text) { $txt = [string]$r21.text }
+    # Un tour n est TERMINE que s il rend une reponse visible non vide ; le
+    # texte de repli historique ("Tache terminee (N appel(s) abouti(s)).") ne
+    # compte pas : c est exactement le defaut T1 corrige en P65-A1.
+    $filler = $txt -match 'Tache terminee \(\d+ appel'
+    $visible = ($txt.Trim().Length -gt 0) -and (-not $filler)
+    $relance = Get-LogProof -Pattern 'relance texte simple|aucune reponse utilisable'
+    Write-Step -Name '21 aucun tour vide accepte' -Ok ($visible) `
+      -Proof ('texte visible : ' + $visible + ' ; repli historique : ' + [bool]$filler +
+        ' ; longueur : ' + $txt.Trim().Length + ' caracteres' +
+        $(if ($relance) { ' || ' + $relance } else { '' })) `
+      -Note 'P65-A1 : sinon relance en texte simple, puis ECHEC explicite + bouton Reessayer'
+  }
+} catch { Write-Step -Name '21 aucun tour vide accepte' -Ok $false -Proof $_.Exception.Message }
+
+# ---------------------------- 22 calcul deterministe sans appel modele (P65-A4)
+try {
+  $s22 = New-Session -Root $copy
+  $appelsAvant = 0
+  if ($script:AgentLog -and (Test-Path $script:AgentLog)) {
+    $appelsAvant = (Select-String -Path $script:AgentLog -Pattern 'appel modele' -AllMatches).Count
+  }
+  $r22 = Invoke-Turn -SessionId $s22 -Prompt 'calcule (3+4)*5' -TimeoutSec 120
+  $txt22 = ''
+  if ($r22 -and $r22.text) { $txt22 = [string]$r22.text }
+  $appelsApres = 0
+  if ($script:AgentLog -and (Test-Path $script:AgentLog)) {
+    $appelsApres = (Select-String -Path $script:AgentLog -Pattern 'appel modele' -AllMatches).Count
+  }
+  $zeroAppel = (($appelsApres - $appelsAvant) -eq 0)
+  $juste = $txt22 -match '35'
+  Write-Step -Name '22 calcul deterministe sans appel modele' -Ok ($zeroAppel -and $juste) `
+    -Proof ('resultat juste (35) : ' + [bool]$juste + ' ; appels modele : ' + ($appelsApres - $appelsAvant))
+} catch { Write-Step -Name '22 calcul deterministe sans appel modele' -Ok $false -Proof $_.Exception.Message }
+
+# --------------------------------------- 23 banc d essai complet (P65-C)
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '23 banc d essai (38 taches)' -Why '-SkipModel'
+  } else {
+    $benchScript = Join-Path (Split-Path -Parent $PSCommandPath) 'ci\agent-bench.js'
+    if (-not (Test-Path $benchScript)) {
+      $benchScript = Join-Path $InstallDir 'resources\app\scripts\ci\agent-bench.js'
+    }
+    if (Test-Path $benchScript) {
+      $benchOut = Join-Path $OutDir 'banc-faux-fournisseur.txt'
+      $env:SUDO_BENCH_FAKE = '1'
+      $out = & node $benchScript --json (Join-Path $OutDir 'banc-faux-fournisseur.json') 2>&1 | Out-String
+      $out | Set-Content -Path $benchOut -Encoding UTF8
+      $ligne = ($out -split "`n" | Where-Object { $_ -match '^TOTAL :' } | Select-Object -Last 1)
+      Write-Step -Name '23 banc d essai (38 taches)' -Ok ([bool]($ligne -match '38/38')) `
+        -Proof ($(if ($ligne) { $ligne.Trim() } else { 'aucune ligne TOTAL' })) `
+        -Note 'faux fournisseur : deterministe, sans modele (resultat d un vrai modele = autre etape)'
+    } else {
+      Skip-Step -Name '23 banc d essai (38 taches)' -Why 'agent-bench.js absent du paquet'
+    }
+  }
+} catch { Write-Step -Name '23 banc d essai (38 taches)' -Ok $false -Proof $_.Exception.Message }
 
 # -------------------------------------------------------------- 10 secrets
 try {

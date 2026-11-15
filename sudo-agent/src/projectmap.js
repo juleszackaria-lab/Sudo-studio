@@ -445,3 +445,207 @@ module.exports = {
   parseManifestDeps, notFoundHint, formatNotFound, deterministicFallback,
   buildQuestionContext,
 };
+
+// ---------------------------------------------------------------------------
+// P65-D10: CARTE DU DEPOT SANS MODELE + recherche lexicale.
+//
+// La carte existante (buildProjectMap) donne l'arborescence et les fichiers
+// cles. Ici on va plus loin, toujours sans appeler le modele :
+//   - symbolIndex : symboles declares par fichier (fonctions, classes,
+//     exports) par analyse de motifs selon l'extension ;
+//   - relevantFiles : quels fichiers de CODE meritent d'entrer dans le
+//     contexte pour CETTE demande (recouvrement lexical chemin + symboles).
+//
+// Objectif : un petit modele recoit 3 a 8 fichiers pertinents au lieu d'une
+// arborescence muette ou d'un depot entier (budget de contexte).
+// Bornes strictes : 400 fichiers, profondeur 5, 60 symboles par fichier.
+// Ne jette jamais : un dossier illisible rend une liste vide.
+// ---------------------------------------------------------------------------
+const SYMBOL_MAX_FILES = 400;
+const SYMBOL_MAX_DEPTH = 5;
+const SYMBOL_MAX_PER_FILE = 60;
+const RELEVANT_MAX = 8;
+
+const SYMBOL_PATTERNS = {
+  '.js': [/\bfunction\s+([A-Za-z_$][\w$]*)/g, /\bclass\s+([A-Za-z_$][\w$]*)/g,
+    /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(/g, /\bexports\.([A-Za-z_$][\w$]*)/g],
+  '.mjs': [/\bfunction\s+([A-Za-z_$][\w$]*)/g, /\bclass\s+([A-Za-z_$][\w$]*)/g],
+  '.ts': [/\bfunction\s+([A-Za-z_$][\w$]*)/g, /\bclass\s+([A-Za-z_$][\w$]*)/g,
+    /\bexport\s+const\s+([A-Za-z_$][\w$]*)/g],
+  '.jsx': [/\bfunction\s+([A-Za-z_$][\w$]*)/g, /\bconst\s+([A-Za-z_$][\w$]*)\s*=/g],
+  '.py': [/\bdef\s+([A-Za-z_]\w*)/g, /\bclass\s+([A-Za-z_]\w*)/g],
+  '.dart': [/\bclass\s+([A-Za-z_]\w*)/g, /\b(?:void|Widget|Future<void>)\s+([A-Za-z_]\w*)\s*\(/g],
+  '.go': [/\bfunc\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)/g],
+  '.rs': [/\bfn\s+([A-Za-z_]\w*)/g, /\bstruct\s+([A-Za-z_]\w*)/g],
+};
+
+function symbolsOf(text, ext) {
+  const pats = SYMBOL_PATTERNS[ext];
+  if (!pats) return [];
+  const out = [];
+  for (const re of pats) {
+    re.lastIndex = 0;
+    let m;
+    while ((m = re.exec(text)) !== null && out.length < SYMBOL_MAX_PER_FILE) {
+      const n = m[1];
+      if (n && out.indexOf(n) === -1) out.push(n);
+    }
+  }
+  return out;
+}
+
+function walkCode(root, limit) {
+  const out = [];
+  const stack = [{ dir: root, depth: 0 }];
+  while (stack.length && out.length < limit) {
+    const cur = stack.pop();
+    if (cur.depth > SYMBOL_MAX_DEPTH) continue;
+    let entries = [];
+    try { entries = fs.readdirSync(cur.dir, { withFileTypes: true }); } catch (_) { continue; }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const e of entries) {
+      if (out.length >= limit) break;
+      if (e.name[0] === '.' && e.name !== '.') continue;
+      const full = path.join(cur.dir, e.name);
+      if (e.isDirectory()) {
+        if (MAP_SKIP.indexOf(e.name) !== -1) continue;
+        stack.push({ dir: full, depth: cur.depth + 1 });
+      } else if (e.isFile()) {
+        const ext = path.extname(e.name).toLowerCase();
+        if (!SYMBOL_PATTERNS[ext]) continue;
+        let size = 0;
+        try { size = fs.statSync(full).size; } catch (_) { continue; }
+        if (size > 256 * 1024) continue;
+        out.push({ abs: full, rel: path.relative(root, full).replace(/\\/g, '/'), ext });
+      }
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// P65-D14: CACHE DES PARTIES STABLES DU PROMPT.
+//
+// L'index des symboles coute la LECTURE de tous les fichiers de code. Il ne
+// change pas tant que rien n'est ecrit. On le met donc en cache, avec une
+// signature (chemin + taille + mtime) : au moindre changement, la signature
+// differe et le cache est ignore. Aucune donnee perimee n'est servie.
+// Statistiques exposees (hits/misses) pour la preuve au banc d'essai.
+// ---------------------------------------------------------------------------
+const PM_CACHE = new Map();
+const PM_CACHE_MAX = 4;
+const PM_STATS = { hits: 0, misses: 0, reads: 0 };
+
+function fileSignature(files) {
+  const parts = [];
+  for (const f of files) {
+    let st = null;
+    try { st = fs.statSync(f.abs); } catch (_) { st = null; }
+    parts.push(f.rel + ':' + (st ? st.size + ':' + Math.round(st.mtimeMs) : '-'));
+  }
+  // Une chaine suffisante pour detecter un changement structurel.
+  return parts.join('|').length + '#' + parts.join('|').slice(0, 4000);
+}
+
+function cacheStats() {
+  return { hits: PM_STATS.hits, misses: PM_STATS.misses, reads: PM_STATS.reads, entries: PM_CACHE.size };
+}
+
+function resetCache() { PM_CACHE.clear(); PM_STATS.hits = 0; PM_STATS.misses = 0; PM_STATS.reads = 0; }
+
+function symbolIndexCached(root) {
+  const files = walkCode(String(root || ''), SYMBOL_MAX_FILES);
+  const sig = String(root) + '/' + fileSignature(files);
+  const hit = PM_CACHE.get(String(root));
+  if (hit && hit.sig === sig) {
+    PM_STATS.hits += 1;
+    return hit.value;
+  }
+  PM_STATS.misses += 1;
+  PM_STATS.reads += files.length;
+  const out = [];
+  for (const f of files) {
+    let text = '';
+    try { text = fs.readFileSync(f.abs, 'utf8'); } catch (_) { continue; }
+    out.push({ rel: f.rel, ext: f.ext, symbols: symbolsOf(text, f.ext) });
+  }
+  PM_CACHE.set(String(root), { sig, value: out });
+  while (PM_CACHE.size > PM_CACHE_MAX) {
+    const first = PM_CACHE.keys().next();
+    PM_CACHE.delete(first.value);
+  }
+  return out;
+}
+
+// index: [{ rel, ext, symbols: [..] }]
+function symbolIndex(root, opts) {
+  const o = opts || {};
+  const files = walkCode(String(root || ''), Number(o.maxFiles) > 0 ? Number(o.maxFiles) : SYMBOL_MAX_FILES);
+  const out = [];
+  for (const f of files) {
+    let text = '';
+    try { text = fs.readFileSync(f.abs, 'utf8'); } catch (_) { continue; }
+    out.push({ rel: f.rel, ext: f.ext, symbols: symbolsOf(text, f.ext) });
+  }
+  return out;
+}
+
+const STOPWORDS = ['le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'et', 'ou', 'en', 'a', 'au',
+  'aux', 'dans', 'sur', 'pour', 'avec', 'par', 'ce', 'cette', 'ces', 'que', 'qui', 'quoi', 'est',
+  'sont', 'the', 'and', 'for', 'with', 'this', 'that', 'les', 'son', 'sa', 'ses', 'il', 'elle',
+  'je', 'tu', 'nous', 'vous', 'fichier', 'fichiers', 'fonction', 'ajoute', 'change', 'cree',
+  'creer', 'corrige', 'modifie', 'dans', 'projet', 'code', 'puis', 'fait', 'faire', 'tout'];
+
+function words(text) {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9_]+/g, ' ').split(' ')
+    .filter((w) => w.length > 2 && STOPWORDS.indexOf(w) === -1);
+}
+
+// Quels fichiers de code meritent le contexte. score = mots de la demande
+// presents dans le CHEMIN (x2) ou dans les SYMBOLES (x1). Deterministe.
+function relevantFiles(root, prompt, opts) {
+  const o = opts || {};
+  const max = Number(o.max) > 0 ? Number(o.max) : RELEVANT_MAX;
+  const q = [];
+  for (const w of words(prompt)) if (q.indexOf(w) === -1) q.push(w);
+  if (!q.length) return [];
+  const idx = o.index || symbolIndexCached(root);
+  const scored = [];
+  for (const f of idx) {
+    const inPath = words(f.rel);
+    const inSym = [];
+    for (const s of (f.symbols || [])) for (const w of words(s)) if (inSym.indexOf(w) === -1) inSym.push(w);
+    let score = 0;
+    const hits = [];
+    for (const w of q) {
+      if (inPath.indexOf(w) !== -1) { score += 3; hits.push(w); continue; }
+      if (inSym.indexOf(w) !== -1) { score += 2; hits.push(w); continue; }
+      if (String(f.rel).toLowerCase().indexOf(w) !== -1) { score += 1; hits.push(w); }
+    }
+    if (score > 0) scored.push({ rel: f.rel, score, hits, symbols: (f.symbols || []).slice(0, 8) });
+  }
+  scored.sort((a, b) => (b.score - a.score) || (a.rel < b.rel ? -1 : 1));
+  return scored.slice(0, max);
+}
+
+// Bloc de contexte borne, pret a etre injecte (aucune invention : le moteur
+// ne fait que nommer des fichiers et des symboles reellement lus).
+function relevantBlock(root, prompt, opts) {
+  const list = relevantFiles(root, prompt, opts);
+  if (!list.length) return { text: '', files: [], tokens: 0 };
+  const lines = ['FICHIERS PERTINENTS (carte du depot, calculee sans modele) :'];
+  for (const f of list) {
+    lines.push('- ' + f.rel + (f.symbols.length ? ' : ' + f.symbols.join(', ') : ''));
+  }
+  lines.push('Lis un de ces fichiers (read) avant de le modifier. Ne devine pas de chemin.');
+  const text = lines.join('\n').slice(0, 1200);
+  return { text, files: list.map((f) => f.rel), tokens: estTokens(text) };
+}
+
+module.exports.symbolIndex = symbolIndex;
+module.exports.symbolIndexCached = symbolIndexCached;
+module.exports.cacheStats = cacheStats;
+module.exports.resetCache = resetCache;
+module.exports.relevantFiles = relevantFiles;
+module.exports.relevantBlock = relevantBlock;
+module.exports.symbolsOf = symbolsOf;
