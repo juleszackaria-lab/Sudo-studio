@@ -4,6 +4,11 @@ Role tenu : verificateur externe. Aucune correction produit, aucun test desactiv
 fusion dans main. Tete verifiee : `p60-linux` = **`add0e408e61a0d442e8907dad99c345043941de6`**
 (`main` reste a `e6c3d48`, non touche).
 
+Note de perimetre : **tous les runs CI et le paquet ont ete mesures sur `add0e40`**. Le seul
+commit posterieur (`0dae9ce`) ajoute ce rapport en Markdown : il ne contient aucun fichier
+produit, aucune suite, aucun script executable. Les faits mesures restent donc valables pour la
+tete actuelle, a ce fichier de documentation pres.
+
 Nature des preuves, sans exception :
 
 - **PROUVE** : log CI reel (run + sortie collee) ou mesure dont la commande est donnee.
