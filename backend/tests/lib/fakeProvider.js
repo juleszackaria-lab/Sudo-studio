@@ -103,6 +103,21 @@ function createFakeProvider(script) {
         res.end(JSON.stringify({ error: next.error, choices: [] }));
         return;
       }
+      // P65-A3: forme EXACTE du refus du runtime local quand un appel d'outil
+      // reste inutilisable apres reparation (backend/runtime/openai_compat.py) :
+      // HTTP 200, une reponse normale (choices[0].message.content = consigne),
+      // ET un objet "error". Sans cette forme, le harnais ne pouvait pas
+      // reproduire la ligne "tool call unusable after repairs".
+      if (next.runtimeRefusal) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          object: 'chat.completion',
+          choices: [{ index: 0, message: msg, finish_reason: 'stop' }],
+          error: Object.assign({ code: 'invalid_tool_call', type: 'invalid_tool_call' },
+            next.runtimeRefusal),
+        }));
+        return;
+      }
 
       if (body && body.stream === true) {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' });
@@ -142,8 +157,8 @@ function createFakeProvider(script) {
 }
 
 /** Provider object as the agent expects it. */
-function providerOf(fake) {
-  return { type: 'local', baseUrl: fake.baseUrl, model: 'fake-model' };
+function providerOf(fake, model) {
+  return { type: 'local', baseUrl: fake.baseUrl, model: model || 'fake-model' };
 }
 
 module.exports = { createFakeProvider, providerOf };

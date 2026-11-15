@@ -55,6 +55,7 @@ function createWorld(opts) {
     const w = {
         proj, home, logsDir, log, store, sessionId: s.id, rules,
         pending: new Map(), waiters: new Map(), seq: 0, events: [],
+        model: opts.model || 'fake-model',
     };
     w.toolsCtx = () => ({ home, sessionRules: rules, pending: w.pending, waiters: w.waiters });
 
@@ -69,7 +70,7 @@ function createWorld(opts) {
             const p = runTurn({
                 store, sessionId: w.sessionId, prompt,
                 corr: o.corr || ('p61-' + w.seq),
-                provider: providerOf(fake),
+                provider: providerOf(fake, w.model),
                 toolsCtx: w.toolsCtx(), runs: new Map(), log,
                 onEvent: (e) => { try { events.push(e); w.events.push(e); } catch (_) {} },
                 maxIt: o.maxIt,

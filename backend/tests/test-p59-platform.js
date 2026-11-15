@@ -214,7 +214,9 @@ function stubBackend(opts) {
   // ====================================================== B12 surface outil
   const full = toolsMod.toOpenAISchema('full', 8192);
   const fullNames = full.map((x) => x.function.name);
-  check('B12 profil complet (>=8192) : 36 outils par defaut (copy_project ajoute en P62-D5)', full.length === 36, full.length);
+  // P65-E : `delegate` s'ajoute a la surface complete (37). Les autres
+  // surfaces (petit profil, budget 70 %) sont verifiees par P26.
+  check('B12 profil complet (>=8192) : 37 outils par defaut (delegate ajoute en P65-E)', full.length === 37, full.length);
   check('B13 aucun outil plateforme dans la surface par defaut',
     fullNames.filter((n) => platform.isPlatformTool(n)).length === 0);
   const routed = toolsMod.toOpenAISchema('full', 8192, { platformTools: r1.tools });

@@ -87,9 +87,41 @@ function evaluate(src) {
   return st[0];
 }
 
-// Une demande "calcul" : l'expression seule, eventuellement suivie de "=".
+// P65-A4: la photo du 14/11 montre le calcul ecrit dans une PHRASE
+// ("1+1 font combien"). Ne reconnaitre que l'expression nue laissait la
+// question au modele, qui se trompait (299 pour 2+298). On retire donc
+// d'abord la formulation francaise/anglaise AUTOUR de l'expression, et
+// seulement si ce qui reste est entierement arithmetique : aucune autre
+// demande n'est detournee (la moindre lettre fait echouer ALLOWED).
+const FRAMES = [
+  /^combien\s+(?:font|fait|vaut|valent|-?\s*t-?il)\s+(.+)$/i,
+  /^combien\s+(.+)$/i,
+  /^(.+?)\s+(?:font|fait|vaut|valent)\s+combien$/i,
+  /^(?:calcule|calculer|calcul|compute|calculate)\s+(?:le\s+resultat\s+de\s+|la\s+valeur\s+de\s+)?(.+)$/i,
+  /^(?:quel\s+est|quelle\s+est|what\s+is)\s+(?:le\s+resultat\s+de\s+|la\s+valeur\s+de\s+)?(.+)$/i,
+  /^(?:resultat\s+de\s+)?(.+?)\s*=\s*\?*$/i,
+];
+
+function expressionOf(text) {
+  let t = String(text == null ? '' : text).trim().replace(/\s+/g, ' ');
+  t = t.replace(/[?!.\s]+$/, '').trim();
+  if (!t) return '';
+  if (!ALLOWED.test(t)) {
+    for (const re of FRAMES) {
+      const m = re.exec(t);
+      if (m && m[1]) {
+        const inner = String(m[1]).trim().replace(/[?!.\s]+$/, '').trim();
+        if (inner && ALLOWED.test(inner)) return inner;
+      }
+    }
+  }
+  return t;
+}
+
+// Une demande "calcul" : l'expression, seule ou dans une phrase courte
+// ("combien font 2+298", "2+298 = ?").
 function isCalc(text) {
-  const t = String(text == null ? '' : text).trim().replace(/[?=]+\s*$/, '').trim();
+  const t = expressionOf(text);
   if (!t || t.length > 120) return false;
   if (!ALLOWED.test(t)) return false;
   if (!/[0-9]/.test(t) || !/[+\-*/%^]/.test(t)) return false;
@@ -104,10 +136,10 @@ function format(v) {
 }
 
 function answer(text) {
-  const t = String(text == null ? '' : text).trim().replace(/[?=]+\s*$/, '').trim();
+  const t = expressionOf(text);
   const v = evaluate(t);
   if (v === null) return null;
   return format(v);
 }
 
-module.exports = { evaluate, isCalc, format, answer, ALLOWED };
+module.exports = { evaluate, isCalc, format, answer, expressionOf, ALLOWED };

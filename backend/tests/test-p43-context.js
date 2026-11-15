@@ -216,10 +216,30 @@ async function tQuestionProviderDown() {
 }
 
 async function tQuestionEmpty() {
+  // P65-A1 (remplace l'assertion P43) : une reponse VIDE du modele n'est plus
+  // maquillee en resume "genere sans IA" (le modele a bien repondu : rien).
+  // Le tour doit etre un ECHEC explicite, reessayable, avec le message exact
+  // "Le modele n'a pas produit de reponse utilisable" + bouton Reessayer.
+  // Le repli deterministe reste reserve a la PANNE fournisseur (Q5), ou le
+  // modele n'a jamais eu la parole.
   const dir = fixtureProject();
-  const r = await driveTurn(dir, 'resume ce projet', [{ content: '' }]);
-  assert(r.out.runStatus === 'PARTIEL', 'empty => PARTIEL');
-  assert(r.last.content.indexOf('generee sans IA') !== -1, 'empty => fallback text');
+  // Deux reponses vides : la premiere, puis la RELANCE de P65-A1. Un modele
+  // qui n'ecrit rien deux fois de suite est un tour vide, pas une reponse.
+  const r = await driveTurn(dir, 'resume ce projet', [{ content: '' }, { content: '' }]);
+  assert(r.out.runStatus === 'ECHEC', 'empty => ECHEC explicite, got ' + r.out.runStatus);
+  assert(r.out.retryable === true, 'empty => retryable (bouton Reessayer)');
+  assert(r.last.content.indexOf("Le modele n'a pas produit de reponse utilisable") !== -1,
+    'empty => message P65-A1 exact, got: ' + String(r.last.content).slice(0, 120));
+  // Le resume deterministe reste autorise, mais UNIQUEMENT en piece jointe
+  // SOUS la ligne d'echec : jamais en tete, jamais a la place de la reponse.
+  assert(r.last.content.indexOf('ECHEC') === 0, 'empty => la ligne d echec est en tete');
+  const posEchec = r.last.content.indexOf('ECHEC');
+  const posRepli = r.last.content.indexOf('[reponse generee sans IA]');
+  assert(posRepli === -1 || posRepli > posEchec,
+    'empty => aucun repli place au-dessus de l echec');
+  assert(r.journal.indexOf('relance question en texte simple') !== -1,
+    'empty => relance unique tentee avant l echec');
+  assert(r.chats.length === 2, 'empty => exactement deux appels (initial + relance), got ' + r.chats.length);
 }
 
 // -- S. saturation rescue ----------------------------------------------------

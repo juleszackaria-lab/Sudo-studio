@@ -20,6 +20,9 @@
                                       18 redemarrage du serveur d'agent puis "continu" : reprise depuis le registre (P63-C)
                                       19 git status propre : aucun fichier de l'agent dans le projet (P63-D)
                                       20 trois echecs sur une etape puis passage a la suivante (P63-C7)
+                                      21 aucun tour vide accepte (P65-A1)
+                                      22 calcul deterministe sans appel modele (P65-A4)
+                                      23 banc d essai 38 taches, faux fournisseur (P65-C)
 
   Usage :
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\agent-e2e.ps1 `
@@ -558,6 +561,73 @@ try {
       -Note 'P63-C7 : le nombre d essais est un reglage documente (3 par defaut)'
   }
 } catch { Write-Step -Name '20 trois echecs puis passage a l etape suivante' -Ok $false -Proof $_.Exception.Message }
+
+# ---------------------------------------------- 21 tours vides (P65-A1/A2/A3)
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '21 aucun tour vide accepte' -Why '-SkipModel'
+  } else {
+    $s21 = New-Session -Root $copy
+    $r21 = Invoke-Turn -SessionId $s21 -Prompt 'salut' -TimeoutSec 240
+    $txt = ''
+    if ($r21 -and $r21.text) { $txt = [string]$r21.text }
+    # Un tour n est TERMINE que s il rend une reponse visible non vide ; le
+    # texte de repli historique ("Tache terminee (N appel(s) abouti(s)).") ne
+    # compte pas : c est exactement le defaut T1 corrige en P65-A1.
+    $filler = $txt -match 'Tache terminee \(\d+ appel'
+    $visible = ($txt.Trim().Length -gt 0) -and (-not $filler)
+    $relance = Get-LogProof -Pattern 'relance texte simple|aucune reponse utilisable'
+    Write-Step -Name '21 aucun tour vide accepte' -Ok ($visible) `
+      -Proof ('texte visible : ' + $visible + ' ; repli historique : ' + [bool]$filler +
+        ' ; longueur : ' + $txt.Trim().Length + ' caracteres' +
+        $(if ($relance) { ' || ' + $relance } else { '' })) `
+      -Note 'P65-A1 : sinon relance en texte simple, puis ECHEC explicite + bouton Reessayer'
+  }
+} catch { Write-Step -Name '21 aucun tour vide accepte' -Ok $false -Proof $_.Exception.Message }
+
+# ---------------------------- 22 calcul deterministe sans appel modele (P65-A4)
+try {
+  $s22 = New-Session -Root $copy
+  $appelsAvant = 0
+  if ($script:AgentLog -and (Test-Path $script:AgentLog)) {
+    $appelsAvant = (Select-String -Path $script:AgentLog -Pattern 'appel modele' -AllMatches).Count
+  }
+  $r22 = Invoke-Turn -SessionId $s22 -Prompt 'calcule (3+4)*5' -TimeoutSec 120
+  $txt22 = ''
+  if ($r22 -and $r22.text) { $txt22 = [string]$r22.text }
+  $appelsApres = 0
+  if ($script:AgentLog -and (Test-Path $script:AgentLog)) {
+    $appelsApres = (Select-String -Path $script:AgentLog -Pattern 'appel modele' -AllMatches).Count
+  }
+  $zeroAppel = (($appelsApres - $appelsAvant) -eq 0)
+  $juste = $txt22 -match '35'
+  Write-Step -Name '22 calcul deterministe sans appel modele' -Ok ($zeroAppel -and $juste) `
+    -Proof ('resultat juste (35) : ' + [bool]$juste + ' ; appels modele : ' + ($appelsApres - $appelsAvant))
+} catch { Write-Step -Name '22 calcul deterministe sans appel modele' -Ok $false -Proof $_.Exception.Message }
+
+# --------------------------------------- 23 banc d essai complet (P65-C)
+try {
+  if ($SkipModel) {
+    Skip-Step -Name '23 banc d essai (38 taches)' -Why '-SkipModel'
+  } else {
+    $benchScript = Join-Path (Split-Path -Parent $PSCommandPath) 'ci\agent-bench.js'
+    if (-not (Test-Path $benchScript)) {
+      $benchScript = Join-Path $InstallDir 'resources\app\scripts\ci\agent-bench.js'
+    }
+    if (Test-Path $benchScript) {
+      $benchOut = Join-Path $OutDir 'banc-faux-fournisseur.txt'
+      $env:SUDO_BENCH_FAKE = '1'
+      $out = & node $benchScript --json (Join-Path $OutDir 'banc-faux-fournisseur.json') 2>&1 | Out-String
+      $out | Set-Content -Path $benchOut -Encoding UTF8
+      $ligne = ($out -split "`n" | Where-Object { $_ -match '^TOTAL :' } | Select-Object -Last 1)
+      Write-Step -Name '23 banc d essai (38 taches)' -Ok ([bool]($ligne -match '38/38')) `
+        -Proof ($(if ($ligne) { $ligne.Trim() } else { 'aucune ligne TOTAL' })) `
+        -Note 'faux fournisseur : deterministe, sans modele (resultat d un vrai modele = autre etape)'
+    } else {
+      Skip-Step -Name '23 banc d essai (38 taches)' -Why 'agent-bench.js absent du paquet'
+    }
+  }
+} catch { Write-Step -Name '23 banc d essai (38 taches)' -Ok $false -Proof $_.Exception.Message }
 
 # -------------------------------------------------------------- 10 secrets
 try {
