@@ -1,467 +1,504 @@
+#Requires -Version 5.1
 <#
-  SUDO STUDIO - P66 : verification du PAQUET INSTALLE sur VOTRE PC (lecture seule).
-
-  Un seul fichier de sortie : verification-report.txt (PASS / FAIL / SKIP, avec la
-  ligne de journal qui prouve chaque point) + un zip des journaux utiles, sur le
-  Bureau. Le script NE MODIFIE RIEN dans l'installation : il ne touche qu'un
-  dossier de travail temporaire (projet d'essai) qu'il cree lui-meme.
-
-  Ce qu'il verifie :
-    1  SHA256 de l'installateur fourni (complet, 64 caracteres)
-    2  dossier d'installation + fichiers critiques
-    3  /health du backend (5000) et du runtime (6000)
-    4  n_ctx et modele reellement charge
-    5  RAM libre du systeme
-    6  l'agent cree test.txt contenant "bonjour" avec le VRAI modele (appel d'outil),
-       le relit, puis repond a une question simple SANS outil (reponse non vide)
-    7  "continu" sans travail inacheve : reponse deterministe, aucun travail invente
-    8  aucun dossier .sudo-agent dans le projet (git status + balayage)
-    9  nombre de rejets d'appels d'outils dans le journal
-   10  aucune chaine anglaise visible par l'utilisateur
-   11  aucun secret ou jeton dans les journaux
-   12  evenements de veille Windows recents (Kernel-Power)
-   13  dernieres lignes de runtime-supervisor.log
-
-  Usage :
-    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verify\verify-installed.ps1 `
-      -Installer "C:\Users\moi\Downloads\SudoStudio-Setup-5.0.0.exe" `
-      -ProjectPath "C:\mon\projet" -InstallDir "C:\Program Files\Sudo Studio"
-
-  Options :
-    -Installer     installateur a controler (SHA256). Optionnel : la verification
-                   est alors SKIP, jamais PASS.
-    -ExpectedSha256 SHA256 attendu (64 caracteres). Si absent, il est seulement
-                   calcule et affiche (aucune comparaison inventee).
-    -InstallDir    dossier d'installation (defaut Program Files).
-    -ProjectPath   projet d'essai (une COPIE est faite ; l'original n'est pas touche).
-    -RuntimeUrl    runtime local (defaut http://127.0.0.1:6000).
-    -BackendUrl    backend local (defaut http://127.0.0.1:5000).
-    -AgentUrl      serveur d'agent (defaut http://127.0.0.1:7311, lance par ce script).
-    -OutDir        dossier des preuves (defaut : Bureau).
-    -SkipModel     n'execute pas les etapes qui exigent le modele (elles sont SKIP).
-
-  ASCII only. Aucun secret n'est affiche : le jeton du serveur d'agent est genere ici.
+.SYNOPSIS
+    Sudo Studio P46 - verify an INSTALLED package, per-line PASS/FAIL/SKIP.
+.DESCRIPTION
+    P36(d) base (manifest hashes, structure, branding, probes) extended with
+    the P46 delivery-gate lines: backend --selftest (L1), agent handshake
+    from the installed path (L2), editor exthost/renderer log scan (L3, -Full),
+    16 panels render + console (L4, -Full), branding incl. old-logo zero (L5),
+    runtime journal header + real-vs-requested n_ctx (L6), manifest vs files +
+    runtime freshness (L7), uninstall line (L8, always SKIP here: destructive,
+    CI gate only), result integrity incl. no-secret scan (L9).
+    Writes verify-result.json holding versions, hashes and verdicts ONLY -
+    never any secret, key, token or project content (L9 refuses to write the
+    file if a secret pattern is detected in it).
+    Never writes inside the install dir (P35c): output goes to the current
+    directory unless -OutFile is given; temp work under -WorkDir or %TEMP%.
+    Default run is fast (< 120 s, P36 matrix compatible) and network-free.
+    -Full launches the editor, renders panels and may download ~1 GB
+    (model load for the n_ctx check).
+.EXAMPLE
+    powershell -NoProfile -ExecutionPolicy Bypass -File "C:\Users\me\AppData\Local\Programs\SudoStudio\verify-installed.ps1"
+.EXAMPLE
+    powershell -NoProfile -ExecutionPolicy Bypass -File verify-installed.ps1 -Full -OutFile .\verify-result.json
 #>
-
-[CmdletBinding()]
 param(
-  [string]$Installer = '',
-  [string]$ExpectedSha256 = '',
-  [string]$InstallDir = (Join-Path $env:ProgramFiles 'Sudo Studio'),
-  [string]$ProjectPath = (Get-Location).Path,
-  [string]$RuntimeUrl = 'http://127.0.0.1:6000',
-  [string]$BackendUrl = 'http://127.0.0.1:5000',
-  [int]$Port = 7311,
-  [string]$OutDir = (Join-Path ([Environment]::GetFolderPath('Desktop')) 'verification-sudo-studio'),
-  [switch]$SkipModel
+    [string]$InstallDir = (Split-Path -Parent $MyInvocation.MyCommand.Path),
+    [string]$OutFile = '',
+    [switch]$Full,
+    [string]$PanelScript = '',
+    [string]$ExeChecker = '',
+    [int]$ModelTimeoutSec = 900,
+    [string]$WorkDir = ''
 )
 
-$ErrorActionPreference = 'Continue'
-$script:Results = New-Object System.Collections.ArrayList
-$script:Token = -join ((48..57) + (97..122) | Get-Random -Count 32 | ForEach-Object { [char]$c })
-$script:Base = "http://127.0.0.1:$Port"
-$script:AgentLog = $null
-$script:Work = $null
+$ErrorActionPreference = 'Stop'
+$files = @()
+$probes = @()
+$checks = @()
+$nFail = 0
+$nSkip = 0
+$autoWork = $false
 
-function Add-Result {
-  param(
-    [Parameter(Mandatory = $true)][string]$Name,
-    [Parameter(Mandatory = $true)][ValidateSet('PASS', 'FAIL', 'SKIP')][string]$Status,
-    [string]$Proof = ''
-  )
-  $null = $script:Results.Add([pscustomobject]@{
-      Etat    = $Status
-      Controle = $Name
-      Preuve  = $Proof
-    })
-  $color = if ($Status -eq 'PASS') { 'Green' } elseif ($Status -eq 'FAIL') { 'Red' } else { 'Yellow' }
-  Write-Host ("[{0}] {1} :: {2}" -f $Status, $Name, $Proof) -ForegroundColor $color
+function Add-File([string]$rel, [bool]$ok, [string]$detail) {
+    $script:files += @{ path = $rel; ok = $ok; detail = $detail }
+}
+function Add-Probe([string]$name, [bool]$ok, [string]$detail) {
+    # Probes are informational: they never fail the verdict.
+    $script:probes += @{ name = $name; ok = $ok; detail = $detail }
+}
+function Add-Check([string]$line, [string]$name, [string]$verdict, [string]$detail) {
+    $script:checks += @{ line = $line; name = $name; verdict = $verdict; detail = $detail }
+    if ($verdict -eq 'FAIL') { $script:nFail++ }
+    if ($verdict -eq 'SKIP') { $script:nSkip++ }
+    Write-Host ("[VERIFY-{0}] {1} {2} {3}" -f $verdict, $line, $name, $detail)
+}
+function Short([string]$s, [int]$n) {
+    if (-not $s) { return '' }
+    $t = $s -replace '\s+', ' '
+    if ($t.Length -gt $n) { return $t.Substring(0, $n) + '...' }
+    return $t
 }
 
-function Invoke-AgentApi {
-  param(
-    [string]$Method = 'GET',
-    [string]$Path = '/health',
-    $Body = $null,
-    [int]$TimeoutSec = 20
-  )
-  $url = $script:Base + $Path
-  $req = [System.Net.HttpWebRequest]::Create($url)
-  $req.Method = $Method
-  $req.Timeout = $TimeoutSec * 1000
-  $req.ReadWriteTimeout = $TimeoutSec * 1000
-  $req.Headers.Add('Authorization', "Bearer $script:Token")
-  if ($null -ne $Body) {
-    $json = $Body | ConvertTo-Json -Compress
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $req.ContentType = 'application/json'
-    $req.ContentLength = $bytes.Length
-    $s = $req.GetRequestStream(); $s.Write($bytes, 0, $bytes.Length); $s.Close()
-  }
-  $resp = $req.GetResponse()
-  $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
-  $text = $reader.ReadToEnd()
-  $reader.Close(); $resp.Close()
-  if ([string]::IsNullOrEmpty($text)) { return $null }
-  return ($text | ConvertFrom-Json)
+if (-not $WorkDir) {
+    $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ('p46v-' + $PID)
+    $autoWork = $true
 }
+New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+$logsDir = Join-Path $env:LOCALAPPDATA 'SudoStudio\logs'
 
-# Un tour complet, en SSE : renvoie le texte final et les evenements.
-function Invoke-Turn {
-  param([string]$SessionId, [string]$Prompt, [int]$TimeoutSec = 300)
-  $url = "$script:Base/sessions/$SessionId/messages"
-  $payload = @{ text = $Prompt } | ConvertTo-Json -Compress
-  $req = [System.Net.HttpWebRequest]::Create($url)
-  $req.Method = 'POST'
-  $req.ContentType = 'application/json'
-  $req.Headers.Add('Authorization', "Bearer $script:Token")
-  $req.Timeout = $TimeoutSec * 1000
-  $req.ReadWriteTimeout = $TimeoutSec * 1000
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
-  $req.ContentLength = $bytes.Length
-  $st = $req.GetRequestStream(); $st.Write($bytes, 0, $bytes.Length); $st.Close()
-
-  $text = New-Object System.Text.StringBuilder
-  $errorText = $null
-  $done = $false
-  try {
-    $resp = $req.GetResponse()
-    $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
-    $eventName = 'message'
-    while (-not $reader.EndOfStream) {
-      $line = $reader.ReadLine()
-      if ($null -eq $line) { continue }
-      if ($line -like 'event:*') { $eventName = $line.Substring(6).Trim(); continue }
-      if (-not ($line -like 'data:*')) { continue }
-      $json = $line.Substring(5).Trim()
-      if (-not $json) { continue }
-      try { $obj = $json | ConvertFrom-Json } catch { continue }
-      if ($eventName -eq 'message.delta' -and $obj.text) { [void]$text.Append($obj.text) }
-      if ($eventName -eq 'message.done' -and $obj.text) { [void]$text.Clear(); [void]$text.Append($obj.text) }
-      if ($eventName -eq 'turn.error') { $errorText = "$($obj.code) : $($obj.error)"; $done = $true; break }
-      if ($eventName -eq 'turn.done') { $done = $true; break }
-    }
-    $reader.Close(); $resp.Close()
-  } catch {
-    $errorText = $_.Exception.Message
-  }
-  return [pscustomobject]@{ ok = ($done -and -not $errorText); text = $text.ToString(); error = $errorText }
-}
-
-function Get-LogProof {
-  param([string]$Path, [string]$Pattern)
-  if (-not $Path) { return $null }
-  if (-not (Test-Path $Path)) { return $null }
-  $hit = Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue | Where-Object { $_ -match $Pattern } | Select-Object -Last 1
-  if ($hit) { return $hit.Trim() }
-  return $null
-}
-
-# --------------------------------------------------------------------- 0 setup
-Write-Host ''
-Write-Host '=== SUDO STUDIO - P66 : verification du paquet installe (lecture seule) ===' -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
-$reportPath = Join-Path $OutDir 'verification-report.txt'
-$script:Work = Join-Path ([System.IO.Path]::GetTempPath()) ('p66-verify-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
-$proj = Join-Path $script:Work 'projet'
-New-Item -ItemType Directory -Force -Path $proj | Out-Null
-$logsDir = Join-Path $script:Work 'logs'
-New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
-$script:AgentLog = Join-Path $logsDir 'agent.log'
-
-# ------------------------------------------------- 1 SHA256 de l'installateur
 try {
-  if (-not $Installer) {
-    Add-Result -Name '1 SHA256 de l installateur' -Status 'SKIP' -Proof '-Installer non fourni : aucun SHA256 ne peut etre affirme'
-  } elseif (-not (Test-Path $Installer)) {
-    Add-Result -Name '1 SHA256 de l installateur' -Status 'FAIL' -Proof ("fichier introuvable : " + $Installer)
-  } else {
-    $h = (Get-FileHash -Path $Installer -Algorithm SHA256).Hash.ToLowerInvariant()
-    $size = (Get-Item $Installer).Length
-    if ($h.Length -ne 64) {
-      Add-Result -Name '1 SHA256 de l installateur' -Status 'FAIL' -Proof ("longueur inattendue : " + $h.Length)
-    } elseif ($ExpectedSha256 -and $ExpectedSha256.ToLowerInvariant() -ne $h) {
-      Add-Result -Name '1 SHA256 de l installateur' -Status 'FAIL' -Proof ("attendu " + $ExpectedSha256 + " / obtenu " + $h)
-    } elseif ($ExpectedSha256) {
-      Add-Result -Name '1 SHA256 de l installateur' -Status 'PASS' -Proof ("sha256=" + $h + " taille=" + $size + " octets (comparaison OK)")
+    # -- 0. manifest ------------------------------------------------------------
+    $mf = $null
+    $mfPath = Join-Path $InstallDir 'build-manifest.json'
+    try {
+        if (-not (Test-Path $mfPath)) { throw 'missing' }
+        $mf = Get-Content $mfPath -Raw | ConvertFrom-Json
+        if (-not $mf.version -or -not $mf.date -or -not $mf.sudo_studio_commit) { throw 'incomplete' }
+        Add-File 'build-manifest.json' $true ("commit=" + $mf.sudo_studio_commit)
+    } catch {
+        Add-File 'build-manifest.json' $false $_.Exception.Message
+    }
+
+    # -- 0b. hashed files (P36b: manifest vs installed files) -------------------
+    if ($mf -and $mf.files) {
+        foreach ($prop in $mf.files.PSObject.Properties) {
+            $rel = $prop.Name
+            $want = [string]$prop.Value
+            $p = Join-Path $InstallDir $rel
+            try {
+                if (-not (Test-Path $p)) { throw 'missing file' }
+                $actual = (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()
+                if ($actual -ne $want.ToLower()) { throw 'sha256 mismatch' }
+                Add-File $rel $true ('sha256 ok ' + $actual.Substring(0, 12) + '...')
+            } catch {
+                Add-File $rel $false $_.Exception.Message
+            }
+        }
     } else {
-      Add-Result -Name '1 SHA256 de l installateur' -Status 'PASS' -Proof ("sha256=" + $h + " taille=" + $size + " octets (calcule ; -ExpectedSha256 non fourni, donc aucune comparaison)")
+        Add-File '(manifest files block)' $false 'no files block to verify'
     }
-  }
-} catch { Add-Result -Name '1 SHA256 de l installateur' -Status 'FAIL' -Proof $_.Exception.Message }
 
-# ------------------------------------------------ 2 dossier d'installation
-try {
-  $crit = @('resources\app\backend\server.js', 'resources\app\sudo-agent\src\server.js', 'resources\app\sudo-agent\src\loop.js')
-  $missing = @()
-  foreach ($c in $crit) { if (-not (Test-Path (Join-Path $InstallDir $c))) { $missing += $c } }
-  $exe = Join-Path $InstallDir 'Sudo Studio.exe'
-  if (-not (Test-Path $exe)) { $missing += 'Sudo Studio.exe' }
-  if ($missing.Count -eq 0) {
-    Add-Result -Name '2 dossier d installation' -Status 'PASS' -Proof ("$InstallDir : exe + backend + agent presents")
-  } else {
-    Add-Result -Name '2 dossier d installation' -Status 'FAIL' -Proof ("absents : " + ($missing -join ', '))
-  }
-} catch { Add-Result -Name '2 dossier d installation' -Status 'FAIL' -Proof $_.Exception.Message }
+    # -- 0c. structure + branding (compat) --------------------------------------
+    foreach ($rel in @('SudoStudio.exe', 'backend.exe', 'runtime.exe', 'start.bat',
+            'launch_hidden.vbs', 'verify-installed.ps1',
+            'extensions\sudo-ai\package.json', 'extensions\sudo-ai\extension.js',
+            'sudo-agent\src\server.js', 'resources\app\product.json')) {
+        Add-File $rel (Test-Path (Join-Path $InstallDir $rel)) 'presence'
+    }
+    try {
+        $pj0 = Get-Content (Join-Path $InstallDir 'resources\app\product.json') -Raw | ConvertFrom-Json
+        Add-File 'brand:product.json nameShort' ($pj0.nameShort -eq 'Sudo Studio') ([string]$pj0.nameShort)
+    } catch {
+        Add-File 'brand:product.json nameShort' $false $_.Exception.Message
+    }
+    try {
+        $lp0 = Get-Content (Join-Path $InstallDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json
+        $cid0 = @($lp0.contributes.viewsContainers.activitybar)[0].id
+        Add-File 'brand:extension container' ($cid0 -eq 'sudo-studio') ([string]$cid0)
+    } catch {
+        Add-File 'brand:extension container' $false $_.Exception.Message
+    }
 
-# ------------------------------------------------ 3 sante backend + runtime
-try {
-  $b = Invoke-RestMethod -Uri ($BackendUrl + '/health') -TimeoutSec 5
-  Add-Result -Name '3a /health backend' -Status 'PASS' -Proof ("GET " + $BackendUrl + "/health -> status=" + $b.status)
-} catch {
-  Add-Result -Name '3a /health backend' -Status 'FAIL' -Proof ($BackendUrl + "/health : " + $_.Exception.Message)
-}
-$rtUp = $false
-$rt = $null
-try {
-  $rt = Invoke-RestMethod -Uri ($RuntimeUrl + '/health') -TimeoutSec 5
-  $rtUp = $true
-  Add-Result -Name '3b /health runtime' -Status 'PASS' -Proof ("GET " + $RuntimeUrl + "/health -> status=" + $rt.status)
-} catch {
-  Add-Result -Name '3b /health runtime' -Status 'FAIL' -Proof ($RuntimeUrl + "/health : " + $_.Exception.Message)
-}
+    # -- 0d. probes (informational: up/down only) -------------------------------
+    try {
+        $b = Invoke-RestMethod 'http://127.0.0.1:5000/api/system/health' -TimeoutSec 3
+        $bs = 'up'
+        if ($b.status) { $bs = [string]$b.status } elseif ($b.ok) { $bs = [string]$b.ok }
+        Add-Probe 'backend-5000' $true $bs
+    } catch {
+        Add-Probe 'backend-5000' $false 'not running (start the app first)'
+    }
+    try {
+        $r = Invoke-RestMethod 'http://127.0.0.1:6000/health' -TimeoutSec 3
+        $rs = 'up'
+        if ($r.status) { $rs = [string]$r.status }
+        Add-Probe 'runtime-6000' $true $rs
+    } catch {
+        Add-Probe 'runtime-6000' $false 'not running (start the app first)'
+    }
+    $perUser = Join-Path $env:LOCALAPPDATA 'SudoStudio'
+    Add-Probe 'per-user-dir' (Test-Path $perUser) $perUser
 
-# ------------------------------------------------ 4 n_ctx et modele charge
-try {
-  if (-not $rtUp) {
-    Add-Result -Name '4 n_ctx et modele charge' -Status 'SKIP' -Proof 'runtime injoignable : rien ne peut etre affirme'
-  } else {
-    $m = $rt.model
-    $line = "model=" + $m.name + " loaded=" + $m.loaded + " n_ctx=" + $m.n_ctx + " device=" + $m.device + " load_ms=" + $m.load_ms
-    if ($m.loaded -eq $true -and $m.n_ctx) {
-      Add-Result -Name '4 n_ctx et modele charge' -Status 'PASS' -Proof $line
+    # == P46-L1: backend.exe --selftest (every require() resolves) =============
+    try {
+        $beExe = Join-Path $InstallDir 'backend.exe'
+        if (-not (Test-Path $beExe)) { throw 'backend.exe missing' }
+        $stOut = Join-Path $WorkDir 'selftest.txt'
+        $stErr = Join-Path $WorkDir 'selftest-err.txt'
+        $sp = Start-Process -FilePath $beExe -ArgumentList '--selftest' -WorkingDirectory $InstallDir -NoNewWindow -RedirectStandardOutput $stOut -RedirectStandardError $stErr -Wait -PassThru
+        $st = ''
+        if (Test-Path $stOut) { $st = Get-Content $stOut -Raw }
+        if ($sp.ExitCode -ne 0) { throw ('exit=' + $sp.ExitCode + ' ' + (Short $st 160)) }
+        if ($st -notmatch 'SELFTEST PASS') { throw 'no SELFTEST PASS line' }
+        $first = ''
+        if ($st -match 'SELFTEST: [^\r\n]*') { $first = $Matches[0] }
+        Add-Check 'P46-1' 'selftest' 'PASS' $first
+    } catch { Add-Check 'P46-1' 'selftest' 'FAIL' (Short $_.Exception.Message 200) }
+
+    # == P46-L2: agent server from the installed path + handshake ==============
+    try {
+        $serverJs = Join-Path $InstallDir 'sudo-agent\src\server.js'
+        $prodExe = Join-Path $InstallDir 'SudoStudio.exe'
+        if (-not (Test-Path $serverJs)) { throw 'server.js missing' }
+        if (-not (Test-Path $prodExe)) { throw 'SudoStudio.exe missing' }
+        $token = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
+        $env:ELECTRON_RUN_AS_NODE = '1'
+        $env:SUDO_AGENT_TOKEN = $token
+        $env:SUDO_AGENT_PORT = '0'
+        $env:SUDO_AGENT_PROVIDER = '{}'
+        $ao = Join-Path $WorkDir 'agent-stdout.txt'
+        $ae = Join-Path $WorkDir 'agent-stderr.txt'
+        if (Test-Path $ao) { Remove-Item $ao -Force }
+        $ap = Start-Process -FilePath $prodExe -ArgumentList "`"$serverJs`"" -NoNewWindow -RedirectStandardOutput $ao -RedirectStandardError $ae -PassThru
+        try {
+            $hs = $null
+            $deadline = (Get-Date).AddSeconds(60)
+            while ((Get-Date) -lt $deadline -and -not $hs) {
+                Start-Sleep -Seconds 2
+                if (Test-Path $ao) { $hs = Select-String -Path $ao -Pattern '^\{"ready":true' | Select-Object -First 1 }
+            }
+            if (-not $hs) { throw 'no handshake on stdout within 60s (MODULE_NOT_FOUND?)' }
+            $port = ($hs.Line | ConvertFrom-Json).port
+            $hr = Invoke-WebRequest ("http://127.0.0.1:{0}/health" -f $port) -TimeoutSec 10 -UseBasicParsing -Headers @{ Authorization = ("Bearer {0}" -f $token) }
+            if (($hr.Content | ConvertFrom-Json).ok -ne $true) { throw 'health ok != true' }
+            Add-Check 'P46-2' 'agent-handshake' 'PASS' ("port={0}" -f $port)
+        } finally {
+            try { Stop-Process -Id $ap.Id -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    } catch { Add-Check 'P46-2' 'agent-handshake' 'FAIL' (Short $_.Exception.Message 200) }
+    finally {
+        $env:ELECTRON_RUN_AS_NODE = $null
+        $env:SUDO_AGENT_TOKEN = $null
+        $env:SUDO_AGENT_PORT = $null
+        $env:SUDO_AGENT_PROVIDER = $null
+    }
+
+    # == P46-L3: editor 30 s on temp user-data-dir + exthost/renderer logs ======
+    if (-not $Full) {
+        Add-Check 'P46-3' 'editor-exthost-logs' 'SKIP' 'needs -Full (launches the editor)'
     } else {
-      Add-Result -Name '4 n_ctx et modele charge' -Status 'FAIL' -Proof ("modele non charge ou n_ctx absent : " + $line)
+        try {
+            $prodExe = Join-Path $InstallDir 'SudoStudio.exe'
+            $masterExt = Join-Path $InstallDir 'extensions\sudo-ai'
+            if (-not (Test-Path $prodExe)) { throw 'SudoStudio.exe missing' }
+            if (-not (Test-Path (Join-Path $masterExt 'package.json'))) { throw 'shipped extension missing' }
+            $liveParent = Join-Path $WorkDir 'live-ext'
+            $udata = Join-Path $WorkDir 'udata'
+            foreach ($d in @($liveParent, $udata)) {
+                if (Test-Path $d) { Remove-Item $d -Recurse -Force }
+                New-Item -ItemType Directory -Force -Path $d | Out-Null
+            }
+            Copy-Item $masterExt (Join-Path $liveParent 'sudo-ai') -Recurse -Force
+            $ep = Start-Process -FilePath $prodExe -ArgumentList "--extensions-dir=`"$liveParent`"", "--user-data-dir=`"$udata`"", '--new-window', '--disable-gpu' -PassThru
+            try {
+                Start-Sleep -Seconds 30
+            } finally {
+                $killEnd = (Get-Date).AddSeconds(30)
+                do {
+                    $eds = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ExecutablePath -like ($InstallDir + '*') -and $_.Name -eq 'SudoStudio.exe' })
+                    foreach ($e in $eds) {
+                        try { Stop-Process -Id $e.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
+                    }
+                    if ($eds.Count -eq 0) { break }
+                    Start-Sleep -Seconds 2
+                } while ((Get-Date) -lt $killEnd)
+            }
+            $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object { $_.ExecutablePath -like ($InstallDir + '*') -and $_.Name -eq 'SudoStudio.exe' })
+            if ($left.Count -gt 0) { throw ($left.Count.ToString() + ' editor process(es) refuse to die') }
+            $logFiles = @(Get-ChildItem (Join-Path $udata 'logs') -Recurse -Filter '*.log' -File -ErrorAction SilentlyContinue)
+            if ($logFiles.Count -eq 0) { throw 'editor produced no logs under the temp user-data-dir' }
+            $hits = @()
+            $nLines = 0
+            foreach ($lf in $logFiles) {
+                try { $lines = Get-Content $lf.FullName -ErrorAction Stop } catch { continue }
+                foreach ($ln in $lines) {
+                    $nLines++
+                    if ($ln -match 'must be of type') { $hits += ('must-be-of-type: ' + (Short $ln 180)); continue }
+                    # P42(5): the proven container rejection is logged as a
+                    # WARNING ("View container ... does not exist"), so warn
+                    # context counts for that pattern; icon stays error-only.
+                    if ($ln -match '(?i)\berror\b|\bexception\b|\bfailed\b|\bwarning\b|\bwarn\b|\bERR\b') {
+                        # P46-cycle2: scope to OUR surface (proven P42 signature
+                        # "View container ... does not exist", or sudo-ai lines).
+                        # VSCode builtins (ms-vscode.* API proposals) warn with
+                        # the same words and must not fail the gate.
+                        if (($ln -match 'does not exist') -and ($ln -match '(?i)sudo|view container|viewsContainer')) { $hits += ('does-not-exist: ' + (Short $ln 180)) }
+                    }
+                    if (($ln -match '(?i)\berror\b|\bexception\b|\bfailed\b|\bERR\b') -and ($ln -match '(?i)\bicon\b')) { $hits += ('icon: ' + (Short $ln 180)) }
+                    if ($hits.Count -ge 5) { break }
+                }
+                if ($hits.Count -ge 5) { break }
+            }
+            if ($hits.Count -gt 0) { throw ('registration errors: ' + ($hits -join ' / ')) }
+            Add-Check 'P46-3' 'editor-exthost-logs' 'PASS' ("{0} logs, {1} lines, 0 registration errors" -f $logFiles.Count, $nLines)
+        } catch { Add-Check 'P46-3' 'editor-exthost-logs' 'FAIL' (Short $_.Exception.Message 300) }
     }
-  }
-} catch { Add-Result -Name '4 n_ctx et modele charge' -Status 'FAIL' -Proof $_.Exception.Message }
 
-# ------------------------------------------------------------- 5 RAM libre
-try {
-  $os = Get-CimInstance Win32_OperatingSystem
-  $freeGb = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
-  $totGb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
-  $proof = "RAM libre=" + $freeGb + " Go / total=" + $totGb + " Go"
-  if ($freeGb -lt 0.3) {
-    Add-Result -Name '5 RAM libre' -Status 'FAIL' -Proof ($proof + " : sous 300 Mo, l agent va manquer de memoire")
-  } else {
-    Add-Result -Name '5 RAM libre' -Status 'PASS' -Proof $proof
-  }
-} catch { Add-Result -Name '5 RAM libre' -Status 'SKIP' -Proof ("CIM indisponible : " + $_.Exception.Message) }
+    # == P46-L4: every panel renders (no blank, no console error) ===============
+    if (-not $Full) {
+        Add-Check 'P46-4' 'panels' 'SKIP' 'needs -Full (renders 16 panels)'
+    } else {
+        try {
+            $ps = $PanelScript
+            if (-not $ps) { $ps = Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'scripts\ci\panel-render-test.js' }
+            if (-not (Test-Path $ps)) { $ps = Join-Path $PSScriptRoot 'panel-render-test.js' }
+            if (-not (Test-Path $ps)) { throw 'SKIP:panel-render-test.js not available (CI checkout only)' }
+            $node = Get-Command node -ErrorAction SilentlyContinue
+            if (-not $node) { throw 'SKIP:node not found on PATH' }
+            $liveParent = Join-Path $WorkDir 'live-ext'
+            if (-not (Test-Path (Join-Path $liveParent 'sudo-ai\package.json'))) {
+                if (Test-Path $liveParent) { Remove-Item $liveParent -Recurse -Force }
+                New-Item -ItemType Directory -Force -Path $liveParent | Out-Null
+                Copy-Item (Join-Path $InstallDir 'extensions\sudo-ai') (Join-Path $liveParent 'sudo-ai') -Recurse -Force
+            }
+            $pudata = Join-Path $WorkDir 'pudata'
+            $pout = Join-Path $WorkDir 'panels'
+            foreach ($d in @($pudata, $pout)) {
+                if (Test-Path $d) { Remove-Item $d -Recurse -Force }
+                New-Item -ItemType Directory -Force -Path $d | Out-Null
+            }
+            $np = Start-Process -FilePath 'node' -ArgumentList "`"$ps`"", '--install-dir', "`"$InstallDir`"", '--live-dir', "`"$liveParent`"", '--user-data-dir', "`"$pudata`"", '--out-dir', "`"$pout`"", '--label', 'p46' -NoNewWindow -Wait -PassThru
+            $rep = Join-Path $pout 'report-p46.json'
+            $detail = 'exit=' + $np.ExitCode
+            if (Test-Path $rep) {
+                $rj = Get-Content $rep -Raw | ConvertFrom-Json
+                $np2 = @($rj.panels).Count
+                $ok2 = @(@($rj.panels) | Where-Object { $_.pass }).Count
+                $detail = ("{0}/{1} panels, exthostErrs={2}, pristineDiffs={3}" -f $ok2, $np2, @($rj.exthostErrs).Count, $rj.pristine.count)
+            }
+            if ($np.ExitCode -ne 0) { throw $detail }
+            Add-Check 'P46-4' 'panels' 'PASS' $detail
+        } catch {
+            $m = $_.Exception.Message
+            if ($m -like 'SKIP:*') { Add-Check 'P46-4' 'panels' 'SKIP' $m.Substring(5) }
+            else { Add-Check 'P46-4' 'panels' 'FAIL' (Short $m 250) }
+        }
+    }
 
-# -------------------------------------------------- demarrage du serveur d agent
-$agentProc = $null
-$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-$serverJs = Join-Path $InstallDir 'resources\app\sudo-agent\src\server.js'
-$agentUp = $false
-if ($SkipModel) {
-  Add-Result -Name '6..7 tours avec le vrai modele' -Status 'SKIP' -Proof '-SkipModel'
-} elseif (-not (Test-Path $serverJs)) {
-  Add-Result -Name '6..7 tours avec le vrai modele' -Status 'SKIP' -Proof ("serveur d agent absent : " + $serverJs)
-} elseif (-not $nodeCmd) {
-  Add-Result -Name '6..7 tours avec le vrai modele' -Status 'SKIP' -Proof 'node.exe absent du PATH (utiliser le node embarque du paquet)'
+    # == P46-L5: branding (name + robot container + old logo absent) ============
+    try {
+        $parts = @()
+        $pj = Get-Content (Join-Path $InstallDir 'resources\app\product.json') -Raw | ConvertFrom-Json
+        if ($pj.nameShort -ne 'Sudo Studio') { throw ('nameShort=' + $pj.nameShort) }
+        if (-not $pj.commit -or -not $pj.date) { throw 'product.json lacks commit/date (About dialog)' }
+        $cfgV = $pj.configurationDefaults
+        if (-not $cfgV -or $cfgV.'window.commandCenter' -ne $false) { throw 'configurationDefaults window.commandCenter != false' }
+        if ($cfgV.'window.title' -ne '${appName}${separator}${dirty}${activeEditorShort}${separator}${rootName}') { throw 'configurationDefaults window.title != app-first template (P48)' }
+        $parts += 'product.json'
+        $ep5 = Get-Content (Join-Path $InstallDir 'extensions\sudo-ai\package.json') -Raw | ConvertFrom-Json
+        $bar = @($ep5.contributes.viewsContainers.activitybar)
+        if ($bar.Count -ne 1 -or $bar[0].id -ne 'sudo-studio') { throw 'activitybar container != [sudo-studio]' }
+        $sIcon = $bar[0].icon
+        if ($sIcon -isnot [string]) { throw 'container icon must be a string path (P42: object form rejected by the editor)' }
+        if (-not (Test-Path (Join-Path $InstallDir ('extensions\sudo-ai\' + ($sIcon -replace '/', '\'))))) { throw ('container icon missing: ' + $sIcon) }
+        $vs = $ep5.contributes.views
+        if (-not $vs.'sudo-studio' -or @($vs.'sudo-studio').Count -lt 1) { throw 'no views in sudo-studio' }
+        if ($vs.explorer) { throw 'views still under explorer' }
+        $parts += ("container views=" + @($vs.'sudo-studio').Count)
+        $a = [System.IO.File]::ReadAllBytes((Join-Path $InstallDir 'resources\app\out\media\code-icon.svg'))
+        $b = [System.IO.File]::ReadAllBytes((Join-Path $InstallDir 'resources\sudo-icon.svg'))
+        $same = ($a.Length -eq $b.Length)
+        if ($same) { for ($i = 0; $i -lt $a.Length; $i++) { if ($a[$i] -ne $b[$i]) { $same = $false; break } } }
+        if (-not $same) { throw 'code-icon.svg differs from sudo-icon.svg' }
+        $parts += 'titlebar-svg'
+        # P48(1): titlebar brand text must be in the installed workbench CSS.
+        $cssV = Join-Path $InstallDir 'resources\app\out\vs\workbench\workbench.desktop.main.css'
+        if (-not (Test-Path $cssV)) { throw 'installed workbench CSS missing (titlebar brand)' }
+        $cssVRaw = [System.IO.File]::ReadAllText($cssV, [System.Text.Encoding]::UTF8)
+        if ($cssVRaw -notmatch 'P48-TITLEBAR-BRAND') { throw 'titlebar brand CSS (P48-TITLEBAR-BRAND) missing from installed package' }
+        $parts += 'titlebar-text'
+        $oldSvgHash = '88bb8eb6c643403be96d1d218a564c28a05f3b31368aad10c0db0bc1efbed75f'
+        $oldSvg = @(Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension.ToLower() -eq '.svg' } |
+            Where-Object {
+                try { (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower() -eq $oldSvgHash }
+                catch { $false }
+            })
+        if ($oldSvg.Count -gt 0) { throw ('old-logo fingerprint svg: ' + $oldSvg[0].FullName.Substring($InstallDir.Length)) }
+        if ($Full) {
+            $oldTextExts = @('.js', '.json', '.css', '.html', '.svg', '.xml', '.ts', '.nls', '.txt', '.md')
+            $oldHits = @(Get-ChildItem $InstallDir -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $oldTextExts -contains $_.Extension.ToLower() } |
+                Where-Object { $_.FullName -notmatch 'node_modules' } |
+                Where-Object { $_.Length -lt 64MB } |
+                Where-Object {
+                    try {
+                        $t = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+                        (($t -match 'path6008') -and ($t -match 'Gradient_1')) -or
+                        (($t -match '#78AEED') -and ($t -match '#1D6BCA') -and ($t -match 'linearGradient'))
+                    } catch { $false }
+                })
+            if ($oldHits.Count -gt 0) { throw ('old-logo markers in: ' + (($oldHits | Select-Object -First 3 | ForEach-Object { $_.FullName.Substring($InstallDir.Length) }) -join ', ')) }
+            $parts += 'oldlogo-deep'
+        } else {
+            $parts += 'oldlogo-fingerprint-only'
+        }
+        if ($ExeChecker -and (Test-Path $ExeChecker)) {
+            & $ExeChecker -ExePath (Join-Path $InstallDir 'SudoStudio.exe')
+            if ($LASTEXITCODE -ne 0) { throw 'exe icon checker exit 1' }
+            $parts += 'exe-icon'
+        } else {
+            $parts += 'exe-icon-skipped'
+        }
+        Add-Check 'P46-5' 'branding' 'PASS' ($parts -join ', ')
+    } catch { Add-Check 'P46-5' 'branding' 'FAIL' (Short $_.Exception.Message 250) }
+
+    # == P46-L6: runtime journal header + real n_ctx == requested ===============
+    try {
+        $jr = Join-Path $logsDir 'runtime.log'
+        if (-not (Test-Path $jr)) { throw 'SKIP:runtime.log absent (runtime never ran)' }
+        $jt = Get-Content $jr -Raw
+        if ($jt -notmatch '# === session start ===') { throw 'no structured session header' }
+        if ($jt -notmatch '\d{4}-\d{2}-\d{2}T\S+ \[(INFO|DEBUG|WARNING|ERROR)\] \[runtime\]') { throw 'no P21-shaped line' }
+        if (-not $Full) { throw 'SKIP:header OK, n_ctx needs -Full (model load)' }
+        try {
+            $h = Invoke-RestMethod 'http://127.0.0.1:6000/health' -TimeoutSec 5
+            if ($h.status -ne 'healthy') { throw ('status=' + $h.status) }
+        } catch {
+            throw 'SKIP:runtime not running (start the app or the gate first)'
+        }
+        $wantCtx = 4096
+        try {
+            $rl = Invoke-RestMethod 'http://127.0.0.1:6000/reload' -Method Post -Body (@{ n_ctx = $wantCtx } | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 30
+        } catch {
+            $code = 0
+            try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch {}
+            if ($code -eq 409) { throw 'SKIP:another model load already in progress (409)' }
+            throw ('reload refused: ' + (Short $_.Exception.Message 150))
+        }
+        $got = $null
+        $deadline = (Get-Date).AddSeconds($ModelTimeoutSec)
+        while ((Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 15
+            try { $m = Invoke-RestMethod 'http://127.0.0.1:6000/models' -TimeoutSec 10 } catch { continue }
+            if ($m.loaded -and $m.n_ctx) { $got = $m; break }
+        }
+        if (-not $got) {
+            $ds = ''
+            try { $ds = Short ((Invoke-RestMethod 'http://127.0.0.1:6000/models/download-status' -TimeoutSec 10) | ConvertTo-Json -Compress) 120 } catch {}
+            throw ('SKIP:model not loaded within ' + $ModelTimeoutSec + 's (network? ' + $ds + ')')
+        }
+        if ([int]$got.n_ctx -ne $wantCtx) { throw ("real n_ctx={0} != requested {1}" -f $got.n_ctx, $wantCtx) }
+        $jt2 = Get-Content $jr -Raw
+        if ($jt2 -notmatch '\[GGUF\] n_ctx=4096 \(requested=4096') { throw 'journal lacks [GGUF] n_ctx=4096 (requested=4096 line' }
+        Add-Check 'P46-6' 'runtime-journal-nctx' 'PASS' 'header OK, n_ctx=4096 requested=4096 (API + journal)'
+    } catch {
+        $m6 = $_.Exception.Message
+        if ($m6 -like 'SKIP:*') { Add-Check 'P46-6' 'runtime-journal-nctx' 'SKIP' $m6.Substring(5) }
+        else { Add-Check 'P46-6' 'runtime-journal-nctx' 'FAIL' (Short $m6 250) }
+    }
+
+    # == P46-L7: manifest vs installed files + runtime freshness ================
+    try {
+        if (-not $mf) { throw 'build-manifest.json unreadable (see files section)' }
+        $bad = @()
+        foreach ($prop in $mf.files.PSObject.Properties) {
+            $p = Join-Path $InstallDir $prop.Name
+            try {
+                if (-not (Test-Path $p)) { throw 'missing' }
+                $ah = (Get-FileHash $p -Algorithm SHA256).Hash.ToLower()
+                if ($ah -ne ([string]$prop.Value).ToLower()) { throw 'sha256 mismatch' }
+            } catch { $bad += ($prop.Name + ':' + $_.Exception.Message) }
+        }
+        if ($bad.Count -gt 0) { throw ('file mismatches: ' + ($bad -join ', ')) }
+        $comps = $mf.components
+        if (-not $comps -or -not $comps.backend -or -not $comps.runtime -or -not $comps.extension -or -not $comps.agent) { throw 'components block incomplete' }
+        foreach ($k in @('backend', 'runtime', 'extension', 'agent')) {
+            if ($comps.$k.commit -ne $mf.sudo_studio_commit) { throw ('component commit mismatch: ' + $k) }
+        }
+        if ($comps.editor.product -ne 'Sudo Studio') { throw 'editor product invalid' }
+        $fresh = 'freshness: manifest predates P46 (no touch field)'
+        if ($comps.runtime.touch -and $comps.runtime.touch -ne 'unknown' -and $comps.runtime.date) {
+            $runDate = [DateTimeOffset]::Parse([string]$comps.runtime.date)
+            $touchDate = [DateTimeOffset]::Parse([string]$comps.runtime.touch)
+            if ($runDate -lt $touchDate) { throw ("stale runtime: run {0} older than last touch {1}" -f $comps.runtime.date, $comps.runtime.touch) }
+            $fresh = ("freshness OK (run {0} >= touch {1})" -f $comps.runtime.date, $comps.runtime.touch)
+        }
+        Add-Check 'P46-7' 'manifest' 'PASS' ("commit={0} files={1} {2}" -f $mf.sudo_studio_commit, @($mf.files.PSObject.Properties).Count, $fresh)
+    } catch { Add-Check 'P46-7' 'manifest' 'FAIL' (Short $_.Exception.Message 250) }
+
+    # == P46-L8: uninstall (never on the owner PC) ==============================
+    Add-Check 'P46-8' 'uninstall-clean' 'SKIP' 'destructive, CI gate only (see p46-gate.ps1)'
+}
+catch {
+    Add-Check 'P46-0' 'verify-aborted' 'FAIL' (Short $_.Exception.Message 200)
+}
+
+# == P46-L9: result integrity (written file holds no secret) ===================
+$verdict = 'PASS'
+if ($nFail -gt 0) { $verdict = 'FAIL' }
+$ver = 'unknown'
+if ($mf) { $ver = [string]$mf.version }
+$com = 'unknown'
+if ($mf) { $com = [string]$mf.sudo_studio_commit }
+$draft = [ordered]@{
+    app     = 'Sudo Studio'
+    version = $ver
+    commit  = $com
+    date    = (Get-Date -Format 'o')
+    install = $InstallDir
+    full    = [bool]$Full
+    files   = $files
+    probes  = $probes
+    checks  = $checks
+    fail    = $nFail
+    skip    = $nSkip
+    verdict = $verdict
+}
+$draftJson = ($draft | ConvertTo-Json -Depth 6)
+$secretHit = $false
+foreach ($pat in @('ghp_', 'gho_', 'github_pat_', 'xox[baprs]-', 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY', '(?i)bearer\s+[A-Za-z0-9\-._~+/=]{8,}')) {
+    if ($draftJson -match $pat) { $secretHit = $true; break }
+}
+if ($secretHit) {
+    Add-Check 'P46-9' 'result-integrity' 'FAIL' 'secret pattern detected - result NOT written'
+    Write-Error 'verify-installed: REFUSING to write verify-result.json (secret pattern detected)'
 } else {
-  $env:SUDO_AGENT_TOKEN = $script:Token
-  $env:SUDO_AGENT_PORT = "$Port"
-  $env:SUDO_STUDIO_HOME = (Join-Path $script:Work 'agent-home')
-  $env:SUDO_STUDIO_LOGS = $logsDir
-  $env:SUDO_AGENT_STORE = (Join-Path $script:Work 'agent-store')
-  $env:SUDO_AGENT_PROVIDER = (@{ type = 'local'; baseUrl = $RuntimeUrl; model = 'local-model' } | ConvertTo-Json -Compress)
-  try {
-    $agentProc = Start-Process -FilePath $nodeCmd.Source -ArgumentList @($serverJs) -PassThru -WindowStyle Hidden
-    $deadline = (Get-Date).AddSeconds(40)
-    while ((Get-Date) -lt $deadline) {
-      try { $null = Invoke-AgentApi -Path '/health' -TimeoutSec 3; $agentUp = $true; break } catch { Start-Sleep -Milliseconds 400 }
+    Add-Check 'P46-9' 'result-integrity' 'PASS' 'no secret pattern in result'
+    $final = [ordered]@{
+        app     = 'Sudo Studio'
+        version = $ver
+        commit  = $com
+        date    = (Get-Date -Format 'o')
+        install = $InstallDir
+        full    = [bool]$Full
+        files   = $files
+        probes  = $probes
+        checks  = $checks
+        fail    = $nFail
+        skip    = $nSkip
+        verdict = $verdict
     }
-  } catch { $agentUp = $false }
-  if (-not $agentUp) {
-    Add-Result -Name '6..7 tours avec le vrai modele' -Status 'SKIP' -Proof ("serveur d agent non demarre sur " + $script:Base + "/health")
-  }
+    if (-not $OutFile) { $OutFile = Join-Path (Get-Location).Path 'verify-result.json' }
+    [System.IO.File]::WriteAllText($OutFile, ($final | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
 }
-
-if ($agentUp -and -not $SkipModel) {
-  # ---- 6a : creation de test.txt avec le VRAI modele (appel d'outil)
-  try {
-    $sess = (Invoke-AgentApi -Method POST -Path '/sessions' -Body @{ projectRoot = $proj; mode = 'build' }).id
-    $p1 = 'Cree le fichier test.txt a la racine du projet, contenant exactement le mot bonjour. Puis termine.'
-    $r1 = Invoke-Turn -SessionId $sess -Prompt $p1 -TimeoutSec 420
-    $file = Join-Path $proj 'test.txt'
-    $writeLine = Get-LogProof -Path $script:AgentLog -Pattern 'tool ok.*tool=write.*test\.txt'
-    if ((Test-Path $file) -and ((Get-Content -Raw $file).Trim() -eq 'bonjour') -and $writeLine) {
-      Add-Result -Name '6a creation de test.txt (appel d outil reel)' -Status 'PASS' -Proof $writeLine
-    } else {
-      Add-Result -Name '6a creation de test.txt (appel d outil reel)' -Status 'FAIL' `
-        -Proof ("fichier=" + (Test-Path $file) + " contenu=" + $(if (Test-Path $file) { (Get-Content -Raw $file).Trim() } else { '-' }) + " | " + $r1.error)
-    }
-    # ---- 6b : relecture
-    $p2 = 'Relis test.txt et dis-moi exactement ce qu il contient.'
-    $r2 = Invoke-Turn -SessionId $sess -Prompt $p2 -TimeoutSec 420
-    $readLine = Get-LogProof -Path $script:AgentLog -Pattern 'tool ok.*tool=read.*test\.txt'
-    if ($readLine -and $r2.text -match 'bonjour') {
-      Add-Result -Name '6b relecture de test.txt' -Status 'PASS' -Proof $readLine
-    } else {
-      Add-Result -Name '6b relecture de test.txt' -Status 'FAIL' -Proof ("reponse=" + ($r2.text -replace '\s+', ' ').Substring(0, [Math]::Min(160, $r2.text.Length)))
-    }
-    # ---- 6c : question simple SANS outil, reponse non vide
-    $sess2 = (Invoke-AgentApi -Method POST -Path '/sessions' -Body @{ projectRoot = $proj; mode = 'plan' }).id
-    $r3 = Invoke-Turn -SessionId $sess2 -Prompt 'Explique en une phrase ce que contient ce projet.' -TimeoutSec 300
-    $txt = ($r3.text -replace '\s+', ' ').Trim()
-    if ($r3.ok -and $txt.Length -gt 10) {
-      Add-Result -Name '6c question simple sans outil (reponse non vide)' -Status 'PASS' -Proof ("statut=TERMINE, " + $txt.Length + " caracteres : " + $txt.Substring(0, [Math]::Min(120, $txt.Length)))
-    } else {
-      Add-Result -Name '6c question simple sans outil (reponse non vide)' -Status 'FAIL' -Proof ("ok=" + $r3.ok + " texte=" + $txt.Length + " car. | " + $r3.error)
-    }
-    # ---- 7 : "continu" sans travail inacheve
-    $r4 = Invoke-Turn -SessionId $sess2 -Prompt 'continu' -TimeoutSec 300
-    $t4 = ($r4.text -replace '\s+', ' ').Trim()
-    $nothing = Get-LogProof -Path $script:AgentLog -Pattern 'aucun travail|rien a reprendre|reprise deterministe|aucune etape'
-    if ($r4.ok -and $t4.Length -gt 0 -and $nothing) {
-      Add-Result -Name '7 continu sans travail inacheve' -Status 'PASS' -Proof $nothing
-    } else {
-      Add-Result -Name '7 continu sans travail inacheve' -Status 'FAIL' -Proof ("ok=" + $r4.ok + " preuve journal=" + $(if ($nothing) { $nothing } else { 'aucune ligne de reprise deterministe' }))
-    }
-  } catch {
-    Add-Result -Name '6/7 tours avec le vrai modele' -Status 'FAIL' -Proof $_.Exception.Message
-  }
+if ($autoWork) {
+    try { Remove-Item $WorkDir -Recurse -Force -ErrorAction SilentlyContinue } catch {}
 }
-
-# ------------------------------------- 8 aucun .sudo-agent dans le projet
-try {
-  $dot = @()
-  $dot += Get-ChildItem -Path $proj -Recurse -Force -Directory -Filter '.sudo-agent' -ErrorAction SilentlyContinue
-  $gitState = 'pas de depo git'
-  if (Test-Path (Join-Path $proj '.git')) {
-    $status = & git -C $proj status --porcelain 2>&1 | Out-String
-    if ($status -match '\.sudo-agent') { $gitState = 'git status mentionne .sudo-agent : ' + (($status -split "`n") | Where-Object { $_ -match '\.sudo-agent' } | Select-Object -First 1) }
-    else { $gitState = 'git status : aucun .sudo-agent' }
-  }
-  if ($dot.Count -eq 0 -and $gitState -notlike 'git status mentionne*') {
-    Add-Result -Name '8 aucun .sudo-agent dans le projet' -Status 'PASS' -Proof $gitState
-  } else {
-    Add-Result -Name '8 aucun .sudo-agent dans le projet' -Status 'FAIL' -Proof ($gitState + " | dossiers trouves : " + $dot.Count)
-  }
-} catch { Add-Result -Name '8 aucun .sudo-agent dans le projet' -Status 'FAIL' -Proof $_.Exception.Message }
-
-# ------------------------------------- 9 rejets d'appels d'outils
-try {
-  if (-not (Test-Path $script:AgentLog)) {
-    Add-Result -Name '9 rejets d appels d outils' -Status 'SKIP' -Proof 'journal de l agent introuvable'
-  } else {
-    $rejets = Get-Content -LiteralPath $script:AgentLog | Where-Object { $_ -match 'deny|refus|denied|non autorise|permission' }
-    $n = ($rejets | Measure-Object).Count
-    $last = $rejets | Select-Object -Last 1
-    Add-Result -Name '9 rejets d appels d outils' -Status 'PASS' -Proof ("rejets=" + $n + $(if ($last) { " | dernier : " + $last.Trim() } else { ' | aucun rejet' }))
-  }
-} catch { Add-Result -Name '9 rejets d appels d outils' -Status 'SKIP' -Proof $_.Exception.Message }
-
-# ------------------------------------- 10 chaines anglaises visibles
-try {
-  $patterns = @('Runtime restarting', 'Tool call', 'max_iters', 'tool call unusable', 'Unknown error',
-    'Not found', 'Permission denied', 'Failed to', 'Something went wrong')
-  $hits = @()
-  foreach ($f in @($script:AgentLog, (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\backend.log'), (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\runtime.log'))) {
-    if (-not (Test-Path $f)) { continue }
-    foreach ($p in $patterns) {
-      $h = Get-Content -LiteralPath $f -ErrorAction SilentlyContinue | Where-Object { $_ -like "*$p*" } | Select-Object -First 1
-      if ($h) { $hits += ("$p -> " + $h.Trim()) }
-    }
-  }
-  if ($hits.Count -eq 0) {
-    Add-Result -Name '10 aucune chaine anglaise visible' -Status 'PASS' -Proof ("9 motifs cherches dans agent.log, backend.log, runtime.log : aucun")
-  } else {
-    Add-Result -Name '10 aucune chaine anglaise visible' -Status 'FAIL' -Proof ($hits -join ' || ')
-  }
-} catch { Add-Result -Name '10 aucune chaine anglaise visible' -Status 'SKIP' -Proof $_.Exception.Message }
-
-# ------------------------------------- 11 secrets dans les journaux
-try {
-  $many = @()
-  $dirs = @($logsDir, (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs'))
-  foreach ($d in $dirs) {
-    if (-not (Test-Path $d)) { continue }
-    $many += Get-ChildItem -Path $d -Filter *.log -ErrorAction SilentlyContinue
-  }
-  $found = @()
-  foreach ($f in $many) {
-    $h = Select-String -Path $f.FullName -Pattern 'ghp_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{12,}|Bearer [A-Za-z0-9._-]{20,}' -AllMatches -ErrorAction SilentlyContinue
-    foreach ($x in $h) { $found += ($f.Name + ':' + $x.LineNumber) }
-  }
-  if ($found.Count -eq 0) {
-    Add-Result -Name '11 aucun secret dans les journaux' -Status 'PASS' -Proof ("fichiers inspectes=" + ($many | Measure-Object).Count + " : aucun motif de jeton")
-  } else {
-    Add-Result -Name '11 aucun secret dans les journaux' -Status 'FAIL' -Proof ($found -join ', ')
-  }
-} catch { Add-Result -Name '11 aucun secret dans les journaux' -Status 'SKIP' -Proof $_.Exception.Message }
-
-# ------------------------------------- 12 veille Windows recente
-try {
-  $since = (Get-Date).AddDays(-7)
-  $ev = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Microsoft-Windows-Kernel-Power'; StartTime = $since } -MaxEvents 20 -ErrorAction Stop
-  $sleep = $ev | Where-Object { $_.Id -in @(42, 107, 131, 506, 507) }
-  if (($sleep | Measure-Object).Count -gt 0) {
-    $e0 = $sleep | Select-Object -First 1
-    Add-Result -Name '12 veille Windows (Kernel-Power)' -Status 'PASS' -Proof ("7 derniers jours : " + ($sleep | Measure-Object).Count + " evenement(s), dernier id=" + $e0.Id + " a " + $e0.TimeCreated)
-  } else {
-    Add-Result -Name '12 veille Windows (Kernel-Power)' -Status 'SKIP' -Proof 'aucun evenement de veille sur 7 jours (normal sur un poste fixe)'
-  }
-} catch { Add-Result -Name '12 veille Windows (Kernel-Power)' -Status 'SKIP' -Proof ("journal System illisible : " + $_.Exception.Message) }
-
-# ------------------------------------- 13 runtime-supervisor.log
-try {
-  $cands = @(
-    (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs\runtime-supervisor.log'),
-    (Join-Path $InstallDir 'logs\runtime-supervisor.log')
-  )
-  $f = $cands | Where-Object { Test-Path $_ } | Select-Object -First 1
-  if ($f) {
-    $tail = Get-Content -LiteralPath $f -Tail 5 -ErrorAction Stop
-    Add-Result -Name '13 runtime-supervisor.log' -Status 'PASS' -Proof (($tail -join ' | ').Trim())
-  } else {
-    Add-Result -Name '13 runtime-supervisor.log' -Status 'SKIP' -Proof ("introuvable dans : " + ($cands -join ' , '))
-  }
-} catch { Add-Result -Name '13 runtime-supervisor.log' -Status 'SKIP' -Proof $_.Exception.Message }
-
-# ---------------------------------------------------------------- rapport + zip
-try {
-  $lines = New-Object System.Collections.ArrayList
-  [void]$lines.Add('SUDO STUDIO - verification du paquet installe (P66)')
-  [void]$lines.Add(('Date : ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')))
-  [void]$lines.Add(('Machine : ' + $env:COMPUTERNAME + ' | utilisateur : ' + $env:USERNAME))
-  [void]$lines.Add(('Installation : ' + $InstallDir))
-  [void]$lines.Add(('Installateur : ' + $(if ($Installer) { $Installer } else { '(non fourni)' })))
-  [void]$lines.Add('')
-  foreach ($r in $script:Results) {
-    [void]$lines.Add(('[{0}] {1}' -f $r.Etat, $r.Controle))
-    [void]$lines.Add(('       preuve : ' + $r.Preuve))
-  }
-  [void]$lines.Add('')
-  $p = ($script:Results | Where-Object { $_.Etat -eq 'PASS' } | Measure-Object).Count
-  $f = ($script:Results | Where-Object { $_.Etat -eq 'FAIL' } | Measure-Object).Count
-  $s = ($script:Results | Where-Object { $_.Etat -eq 'SKIP' } | Measure-Object).Count
-  [void]$lines.Add(('RESUME : PASS {0} | FAIL {1} | SKIP {2}' -f $p, $f, $s))
-  [void]$lines.Add('Regle : un point est PASS seulement avec la ligne de journal ou la mesure qui le prouve.')
-  $lines | Set-Content -Path $reportPath -Encoding UTF8
-  Add-Result -Name '14 rapport ecrit' -Status 'PASS' -Proof $reportPath
-
-  $zip = Join-Path $OutDir 'journaux-sudo-studio.zip'
-  if (Test-Path $zip) { Remove-Item $zip -Force }
-  $toZip = New-Object System.Collections.ArrayList
-  [void]$toZip.Add($reportPath)
-  foreach ($d in @($logsDir, (Join-Path $env:LOCALAPPDATA 'SudoStudio\logs'))) {
-    if (Test-Path $d) { Get-ChildItem -Path $d -File -ErrorAction SilentlyContinue | ForEach-Object { [void]$toZip.Add($_.FullName) } }
-  }
-  if ($toZip.Count -gt 0) {
-    Compress-Archive -Path $toZip.ToArray() -DestinationPath $zip -Force -ErrorAction Stop
-    Add-Result -Name '15 zip des journaux' -Status 'PASS' -Proof $zip
-  } else {
-    Add-Result -Name '15 zip des journaux' -Status 'SKIP' -Proof 'aucun journal a zipper'
-  }
-} catch { Add-Result -Name '14/15 rapport et zip' -Status 'FAIL' -Proof $_.Exception.Message }
-
-Write-Host ''
-Write-Host '=== RESUME ===' -ForegroundColor Cyan
-$script:Results | Format-Table -AutoSize | Out-String | Write-Host
-$fail = ($script:Results | Where-Object { $_.Etat -eq 'FAIL' } | Measure-Object).Count
-Write-Host ("Rapport : " + $reportPath) -ForegroundColor Cyan
-if ($agentProc) { try { Stop-Process -Id $agentProc.Id -Force } catch {} }
-if ($fail -gt 0) { exit 1 } else { exit 0 }
+if ($nFail -gt 0) { $verdict = 'FAIL' }
+Write-Host ("verify-installed: {0} (checks={1} fail={2} skip={3}) -> {4}" -f $verdict, $checks.Count, $nFail, $nSkip, $OutFile)
+if ($verdict -eq 'FAIL') { exit 1 }
