@@ -388,3 +388,167 @@ Rien n'a ete corrige : ces defauts sont decrits, pas modifies.
 | Defauts trouves | 10 (2 BLOQUANT, 2 ELEVE, 2 MOYEN, 3 FAIBLE, 1 INFO) |
 | Fusion dans main | **NON FAIT (interdit)** - `main` = `e6c3d48` |
 | Linux | **NON TRAITE (decision de l'utilisateur)** |
+
+
+---
+
+## H. CORRECTIONS APPORTEES APRES REMARQUE DE L'UTILISATEUR (paquet)
+
+L'utilisateur a indique la chaine reelle : **backend et runtime sont construits dans
+`Sudo-studio`, le PAQUET est construit dans `sudo-studio-packager`** (workflow
+« SudoStudio Stable Build »). Le workflow `.github/workflows/03-package.yml` de ce depot etait
+donc un **doublon degrade**, et il a ete supprime (commit `af42630`, ordre explicite de
+l'utilisateur : `git rm .github/workflows/03-package.yml`).
+
+Trois conclusions de ce rapport doivent etre corrigees, sans effacer l'erreur :
+
+| Point du rapport | Ce que j'avais ecrit | Correction |
+|---|---|---|
+| Defaut n°1 (BLOQUANT) « aucun build-manifest.json » | presente comme un defaut produit | **VRAI pour le doublon**, **FAUX pour la chaine reelle** : le workflow du packager appelle `scripts/ci/build-manifest.ps1 -BuildDir build/SudoStudio -SudoStudioCommit $ssCommit -BackendRunId ... -RuntimeRunId ...` (ligne 571 du fichier du packager). Le manifeste n'etait absent que parce que le doublon supprime ne l'appelait pas. |
+| Defaut n°4 (ELEVE) « verify-installed.ps1 absent du paquet » | presente comme un defaut produit | **VRAI pour le doublon**, **FAUX pour la chaine reelle** : le packager copie `scripts/verify/verify-installed.ps1` a la RACINE du build (lignes 467-469) et refuse le paquet s'il manque (lignes 549-553). |
+| Defaut n°2 (BLOQUANT) « run 43648790493 = 404 » | j'ai conclu que la preuve de P63-B n'existait plus | **ERREUR DE MA PART** : ce run existe, mais dans le depot **`sudo-studio-packager`** — c'est « 05 - Linux smoke test (clean containers) », `conclusion: failure`, sur `main` du packager. Je l'avais cherche dans `Sudo-studio`. Il reste rouge, et comme il concerne Linux il releve de **NON TRAITE (decision de l'utilisateur)**. Le workflow `06-smoke-installed.yml` de ce depot, lui, reste non declenchable (absent de `main` de Sudo-studio) : c'est cette partie-la qui est un vrai blocage, et elle depend maintenant du packager puisque le workflow 03 local n'existe plus. |
+
+Ce qui reste vrai apres correction : defauts n°3 (marque Microsoft, 25 chaines), n°5 (149 chaines
+anglaises), n°6 (dossier `scripts/verify/` piege), n°7 (nom de job CI perime), n°8 (nom du moteur
+d'origine dans des docs internes), n°9 (controle anglais partiel de mon script), n°10 (INFO).
+
+Le paquet de reference est desormais celui du packager : run **`43746055054`** (branche
+`p66-pins`, commit de pins `531caf2`, tete Sudo-studio `af42630`).
+
+## I. PAQUET DE REFERENCE : MESURES SUR LE NOUVEAU PAQUET (chaine du packager)
+
+Cette section remplace, pour tous les points qu'elle couvre, les chiffres obtenus sur l'ancien
+paquet (celui du doublon `03-package.yml` de `Sudo-studio`, run `43709187255`). Elle ne supprime
+pas les sections precedentes : elle les met a jour, avec les preuves du paquet reellement produit
+par la chaine que vous avez designee.
+
+### I.1 Identite du run et de l'artefact
+
+| Element | Valeur |
+|---|---|
+| Depot | `juleszackaria-lab/sudo-studio-packager` |
+| Workflow | « SudoStudio Stable Build » (`.github/workflows/03-package.yml`) |
+| Run | **`43746055054`** — conclusion **success** |
+| Ref / commit du packager | branche `p66-pins`, commit **`531caf2`** |
+| Pins | `BACKEND_RUN_ID=43744211588` (run 01 success), `RUNTIME_RUN_ID=43744214948` (run 02 success), `SUDO_STUDIO_REF=af42630b0b43cdbee09296c9ce01263ef3687c10` |
+| Jobs | `build` 44/44 etapes, `P32 screenshots` 6/6, `P29+P31 smoke (Windows install + agent e2e)` 12/12, `P35 panel render` 13/13 |
+| Artefact installateur | `SudoStudio-Installer` (id 14175160382), zipped 376 485 415 octets |
+| Fichier installeur | **`SudoStudio-Setup.exe` — 376 877 199 octets** (journal : « Installer: SudoStudio-Setup.exe -- 359.4 MB », compilation Inno 163,687 s) |
+| SHA256 (64 caracteres) | **`fd10c679a13afe8f20a3649a5d4c797be0b3eb7029fa66790a87e9e2434a1d16`** |
+| Artefact portable | `SudoStudio-Portable` (id 14174459627), 436 120 306 octets, **2 773 fichiers** extraits |
+| Autres artefacts | `smoke-logs` 169 509 o (id 14175161628), `panel-render` 2 837 744 o, `p32-screenshots` 59 821 o |
+
+Ce SHA256 differe de celui de l'ancien paquet (`c4067656...26c9d`, 445 042 538 o) : normal, la
+tete a change (`add0e40` -> `af42630`) et la chaine d'assemblage n'est plus la meme. Les deux
+valeurs sont exactes, elles ne portent pas sur le meme fichier.
+
+### I.2 Ce que la chaine a reellement fait (sortie collee)
+
+```
+[MANIFEST] Sudo-studio checkout = af42630b0b43cdbee09296c9ce01263ef3687c10
+[MANIFEST] 15/15 component files present
+verify-installed.ps1 copied to ROOT.
+D:\a\sudo-studio-packager\sudo-studio-packager\build\SudoStudio\verify-installed.ps1
+OK: verify-installed.ps1 a la RACINE
+[GATE-PASS] P46-7 manifest commit=af42630b0b43cdbee09296c9ce01263ef3687c10 files=9 freshness OK (run 2026-11-15T18:00:02Z >= touch 2026-11-14T18:03:23Z)
+```
+
+Consequence : les defauts n°1 (manifeste) et n°4 (`verify-installed.ps1`) restent, comme annonce
+en section H, **faux pour la chaine reelle**.
+
+### I.3 Fumee sur le paquet INSTALLE (journal CI, job « P29+P31 smoke »)
+
+```
+[PASS] pre-installdir-absent
+[PASS] silent-install exit=0 dir=C:\Program Files\Sudo Studio
+[PASS] expected-files 17 files
+[PASS] build-manifest commit=af42630b0b43cdbee09296c9ce01263ef3687c10 components=5 brand=P20-OK
+[PASS] brand-product.json nameShort=Sudo Studio
+[PASS] brand-titlebar-svg code-icon.svg == sudo-icon.svg
+[PASS] brand-oldlogo-zero markers+b64+fingerprint absent
+[PASS] brand-extension-single extensions\sudo-ai views=1
+[PASS] brand-exe-icon old gone + new present
+[PASS] backend-health HTTP 200
+[PASS] runtime-health status=healthy
+[PASS] runtime-p21-journal C:\Users\runneradmin\AppData\Local\SudoStudio\logs\runtime.log
+[PASS] agent-handshake port=60979
+[PASS] editor-close-cleanup 0 processes remain
+[PASS] logs-single-dir agent.jsonl, agent.log, backend.jsonl, backend.log, enterprise.log, extension.jsonl, extension.log, runtime-supervisor.log, runtime.jsonl, runtime.log, runtime_debug.log, startup.log, supervisor.jsonl, supervisor.log
+[PASS] extension-live-copy live + no install data
+[PASS] clean-uninstall exit=0 leftover-items=1 (logs/data accepted)
+FAIL=0 SKIP=0
+```
+
+Et, dans le meme run, la porte P46 sur machine nue :
+
+```
+[GATE-PASS] P46-8a install-pristine 2775 files unchanged
+[GATE-PASS] P46-8b uninstall-no-files exit=0 dir removed
+[GATE-PASS] P46-8b uninstall-no-processes 0 processes
+[GATE-PASS] P46-9 result-integrity no secret pattern in result
+```
+
+### I.4 Agent de bout en bout sur le paquet installe (journal CI, verbatim)
+
+```
+[AGENT-E2E] e2e-handshake PASS port=61105
+[AGENT-E2E] e2e-health PASS ok
+[AGENT-E2E] e2e-session PASS fb254401924a8150
+[AGENT-E2E] e2e-turn1 PASS paused, nothing written
+[AGENT-E2E] e2e-approve PASS resumed, scripted content
+[AGENT-E2E] e2e-turn2 PASS TERMINE
+[AGENT-E2E] e2e-only-file PASS hello.txt only
+[AGENT-E2E] missing-require PASS C:\Users\RUNNER~1\AppData\Local\Temp\SudoE2E\extensions\sudo-ai\src\agent\AgentServer.js
+[AGENT-E2E] uninstall PASS exit=0
+matrix: 56 lines PASS=27 FAIL=0 SKIP=3 gated=22 external=4 gate=PASS
+```
+
+### I.5 Critere de tracabilite du paquet : journal de demarrage
+
+Le journal produit par le paquet installe porte, en troisieme ligne, le commit exact :
+
+```
+  SUDO STUDIO v5.0.0 - Sun 11/15/2026 18:36:18.83
+  Build commit: af42630b0b43cdbee09296c9ce01263ef3687c10
+  Root: C:\Program Files\Sudo Studio\
+```
+
+### I.6 Re-mesures des six points de C5, sur CE paquet (2 773 fichiers)
+
+| Point | Ancienne mesure (mauvais paquet) | Mesure sur le paquet `43746055054` |
+|---|---|---|
+| (a) `.sudo-agent` | aucun dossier livre | **aucun dossier ni fichier `.sudo-agent`** ; 33 occurrences de la chaine, toutes dans `sudo-agent/src/*.js` : etiquette de journal `[sudo-agent]` (sur chemin fatal uniquement -> **0 occurrence** dans le stderr reel de l'e2e) et un commentaire `// ... (.sudo-agent/orch-<planId>.json)` |
+| (b) chaines anglaises | 149 hits sur un scan borne | **3 chaines** dans les sources livrees de l'extension : `Loading (${m.download_progress||0}%)`, `Error: ${modelInfo.error || ...}`, `Runtime restarting, attempt N` |
+| (c) secret dans le paquet | 0 dans les fichiers livres, journaux non prouves | **0** sur les 2 773 fichiers (`ghp_`, `github_pat_`, `sk-`, `AKIA`, cle privee) **et 0** dans tous les journaux reels du paquet installe |
+| (d) marque Microsoft | 25 chaines dans `product.json` | **21 chaines** dans `resources/app/product.json`, dont `serverLicenseUrl = https://github.com/microsoft/vscode/blob/main/LICENSE.txt` et les `publisherDisplayName: Microsoft` des extensions integrees. Defaut n°3 **confirme** |
+| (e) nom du moteur d'origine | fuite hors notices | sources de l'extension **propres** ; 4 fichiers concernes, tous du socle : `out/vs/workbench/workbench.desktop.main.js`, `out/vs/workbench/api/node/extensionHostProcess.js`, `out/vs/workbench/api/worker/extensionHostWorkerMain.js`, `out/vs/workbench/contrib/terminal/common/scripts/shellIntegration.fish` |
+| (f) chemins d'etat | `%LOCALAPPDATA%\SudoStudio\agent\workspaces\<sha16>` + `<agentHome>/logs` | **confirme sur machine** : `C:\Users\runneradmin\AppData\Local\SudoStudio\agent` et `%LOCALAPPDATA%\SudoStudio\logs` (14 fichiers, un seul dossier) |
+
+### I.7 Statuts corriges apres ces mesures
+
+| Point du tableau G | Avant | Apres |
+|---|---|---|
+| C6a installation silencieuse | NON PROUVE ICI | **PROUVE EN CI** (paquet installe, `silent-install exit=0`) |
+| C6b `/health` backend et runtime | NON PROUVE ICI | **PROUVE EN CI** (HTTP 200 / `status=healthy`) |
+| C6c un seul dossier de journaux | NON PROUVE ICI | **PROUVE EN CI** (`logs-single-dir`, 14 fichiers) |
+| C6d desinstallation | NON PROUVE ICI | **PROUVE EN CI** (`clean-uninstall exit=0`, `dir removed`, 0 processus) |
+| C5c secret (journaux) | NON PROUVE ICI | **PROUVE EN CI** (0 motif sur tous les journaux reels) |
+| C5f chemins d'etat (agent) | PARTIEL (deduit du code) | **PROUVE EN CI** (chemin reel dans le journal) |
+| Traceabilite du binaire (commit dans `startup.log`) | NON PROUVE ICI | **PROUVE EN CI** (`Build commit: af42630...`) |
+| Qualite sur votre PC physique | NON PROUVE ICI | **NON PROUVE ICI** (inchange : le runner GitHub n'est pas votre machine ; script `scripts/p66-verify-installed.ps1` a lancer chez vous) |
+| Modele reel (pas le faux fournisseur) | NON PROUVE ICI | **NON PROUVE ICI** (inchange : l'e2e utilise un scenario scripte, ce n'est pas une inference de modele) |
+
+### I.8 Ce qui reste ouvert apres cette section
+
+1. **Defaut n°3 (marque Microsoft)** : toujours present, 21 chaines dans `product.json`, dont une
+   URL de licence pointant vers le depot Microsoft. Non corrige (P66 = lecture seule).
+2. **Defaut n°5 (chaines anglaises)** : reduit a 3 occurrences, toujours la.
+3. **`06-smoke-installed.yml`** dans `Sudo-studio` : il reference encore un flux de paquet local
+   qui n'existe plus. Il faut soit le supprimer, soit le repointerer vers le packager. Je ne l'ai
+   pas touche (P66 = ne rien supprimer, sauf ordre explicite, qui ne portait que sur `03`).
+4. **Version du workflow du packager** : la version a pins jour n'existe que sur la branche
+   `p66-pins` de `sudo-studio-packager` ; `main` porte encore les anciens pins (`43639603148` /
+   `43639606603` / `a56713fdf...`). La fusion `p66-pins` -> `main` demande vos droits d'admin :
+   je ne peux pas la faire, et je ne la fais pas sans votre ordre.
+5. **Linux** : NON TRAITE (votre decision). Le run « 05 - Linux smoke test » reste rouge sur
+   `main` du packager ; il n'entre pas dans ce perimetre.
