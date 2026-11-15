@@ -1,0 +1,2477 @@
+{
+  "@babel/helper-string-parser@7.27.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/babel/babel",
+    "publisher": "The Babel Team",
+    "url": "https://babel.dev/team",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@babel/helper-string-parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@babel/helper-string-parser/LICENSE"
+  },
+  "@babel/helper-validator-identifier@7.28.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/babel/babel",
+    "publisher": "The Babel Team",
+    "url": "https://babel.dev/team",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@babel/helper-validator-identifier",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@babel/helper-validator-identifier/LICENSE"
+  },
+  "@babel/parser@7.29.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/babel/babel",
+    "publisher": "The Babel Team",
+    "url": "https://babel.dev/team",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@babel/parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@babel/parser/LICENSE"
+  },
+  "@babel/types@7.29.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/babel/babel",
+    "publisher": "The Babel Team",
+    "url": "https://babel.dev/team",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@babel/types",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@babel/types/LICENSE"
+  },
+  "@colors/colors@1.6.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DABH/colors.js",
+    "publisher": "DABH",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@colors/colors",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@colors/colors/LICENSE"
+  },
+  "@dabh/diagnostics@2.0.8": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DABH/diagnostics",
+    "publisher": "Arnout Kazemier",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@dabh/diagnostics",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@dabh/diagnostics/LICENSE"
+  },
+  "@fastify/busboy@1.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/fastify/busboy",
+    "publisher": "Brian White",
+    "email": "mscdex@mscdex.net",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@fastify/busboy",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@fastify/busboy/LICENSE"
+  },
+  "@firebase/app-types@0.9.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/app-types",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/app-types/README.md"
+  },
+  "@firebase/auth-interop-types@0.2.1": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/auth-interop-types",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/auth-interop-types/README.md"
+  },
+  "@firebase/component@0.6.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/component",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/component/README.md"
+  },
+  "@firebase/database-compat@0.3.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/database-compat",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/database-compat/README.md"
+  },
+  "@firebase/database-types@0.10.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/database-types",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/database-types/README.md"
+  },
+  "@firebase/database@0.14.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/database",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/database/README.md"
+  },
+  "@firebase/logger@0.4.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/logger",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/logger/README.md"
+  },
+  "@firebase/util@1.9.3": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-js-sdk",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@firebase/util",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@firebase/util/README.md"
+  },
+  "@google-cloud/firestore@6.8.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/nodejs-firestore",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/firestore",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/firestore/LICENSE"
+  },
+  "@google-cloud/paginator@3.0.7": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/nodejs-paginator",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/paginator",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/paginator/LICENSE"
+  },
+  "@google-cloud/projectify@3.0.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/nodejs-projectify",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/projectify",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/projectify/LICENSE"
+  },
+  "@google-cloud/promisify@3.0.1": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/nodejs-promisify",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/promisify",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/promisify/LICENSE"
+  },
+  "@google-cloud/storage@6.12.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/nodejs-storage",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/storage",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/storage/LICENSE"
+  },
+  "@grpc/grpc-js@1.8.22": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/grpc/grpc-node/tree/master/packages/grpc-js",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@grpc/grpc-js",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@grpc/grpc-js/LICENSE"
+  },
+  "@grpc/proto-loader@0.7.15": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/grpc/grpc-node",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@grpc/proto-loader",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@grpc/proto-loader/LICENSE"
+  },
+  "@jsdoc/salty@0.2.9": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/jsdoc/jsdoc",
+    "publisher": "Jeff Williams",
+    "email": "jeffrey.l.williams@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@jsdoc/salty",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@jsdoc/salty/LICENSE"
+  },
+  "@protobufjs/aspromise@1.1.2": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/aspromise",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/aspromise/LICENSE"
+  },
+  "@protobufjs/base64@1.1.2": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/base64",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/base64/LICENSE"
+  },
+  "@protobufjs/codegen@2.0.4": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/codegen",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/codegen/LICENSE"
+  },
+  "@protobufjs/eventemitter@1.1.0": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/eventemitter",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/eventemitter/LICENSE"
+  },
+  "@protobufjs/fetch@1.1.0": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/fetch",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/fetch/LICENSE"
+  },
+  "@protobufjs/float@1.0.2": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/float",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/float/LICENSE"
+  },
+  "@protobufjs/inquire@1.1.0": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/inquire",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/inquire/LICENSE"
+  },
+  "@protobufjs/path@1.1.2": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/path",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/path/LICENSE"
+  },
+  "@protobufjs/pool@1.1.0": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/pool",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/pool/LICENSE"
+  },
+  "@protobufjs/utf8@1.1.0": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/utf8",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@protobufjs/utf8/LICENSE"
+  },
+  "@so-ric/colorspace@1.1.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/so-ric/colorspace",
+    "publisher": "Arnout Kazemier",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@so-ric/colorspace",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@so-ric/colorspace/LICENSE.md"
+  },
+  "@socket.io/component-emitter@3.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/socketio/emitter",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@socket.io/component-emitter",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@socket.io/component-emitter/LICENSE"
+  },
+  "@tootallnate/once@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/TooTallNate/once",
+    "publisher": "Nathan Rajlich",
+    "email": "nathan@tootallnate.net",
+    "url": "http://n8.io/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@tootallnate/once",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@tootallnate/once/LICENSE"
+  },
+  "@types/cors@2.8.19": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/cors",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/cors/LICENSE"
+  },
+  "@types/glob@8.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/glob",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/glob/LICENSE"
+  },
+  "@types/jsonwebtoken@9.0.10": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/jsonwebtoken",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/jsonwebtoken/LICENSE"
+  },
+  "@types/linkify-it@5.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/linkify-it",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/linkify-it/LICENSE"
+  },
+  "@types/long@4.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/long",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/long/LICENSE"
+  },
+  "@types/markdown-it@14.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/markdown-it",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/markdown-it/LICENSE"
+  },
+  "@types/mdurl@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/mdurl",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/mdurl/LICENSE"
+  },
+  "@types/minimatch@5.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/minimatch",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/minimatch/LICENSE"
+  },
+  "@types/ms@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/ms",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/ms/LICENSE"
+  },
+  "@types/node@25.0.9": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/node",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/node/LICENSE"
+  },
+  "@types/rimraf@3.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/rimraf",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/rimraf/LICENSE"
+  },
+  "@types/triple-beam@1.3.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/triple-beam",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/triple-beam/LICENSE"
+  },
+  "@types/ws@8.18.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/DefinitelyTyped/DefinitelyTyped",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@types/ws",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@types/ws/LICENSE"
+  },
+  "abort-controller@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mysticatea/abort-controller",
+    "publisher": "Toru Nagashima",
+    "url": "https://github.com/mysticatea",
+    "path": "/home/user/Sudo-studio/backend/node_modules/abort-controller",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/abort-controller/LICENSE"
+  },
+  "accepts@1.3.8": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/accepts",
+    "path": "/home/user/Sudo-studio/backend/node_modules/accepts",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/accepts/LICENSE"
+  },
+  "acorn-jsx@5.3.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/acornjs/acorn-jsx",
+    "path": "/home/user/Sudo-studio/backend/node_modules/acorn-jsx",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/acorn-jsx/LICENSE"
+  },
+  "acorn@8.16.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/acornjs/acorn",
+    "path": "/home/user/Sudo-studio/backend/node_modules/acorn",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/acorn/LICENSE"
+  },
+  "agent-base@6.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/TooTallNate/node-agent-base",
+    "publisher": "Nathan Rajlich",
+    "email": "nathan@tootallnate.net",
+    "url": "http://n8.io/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/agent-base",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/agent-base/README.md"
+  },
+  "ansi-regex@5.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/chalk/ansi-regex",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ansi-regex",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ansi-regex/license"
+  },
+  "ansi-styles@4.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/chalk/ansi-styles",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ansi-styles",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ansi-styles/license"
+  },
+  "argparse@2.0.1": {
+    "licenses": "Python-2.0",
+    "repository": "https://github.com/nodeca/argparse",
+    "path": "/home/user/Sudo-studio/backend/node_modules/argparse",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/argparse/LICENSE"
+  },
+  "array-flatten@1.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/blakeembrey/array-flatten",
+    "publisher": "Blake Embrey",
+    "email": "hello@blakeembrey.com",
+    "url": "http://blakeembrey.me",
+    "path": "/home/user/Sudo-studio/backend/node_modules/array-flatten",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/array-flatten/LICENSE"
+  },
+  "arrify@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/arrify",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/arrify",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/arrify/license"
+  },
+  "async-retry@1.3.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/vercel/async-retry",
+    "path": "/home/user/Sudo-studio/backend/node_modules/async-retry",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/async-retry/LICENSE.md"
+  },
+  "async@3.2.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/caolan/async",
+    "publisher": "Caolan McMahon",
+    "path": "/home/user/Sudo-studio/backend/node_modules/async",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/async/LICENSE"
+  },
+  "asynckit@0.4.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/alexindigo/asynckit",
+    "publisher": "Alex Indigo",
+    "email": "iam@alexindigo.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/asynckit",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/asynckit/LICENSE"
+  },
+  "axios@1.13.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/axios/axios",
+    "publisher": "Matt Zabriskie",
+    "path": "/home/user/Sudo-studio/backend/node_modules/axios",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/axios/LICENSE"
+  },
+  "backend@1.0.0": {
+    "licenses": "UNKNOWN",
+    "path": "/home/user/Sudo-studio/backend"
+  },
+  "balanced-match@1.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/juliangruber/balanced-match",
+    "publisher": "Julian Gruber",
+    "email": "mail@juliangruber.com",
+    "url": "http://juliangruber.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/balanced-match",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/balanced-match/LICENSE.md"
+  },
+  "base64-js@1.5.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/beatgammit/base64-js",
+    "publisher": "T. Jameson Little",
+    "email": "t.jameson.little@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/base64-js",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/base64-js/LICENSE"
+  },
+  "base64id@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/faeldt/base64id",
+    "publisher": "Kristian Faeldt",
+    "email": "faeldt_kristian@cyberagent.co.jp",
+    "path": "/home/user/Sudo-studio/backend/node_modules/base64id",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/base64id/LICENSE"
+  },
+  "bcryptjs@3.0.3": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/dcodeIO/bcrypt.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/bcryptjs",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/bcryptjs/LICENSE"
+  },
+  "bignumber.js@9.3.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/MikeMcl/bignumber.js",
+    "publisher": "Michael Mclaughlin",
+    "email": "M8ch88l@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/bignumber.js",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/bignumber.js/LICENCE.md"
+  },
+  "bluebird@3.7.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/petkaantonov/bluebird",
+    "publisher": "Petka Antonov",
+    "email": "petka_antonov@hotmail.com",
+    "url": "http://github.com/petkaantonov/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/bluebird",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/bluebird/LICENSE"
+  },
+  "body-parser@1.20.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/body-parser",
+    "path": "/home/user/Sudo-studio/backend/node_modules/body-parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/body-parser/LICENSE"
+  },
+  "brace-expansion@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/juliangruber/brace-expansion",
+    "publisher": "Julian Gruber",
+    "email": "mail@juliangruber.com",
+    "url": "http://juliangruber.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/glob/node_modules/brace-expansion",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/glob/node_modules/brace-expansion/LICENSE"
+  },
+  "buffer-equal-constant-time@1.0.1": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/goinstant/buffer-equal-constant-time",
+    "publisher": "GoInstant Inc., a salesforce.com company",
+    "path": "/home/user/Sudo-studio/backend/node_modules/buffer-equal-constant-time",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/buffer-equal-constant-time/LICENSE.txt"
+  },
+  "bytes@3.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/visionmedia/bytes.js",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "url": "http://tjholowaychuk.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/bytes",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/bytes/LICENSE"
+  },
+  "call-bind-apply-helpers@1.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/call-bind-apply-helpers",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/call-bind-apply-helpers",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/call-bind-apply-helpers/LICENSE"
+  },
+  "call-bound@1.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/call-bound",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/call-bound",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/call-bound/LICENSE"
+  },
+  "catharsis@0.9.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/hegemonic/catharsis",
+    "publisher": "Jeff Williams",
+    "email": "jeffrey.l.williams@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/catharsis",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/catharsis/LICENSE"
+  },
+  "chalk@4.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/chalk/chalk",
+    "path": "/home/user/Sudo-studio/backend/node_modules/chalk",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/chalk/license"
+  },
+  "cliui@8.0.1": {
+    "licenses": "ISC",
+    "repository": "https://github.com/yargs/cliui",
+    "publisher": "Ben Coe",
+    "email": "ben@npmjs.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/cliui",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/cliui/LICENSE.txt"
+  },
+  "color-convert@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Qix-/color-convert",
+    "publisher": "Heather Arthur",
+    "email": "fayearthur@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/color-convert",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/color-convert/LICENSE"
+  },
+  "color-convert@3.1.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Qix-/color-convert",
+    "publisher": "Josh Junon",
+    "email": "josh@junon.me",
+    "path": "/home/user/Sudo-studio/backend/node_modules/color/node_modules/color-convert",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/color/node_modules/color-convert/LICENSE"
+  },
+  "color-name@1.1.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/colorjs/color-name",
+    "publisher": "DY",
+    "email": "dfcreative@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/color-name",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/color-name/LICENSE"
+  },
+  "color-name@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/colorjs/color-name",
+    "publisher": "Dmitry Iv",
+    "email": "dfcreative@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/color/node_modules/color-name",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/color/node_modules/color-name/LICENSE"
+  },
+  "color-string@2.1.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Qix-/color-string",
+    "publisher": "Josh Junon",
+    "url": "https://github.com/qix-",
+    "path": "/home/user/Sudo-studio/backend/node_modules/color-string",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/color-string/LICENSE"
+  },
+  "color@5.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Qix-/color",
+    "path": "/home/user/Sudo-studio/backend/node_modules/color",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/color/LICENSE"
+  },
+  "combined-stream@1.0.8": {
+    "licenses": "MIT",
+    "repository": "https://github.com/felixge/node-combined-stream",
+    "publisher": "Felix Geisendörfer",
+    "email": "felix@debuggable.com",
+    "url": "http://debuggable.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/combined-stream",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/combined-stream/License"
+  },
+  "compressible@2.0.18": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/compressible",
+    "path": "/home/user/Sudo-studio/backend/node_modules/compressible",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/compressible/LICENSE"
+  },
+  "content-disposition@0.5.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/content-disposition",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/content-disposition",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/content-disposition/LICENSE"
+  },
+  "content-type@1.0.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/content-type",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/content-type",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/content-type/LICENSE"
+  },
+  "cookie-signature@1.0.7": {
+    "licenses": "MIT",
+    "repository": "https://github.com/visionmedia/node-cookie-signature",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@learnboost.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/cookie-signature",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/cookie-signature/Readme.md"
+  },
+  "cookie@0.7.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/cookie",
+    "publisher": "Roman Shtylman",
+    "email": "shtylman@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/cookie",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/cookie/LICENSE"
+  },
+  "cors@2.8.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/cors",
+    "publisher": "Troy Goode",
+    "email": "troygoode@gmail.com",
+    "url": "https://github.com/troygoode/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/cors",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/cors/LICENSE"
+  },
+  "debug@2.6.9": {
+    "licenses": "MIT",
+    "repository": "https://github.com/visionmedia/debug",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "path": "/home/user/Sudo-studio/backend/node_modules/debug",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/debug/LICENSE"
+  },
+  "debug@4.4.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/debug-js/debug",
+    "publisher": "Josh Junon",
+    "url": "https://github.com/qix-",
+    "path": "/home/user/Sudo-studio/backend/node_modules/jwks-rsa/node_modules/debug",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/jwks-rsa/node_modules/debug/LICENSE"
+  },
+  "deep-is@0.1.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/thlorenz/deep-is",
+    "publisher": "Thorsten Lorenz",
+    "email": "thlorenz@gmx.de",
+    "url": "http://thlorenz.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/deep-is",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/deep-is/LICENSE"
+  },
+  "delayed-stream@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/felixge/node-delayed-stream",
+    "publisher": "Felix Geisendörfer",
+    "email": "felix@debuggable.com",
+    "url": "http://debuggable.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/delayed-stream",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/delayed-stream/License"
+  },
+  "depd@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/dougwilson/nodejs-depd",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/depd",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/depd/LICENSE"
+  },
+  "destroy@1.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stream-utils/destroy",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/destroy",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/destroy/LICENSE"
+  },
+  "dunder-proto@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/es-shims/dunder-proto",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/dunder-proto",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/dunder-proto/LICENSE"
+  },
+  "duplexify@4.1.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mafintosh/duplexify",
+    "publisher": "Mathias Buus",
+    "path": "/home/user/Sudo-studio/backend/node_modules/duplexify",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/duplexify/LICENSE"
+  },
+  "ecdsa-sig-formatter@1.0.11": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/Brightspace/node-ecdsa-sig-formatter",
+    "publisher": "D2L Corporation",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ecdsa-sig-formatter",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ecdsa-sig-formatter/LICENSE"
+  },
+  "ee-first@1.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonathanong/ee-first",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ee-first",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ee-first/LICENSE"
+  },
+  "emoji-regex@8.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mathiasbynens/emoji-regex",
+    "publisher": "Mathias Bynens",
+    "url": "https://mathiasbynens.be/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/emoji-regex",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/emoji-regex/LICENSE-MIT.txt"
+  },
+  "enabled@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/3rd-Eden/enabled",
+    "publisher": "Arnout Kazemier",
+    "path": "/home/user/Sudo-studio/backend/node_modules/enabled",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/enabled/LICENSE"
+  },
+  "encodeurl@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/encodeurl",
+    "path": "/home/user/Sudo-studio/backend/node_modules/encodeurl",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/encodeurl/LICENSE"
+  },
+  "encoding@0.1.13": {
+    "licenses": "MIT",
+    "repository": "https://github.com/andris9/encoding",
+    "publisher": "Andris Reinman",
+    "path": "/home/user/Sudo-studio/backend/node_modules/encoding",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/encoding/LICENSE"
+  },
+  "end-of-stream@1.4.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mafintosh/end-of-stream",
+    "publisher": "Mathias Buus",
+    "email": "mathiasbuus@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/end-of-stream",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/end-of-stream/LICENSE"
+  },
+  "engine.io-parser@5.2.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/socketio/socket.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/engine.io-parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/engine.io-parser/LICENSE"
+  },
+  "engine.io@6.6.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/socketio/socket.io",
+    "publisher": "Guillermo Rauch",
+    "email": "guillermo@learnboost.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/engine.io",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/engine.io/LICENSE"
+  },
+  "ent@2.2.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/ent",
+    "publisher": "James Halliday",
+    "email": "mail@substack.net",
+    "url": "http://substack.net",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ent",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ent/LICENSE"
+  },
+  "entities@4.5.0": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/fb55/entities",
+    "publisher": "Felix Boehm",
+    "email": "me@feedic.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/entities",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/entities/LICENSE"
+  },
+  "es-define-property@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/es-define-property",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/es-define-property",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/es-define-property/LICENSE"
+  },
+  "es-errors@1.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/es-errors",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/es-errors",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/es-errors/LICENSE"
+  },
+  "es-object-atoms@1.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/es-object-atoms",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/es-object-atoms",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/es-object-atoms/LICENSE"
+  },
+  "es-set-tostringtag@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/es-shims/es-set-tostringtag",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/es-set-tostringtag",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/es-set-tostringtag/LICENSE"
+  },
+  "escalade@3.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lukeed/escalade",
+    "publisher": "Luke Edwards",
+    "email": "luke.edwards05@gmail.com",
+    "url": "https://lukeed.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/escalade",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/escalade/license"
+  },
+  "escape-html@1.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/component/escape-html",
+    "path": "/home/user/Sudo-studio/backend/node_modules/escape-html",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/escape-html/LICENSE"
+  },
+  "escape-string-regexp@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/escape-string-regexp",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/escape-string-regexp",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/escape-string-regexp/license"
+  },
+  "escodegen@1.14.3": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/estools/escodegen",
+    "path": "/home/user/Sudo-studio/backend/node_modules/escodegen",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/escodegen/LICENSE.BSD"
+  },
+  "eslint-visitor-keys@3.4.3": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/eslint/eslint-visitor-keys",
+    "publisher": "Toru Nagashima",
+    "url": "https://github.com/mysticatea",
+    "path": "/home/user/Sudo-studio/backend/node_modules/eslint-visitor-keys",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/eslint-visitor-keys/LICENSE"
+  },
+  "espree@9.6.1": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/eslint/espree",
+    "publisher": "Nicholas C. Zakas",
+    "email": "nicholas+npm@nczconsulting.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/espree",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/espree/LICENSE"
+  },
+  "esprima@4.0.1": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/jquery/esprima",
+    "publisher": "Ariya Hidayat",
+    "email": "ariya.hidayat@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/esprima",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/esprima/LICENSE.BSD"
+  },
+  "estraverse@4.3.0": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/estools/estraverse",
+    "path": "/home/user/Sudo-studio/backend/node_modules/escodegen/node_modules/estraverse",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/escodegen/node_modules/estraverse/LICENSE.BSD"
+  },
+  "estraverse@5.3.0": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/estools/estraverse",
+    "path": "/home/user/Sudo-studio/backend/node_modules/estraverse",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/estraverse/LICENSE.BSD"
+  },
+  "esutils@2.0.3": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/estools/esutils",
+    "path": "/home/user/Sudo-studio/backend/node_modules/esutils",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/esutils/LICENSE.BSD"
+  },
+  "etag@1.8.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/etag",
+    "path": "/home/user/Sudo-studio/backend/node_modules/etag",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/etag/LICENSE"
+  },
+  "event-target-shim@5.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mysticatea/event-target-shim",
+    "publisher": "Toru Nagashima",
+    "path": "/home/user/Sudo-studio/backend/node_modules/event-target-shim",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/event-target-shim/LICENSE"
+  },
+  "express-rate-limit@6.11.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/express-rate-limit/express-rate-limit",
+    "publisher": "Nathan Friedly",
+    "url": "http://nfriedly.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/express-rate-limit",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/express-rate-limit/license.md"
+  },
+  "express-validator@7.3.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/express-validator/express-validator",
+    "publisher": "Christoph Tavan",
+    "email": "dev@tavan.de",
+    "path": "/home/user/Sudo-studio/backend/node_modules/express-validator",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/express-validator/LICENSE"
+  },
+  "express@4.22.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/express",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "path": "/home/user/Sudo-studio/backend/node_modules/express",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/express/LICENSE"
+  },
+  "extend@3.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/justmoon/node-extend",
+    "publisher": "Stefan Thomas",
+    "email": "justmoon@members.fsf.org",
+    "url": "http://www.justmoon.net",
+    "path": "/home/user/Sudo-studio/backend/node_modules/extend",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/extend/LICENSE"
+  },
+  "fast-deep-equal@3.1.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/epoberezkin/fast-deep-equal",
+    "publisher": "Evgeny Poberezkin",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fast-deep-equal",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fast-deep-equal/LICENSE"
+  },
+  "fast-levenshtein@2.0.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/hiddentao/fast-levenshtein",
+    "publisher": "Ramesh Nair",
+    "email": "ram@hiddentao.com",
+    "url": "http://www.hiddentao.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fast-levenshtein",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fast-levenshtein/LICENSE.md"
+  },
+  "fast-text-encoding@1.0.6": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/samthor/fast-text-encoding",
+    "publisher": "Sam Thorogood",
+    "email": "sam.thorogood@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fast-text-encoding",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fast-text-encoding/LICENSE"
+  },
+  "fast-xml-parser@4.5.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/NaturalIntelligence/fast-xml-parser",
+    "publisher": "Amit Gupta",
+    "url": "https://solothought.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fast-xml-parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fast-xml-parser/LICENSE"
+  },
+  "faye-websocket@0.11.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/faye/faye-websocket-node",
+    "publisher": "James Coglan",
+    "email": "jcoglan@gmail.com",
+    "url": "http://jcoglan.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/faye-websocket",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/faye-websocket/LICENSE.md"
+  },
+  "fecha@4.2.3": {
+    "licenses": "MIT",
+    "repository": "git+https://taylorhakes@github.com/taylorhakes/fecha",
+    "publisher": "Taylor Hakes",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fecha",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fecha/LICENSE"
+  },
+  "finalhandler@1.3.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/finalhandler",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/finalhandler",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/finalhandler/LICENSE"
+  },
+  "firebase-admin@11.11.1": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/firebase/firebase-admin-node",
+    "publisher": "Firebase",
+    "email": "firebase-support@google.com",
+    "url": "https://firebase.google.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/firebase-admin",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/firebase-admin/LICENSE"
+  },
+  "fn.name@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/3rd-Eden/fn.name",
+    "publisher": "Arnout Kazemier",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fn.name",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fn.name/LICENSE"
+  },
+  "follow-redirects@1.15.11": {
+    "licenses": "MIT",
+    "repository": "https://github.com/follow-redirects/follow-redirects",
+    "publisher": "Ruben Verborgh",
+    "email": "ruben@verborgh.org",
+    "url": "https://ruben.verborgh.org/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/follow-redirects",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/follow-redirects/LICENSE"
+  },
+  "form-data@4.0.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/form-data/form-data",
+    "publisher": "Felix Geisendörfer",
+    "email": "felix@debuggable.com",
+    "url": "http://debuggable.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/form-data",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/form-data/License"
+  },
+  "forwarded@0.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/forwarded",
+    "path": "/home/user/Sudo-studio/backend/node_modules/forwarded",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/forwarded/LICENSE"
+  },
+  "fresh@0.5.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/fresh",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "url": "http://tjholowaychuk.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fresh",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fresh/LICENSE"
+  },
+  "fs.realpath@1.0.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/fs.realpath",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/fs.realpath",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/fs.realpath/LICENSE"
+  },
+  "function-bind@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Raynos/function-bind",
+    "publisher": "Raynos",
+    "email": "raynos2@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/function-bind",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/function-bind/LICENSE"
+  },
+  "functional-red-black-tree@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mikolalysenko/functional-red-black-tree",
+    "publisher": "Mikola Lysenko",
+    "path": "/home/user/Sudo-studio/backend/node_modules/functional-red-black-tree",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/functional-red-black-tree/LICENSE"
+  },
+  "gaxios@5.1.3": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/gaxios",
+    "publisher": "Google, LLC",
+    "path": "/home/user/Sudo-studio/backend/node_modules/gaxios",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/gaxios/LICENSE"
+  },
+  "gcp-metadata@5.3.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/gcp-metadata",
+    "publisher": "Stephen Sawchuk",
+    "path": "/home/user/Sudo-studio/backend/node_modules/gcp-metadata",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/gcp-metadata/LICENSE"
+  },
+  "get-caller-file@2.0.5": {
+    "licenses": "ISC",
+    "repository": "https://github.com/stefanpenner/get-caller-file",
+    "publisher": "Stefan Penner",
+    "path": "/home/user/Sudo-studio/backend/node_modules/get-caller-file",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/get-caller-file/LICENSE.md"
+  },
+  "get-intrinsic@1.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/get-intrinsic",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/get-intrinsic",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/get-intrinsic/LICENSE"
+  },
+  "get-proto@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/get-proto",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/get-proto",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/get-proto/LICENSE"
+  },
+  "glob@8.1.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/node-glob",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/glob",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/glob/LICENSE"
+  },
+  "google-auth-library@8.9.0": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/google-auth-library-nodejs",
+    "publisher": "Google Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/google-auth-library",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/google-auth-library/LICENSE"
+  },
+  "google-gax@3.6.1": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/gax-nodejs",
+    "publisher": "Google API Authors",
+    "path": "/home/user/Sudo-studio/backend/node_modules/google-gax",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/google-gax/LICENSE"
+  },
+  "google-p12-pem@4.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/googleapis/google-p12-pem",
+    "publisher": "Ryan Seys",
+    "path": "/home/user/Sudo-studio/backend/node_modules/google-p12-pem",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/google-p12-pem/LICENSE"
+  },
+  "gopd@1.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/gopd",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/gopd",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/gopd/LICENSE"
+  },
+  "graceful-fs@4.2.11": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/node-graceful-fs",
+    "path": "/home/user/Sudo-studio/backend/node_modules/graceful-fs",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/graceful-fs/LICENSE"
+  },
+  "gtoken@6.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/google/node-gtoken",
+    "publisher": "Google, LLC",
+    "path": "/home/user/Sudo-studio/backend/node_modules/gtoken",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/gtoken/LICENSE"
+  },
+  "has-flag@4.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/has-flag",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/chalk/node_modules/has-flag",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/chalk/node_modules/has-flag/license"
+  },
+  "has-symbols@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/has-symbols",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "url": "http://ljharb.codes",
+    "path": "/home/user/Sudo-studio/backend/node_modules/has-symbols",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/has-symbols/LICENSE"
+  },
+  "has-tostringtag@1.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/has-tostringtag",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "url": "http://ljharb.codes",
+    "path": "/home/user/Sudo-studio/backend/node_modules/has-tostringtag",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/has-tostringtag/LICENSE"
+  },
+  "hasown@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/hasOwn",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/hasown",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/hasown/LICENSE"
+  },
+  "helmet@7.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/helmetjs/helmet",
+    "publisher": "Adam Baldwin",
+    "email": "adam@npmjs.com",
+    "url": "https://evilpacket.net",
+    "path": "/home/user/Sudo-studio/backend/node_modules/helmet",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/helmet/LICENSE"
+  },
+  "http-errors@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/http-errors",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/http-errors",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/http-errors/LICENSE"
+  },
+  "http-parser-js@0.5.10": {
+    "licenses": "MIT",
+    "repository": "https://github.com/creationix/http-parser-js",
+    "publisher": "Tim Caswell",
+    "url": "https://github.com/creationix",
+    "path": "/home/user/Sudo-studio/backend/node_modules/http-parser-js",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/http-parser-js/LICENSE.md"
+  },
+  "http-proxy-agent@5.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/TooTallNate/node-http-proxy-agent",
+    "publisher": "Nathan Rajlich",
+    "email": "nathan@tootallnate.net",
+    "url": "http://n8.io/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/http-proxy-agent",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/http-proxy-agent/README.md"
+  },
+  "https-proxy-agent@5.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/TooTallNate/node-https-proxy-agent",
+    "publisher": "Nathan Rajlich",
+    "email": "nathan@tootallnate.net",
+    "url": "http://n8.io/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/https-proxy-agent",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/https-proxy-agent/README.md"
+  },
+  "iconv-lite@0.4.24": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ashtuchkin/iconv-lite",
+    "publisher": "Alexander Shtuchkin",
+    "email": "ashtuchkin@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/iconv-lite",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/iconv-lite/LICENSE"
+  },
+  "iconv-lite@0.6.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ashtuchkin/iconv-lite",
+    "publisher": "Alexander Shtuchkin",
+    "email": "ashtuchkin@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/encoding/node_modules/iconv-lite",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/encoding/node_modules/iconv-lite/LICENSE"
+  },
+  "inflight@1.0.6": {
+    "licenses": "ISC",
+    "repository": "https://github.com/npm/inflight",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/inflight",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/inflight/LICENSE"
+  },
+  "inherits@2.0.4": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/inherits",
+    "path": "/home/user/Sudo-studio/backend/node_modules/inherits",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/inherits/LICENSE"
+  },
+  "ipaddr.js@1.9.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/whitequark/ipaddr.js",
+    "publisher": "whitequark",
+    "email": "whitequark@whitequark.org",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ipaddr.js",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ipaddr.js/LICENSE"
+  },
+  "is-fullwidth-code-point@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/is-fullwidth-code-point",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/is-fullwidth-code-point",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/is-fullwidth-code-point/license"
+  },
+  "is-promise@2.2.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/then/is-promise",
+    "publisher": "ForbesLindesay",
+    "path": "/home/user/Sudo-studio/backend/node_modules/is-promise",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/is-promise/LICENSE"
+  },
+  "is-regex@1.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/is-regex",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/is-regex",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/is-regex/LICENSE"
+  },
+  "is-stream-ended@0.1.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stephenplusplus/is-stream-ended",
+    "publisher": "Stephen Sawchuk",
+    "email": "sawchuk@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/is-stream-ended",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/is-stream-ended/license"
+  },
+  "is-stream@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/is-stream",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/is-stream",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/is-stream/license"
+  },
+  "jose@4.15.9": {
+    "licenses": "MIT",
+    "repository": "https://github.com/panva/jose",
+    "publisher": "Filip Skokan",
+    "email": "panva.ip@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/jose",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/jose/LICENSE.md"
+  },
+  "js2xmlparser@4.0.2": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/michaelkourlas/node-js2xmlparser",
+    "publisher": "Michael Kourlas",
+    "email": "michael@kourlas.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/js2xmlparser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/js2xmlparser/LICENSE",
+    "noticeFile": "/home/user/Sudo-studio/backend/node_modules/js2xmlparser/NOTICE"
+  },
+  "jsdoc@4.0.5": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/jsdoc/jsdoc",
+    "publisher": "Michael Mathews",
+    "email": "micmath@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/jsdoc",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/jsdoc/LICENSE.md"
+  },
+  "json-bigint@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sidorares/json-bigint",
+    "publisher": "Andrey Sidorov",
+    "email": "sidorares@yandex.ru",
+    "path": "/home/user/Sudo-studio/backend/node_modules/json-bigint",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/json-bigint/LICENSE"
+  },
+  "jsonwebtoken@9.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/auth0/node-jsonwebtoken",
+    "publisher": "auth0",
+    "path": "/home/user/Sudo-studio/backend/node_modules/jsonwebtoken",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/jsonwebtoken/LICENSE"
+  },
+  "jwa@2.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/brianloveswords/node-jwa",
+    "publisher": "Brian J. Brennan",
+    "email": "brianloveswords@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/jwa",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/jwa/LICENSE"
+  },
+  "jwks-rsa@3.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/auth0/node-jwks-rsa",
+    "publisher": "Auth0",
+    "path": "/home/user/Sudo-studio/backend/node_modules/jwks-rsa",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/jwks-rsa/LICENSE"
+  },
+  "jws@4.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/brianloveswords/node-jws",
+    "publisher": "Brian J Brennan",
+    "path": "/home/user/Sudo-studio/backend/node_modules/jws",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/jws/LICENSE"
+  },
+  "klaw@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jprichardson/node-klaw",
+    "publisher": "JP Richardson",
+    "path": "/home/user/Sudo-studio/backend/node_modules/klaw",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/klaw/LICENSE"
+  },
+  "kuler@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/3rd-Eden/kuler",
+    "publisher": "Arnout Kazemier",
+    "path": "/home/user/Sudo-studio/backend/node_modules/kuler",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/kuler/LICENSE"
+  },
+  "levn@0.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/gkz/levn",
+    "publisher": "George Zahariev",
+    "email": "z@georgezahariev.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/levn",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/levn/LICENSE"
+  },
+  "limiter@1.1.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jhurliman/node-rate-limiter",
+    "publisher": "John Hurliman",
+    "email": "jhurliman@jhurliman.org",
+    "path": "/home/user/Sudo-studio/backend/node_modules/limiter",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/limiter/LICENSE.txt"
+  },
+  "linkify-it@5.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/markdown-it/linkify-it",
+    "path": "/home/user/Sudo-studio/backend/node_modules/linkify-it",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/linkify-it/LICENSE"
+  },
+  "lodash.camelcase@4.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.camelcase",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.camelcase/LICENSE"
+  },
+  "lodash.clonedeep@4.5.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.clonedeep",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.clonedeep/LICENSE"
+  },
+  "lodash.includes@4.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.includes",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.includes/LICENSE"
+  },
+  "lodash.isboolean@3.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.isboolean",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.isboolean/LICENSE"
+  },
+  "lodash.isinteger@4.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.isinteger",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.isinteger/LICENSE"
+  },
+  "lodash.isnumber@3.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.isnumber",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.isnumber/LICENSE"
+  },
+  "lodash.isplainobject@4.0.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.isplainobject",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.isplainobject/LICENSE"
+  },
+  "lodash.isstring@4.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.isstring",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.isstring/LICENSE"
+  },
+  "lodash.once@4.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "url": "http://allyoucanleet.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash.once",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash.once/LICENSE"
+  },
+  "lodash@4.17.21": {
+    "licenses": "MIT",
+    "repository": "https://github.com/lodash/lodash",
+    "publisher": "John-David Dalton",
+    "email": "john.david.dalton@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lodash",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lodash/LICENSE"
+  },
+  "logform@2.7.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/winstonjs/logform",
+    "publisher": "Charlie Robbins",
+    "email": "charlie.robbins@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/logform",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/logform/LICENSE"
+  },
+  "long@5.3.2": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/dcodeIO/long.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/long",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/long/LICENSE"
+  },
+  "lowdb@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/typicode/lowdb",
+    "publisher": "Typicode",
+    "email": "typicode@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lowdb",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lowdb/LICENSE"
+  },
+  "lru-cache@6.0.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/node-lru-cache",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lru-cache",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lru-cache/LICENSE"
+  },
+  "lru-memoizer@2.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jfromaniello/lru-memoizer",
+    "publisher": "José F. Romaniello",
+    "email": "jfromaniello@gmail.com",
+    "url": "http://joseoncode.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/lru-memoizer",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/lru-memoizer/LICENSE"
+  },
+  "markdown-it-anchor@8.6.7": {
+    "licenses": "Unlicense",
+    "repository": "https://github.com/valeriangalliat/markdown-it-anchor",
+    "path": "/home/user/Sudo-studio/backend/node_modules/markdown-it-anchor",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/markdown-it-anchor/README.md"
+  },
+  "markdown-it@14.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/markdown-it/markdown-it",
+    "path": "/home/user/Sudo-studio/backend/node_modules/markdown-it",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/markdown-it/LICENSE"
+  },
+  "marked@4.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/markedjs/marked",
+    "publisher": "Christopher Jeffrey",
+    "path": "/home/user/Sudo-studio/backend/node_modules/marked",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/marked/LICENSE.md"
+  },
+  "math-intrinsics@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/es-shims/math-intrinsics",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/math-intrinsics",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/math-intrinsics/LICENSE"
+  },
+  "mdurl@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/markdown-it/mdurl",
+    "path": "/home/user/Sudo-studio/backend/node_modules/mdurl",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/mdurl/LICENSE"
+  },
+  "media-typer@0.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/media-typer",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/media-typer",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/media-typer/LICENSE"
+  },
+  "merge-descriptors@1.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/merge-descriptors",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/merge-descriptors",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/merge-descriptors/LICENSE"
+  },
+  "methods@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/methods",
+    "path": "/home/user/Sudo-studio/backend/node_modules/methods",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/methods/LICENSE"
+  },
+  "mime-db@1.52.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/mime-db",
+    "path": "/home/user/Sudo-studio/backend/node_modules/mime-types/node_modules/mime-db",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/mime-types/node_modules/mime-db/LICENSE"
+  },
+  "mime-db@1.54.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/mime-db",
+    "path": "/home/user/Sudo-studio/backend/node_modules/mime-db",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/mime-db/LICENSE"
+  },
+  "mime-types@2.1.35": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/mime-types",
+    "path": "/home/user/Sudo-studio/backend/node_modules/mime-types",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/mime-types/LICENSE"
+  },
+  "mime@1.6.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/broofa/node-mime",
+    "publisher": "Robert Kieffer",
+    "email": "robert@broofa.com",
+    "url": "http://github.com/broofa",
+    "path": "/home/user/Sudo-studio/backend/node_modules/send/node_modules/mime",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/send/node_modules/mime/LICENSE"
+  },
+  "mime@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/broofa/mime",
+    "publisher": "Robert Kieffer",
+    "email": "robert@broofa.com",
+    "url": "http://github.com/broofa",
+    "path": "/home/user/Sudo-studio/backend/node_modules/mime",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/mime/LICENSE"
+  },
+  "minimatch@5.1.6": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/minimatch",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me",
+    "path": "/home/user/Sudo-studio/backend/node_modules/glob/node_modules/minimatch",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/glob/node_modules/minimatch/LICENSE"
+  },
+  "minimist@1.2.8": {
+    "licenses": "MIT",
+    "repository": "https://github.com/minimistjs/minimist",
+    "publisher": "James Halliday",
+    "email": "mail@substack.net",
+    "url": "http://substack.net",
+    "path": "/home/user/Sudo-studio/backend/node_modules/minimist",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/minimist/LICENSE"
+  },
+  "mkdirp@1.0.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/isaacs/node-mkdirp",
+    "path": "/home/user/Sudo-studio/backend/node_modules/mkdirp",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/mkdirp/LICENSE"
+  },
+  "ms@2.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/zeit/ms",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ms",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ms/license.md"
+  },
+  "ms@2.1.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/vercel/ms",
+    "path": "/home/user/Sudo-studio/backend/node_modules/send/node_modules/ms",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/send/node_modules/ms/license.md"
+  },
+  "negotiator@0.6.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/negotiator",
+    "path": "/home/user/Sudo-studio/backend/node_modules/negotiator",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/negotiator/LICENSE"
+  },
+  "node-fetch@2.7.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/bitinn/node-fetch",
+    "publisher": "David Frank",
+    "path": "/home/user/Sudo-studio/backend/node_modules/node-fetch",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/node-fetch/LICENSE.md"
+  },
+  "node-forge@1.3.3": {
+    "licenses": "(BSD-3-Clause OR GPL-2.0)",
+    "repository": "https://github.com/digitalbazaar/forge",
+    "publisher": "Digital Bazaar, Inc.",
+    "email": "support@digitalbazaar.com",
+    "url": "http://digitalbazaar.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/node-forge",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/node-forge/LICENSE"
+  },
+  "object-assign@4.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/object-assign",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/object-assign",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/object-assign/license"
+  },
+  "object-hash@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/puleos/object-hash",
+    "publisher": "Scott Puleo",
+    "email": "puleos@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/object-hash",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/object-hash/LICENSE"
+  },
+  "object-inspect@1.13.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/inspect-js/object-inspect",
+    "publisher": "James Halliday",
+    "email": "mail@substack.net",
+    "url": "http://substack.net",
+    "path": "/home/user/Sudo-studio/backend/node_modules/object-inspect",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/object-inspect/LICENSE"
+  },
+  "on-finished@2.4.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/on-finished",
+    "path": "/home/user/Sudo-studio/backend/node_modules/on-finished",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/on-finished/LICENSE"
+  },
+  "once@1.4.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/once",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/once",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/once/LICENSE"
+  },
+  "one-time@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/3rd-Eden/one-time",
+    "publisher": "Arnout Kazemier",
+    "path": "/home/user/Sudo-studio/backend/node_modules/one-time",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/one-time/LICENSE"
+  },
+  "optionator@0.8.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/gkz/optionator",
+    "publisher": "George Zahariev",
+    "email": "z@georgezahariev.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/optionator",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/optionator/LICENSE"
+  },
+  "p-limit@3.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/p-limit",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/p-limit",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/p-limit/license"
+  },
+  "parseurl@1.3.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/parseurl",
+    "path": "/home/user/Sudo-studio/backend/node_modules/parseurl",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/parseurl/LICENSE"
+  },
+  "path-to-regexp@0.1.12": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/path-to-regexp",
+    "path": "/home/user/Sudo-studio/backend/node_modules/path-to-regexp",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/path-to-regexp/LICENSE"
+  },
+  "pify@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/pify",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/pify",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/pify/license"
+  },
+  "prelude-ls@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/gkz/prelude-ls",
+    "publisher": "George Zahariev",
+    "email": "z@georgezahariev.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/prelude-ls",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/prelude-ls/LICENSE"
+  },
+  "proto3-json-serializer@1.1.1": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/proto3-json-serializer-nodejs",
+    "path": "/home/user/Sudo-studio/backend/node_modules/proto3-json-serializer",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/proto3-json-serializer/LICENSE"
+  },
+  "protobufjs-cli@1.1.1": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/protobufjs/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/protobufjs-cli",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/protobufjs-cli/LICENSE"
+  },
+  "protobufjs@7.2.4": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/protobufjs/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/google-gax/node_modules/protobufjs",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/google-gax/node_modules/protobufjs/LICENSE"
+  },
+  "protobufjs@7.5.4": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/protobufjs/protobuf.js",
+    "publisher": "Daniel Wirtz",
+    "email": "dcode+protobufjs@dcode.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/protobufjs",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/protobufjs/LICENSE"
+  },
+  "proxy-addr@2.0.7": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/proxy-addr",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/proxy-addr",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/proxy-addr/LICENSE"
+  },
+  "proxy-from-env@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Rob--W/proxy-from-env",
+    "publisher": "Rob Wu",
+    "email": "rob@robwu.nl",
+    "url": "https://robwu.nl/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/proxy-from-env",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/proxy-from-env/LICENSE"
+  },
+  "punycode.js@2.3.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mathiasbynens/punycode.js",
+    "publisher": "Mathias Bynens",
+    "url": "https://mathiasbynens.be/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/punycode.js",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/punycode.js/LICENSE-MIT.txt"
+  },
+  "punycode@1.4.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/bestiejs/punycode.js",
+    "publisher": "Mathias Bynens",
+    "url": "https://mathiasbynens.be/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/punycode",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/punycode/LICENSE-MIT.txt"
+  },
+  "qs@6.14.1": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/ljharb/qs",
+    "path": "/home/user/Sudo-studio/backend/node_modules/qs",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/qs/LICENSE.md"
+  },
+  "range-parser@1.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/range-parser",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "url": "http://tjholowaychuk.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/range-parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/range-parser/LICENSE"
+  },
+  "raw-body@2.5.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stream-utils/raw-body",
+    "publisher": "Jonathan Ong",
+    "email": "me@jongleberry.com",
+    "url": "http://jongleberry.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/raw-body",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/raw-body/LICENSE"
+  },
+  "readable-stream@3.6.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/nodejs/readable-stream",
+    "path": "/home/user/Sudo-studio/backend/node_modules/readable-stream",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/readable-stream/LICENSE"
+  },
+  "require-directory@2.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/troygoode/node-require-directory",
+    "publisher": "Troy Goode",
+    "email": "troygoode@gmail.com",
+    "url": "http://github.com/troygoode/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/require-directory",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/require-directory/LICENSE"
+  },
+  "requizzle@0.2.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/hegemonic/requizzle",
+    "publisher": "Jeff Williams",
+    "email": "jeffrey.l.williams@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/requizzle",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/requizzle/LICENSE"
+  },
+  "retry-request@5.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stephenplusplus/retry-request",
+    "publisher": "Stephen Sawchuk",
+    "email": "sawchuk@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/retry-request",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/retry-request/license"
+  },
+  "retry@0.13.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/tim-kos/node-retry",
+    "publisher": "Tim Koschützki",
+    "email": "tim@debuggable.com",
+    "url": "http://debuggable.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/retry",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/retry/License"
+  },
+  "safe-buffer@5.2.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/feross/safe-buffer",
+    "publisher": "Feross Aboukhadijeh",
+    "email": "feross@feross.org",
+    "url": "https://feross.org",
+    "path": "/home/user/Sudo-studio/backend/node_modules/safe-buffer",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/safe-buffer/LICENSE"
+  },
+  "safe-regex-test@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/safe-regex-test",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/safe-regex-test",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/safe-regex-test/LICENSE"
+  },
+  "safe-stable-stringify@2.5.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/BridgeAR/safe-stable-stringify",
+    "publisher": "Ruben Bridgewater",
+    "path": "/home/user/Sudo-studio/backend/node_modules/safe-stable-stringify",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/safe-stable-stringify/LICENSE"
+  },
+  "safer-buffer@2.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ChALkeR/safer-buffer",
+    "publisher": "Nikita Skovoroda",
+    "email": "chalkerx@gmail.com",
+    "url": "https://github.com/ChALkeR",
+    "path": "/home/user/Sudo-studio/backend/node_modules/safer-buffer",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/safer-buffer/LICENSE"
+  },
+  "semver@7.7.3": {
+    "licenses": "ISC",
+    "repository": "https://github.com/npm/node-semver",
+    "publisher": "GitHub Inc.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/semver",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/semver/LICENSE"
+  },
+  "send@0.19.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/pillarjs/send",
+    "publisher": "TJ Holowaychuk",
+    "email": "tj@vision-media.ca",
+    "path": "/home/user/Sudo-studio/backend/node_modules/send",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/send/LICENSE"
+  },
+  "serve-static@1.16.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/expressjs/serve-static",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/serve-static",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/serve-static/LICENSE"
+  },
+  "setprototypeof@1.2.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/wesleytodd/setprototypeof",
+    "publisher": "Wes Todd",
+    "path": "/home/user/Sudo-studio/backend/node_modules/setprototypeof",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/setprototypeof/LICENSE"
+  },
+  "side-channel-list@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel-list",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/side-channel-list",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/side-channel-list/LICENSE"
+  },
+  "side-channel-map@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel-map",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/side-channel-map",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/side-channel-map/LICENSE"
+  },
+  "side-channel-weakmap@1.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel-weakmap",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/side-channel-weakmap",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/side-channel-weakmap/LICENSE"
+  },
+  "side-channel@1.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/ljharb/side-channel",
+    "publisher": "Jordan Harband",
+    "email": "ljharb@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/side-channel",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/side-channel/LICENSE"
+  },
+  "socket.io-adapter@2.5.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/socketio/socket.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/socket.io-adapter",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/socket.io-adapter/LICENSE"
+  },
+  "socket.io-parser@4.2.6": {
+    "licenses": "MIT",
+    "repository": "https://github.com/socketio/socket.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/socket.io-parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/socket.io-parser/LICENSE"
+  },
+  "socket.io@4.8.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/socketio/socket.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/socket.io",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/socket.io/LICENSE"
+  },
+  "source-map@0.6.1": {
+    "licenses": "BSD-3-Clause",
+    "repository": "https://github.com/mozilla/source-map",
+    "publisher": "Nick Fitzgerald",
+    "email": "nfitzgerald@mozilla.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/source-map",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/source-map/LICENSE"
+  },
+  "stack-trace@0.0.10": {
+    "licenses": "MIT",
+    "repository": "https://github.com/felixge/node-stack-trace",
+    "publisher": "Felix Geisendörfer",
+    "email": "felix@debuggable.com",
+    "url": "http://debuggable.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/stack-trace",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/stack-trace/License"
+  },
+  "statuses@2.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/statuses",
+    "path": "/home/user/Sudo-studio/backend/node_modules/statuses",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/statuses/LICENSE"
+  },
+  "steno@0.4.4": {
+    "licenses": "MIT",
+    "repository": "https://github.com/typicode/steno",
+    "publisher": "typicode",
+    "path": "/home/user/Sudo-studio/backend/node_modules/steno",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/steno/LICENSE"
+  },
+  "stream-events@1.0.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stephenplusplus/stream-events",
+    "publisher": "Stephen Sawchuk",
+    "path": "/home/user/Sudo-studio/backend/node_modules/stream-events",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/stream-events/readme.md"
+  },
+  "stream-shift@1.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/mafintosh/stream-shift",
+    "publisher": "Mathias Buus",
+    "url": "@mafintosh",
+    "path": "/home/user/Sudo-studio/backend/node_modules/stream-shift",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/stream-shift/LICENSE"
+  },
+  "string-width@4.2.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/string-width",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/string-width",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/string-width/license"
+  },
+  "string_decoder@1.3.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/nodejs/string_decoder",
+    "path": "/home/user/Sudo-studio/backend/node_modules/string_decoder",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/string_decoder/LICENSE"
+  },
+  "strip-ansi@6.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/chalk/strip-ansi",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/strip-ansi",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/strip-ansi/license"
+  },
+  "strip-json-comments@3.1.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/strip-json-comments",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/strip-json-comments",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/strip-json-comments/license"
+  },
+  "strnum@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/NaturalIntelligence/strnum",
+    "publisher": "Amit Gupta",
+    "url": "https://amitkumargupta.work/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/strnum",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/strnum/LICENSE"
+  },
+  "stubs@3.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stephenplusplus/stubs",
+    "publisher": "Stephen Sawchuk",
+    "path": "/home/user/Sudo-studio/backend/node_modules/stubs",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/stubs/readme.md"
+  },
+  "supports-color@7.2.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/chalk/supports-color",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/chalk/node_modules/supports-color",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/chalk/node_modules/supports-color/license"
+  },
+  "teeny-request@8.0.3": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/googleapis/teeny-request",
+    "publisher": "fhinkel",
+    "path": "/home/user/Sudo-studio/backend/node_modules/teeny-request",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/teeny-request/LICENSE"
+  },
+  "text-decoding@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/idiocc/text-decoding",
+    "publisher": "Anton",
+    "email": "anton@adc.sh",
+    "path": "/home/user/Sudo-studio/backend/node_modules/text-decoding",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/text-decoding/LICENSE"
+  },
+  "text-hex@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/3rd-Eden/text-hex",
+    "publisher": "Arnout Kazemier",
+    "path": "/home/user/Sudo-studio/backend/node_modules/text-hex",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/text-hex/LICENSE"
+  },
+  "tmp@0.2.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/raszi/node-tmp",
+    "publisher": "KARASZI István",
+    "email": "github@spam.raszi.hu",
+    "path": "/home/user/Sudo-studio/backend/node_modules/tmp",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/tmp/LICENSE"
+  },
+  "toidentifier@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/component/toidentifier",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/toidentifier",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/toidentifier/LICENSE"
+  },
+  "tr46@0.0.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/Sebmaster/tr46.js",
+    "publisher": "Sebastian Mayr",
+    "email": "npm@smayr.name",
+    "path": "/home/user/Sudo-studio/backend/node_modules/tr46"
+  },
+  "triple-beam@1.4.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/winstonjs/triple-beam",
+    "publisher": "Charlie Robbins",
+    "email": "charlie.robbins@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/triple-beam",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/triple-beam/LICENSE"
+  },
+  "tslib@2.8.1": {
+    "licenses": "0BSD",
+    "repository": "https://github.com/Microsoft/tslib",
+    "publisher": "Microsoft Corp.",
+    "path": "/home/user/Sudo-studio/backend/node_modules/tslib",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/tslib/LICENSE.txt"
+  },
+  "type-check@0.3.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/gkz/type-check",
+    "publisher": "George Zahariev",
+    "email": "z@georgezahariev.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/type-check",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/type-check/LICENSE"
+  },
+  "type-is@1.6.18": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/type-is",
+    "path": "/home/user/Sudo-studio/backend/node_modules/type-is",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/type-is/LICENSE"
+  },
+  "uc.micro@2.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/markdown-it/uc.micro",
+    "path": "/home/user/Sudo-studio/backend/node_modules/uc.micro",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/uc.micro/LICENSE.txt"
+  },
+  "uglify-js@3.19.3": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/mishoo/UglifyJS",
+    "publisher": "Mihai Bazon",
+    "email": "mihai.bazon@gmail.com",
+    "url": "http://lisperator.net/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/uglify-js",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/uglify-js/LICENSE"
+  },
+  "underscore@1.13.7": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jashkenas/underscore",
+    "publisher": "Jeremy Ashkenas",
+    "email": "jeremy@documentcloud.org",
+    "path": "/home/user/Sudo-studio/backend/node_modules/underscore",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/underscore/LICENSE"
+  },
+  "undici-types@7.16.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/nodejs/undici",
+    "path": "/home/user/Sudo-studio/backend/node_modules/undici-types",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/undici-types/LICENSE"
+  },
+  "unpipe@1.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/stream-utils/unpipe",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/unpipe",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/unpipe/LICENSE"
+  },
+  "util-deprecate@1.0.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/TooTallNate/util-deprecate",
+    "publisher": "Nathan Rajlich",
+    "email": "nathan@tootallnate.net",
+    "url": "http://n8.io/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/util-deprecate",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/util-deprecate/LICENSE"
+  },
+  "utils-merge@1.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jaredhanson/utils-merge",
+    "publisher": "Jared Hanson",
+    "email": "jaredhanson@gmail.com",
+    "url": "http://www.jaredhanson.net/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/utils-merge",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/utils-merge/LICENSE"
+  },
+  "uuid@8.3.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/uuidjs/uuid",
+    "path": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/storage/node_modules/uuid",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/@google-cloud/storage/node_modules/uuid/LICENSE.md"
+  },
+  "uuid@9.0.1": {
+    "licenses": "MIT",
+    "repository": "https://github.com/uuidjs/uuid",
+    "path": "/home/user/Sudo-studio/backend/node_modules/uuid",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/uuid/LICENSE.md"
+  },
+  "validator@13.15.26": {
+    "licenses": "MIT",
+    "repository": "https://github.com/validatorjs/validator.js",
+    "publisher": "Chris O'Hara",
+    "email": "cohara87@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/validator",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/validator/LICENSE"
+  },
+  "vary@1.1.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jshttp/vary",
+    "publisher": "Douglas Christopher Wilson",
+    "email": "doug@somethingdoug.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/vary",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/vary/LICENSE"
+  },
+  "webidl-conversions@3.0.1": {
+    "licenses": "BSD-2-Clause",
+    "repository": "https://github.com/jsdom/webidl-conversions",
+    "publisher": "Domenic Denicola",
+    "email": "d@domenic.me",
+    "url": "https://domenic.me/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/webidl-conversions",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/webidl-conversions/LICENSE.md"
+  },
+  "websocket-driver@0.7.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/faye/websocket-driver-node",
+    "publisher": "James Coglan",
+    "email": "jcoglan@gmail.com",
+    "url": "http://jcoglan.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/websocket-driver",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/websocket-driver/LICENSE.md"
+  },
+  "websocket-extensions@0.1.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/faye/websocket-extensions-node",
+    "publisher": "James Coglan",
+    "email": "jcoglan@gmail.com",
+    "url": "http://jcoglan.com/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/websocket-extensions",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/websocket-extensions/LICENSE.md"
+  },
+  "whatwg-url@5.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jsdom/whatwg-url",
+    "publisher": "Sebastian Mayr",
+    "email": "github@smayr.name",
+    "path": "/home/user/Sudo-studio/backend/node_modules/whatwg-url",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/whatwg-url/LICENSE.txt"
+  },
+  "winston-transport@4.9.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/winstonjs/winston-transport",
+    "publisher": "Charlie Robbins",
+    "email": "charlie.robbins@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/winston-transport",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/winston-transport/LICENSE"
+  },
+  "winston@3.19.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/winstonjs/winston",
+    "publisher": "Charlie Robbins",
+    "email": "charlie.robbins@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/winston",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/winston/LICENSE"
+  },
+  "word-wrap@1.2.5": {
+    "licenses": "MIT",
+    "repository": "https://github.com/jonschlinkert/word-wrap",
+    "publisher": "Jon Schlinkert",
+    "url": "https://github.com/jonschlinkert",
+    "path": "/home/user/Sudo-studio/backend/node_modules/word-wrap",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/word-wrap/LICENSE"
+  },
+  "wrap-ansi@7.0.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/chalk/wrap-ansi",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/wrap-ansi",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/wrap-ansi/license"
+  },
+  "wrappy@1.0.2": {
+    "licenses": "ISC",
+    "repository": "https://github.com/npm/wrappy",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/wrappy",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/wrappy/LICENSE"
+  },
+  "ws@8.18.3": {
+    "licenses": "MIT",
+    "repository": "https://github.com/websockets/ws",
+    "publisher": "Einar Otto Stangvik",
+    "email": "einaros@gmail.com",
+    "url": "http://2x.io",
+    "path": "/home/user/Sudo-studio/backend/node_modules/ws",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/ws/LICENSE"
+  },
+  "xmlcreate@2.0.4": {
+    "licenses": "Apache-2.0",
+    "repository": "https://github.com/michaelkourlas/node-xmlcreate",
+    "publisher": "Michael Kourlas",
+    "email": "michael@kourlas.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/xmlcreate",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/xmlcreate/LICENSE",
+    "noticeFile": "/home/user/Sudo-studio/backend/node_modules/xmlcreate/NOTICE"
+  },
+  "y18n@5.0.8": {
+    "licenses": "ISC",
+    "repository": "https://github.com/yargs/y18n",
+    "publisher": "Ben Coe",
+    "email": "bencoe@gmail.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/y18n",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/y18n/LICENSE"
+  },
+  "yallist@4.0.0": {
+    "licenses": "ISC",
+    "repository": "https://github.com/isaacs/yallist",
+    "publisher": "Isaac Z. Schlueter",
+    "email": "i@izs.me",
+    "url": "http://blog.izs.me/",
+    "path": "/home/user/Sudo-studio/backend/node_modules/yallist",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/yallist/LICENSE"
+  },
+  "yargs-parser@21.1.1": {
+    "licenses": "ISC",
+    "repository": "https://github.com/yargs/yargs-parser",
+    "publisher": "Ben Coe",
+    "email": "ben@npmjs.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/yargs-parser",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/yargs-parser/LICENSE.txt"
+  },
+  "yargs@17.7.2": {
+    "licenses": "MIT",
+    "repository": "https://github.com/yargs/yargs",
+    "path": "/home/user/Sudo-studio/backend/node_modules/yargs",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/yargs/LICENSE"
+  },
+  "yocto-queue@0.1.0": {
+    "licenses": "MIT",
+    "repository": "https://github.com/sindresorhus/yocto-queue",
+    "publisher": "Sindre Sorhus",
+    "email": "sindresorhus@gmail.com",
+    "url": "https://sindresorhus.com",
+    "path": "/home/user/Sudo-studio/backend/node_modules/yocto-queue",
+    "licenseFile": "/home/user/Sudo-studio/backend/node_modules/yocto-queue/license"
+  }
+}
+
