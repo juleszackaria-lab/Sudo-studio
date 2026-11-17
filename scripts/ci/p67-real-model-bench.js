@@ -181,7 +181,20 @@ const TASKS = [
 ];
 
 async function runTask(t, world) {
-  const r = await turn(world, t.prompt, { maxIt: 6 });
+  // Mesure PAR TACHE : on repart d'un journal vide, sinon les compteurs
+  // cumulent les tours precedents (defaut de mesure, pas de produit).
+  try { fs.writeFileSync(path.join(world.logsDir, 'agent.log'), ''); } catch (_) {}
+  let r = await turn(world, t.prompt, { maxIt: 6 });
+  // Garde de reprise : apres une tache inachevee, le tour suivant repond
+  // "REPRENDRE ou ABANDONNER". Le banc tranche (ABANDONNER) pour mesurer la
+  // tache demandee, et le dit dans le rapport.
+  const last = lastAssistant(r.messages);
+  let abandoned = false;
+  if (/REPRENDRE/.test(last) && /ABANDONNER/.test(last)) {
+    abandoned = true;
+    try { fs.writeFileSync(path.join(world.logsDir, 'agent.log'), ''); } catch (_) {}
+    r = await turn(world, 'ABANDONNER', { maxIt: 2 });
+  }
   const v = t.check(r, world);
   const journal = SAFE_JOURNAL();
   const chatLines = countLines(journal, 'appel modele');
@@ -209,6 +222,7 @@ async function runTask(t, world) {
     rejections: rejectLines.slice(-3),
     fallbacks: fallbackLines.slice(-3),
     finalAnswer: lastAssistant(r.messages).slice(0, 400),
+    abandonedResumeGuard: abandoned,
     events: r.events.filter((e) => /runtime|approval|step/.test(String(e && e.type))).slice(-6),
   };
 }
