@@ -226,7 +226,7 @@ jobs:
           pip install flask flask-cors psutil
           python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
 
-      - name: Demarrer le runtime du produit (repli: serveur llama-cpp)
+      - name: "Demarrer le runtime du produit (repli sur serveur llama-cpp)"
         run: |
           F=~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
           echo "runtime-du-produit" > p67-engine.txt
