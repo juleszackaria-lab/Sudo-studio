@@ -251,6 +251,7 @@ function SAFE_JOURNAL() {
     catch (e) { r = { id: t.id, pass: false, error: String((e && e.message) || e), detail: 'exception' }; }
     results.push(r);
     process.stdout.write('PASS=' + r.pass + ' | ' + r.detail + '\n');
+    if (r.error) process.stdout.write('ERREUR=' + String(r.error).slice(0, 300) + '\n');
     process.stdout.write('appels modele=' + r.modelCalls + ' jetonsPrompt=' + JSON.stringify(r.tokensPrompt || []) +
       ' jetonsGeneres=' + JSON.stringify(r.tokensGen || []) + ' duree=' + Math.round((r.ms || 0) / 1000) + 's\n');
     if (r.rejections && r.rejections.length) {

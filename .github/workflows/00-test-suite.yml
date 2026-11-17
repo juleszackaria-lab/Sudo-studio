@@ -223,33 +223,36 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          pip install flask flask-cors psutil
+          pip install flask flask-cors psutil requests huggingface_hub
           python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
 
       - name: "Demarrer le runtime du produit (repli sur serveur llama-cpp)"
         run: |
           F=~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+          M=qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+          mkdir -p ~/.sudo_studio/models
+          cp -f "$F" ~/.sudo_studio/models/"$M"
           echo "runtime-du-produit" > p67-engine.txt
-          (python backend/runtime/server.enterprise.py --model "$F" --port 6000 --host 127.0.0.1 > runtime.log 2>&1 &) || true
+          (python backend/runtime/server.enterprise.py --model "$M" --port 6000 --host 127.0.0.1 > runtime.log 2>&1 &) || true
           ok=0
-          for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:6000/health > /dev/null 2>&1; then ok=1; break; fi
-            if ! pgrep -f "server.enterprise.py" > /dev/null 2>&1; then break; fi
+          for i in $(seq 1 72); do
+            MODELS=$(curl -sf http://127.0.0.1:6000/v1/models 2>/dev/null || true)
+            if echo "$MODELS" | grep -q '"id"'; then ok=1; break; fi
             sleep 5
           done
           if [ "$ok" != "1" ]; then
-            echo "runtime-du-produit indisponible -> repli llama-cpp.server" | tee -a runtime.log
+            echo "runtime-du-produit sans modele charge -> repli llama-cpp.server" | tee -a runtime.log
             echo "llama-cpp-server" > p67-engine.txt
             pkill -f server.enterprise.py || true
             (python -m llama_cpp.server --model "$F" --n_ctx 4096 --host 127.0.0.1 --port 6000 > runtime.log 2>&1 &) || true
-            for i in $(seq 1 60); do
-              if curl -sf http://127.0.0.1:6000/v1/models > /dev/null 2>&1; then ok=1; break; fi
+            for i in $(seq 1 72); do
+              if curl -sf http://127.0.0.1:6000/v1/models 2>/dev/null | grep -q '"id"'; then ok=1; break; fi
               sleep 5
             done
           fi
-          echo "moteur=$(cat p67-engine.txt) sante=$ok"
+          echo "moteur=$(cat p67-engine.txt) modele_pret=$ok"
           tail -30 runtime.log || true
-          if [ "$ok" != "1" ]; then echo "aucun moteur n'a repondu"; exit 1; fi
+          if [ "$ok" != "1" ]; then echo "aucun modele charge"; exit 1; fi
 
       - name: Banc modele reel (taches a a d)
         run: |
