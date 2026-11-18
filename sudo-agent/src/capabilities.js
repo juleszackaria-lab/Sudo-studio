@@ -35,6 +35,10 @@ function readJson(file) {
 // "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF" -> "qwen2.5-coder-3b-instruct"
 function normalizeId(id) {
   let s = String(id == null ? '' : id).trim().toLowerCase();
+  // P67-D13: le nom AFFICHE par l'interface peut porter un suffixe de format
+  // entre parentheses ("Qwen2.5-Coder-1.5B-Q4_K_M (GGUF)"). Il ne doit pas
+  // empecher la reconnaissance du modele par le manifeste.
+  s = s.replace(/\([^)]*\)/g, ' ').replace(/\[[^\]]*\]/g, ' ');
   s = s.replace(/\\/g, '/');
   const slash = s.lastIndexOf('/');
   if (slash !== -1) s = s.slice(slash + 1);
@@ -124,6 +128,24 @@ function resolve(modelId, opts) {
     scored.sort((a, b) => b.length - a.length);
     const k = scored[0];
     return { id: k, source: 'manifeste', warning: '', profile: merge(base, models[k]), sources: man._sources };
+  }
+  // P67-D13: dernier recours AVANT "inconnu" : correspondance par JETONS.
+  // "qwen2.5-coder-1.5b-q4_k_m-gguf" contient tous les jetons de la cle
+  // "qwen2.5-coder-1.5b-instruct" (le suffixe "instruct" est un mot de
+  // variante, pas une famille). Il faut au moins 3 jetons et la meme famille.
+  const toks = (x) => String(x || '').split(/[-._]+/).filter((t) => t && t !== 'instruct' && t !== 'chat');
+  const wt = toks(wanted);
+  let best = null;
+  for (const k of keys) {
+    const kt = toks(k);
+    if (kt.length < 3 || wt.length < 3) continue;
+    if (kt[0] !== wt[0]) continue;
+    const all = kt.every((t) => wt.indexOf(t) !== -1);
+    if (!all) continue;
+    if (!best || kt.length > toks(best).length) best = k;
+  }
+  if (best) {
+    return { id: best, source: 'manifeste', warning: '', profile: merge(base, models[best]), sources: man._sources };
   }
   const prudent = merge(merge(base, unk), {});
   return {

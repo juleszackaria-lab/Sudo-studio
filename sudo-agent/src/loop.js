@@ -16,6 +16,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 const { probeProvider, streamChat, chatOnce, waitForRuntime, runtimeDeadline } = require('./providers');
 const { classifyAction } = require('./intent');
+const smallpath = require('./smallpath'); // P67-B4: actions deterministes + protocole texte
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
 // P65-B: reglages HISTORIQUES du moteur, nommes. Un profil de capacite les
 // remplace quand le modele est CONNU du manifeste ; sinon ce sont ces valeurs
@@ -1393,7 +1394,20 @@ async function toolsTurn(base, session, toolsCtx) {
       journal('warn', 'extensions illisibles', { error: String((e && e.message) || e).slice(0, 120) });
     }
   } else {
-    journal('info', 'extensions omises (contexte court)', { ctx: ctxTokens, min: EXT_MIN_CTX });
+    // P67-D14: a 4096 on ne cache plus les extensions : une surface COMPACTE
+    // (une ligne par MCP, skill ou commande) remplace l'omission totale.
+    try {
+      const comp = extMod.compactSurface(home, root, 480);
+      if (comp && comp.text) {
+        extDigest = comp.text;
+        journal('info', 'extensions compactes (contexte court)', {
+          ctx: ctxTokens, min: EXT_MIN_CTX, chars: comp.text.length, badge: comp.counts && comp.counts.label });
+      } else {
+        journal('info', 'extensions omises (aucune extension dans le projet)', { ctx: ctxTokens });
+      }
+    } catch (e) {
+      journal('warn', 'extensions illisibles', { error: String((e && e.message) || e).slice(0, 120) });
+    }
   }
   // P57(3): "@nom" dans la barre de texte charge un skill ou cible un agent.
   let mention = null;
@@ -1896,6 +1910,42 @@ async function toolsTurn(base, session, toolsCtx) {
   // NORMAL (approbation, journal, verification), pas par un raccourci.
   const fallbackQueue = [];
   let fallbackRounds = 0;
+  // P67-B4/B6: une demande sans ambiguite ne depend plus du modele. L'agent
+  // construit LUI-MEME l'appel d'outil (il passe ensuite par le chemin normal:
+  // approbation, journal, verification). Le modele n'est pas appele du tout.
+  const deterministicReply = () => {
+    try {
+      const intents = [];
+      const cf = smallpath.createFileIntent(base.prompt);
+      if (cf) intents.push(cf);
+      const listFiles = () => {
+        const out = [];
+        const walk = (dir, depth) => {
+          if (depth > 3 || out.length > 200) return;
+          let ents = [];
+          try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+          for (const e of ents) {
+            if (out.length > 200) break;
+            if (e.name === 'node_modules' || e.name === '.git') continue;
+            const full = path.join(dir, e.name);
+            if (e.isDirectory()) { walk(full, depth + 1); continue; }
+            out.push(path.relative(root, full).split(path.sep).join('/'));
+          }
+        };
+        walk(root, 0);
+        return out;
+      };
+      const readFile = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+      for (const c of smallpath.primaryColorIntents(base.prompt, listFiles, readFile)) intents.push(c);
+      if (!intents.length) return null;
+      journal('info', 'action deterministe (sans modele)', {
+        appels: intents.length, outils: intents.map((c) => c.name).join(',') });
+      return { text: '', usage: null, deterministic: true,
+        toolCalls: intents.map((c, i) => ({ id: 'det-' + i, type: 'function',
+          name: c.name, argsText: JSON.stringify(c.args), args: c.args, parseError: null })) };
+    } catch (_) { return null; }
+  };
+
   const roundOnce = async () => {
     if (fallbackQueue.length) {
       const f = fallbackQueue.shift();
@@ -2245,9 +2295,9 @@ async function toolsTurn(base, session, toolsCtx) {
       if (runEntry.aborted) break;
       const cmp = await maybeCompress();
       if (!cmp.ok) { stopReason = 'context'; stopDetail = cmp.reason; break; }
-      let reply = null;
+      let reply = deterministicReply();
       try {
-        reply = await roundOnce();
+        if (!reply) reply = await roundOnce();
       } catch (e) {
         // Provider without tool support: fall back to ONE legacy streamed turn.
         if (e && e.status === 400 && iters === 0) {
@@ -2317,7 +2367,8 @@ async function toolsTurn(base, session, toolsCtx) {
       if (!calls.length && strictAction && !runEntry.aborted) {
         const fix = await actionRepair('reponse sans appel d\'outil (texte libre interdit pour une ACTION)');
         if (fix) { reply = fix; calls = Array.isArray(fix.toolCalls) ? fix.toolCalls : []; }
-        else { stopReason = 'no_tool'; stopDetail = 'le modele n\'emet aucun appel d\'outil (reparations contraintes epuisees).'; break; }
+        else { stopReason = 'no_tool';
+          stopDetail = 'Ce modele n\'arrive pas a appeler les outils sur cette tache : essaie un modele plus grand ou une tache plus simple.'; break; }
       }
       if (!calls.length) {
         // P52: same catch-up sweep on the free-text declare path.

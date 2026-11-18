@@ -163,6 +163,26 @@ function summary(home, root) {
   };
 }
 
+/**
+ * P67-D14: surface COMPACTE pour un contexte court (4096). Une ligne par
+ * extension, noms et descriptions tronques, budget de caracteres strict.
+ * Remplace l'omission totale : le modele sait qu'un MCP ou un skill existe.
+ */
+function compactSurface(home, root, maxChars) {
+  const cap = Math.max(120, Number(maxChars) || 500);
+  const inv = inventory(home, root);
+  const lines = [];
+  const mcp = inv.mcp.slice(0, 6).map((m) => oneLine(m.name, 24) + (m.enabled ? '' : ' (inactif)'));
+  if (mcp.length) lines.push('MCP: ' + mcp.join(', '));
+  const sk = inv.skills.slice(0, 6).map((x) => oneLine(x.name, 24) + (x.active ? '' : ' (inactif)'));
+  if (sk.length) lines.push('SKILLS: ' + sk.join(', '));
+  const cmds = inv.commands.slice(0, 8).map((c) => oneLine(c.name, 20));
+  if (cmds.length) lines.push('COMMANDES: ' + cmds.join(', '));
+  let out = lines.join('\n');
+  if (out.length > cap) out = out.slice(0, cap - 3) + '...';
+  return { text: out, counts: summary(home, root) };
+}
+
 // ---------------------------------------------------------------------------
 // Decouverte : les extensions pertinentes pour une demande (P57-1)
 // ---------------------------------------------------------------------------
@@ -438,6 +458,7 @@ function loadSkill(home, root, name) {
 }
 
 module.exports = {
+  compactSurface,
   agentDir, auditFile, audit, readAudit, mask, oneLine,
   inventory, summary, suggest, digest, proposalText, describe,
   resolveSecretEnv, callMcp, loadSkill,
