@@ -44,6 +44,7 @@
       "planStepSize": 3,
       "examples": 2,
       "profile": "small",
+      "deterministicActions": true,
       "source": { "ctxSafe": "policy", "toolsMax": "policy", "temperature": "policy" },
       "note": "Profil mesure au banc d'essai de la partie C (voir docs/p65)."
     },

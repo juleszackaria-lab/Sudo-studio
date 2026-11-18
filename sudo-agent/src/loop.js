@@ -2295,7 +2295,9 @@ async function toolsTurn(base, session, toolsCtx) {
       if (runEntry.aborted) break;
       const cmp = await maybeCompress();
       if (!cmp.ok) { stopReason = 'context'; stopDetail = cmp.reason; break; }
-      let reply = deterministicReply();
+      // P67-B4: la voie deterministe est une DONNEE du manifeste
+      // (deterministicActions), pas un comportement impose a tous les modeles.
+      let reply = (cap && cap.profile && cap.profile.deterministicActions === true) ? deterministicReply() : null;
       try {
         if (!reply) reply = await roundOnce();
       } catch (e) {
