@@ -174,8 +174,16 @@ const TASKS = [
     prompt: 'Change la couleur principale en vert',
     check: (r, world) => {
       const css = String(world.read('style.css') || '');
-      const green = /(--primary:\s*(green|#0[0-9a-f]{2}[0-9a-f]{2}0|#00[0-9a-f]{4}))/i.test(css);
-      return { pass: green, detail: 'style.css=' + JSON.stringify(css.replace(/\s+/g, ' ').slice(0, 120)) };
+      // Vert = le mot, ou un hexadecimal dont la composante verte domine
+      // (le correctif deterministe ecrit #22c55e : mon ancien motif ne
+      // l'acceptait pas, defaut de MESURE, pas du produit).
+      const hex = /--primary:\s*#([0-9a-f]{6})\b/i.exec(css);
+      let isGreen = /--primary:\s*(green|vert)\b/i.test(css);
+      if (hex) {
+        const r = parseInt(hex[1].slice(0, 2), 16), g = parseInt(hex[1].slice(2, 4), 16), b = parseInt(hex[1].slice(4, 6), 16);
+        isGreen = isGreen || (g > r && g > b);
+      }
+      return { pass: isGreen, detail: 'style.css=' + JSON.stringify(css.replace(/\s+/g, ' ').slice(0, 120)) };
     },
   },
 ];
