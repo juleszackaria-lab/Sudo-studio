@@ -195,17 +195,26 @@ class Runtime:
         return ev
 
 
-def call_plan(i, n_total):
-    """Serie melangee : 1/3 chat, 1/3 outils+grammaire, 1/3 pres de la fenetre."""
-    kind = ["chat", "tools", "long"][i % 3]
-    msgs = [{"role": "user", "content": "Dis bonjour en un mot."}]
-    payload = {"messages": msgs, "max_tokens": 24, "temperature": 0.0, "stream": False}
+def call_plan(i, n_ctx=2048):
+    """Serie melangee : chat, outils+grammaire, pres de la fenetre, au-dela.
+
+    La proportion estimee est grossiere (2,6 caracteres par jeton pour du
+    francais) : c'est suffisant pour viser 55 % et 120 % de `n_ctx`, les deux
+    cas que le prompt demande de couvrir.
+    """
+    chars_per_token = 2.6
+    kind = ["chat", "tools", "pres", "depasse"][i % 4]
+    payload = {"messages": [{"role": "user", "content": "Dis bonjour en un mot."}],
+               "max_tokens": 24, "temperature": 0.0, "stream": False}
     if kind == "tools":
         payload["tools"] = TOOLS
         payload["messages"] = [{"role": "user", "content": "Lis le fichier app.py"}]
-    elif kind == "long":
-        # ~55 % de la fenetre du premier palier : proche sans depasser
-        payload["messages"] = [{"role": "user", "content": FILLER * 90 + "\nReponds OK."}]
+    elif kind in ("pres", "depasse"):
+        share = 0.55 if kind == "pres" else 1.20
+        target_chars = int(n_ctx * share * chars_per_token)
+        reps = max(1, target_chars // len(FILLER))
+        payload["messages"] = [{"role": "user", "content": FILLER * reps + "\nReponds OK."}]
+        payload["max_tokens"] = 16
     return kind, payload
 
 
@@ -214,14 +223,22 @@ def run_series(rt, calls, out_dir):
     rows = []
     deaths = []
     lat = []
+    n_ctx = 2048
     for i in range(1, calls + 1):
-        kind, payload = call_plan(i, calls)
+        # point 2 du prompt : la serie couvre n_ctx 2048 PUIS 4096.
+        if i == (calls // 2) + 1:
+            r = http(rt.base() + "/reload", {"model": rt.model, "n_ctx": 4096}, timeout=60)
+            print("[BASCULE] n_ctx 2048 -> 4096 : %s" % json.dumps(r)[:200])
+            w = rt.wait_model(timeout=300)
+            print("[BASCULE] rechargement : %s" % json.dumps(w))
+            n_ctx = 4096
+        kind, payload = call_plan(i, n_ctx)
         t0 = time.time()
         r = http(rt.base() + "/v1/chat/completions", payload, timeout=300)
         ms = int((time.time() - t0) * 1000)
         alive_after = rt.alive()
         ok = (r.get("status") == 200)
-        row = {"i": i, "kind": kind, "status": r.get("status"), "ms": ms,
+        row = {"i": i, "kind": kind, "n_ctx": n_ctx, "status": r.get("status"), "ms": ms,
                "alive_after": alive_after}
         if not ok:
             row["error"] = str(r.get("error") or r.get("text"))[:200]
