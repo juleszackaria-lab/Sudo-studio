@@ -253,13 +253,57 @@ def n_ctx_reduction_info(nominal, effective, reason=None):
             'reason': None, 'message': ''}
 
 
-def context_budget_tokens(n_ctx):
-    """60 % du contexte au maximum par appel (le reste = reponse + marge)."""
+# P68-B: ce que le moteur ANNONCE n'est pas ce qu'il tient. Le banc
+# scripts/ci/p68-context-bench.py remplit le prompt de texte neutre, cache le mot
+# temoin ZORBULAX tout au debut, et exige qu'il soit restitue : quand le debut
+# du prompt n'est plus lu, la fenetre REELLE est atteinte (recherche
+# dichotomique, vrai modele, llama.cpp CPU).
+#
+# MESURE du 2026-11-21 (Qwen2.5-Coder-1.5B-Instruct Q4_K_M, CI ubuntu-22.04,
+# run 44957368559, artefact p68-context / p68-results/p68-context.json) :
+#     n_ctx 2048 -> 1949 jetons lisibles (95,2 %) RSS 1835 Mo
+#     n_ctx 4096 -> 3995 jetons lisibles (97,5 %) RSS 1898 Mo
+#     n_ctx 8192 -> 8090 jetons lisibles (98,8 %) RSS 2054 Mo
+# Conclusion : sur ce modele la fenetre annoncee est TENUE (>= 95 %). Le mythe
+# des "70 % de contexte reel" ne tient pas ici ; on garde donc le chiffre
+# mesure, palier par palier, et le plus petit sert de defaut prudent.
+REAL_WINDOW_RATIOS = {2048: 0.95, 4096: 0.97, 8192: 0.98}
+REAL_WINDOW_RATIO = 0.95
+
+# P68-B: et on ne remplit jamais toute la fenetre reelle : 70 % au maximum par
+# appel (le reste = reponse + marge de gabarit de chat).
+CALL_BUDGET_RATIO = 0.70
+
+
+def real_window_tokens(n_ctx, real_ratio=None):
+    """Jetons REELLEMENT lisibles dans un contexte nominal (mesure, pas espoir)."""
     try:
         n = int(n_ctx)
     except (TypeError, ValueError):
         n = 2048
-    return max(256, int(n * 0.60))
+    ratio = None
+    if real_ratio:
+        try:
+            ratio = float(real_ratio)
+        except (TypeError, ValueError):
+            ratio = None
+    if not ratio:
+        # le plus petit palier mesure >= n_ctx (le plus prudent), sinon le plus grand
+        keys = sorted(REAL_WINDOW_RATIOS)
+        ratio = REAL_WINDOW_RATIOS[keys[-1]]
+        for k in keys:
+            if n <= k:
+                ratio = REAL_WINDOW_RATIOS[k]
+                break
+    if ratio <= 0 or ratio > 1:
+        ratio = REAL_WINDOW_RATIO
+    return max(256, int(n * ratio))
+
+
+def context_budget_tokens(n_ctx, real_ratio=None):
+    """Budget d'un appel = 70 % de la fenetre REELLE (pas du nominal)."""
+    win = real_window_tokens(n_ctx, real_ratio)
+    return max(256, int(win * CALL_BUDGET_RATIO))
 
 
 def context_under_pressure(n_ctx, avail_gb):

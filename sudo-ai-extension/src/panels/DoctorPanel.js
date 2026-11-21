@@ -106,6 +106,35 @@ class DoctorPanel {
             results.push({ name: 'AI Runtime (port 6000)', status: 'error', value: 'Not running', fix: 'startRuntime' });
         }
 
+        // P68-B: la fenetre de contexte REELLE et le budget d'un appel.
+        // Les chiffres viennent du runtime (/models), ils ne sont pas inventes.
+        try {
+            const rm = await axios.get('http://127.0.0.1:6000/models', { timeout: 2000 });
+            const md = (rm && rm.data) || {};
+            const nctx = Number(md.n_ctx);
+            const nominal = Number(md.n_ctx_nominal);
+            const real = Number(md.real_window_tokens);
+            const budget = Number(md.call_budget_tokens);
+            const red = md.n_ctx_reduction;
+            if (Number.isFinite(nctx) && nctx > 0) {
+                results.push({
+                    name: 'Contexte (jetons)',
+                    status: (red && red.reduced) ? 'warn' : 'ok',
+                    value: Number.isFinite(nominal) && nominal > nctx
+                        ? `${nctx} effectifs / ${nominal} demandes`
+                        : `${nctx} jetons charges`,
+                });
+            }
+            if (Number.isFinite(real) && real > 0) {
+                const pct = Math.round((Number(md.real_window_ratio) || 0) * 100);
+                results.push({
+                    name: 'Fenetre reelle mesuree',
+                    status: 'info',
+                    value: `${real} jetons lisibles (${pct} % du nominal), budget par appel ${Number.isFinite(budget) ? budget : '?'}`,
+                });
+            }
+        } catch (_) { /* runtime absent : la ligne Runtime ci-dessus le dit deja */ }
+
         // System info
         results.push({ name: 'Platform', status: 'info', value: `${os.platform()} ${os.arch()}` });
         results.push({ name: 'RAM',      status: 'info', value: `${Math.round(os.totalmem() / 1024 / 1024 / 1024)}GB total, ${Math.round(os.freemem() / 1024 / 1024 / 1024)}GB free` });

@@ -43,12 +43,16 @@ FILLER = ("Le service de facturation traite les commandes du lundi au vendredi. 
           "Les erreurs sont reessayees trois fois avant d etre signalees. ")
 
 # Corpus pour l'estimateur : ce que le produit envoie VRAIMENT au modele.
-# Le critere porte sur la colonne "long" (>=300 caracteres) : c'est la que
-# l'estimateur sert a quelque chose (budget de contexte). Les entrees courtes
-# restent affichees a titre indicatif : une marge forfaitaire y pese forcement
-# trop lourd en pourcentage, ce n'est pas une erreur de conversion.
+# 20 echantillons, 8 familles (prose FR, code JS/PY, JSON, arborescence, sortie
+# d'outil, chemins Windows, accents). Le critere porte sur les echantillons
+# "long" (ceux ou un budget de contexte se calcule) ; les "court" restent
+# affiches a titre indicatif (une marge forfaitaire y pese trop en pourcentage).
+def _listing(n, ext=".js"):
+    return "\n".join("src/modules/module_%02d%s  (lignes 1-%d, modifie il y a %d jours)"
+                     % (i, ext, 40 + i, i) for i in range(n))
+
 CORPUS = [
-    ("note-systeme-fr", "long",
+    ("note-systeme", "long",
      "Tu es un agent de developpement integre a l editeur. Tu disposes d outils pour lire, "
      "ecrire et modifier des fichiers du projet. Reponds toujours en francais, de facon concise "
      "et directement actionnable. N invente jamais un chemin de fichier : si un fichier est "
@@ -56,6 +60,11 @@ CORPUS = [
      "projet avant de repondre. Si une commande echoue, lis le message d erreur et corrige la "
      "cause au lieu de reessayer a l identique. Termine toujours par un resume de ce que tu as "
      "fait et de ce qui reste a faire."),
+    ("consigne-longue", "long",
+     "Analyse le projet, corrige les erreurs de compilation, ajoute les tests manquants et "
+     "verifie que la suite passe entierement avant de me repondre. Ne touche pas aux fichiers "
+     "de configuration de production, ne supprime aucun test existant, et si une correction "
+     "demande un choix d architecture, explique le choix au lieu de l imposer."),
     ("code-js", "long",
      "function estimateTokens(messages, schemaChars) {\n"
      "  let chars = 0;\n  for (const m of messages || []) {\n    chars += 32;\n"
@@ -70,6 +79,12 @@ CORPUS = [
      "        n = len(str(m.get('content') or '')) // 4 + 32\n"
      "        if keep and total + n > budget_tokens:\n            break\n"
      "        keep.append(m)\n        total += n\n    return list(reversed(keep))\n"),
+    ("code-ts", "long",
+     "export interface CheckResult { name: string; ok: boolean; detail?: string; }\n"
+     "export function summarize(rows: CheckResult[]): string {\n"
+     "  const bad = rows.filter((r) => !r.ok);\n"
+     "  if (!bad.length) return `${rows.length} verifications OK`;\n"
+     "  return bad.map((r) => `- ${r.name}: ${r.detail || 'echec'}`).join('\\n');\n}\n"),
     ("json-outils", "long",
      '[{"type":"function","function":{"name":"read","description":"Lire un fichier du projet",'
      '"parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"]}}},'
@@ -79,16 +94,39 @@ CORPUS = [
      '"description":"Remplacer une chaine exacte","parameters":{"type":"object","properties":'
      '{"file":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"}},'
      '"required":["file","old","new"]}}}]'),
-    ("liste-fichiers", "long",
-     "\n".join("src/modules/module_%02d.js  (lignes 1-%d, modifie il y a %d jours)" % (i, 40 + i, i)
-               for i in range(25))),
+    ("json-reponse", "long",
+     '{"ok": false, "code": "not_found", "error": "fichier introuvable : src/indx.js", '
+     '"candidats": ["src/index.js", "src/index.ts"], "note": "choisis un de ces chemins exacts"}'),
+    ("liste-fichiers", "long", _listing(25)),
+    ("arborescence", "long",
+     "backend/\n  runtime/\n    grammar.py\n    openai_compat.py\n    server.enterprise.py\n"
+     "  tests/\n    test-p62-ram-runtime.js\n    run-all.js\nsudo-agent/\n  src/\n"
+     "    loop.js\n    profiles.js\n    recovery.js\n    tools.js\n"),
     ("sortie-outil", "long",
      "".join("ligne %d : ok  (backend/tests/test-p%02d.js)  %d ms\n" % (i, i, 3 * i) for i in range(80))),
-    ("prose-fr", "long",
-     FILLER * 6),
+    ("journal", "long",
+     "".join("2026-11-21T22:3%d:11Z [INFO] [agent] [c%d] tour demarre | prompt=%s\n"
+             % (i % 10, i, "corrige le fichier " + str(i)) for i in range(40))),
+    ("prose-fr", "long", FILLER * 6),
+    ("prose-fr-2", "long",
+     "La fenetre de contexte annoncee par un moteur de langage n est pas forcement celle dont "
+     "l utilisateur dispose. Pour le verifier, on remplit le prompt avec un texte neutre, on "
+     "cache un mot temoin au tout debut, puis on demande au modele de le recopier. Tant qu il "
+     "repond correctement, le debut du prompt est bien lu ; des qu il ne le restitue plus, la "
+     "limite reelle est atteinte. Cette mesure ne coute qu une poignee de generations."),
     ("chemins-win", "long",
      "\r\n".join("C:\\Users\\jules\\Documents\\projets\\sudo-studio\\backend\\runtime\\module_%02d.py" % i
                   for i in range(20))),
+    ("chemins-unix", "long",
+     "\n".join("/home/jules/projets/sudo-studio/backend/tests/test-p%02d-suite.js" % i for i in range(20))),
+    ("diff", "long",
+     "--- a/sudo-agent/src/loop.js\n+++ b/sudo-agent/src/loop.js\n@@ -2000,7 +2000,9 @@\n"
+     "-        if (r && r.invalidCall) {\n+        if (r && r.invalidCall && !(r.toolCalls && r.toolCalls.length)) {\n"
+     "           recoveryUsed += 1;\n-          continue;\n+          journal('warn', 'appel outil invalide, reprise');\n+          continue;\n"),
+    ("accents-long", "long",
+     ("Les eleves de l ecole primaire ont ecrit une histoire drole. Cependant, la maitresse a "
+      "souligne les fautes d orthographe et de grammaire. Il etait une fois un chateau tres "
+      "eleve, entoure de forets profondes, ou vivait un roi devoue. ") * 3),
     ("accents-courts", "court",
      "Les eleves ont ecrit une histoire drole, cependant la maitresse a souligne les fautes."),
     ("consigne-courte", "court",
@@ -171,13 +209,64 @@ def real_window(llm, model_tok, n_ctx):
     return best, trace
 
 
-def candidate_errors(rows):
-    """Compare plusieurs formules chars->jetons sur les MEMES mesures reelles.
+def _solve(a, b):
+    """Resolution d'un systeme lineaire (Gauss, petits systemes)."""
+    n = len(a)
+    m = [list(map(float, a[i])) + [float(b[i])] for i in range(n)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[piv][col]) < 1e-12:
+            return None
+        m[col], m[piv] = m[piv], m[col]
+        pv = m[col][col]
+        for j in range(col, n + 1):
+            m[col][j] /= pv
+        for r in range(n):
+            if r == col:
+                continue
+            f = m[r][col]
+            if not f:
+                continue
+            for j in range(col, n + 1):
+                m[r][j] -= f * m[col][j]
+    return [m[i][n] for i in range(n)]
 
-    L'estimateur du produit est `ceil((chars + 32) / 4) + 64`. La marge fixe de
-    64 jetons est confortable sur un prompt long et absurde sur une consigne
-    courte. On cherche donc, sur les prompts REELS, le couple (diviseur, marge)
-    le plus juste : c'est ce couple qui sera ecrit dans le produit.
+
+def _features(txt):
+    """Caracteristiques d'un texte (celles que l'estimateur du produit peut
+    calculer sans modele) : caracteres, mots, lignes, part de non-alphanumerique."""
+    t = str(txt)
+    chars = len(t)
+    words = len([w for w in t.replace("\n", " ").split(" ") if w])
+    lines = t.count("\n") + 1
+    na = sum(1 for c in t if not (c.isalnum() or c.isspace()))
+    return [chars, words, lines, (na / chars) if chars else 0.0, 1.0]
+
+
+def _fit(samples):
+    """Moindres carres : jetons = a*chars + b*mots + c*lignes + d*ratio_na + e."""
+    k = 5
+    ata = [[0.0] * k for _ in range(k)]
+    atb = [0.0] * k
+    for feats, y in samples:
+        for i in range(k):
+            atb[i] += feats[i] * y
+            for j in range(k):
+                ata[i][j] += feats[i] * feats[j]
+    return _solve(ata, atb)
+
+
+def _predict(coef, feats):
+    return sum(c * f for c, f in zip(coef, feats))
+
+
+def candidate_errors(rows):
+    """Quelle formule chars->jetons est la plus JUSTE sur les prompts reels ?
+
+    1. les formules a un seul diviseur (dont celle du produit) ;
+    2. un modele lineaire a 4 caracteristiques, evalue en validation croisee
+       "laisser un dehors" (LOO) : c'est la seule note honnete, la note
+       d'apprentissage ne prouve rien.
     """
     import math
     longs = [r for r in rows if r["classe"] == "long" and r["reel"]]
@@ -186,19 +275,50 @@ def candidate_errors(rows):
              ("/3.4 +16", 3.4, 16), ("/3.6 +16", 3.6, 16), ("/3.8 +16", 3.8, 16),
              ("/3.4 +0", 3.4, 0), ("/3.5 +0", 3.5, 0), ("/3.6 +0", 3.6, 0),
              ("/3.7 +0", 3.7, 0), ("/3.8 +0", 3.8, 0), ("/3.9 +0", 3.9, 0),
-             ("/4.0 +0", 4.0, 0), ("/3.6 +8", 3.6, 8)]
+             ("/4.0 +0", 4.0, 0), ("/2.7 +0", 2.7, 0), ("/2.9 +0", 2.9, 0)]
     for label, div, margin in cands:
         errs = []
         for r in longs:
             est = math.ceil((r["chars"] + 32) / div) + margin
             errs.append(100.0 * (est - r["reel"]) / r["reel"])
-        mean = round(sum(abs(e) for e in errs) / max(1, len(errs)), 2)
-        mx = round(max(abs(e) for e in errs), 2) if errs else 0.0
-        bias = round(sum(errs) / max(1, len(errs)), 2)
-        out.append({"formule": label, "moyenne_abs_pct": mean, "max_abs_pct": mx,
-                    "biais_pct": bias})
+        out.append({"formule": label,
+                    "moyenne_abs_pct": round(sum(abs(e) for e in errs) / max(1, len(errs)), 2),
+                    "max_abs_pct": round(max(abs(e) for e in errs), 2) if errs else 0.0,
+                    "biais_pct": round(sum(errs) / max(1, len(errs)), 2)})
+
+    # --- modele lineaire multi-caracteristiques --------------------------------
+    texts = {r["id"]: r for r in longs}
+    samples = []
+    for cid, kind, txt in CORPUS:
+        if kind != "long" or cid not in texts:
+            continue
+        samples.append((_features(txt), texts[cid]["reel"]))
+    model = {}
+    if len(samples) >= 6:
+        coef = _fit(samples)
+        if coef:
+            ins = [100.0 * (_predict(coef, f) - y) / y for f, y in samples]
+            loo = []
+            for i in range(len(samples)):
+                sub = samples[:i] + samples[i + 1:]
+                c2 = _fit(sub)
+                if not c2:
+                    continue
+                f, y = samples[i]
+                loo.append(100.0 * (_predict(c2, f) - y) / y)
+            model = {
+                "coef": [round(c, 6) for c in coef],
+                "formule": ("jetons = %.6f*chars + %.6f*mots + %.6f*lignes + %.6f*ratio_na + %.3f"
+                            % tuple(coef)),
+                "apprentissage_moyenne_abs_pct": round(sum(abs(e) for e in ins) / len(ins), 2),
+                "loo_moyenne_abs_pct": round(sum(abs(e) for e in loo) / max(1, len(loo)), 2),
+                "loo_max_abs_pct": round(max(abs(e) for e in loo), 2) if loo else None,
+                "echantillons": len(samples),
+            }
+            out.append({"formule": "modele lineaire (LOO)", "moyenne_abs_pct": model["loo_moyenne_abs_pct"],
+                        "max_abs_pct": model["loo_max_abs_pct"], "biais_pct": None})
     out.sort(key=lambda r: r["moyenne_abs_pct"])
-    return out
+    return out, model
 
 
 def estimator_errors(node_bin):
@@ -277,14 +397,21 @@ def main():
                 tot_chars += len(txt)
                 tot_real += real
         longs = [r for r in rows if r["classe"] == "long"]
-        cands = candidate_errors(rows) if "est_cands" not in results else results["est_cands"]
         if "est_cands" not in results:
+            cands, model = candidate_errors(rows)
             results["est_cands"] = cands
+            results["est_model"] = model
             print("  formules candidates (sur les prompts reels) :")
             for c in cands:
-                print("    %-16s moyenne |%%|=%6.2f  max=%6.2f  biais=%+6.2f"
-                      % (c["formule"], c["moyenne_abs_pct"], c["max_abs_pct"], c["biais_pct"]))
-            print("    -> retenue : %s" % cands[0]["formule"])
+                print("    %-24s moyenne |%%|=%6.2f  max=%6.2f"
+                      % (c["formule"], c["moyenne_abs_pct"], c["max_abs_pct"] or 0.0))
+            print("    -> meilleure formule simple : %s" % cands[0]["formule"])
+            if results.get("est_model"):
+                mm = results["est_model"]
+                print("    modele lineaire : %s" % mm["formule"])
+                print("      apprentissage %.2f %% | validation croisee (LOO) %.2f %% (max %.2f) sur %d echantillons"
+                      % (mm["apprentissage_moyenne_abs_pct"], mm["loo_moyenne_abs_pct"],
+                         mm["loo_max_abs_pct"] or 0, mm["echantillons"]))
         mean_abs = round(sum(abs(r["erreur_pct"]) for r in longs) / max(1, len(longs)), 2)
         max_abs = round(max(abs(r["erreur_pct"]) for r in longs), 2) if longs else 0.0
         ratio = round(tot_chars / tot_real, 2) if tot_real else None

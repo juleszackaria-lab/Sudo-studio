@@ -9,7 +9,7 @@
  *   C1  n_ctx / n_threads / n_batch choisis selon la RAM libre, avec message FR ;
  *   C2  427 Mo libres (chiffres de la video) -> refus explique, pas de plantage ;
  *   C3  sous pression -> contexte divise pour l'appel suivant ;
- *   F-2 le budget d'appel est 60 % du contexte et les vieux messages sortent.
+ *   F-2 le budget d'appel est 70 % de la fenetre REELLE et les vieux messages sortent.
  *
  * ASCII only. Lancer : node backend/tests/test-p62-ram-runtime.js
  */
@@ -87,7 +87,10 @@ if (regimes.ok) {
         v.pressure.changed === true && v.pressure.n_ctx === 2048, JSON.stringify(v.pressure));
     check('C3-b: la reduction est annoncee en francais', /RAM libre faible/.test(v.pressure.message), v.pressure.message);
     check('C3-c: RAM correcte -> aucun changement', v.calm.changed === false && v.calm.n_ctx === 4096);
-    check('F-2a: le budget d appel vaut 60 % du contexte', v.budget === 2457, String(v.budget));
+    // P68-B: le budget n'est plus 60 % du NOMINAL mais 70 % de la fenetre REELLE
+    // MESUREE (97,5 % du nominal a 4096) : 4096 -> 3973 -> 2781 jetons.
+    check('F-2a: le budget d appel vaut 70 % de la fenetre reelle (4096 -> 2781)',
+        v.budget === 2781, String(v.budget));
     check('F-2b: le message geant sort du budget, le systeme et le dernier restent',
         v.trimmed.every((m) => String(m.content).length < 1000) &&
         v.trimmed[0].role === 'system' && v.trimmed[v.trimmed.length - 1].content === 'dernier',

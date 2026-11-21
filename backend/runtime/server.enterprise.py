@@ -2308,6 +2308,11 @@ def health():
             # P68-B: fenetre annoncee vs fenetre obtenue, jamais en silence.
             "n_ctx_nominal":      getattr(state, "n_ctx_nominal", None),
             "n_ctx_reduction":    getattr(state, "n_ctx_reduction", None),
+            "real_window_ratio":  openai_compat.REAL_WINDOW_RATIO,
+            "real_window_tokens": (openai_compat.real_window_tokens(state.n_ctx)
+                                   if state.n_ctx else None),
+            "call_budget_tokens": (openai_compat.context_budget_tokens(state.n_ctx)
+                                   if state.n_ctx else None),
             # P62-C: ce que la politique RAM a decide, et le temps de chargement.
             "n_batch":            getattr(state, "ram_profile", {}).get("n_batch") if isinstance(getattr(state, "ram_profile", None), dict) else None,
             "n_threads":          getattr(state, "ram_profile", {}).get("n_threads") if isinstance(getattr(state, "ram_profile", None), dict) else None,
@@ -2564,6 +2569,12 @@ def models():
         "n_ctx_nominal":        getattr(state, "n_ctx_nominal", None),
         "n_ctx_reduction":      getattr(state, "n_ctx_reduction", None),
         "n_ctx_default":        openai_compat.default_n_ctx(avail),
+        # P68-B: la fenetre REELLE (mesuree) et le budget d'un appel, en clair.
+        "real_window_ratio":    openai_compat.REAL_WINDOW_RATIO,
+        "real_window_tokens":   (openai_compat.real_window_tokens(state.n_ctx)
+                                 if state.n_ctx else None),
+        "call_budget_tokens":   (openai_compat.context_budget_tokens(state.n_ctx)
+                                 if state.n_ctx else None),
         "mock_mode":            _demo_mock_enabled() and not state.loaded,
     })
 
