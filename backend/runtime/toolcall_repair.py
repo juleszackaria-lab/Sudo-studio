@@ -279,6 +279,27 @@ def _call_from_obj(obj):
     return name, args
 
 
+_UNQUOTED_NAME = re.compile(r'("name"\s*:\s*)([A-Za-z_][A-Za-z0-9_.-]*)(\s*[,}])')
+
+
+def quote_unquoted_names(body, valid_names):
+    """P68-A4: filet de securite. Un nom d'outil ecrit SANS guillemets
+    ({"name":  write, ...}) n'est pas du JSON. Si le token nu est un outil
+    connu, on le remet entre guillemets AVANT l'analyse et on le journalise
+    ("repare : nom non quote"). Un token inconnu n'est PAS devine : il reste
+    une erreur, comme avant.
+    """
+    fixed = []
+    def _sub(m):
+        head, name, tail = m.group(1), m.group(2), m.group(3)
+        if valid_names and name not in valid_names:
+            return m.group(0)
+        fixed.append(name)
+        return head + '"' + name + '"' + tail
+    out = _UNQUOTED_NAME.sub(_sub, body)
+    return out, fixed
+
+
 def repair_toolcall(text, tools, truncated=False):
     """Repare une sortie de modele en une liste d'appels.
 
@@ -306,6 +327,11 @@ def repair_toolcall(text, tools, truncated=False):
         if changed:
             body = closed
             repairs.append("troncature-refermee")
+    # P68-A4: defense en profondeur - un nom d'outil non quote est repare ici,
+    # meme si la grammaire corrigee (P68-A2) ne devrait plus le produire.
+    body, quoted = quote_unquoted_names(body, valid_names)
+    if quoted:
+        repairs.append("nom-outil-non-quote:" + ",".join(sorted(set(quoted))[:3]))
     blobs = _balanced_objects(body)
     if not blobs:
         return _fail("json", "aucun objet JSON trouve", tools, repairs)

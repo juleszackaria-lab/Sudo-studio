@@ -25,13 +25,15 @@ import re
 WS = 'ws ::= [ \\t\\n]*\n'
 
 BASE_RULES = r'''
-ws ::= [ \t\n]*
+ws ::= " "?
 value ::= object | array | string | number | "true" | "false" | "null"
 object ::= "{" ws ( pair ( ws "," ws pair )* )? ws "}"
 pair ::= string ws ":" ws value
 array ::= "[" ws ( value ( ws "," ws value )* )? ws "]"
 string ::= "\"" chars "\""
-chars ::= [^"\\]*
+chars ::= ( [^"\\] | escape )*
+escape ::= "\\" ( "\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | "u" hex hex hex hex )
+hex ::= [0-9a-fA-F]
 number ::= "-"? ( "0" | [1-9] [0-9]* ) ( "." [0-9]+ )?
 '''
 
@@ -59,7 +61,11 @@ def toolcall_grammar(tools):
     names = _tool_names(tools)
     if not names:
         return None
-    alts = ' | '.join('"%s"' % n for n in names)
+    # P68-A: un nom d'outil est une CHAINE JSON. En GBNF un litteral "read"
+    # designe la suite de caracteres read (SANS guillemets) ; pour exiger
+    # "read" dans la sortie il faut "\"read\"". L'ancienne construction
+    # produisait donc un identifiant nu et rendait tout appel invalide.
+    alts = ' | '.join('"\\"%s\\""' % n for n in names)
     head = (
         'root ::= "{" ws "\\"name\\"" ws ":" ws name ws "," ws '
         '"\\"arguments\\"" ws ":" ws value ws "}"\n'

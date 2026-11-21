@@ -280,3 +280,73 @@ jobs:
             runtime.log
             p67-engine.txt
           if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # P68-A3: TEMOIN DE GRAMMAIRE avec le vrai modele.
+  # Meme serie de 50 consignes, deux grammaires: celle du depot (corrigee) et
+  # celle d'avant (temoins negatifs). Analyse STRICTE (json.loads) + schema.
+  # ---------------------------------------------------------------------------
+  p68-grammar:
+    name: P68 - grammaire (50 consignes, vrai modele)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache du modele GGUF
+        uses: actions/cache@v4
+        with:
+          path: ~/p67-model
+          key: p67-qwen25-coder-1.5b-q4km-v1
+
+      - name: Telecharger le modele (si absent du cache)
+        run: |
+          mkdir -p ~/p67-model
+          F=~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+          if [ ! -s "$F" ]; then
+            curl -sL -o "$F" "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+          fi
+          sha256sum "$F"
+
+      - name: Installer llama-cpp-python (CPU)
+        run: |
+          python -m pip install --upgrade pip
+          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+      - name: Temoin - grammaire du depot (corrigee)
+        run: |
+          python3 scripts/ci/p68-grammar-witness.py --model ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf --grammar fixed --out p68-results || echo "TEMOIN ROUGE (voir tableau)"
+
+      - name: Controle negatif - grammaire d'avant (doit etre rouge)
+        run: |
+          python3 scripts/ci/p68-grammar-witness.py --model ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf --grammar legacy --out p68-results || true
+
+      - name: Verdict
+        run: |
+          python3 - <<'PY'
+          import json
+          f = json.load(open('p68-results/p68-witness-fixed.json'))
+          l = json.load(open('p68-results/p68-witness-legacy.json'))
+          print('APRES (grammaire corrigee) : %d/%d valides' % (f['valides'], f['total']))
+          print('AVANT (ancienne grammaire) : %d/%d valides' % (l['valides'], l['total']))
+          if l['valides'] == l['total']:
+              print('[FAIL] le controle negatif est VERT : le temoin ne peut pas echouer, il ne prouve rien')
+              raise SystemExit(1)
+          if f['valides'] == f['total']:
+              print('[PASS] 100 % de JSON strict avec la grammaire corrigee, et l ancienne grammaire echoue')
+          else:
+              print('[PARTIEL] la grammaire corrigee ne donne pas 100 % : voir les lignes INVALIDE')
+          PY
+
+      - name: Artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p68-grammar
+          path: p68-results/
+          if-no-files-found: warn
