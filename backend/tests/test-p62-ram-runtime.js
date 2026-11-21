@@ -117,7 +117,10 @@ tools = [{"type":"function","function":{"name":"read_file"}},
          {"type":"function","function":{"name":"write_file"}}]
 gb = g.toolcall_grammar(tools)
 out = {"lint": g.lint_gbnf(gb), "stats": g.grammar_stats(gb),
-       "has_read": '"read_file"' in gb, "has_write": '"write_file"' in gb,
+       "quoted": all(a.strip().startswith('"\\\\"') and a.strip().endswith('\\\\""') for a in
+                     [l for l in gb.splitlines() if l.startswith('name ::= ')][0].split('=', 1)[1].split('|')),
+       "has_read": 'read_file' in gb, "has_write": 'write_file' in gb,
+       "absent_tool": 'exec' in gb or 'shell' in gb,
        "obj": g.lint_gbnf(g.json_object_grammar()),
        "empty": g.toolcall_grammar([]),
        "bad": g.lint_gbnf("root ::= missing_rule")}
@@ -126,8 +129,9 @@ print(json.dumps(out))
 check('F5-a: la grammaire GBNF des appels d outils est generee et valide',
     gram.ok && gram.value.lint.ok === true && gram.value.stats.rules >= 9,
     gram.ok ? JSON.stringify(gram.value.lint) : gram.error);
-check('F5-b: seuls les outils reellement exposes sont autorises',
-    gram.ok && gram.value.has_read === true && gram.value.has_write === true,
+check('F5-b: seuls les outils reellement exposes sont autorises (nom en chaine JSON)',
+    gram.ok && gram.value.has_read === true && gram.value.has_write === true &&
+    gram.value.absent_tool === false && gram.value.quoted === true,
     gram.ok ? String(gram.value.stats) : '');
 check('F5-c: sans outil, aucune grammaire (repli propre, pas de faux succes)',
     gram.ok && gram.value.empty === null, gram.ok ? JSON.stringify(gram.value.empty) : '');

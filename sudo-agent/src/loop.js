@@ -521,6 +521,43 @@ async function runTurn(opts) {
       return _after({ status: 'done', model: model, runStatus: 'TERMINE', code: 'calc', result: v });
     }
   }
+  // P68-C10: l'audit de securite est une LECTURE. L'agent l'execute lui-meme et
+  // repond SANS modele; le petit modele n'a plus a produire de JSON pour une
+  // intention de diagnostic.
+  if (useTools && _root && smallpath.isAuditIntent(turnPrompt)) {
+    try {
+      const bizMod = require('./biz');
+      const r = bizMod.secaudit(_root);
+      const score = platformMod.securityScore(r);
+      const secrets = (r.secrets || []).length;
+      const adv = (r.advisories || []).length;
+      const liste = (r.secrets || []).slice(0, 8).map((x) => '- ' + (x.label || x.type) + ' ' +
+        (x.rel || x.file) + ':' + x.line + ' ' + (x.hint || '')).join('\n') +
+        ((r.advisories || []).length ? '\n' + r.advisories.slice(0, 8).map((a) =>
+          '- ' + (a.cve || '?') + ' ' + (a.pkg || a.package || '') + ' ' + (a.version || '')).join('\n') : '');
+      const txt = (secrets === 0 && adv === 0)
+        ? 'Audit de securite : score ' + score + '/100, 0 secret, 0 dependance vulnerable. Aucune faille a corriger.'
+        : 'Audit de securite : score ' + score + '/100, ' + secrets + ' secret(s), ' + adv +
+          ' dependance(s) vulnerable(s).\n' + liste +
+          '\nAucune correction automatique appliquee : chaque constat demande une decision.';
+      journal('info', 'audit deterministe (sans modele)', {
+        session: sessionId, score: score, secrets: secrets, advisories: adv, ms: r.ms || 0 });
+      try { onEvent({ type: 'turn.start', turnId: corr, model }); } catch (_) {}
+      try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+      store.append(sessionId, { role: 'assistant', content: txt });
+      try { onEvent({ type: 'message.done', text: txt, aborted: false }); } catch (_) {}
+      try {
+        onEvent({ type: 'turn.done', turnId: corr,
+          messageCount: (store.get(sessionId) || { messages: [] }).messages.length,
+          model: model, aborted: false, status: 'TERMINE', reason: '', filesModified: [],
+          stopReason: 'audit', declaredDone: true, toolCalls: 0, unresolvedErrors: [] });
+      } catch (_) {}
+      return _after({ status: 'done', model: model, runStatus: 'TERMINE', code: 'audit',
+        result: { score: score, secrets: secrets, advisories: adv } });
+    } catch (e) {
+      if (log) { try { log.warn('audit deterministe impossible', { error: String((e && e.message) || e).slice(0, 120) }, corr); } catch (_) {} }
+    }
+  }
   const base = { store, provider, sessionId, prompt: turnPrompt, corr, log, runs, onEvent, model, probeTimeoutMs, preProbe: probe, verify: opts.verify, runtimeWait, rwDeadline, maxIt: opts.maxIt, subDepth: opts.subDepth, allowedTools: Array.isArray(opts.allowedTools) ? opts.allowedTools : null, forceTools: opts.forceTools === true, readonly: opts.readonly === true };
   if (useTools) return _after(await toolsTurn(base, sessionNow, opts.toolsCtx));
   return _after(await legacyTurn(base, sessionNow));

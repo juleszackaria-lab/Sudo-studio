@@ -195,7 +195,17 @@ function textProtocolPrompt() {
   ].join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// 4. Audit de securite : intention de DIAGNOSTIC (lecture seule).
+// ---------------------------------------------------------------------------
+function isAuditIntent(prompt) {
+  const t = fold(prompt);
+  if (!/\baudit\b/.test(t)) return false;
+  return /securit|securite|faille|secret|vulnerab|security/.test(t);
+}
+
 module.exports = {
+  isAuditIntent,
   COLORS, createFileIntent, primaryColorIntents, isColorIntent, requestedColor,
   parseActionText, textProtocolPrompt, fold, cleanValue,
 };
