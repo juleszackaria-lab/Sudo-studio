@@ -228,6 +228,31 @@ def low_ram_profile(model_id, weights_gb, avail_gb, cpus=None):
     }
 
 
+def n_ctx_reduction_info(nominal, effective, reason=None):
+    """P68-B : dire a l'utilisateur quand la fenetre ANNONCEE n'est pas celle
+    obtenue. Renvoie un dict stable (jamais None), message en francais pur.
+
+    nominal   : ce que la politique (ou l'utilisateur) avait choisi
+    effective : ce que le moteur a REELLEMENT charge apres la politique RAM
+    """
+    try:
+        n = int(nominal)
+    except (TypeError, ValueError):
+        n = 0
+    try:
+        e = int(effective)
+    except (TypeError, ValueError):
+        e = 0
+    if n > 0 and e > 0 and e < n:
+        why = str(reason or "RAM libre insuffisante")
+        return {'reduced': True, 'nominal': n, 'effective': e, 'reason': why,
+                'message': ("Contexte reduit : %d -> %d jetons (%s). "
+                            "La conversation sera compressee plus tot."
+                            % (n, e, why))}
+    return {'reduced': False, 'nominal': n or None, 'effective': e or None,
+            'reason': None, 'message': ''}
+
+
 def context_budget_tokens(n_ctx):
     """60 % du contexte au maximum par appel (le reste = reponse + marge)."""
     try:

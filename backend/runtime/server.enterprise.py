@@ -173,6 +173,8 @@ class State:
     detection_log  = []      # Messages from the scan phase
     current_job    = None    # Active load job {model, force_download, started_at} or None
     n_ctx          = None    # P1-c: active context size (None until first load)
+    n_ctx_nominal  = None    # P68-B: taille demandee AVANT la politique RAM
+    n_ctx_reduction = None   # P68-B: {"reduced":.., "message":..} ou None
 
 state = State()
 
@@ -1232,6 +1234,9 @@ def resolve_gguf_wanted(model_id: str):
 
 
 def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = None):
+    # P68-B: une reduction annoncee ne doit jamais survivre a un rechargement.
+    state.n_ctx_nominal = None
+    state.n_ctx_reduction = None
     """
     Load model in background thread.
     If model is already cached locally, loads from cache (no download).
@@ -1418,6 +1423,7 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                         _auto = openai_compat.auto_n_ctx(model_id, _weights_gb, _avail_now)
                         eff_n_ctx = _auto['n_ctx']
                         _pol = _auto['explain']
+                    _n_ctx_nominal = eff_n_ctx   # P68-B: avant la politique RAM
                     dlog(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx}, freeRAM={_avail_now:.1f}GB)")
                     logger.info(f"[GGUF] n_ctx={eff_n_ctx} (requested={n_ctx}, freeRAM={_avail_now:.1f}GB)")
                     dlog(f"[GGUF] policy: {_pol}")
@@ -1443,7 +1449,12 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                             if (not _req) and int(_p62["n_ctx"]) < int(eff_n_ctx):
                                 dlog("[RAM62] contexte reduit par la politique RAM : "
                                      + str(eff_n_ctx) + " -> " + str(_p62["n_ctx"]))
+                                _n_ctx_reason = ("profil RAM faible (%.1f Go libres)"
+                                                 % float(get_available_ram_gb()))
                                 eff_n_ctx = int(_p62["n_ctx"])
+                                state.n_ctx_reduction = openai_compat.n_ctx_reduction_info(
+                                    _n_ctx_nominal, eff_n_ctx, _n_ctx_reason)
+                                logger.info("[RAM62] " + state.n_ctx_reduction["message"])
                             state.ram_profile = _p62
                         else:
                             # C2: avertissement explicite, on ne plante pas en
@@ -1531,6 +1542,10 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                     state.loading    = False
                     state.device     = 'cpu'
                     state.n_ctx      = eff_n_ctx
+                    state.n_ctx_nominal = locals().get('_n_ctx_nominal', eff_n_ctx)
+                    if int(state.n_ctx_nominal or eff_n_ctx) <= int(eff_n_ctx):
+                        state.n_ctx_reduction = openai_compat.n_ctx_reduction_info(
+                            state.n_ctx_nominal, eff_n_ctx, None)
                     state.detected_local = True
                     state.download_progress = 100
                     state.error = None
@@ -2290,6 +2305,9 @@ def health():
             "error":              state.error,
             "from_local_cache":   state.detected_local,
             "n_ctx":              state.n_ctx,
+            # P68-B: fenetre annoncee vs fenetre obtenue, jamais en silence.
+            "n_ctx_nominal":      getattr(state, "n_ctx_nominal", None),
+            "n_ctx_reduction":    getattr(state, "n_ctx_reduction", None),
             # P62-C: ce que la politique RAM a decide, et le temps de chargement.
             "n_batch":            getattr(state, "ram_profile", {}).get("n_batch") if isinstance(getattr(state, "ram_profile", None), dict) else None,
             "n_threads":          getattr(state, "ram_profile", {}).get("n_threads") if isinstance(getattr(state, "ram_profile", None), dict) else None,
@@ -2543,6 +2561,8 @@ def models():
         "system_ram_available_gb": round(avail, 2),
         "from_local_cache":     state.detected_local,
         "n_ctx":                state.n_ctx,
+        "n_ctx_nominal":        getattr(state, "n_ctx_nominal", None),
+        "n_ctx_reduction":      getattr(state, "n_ctx_reduction", None),
         "n_ctx_default":        openai_compat.default_n_ctx(avail),
         "mock_mode":            _demo_mock_enabled() and not state.loaded,
     })

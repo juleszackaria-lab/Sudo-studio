@@ -165,7 +165,7 @@ class RuntimePanel {
         let modelsInfo = null;
         try {
             const rm = await axios.get('http://127.0.0.1:6000/models', { timeout: 3000 });
-            if (rm && rm.data) modelsInfo = { n_ctx: rm.data.n_ctx ?? null, n_ctx_default: rm.data.n_ctx_default ?? null };
+            if (rm && rm.data) modelsInfo = { n_ctx: rm.data.n_ctx ?? null, n_ctx_default: rm.data.n_ctx_default ?? null, n_ctx_nominal: rm.data.n_ctx_nominal ?? null, n_ctx_reduction: rm.data.n_ctx_reduction || null };
         } catch (e) { /* ignore */ }
         try {
             const n = modelsInfo ? parseInt(modelsInfo.n_ctx, 10) : NaN;
@@ -544,6 +544,7 @@ ${guardSnippet({ nonce: nonce })}
         <span id="modelName" style="font-size:12px;color:var(--muted)">—</span>
     </div>
     <div id="restartBanner" style="display:none;font-size:11px;color:var(--orange);background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);border-radius:6px;padding:6px 10px;margin-bottom:10px"></div>
+    <div id="ctxReducedBanner" style="display:none;font-size:11px;color:var(--orange);background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);border-radius:6px;padding:6px 10px;margin-bottom:10px"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:11px;color:var(--muted)">
         <label for="nctxInput" title="Contexte tokens. Vide = defaut auto selon RAM.">n_ctx :</label>
         <input id="nctxInput" type="number" min="512" max="32768" step="512" placeholder="auto" style="width:90px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:11px" />
@@ -913,6 +914,20 @@ window.addEventListener('message', function(ev) {
             if (nctxCur) {
                 var mi = msg.modelsInfo || {};
                 nctxCur.textContent = (mi.n_ctx ? ('actif: ' + mi.n_ctx) : '') + (mi.n_ctx_default ? (' (defaut: ' + mi.n_ctx_default + ')') : '');
+            }
+            // P68-B: la fenetre obtenue n'est pas celle annoncee -> le dire.
+            var ctxBanner = document.getElementById('ctxReducedBanner');
+            if (ctxBanner) {
+                var mi2 = msg.modelsInfo || {};
+                var red = mi2.n_ctx_reduction;
+                if (red && red.reduced) {
+                    ctxBanner.style.display = 'block';
+                    ctxBanner.textContent = '\u26a0 Contexte r\u00e9duit : ' + red.nominal + ' \u2192 ' + red.effective + ' jetons (' + (red.reason || 'RAM') + ')';
+                    ctxBanner.title = red.message || '';
+                } else {
+                    ctxBanner.style.display = 'none';
+                    ctxBanner.textContent = '';
+                }
             }
             if (msg.runtimeError) {
                 document.getElementById('statusBadge').className = 'offline';
