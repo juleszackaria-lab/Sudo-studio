@@ -212,7 +212,7 @@ function streamChat(cfg, messages, opts) {
 module.exports = {
   monoMs,
   runtimeDeadline, normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime,
-  samplingPayload, countTokens };
+  samplingPayload, countTokens, probeHeartbeat };
 
 // P68-B: comptage REEL des jetons par le runtime local (POST /tokenize).
 // Resout { tokens, source:'comptage runtime' } ou { tokens:null } : jamais
@@ -361,6 +361,42 @@ function runtimeDeadline(budgetMs) {
 // P62-B1: attente pilotee par le TEMPS (et non par un nombre d essais).
 // Sondages progressifs 1 s, 2 s, 4 s puis 5 s. Message unique en francais,
 // avec le temps ecoule, pour que l utilisateur voie une progression reelle.
+// P69-B5: le battement de coeur du runtime (port separe). Il repond meme
+// pendant une generation : c'est ce qui distingue "occupe" de "mort".
+// Resout {alive, busy, phase, call} ; jamais d'exception.
+function probeHeartbeat(cfg, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    let base = String((cfg && cfg.hbUrl) || process.env.SUDO_HB_URL ||
+      ('http://127.0.0.1:' + (process.env.SUDO_HB_PORT || 6001)));
+    let url = null;
+    try { url = new URL(joinUrl(base, '/hb')); } catch (_) { resolve({ alive: false, why: 'url' }); return; }
+    const lib = pickLib(url);
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    let req = null;
+    try {
+      req = lib.request({ hostname: url.hostname, port: url.port || 80, path: url.pathname,
+        method: 'GET', timeout: opts.timeoutMs || 1500 }, (res) => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { raw += c; });
+        res.on('end', () => {
+          try {
+            const d = JSON.parse(raw);
+            finish({ alive: res.statusCode === 200 && d.alive === true,
+              busy: !!d.busy, phase: d.phase || null, call: d.call || null,
+              model: d.model || null, status: res.statusCode });
+          } catch (_) { finish({ alive: false, why: 'reponse illisible' }); }
+        });
+      });
+      req.on('timeout', () => { try { req.destroy(); } catch (_) {} finish({ alive: false, why: 'delai' }); });
+      req.on('error', (e) => finish({ alive: false, why: String((e && e.message) || e) }));
+      req.end();
+    } catch (e) { finish({ alive: false, why: String((e && e.message) || e) }); }
+  });
+}
+
 async function waitForRuntimeTimed(cfg, opts) {
   opts = opts || {};
   const probeFn = typeof opts.probeFn === 'function' ? opts.probeFn : probeProvider;
@@ -402,6 +438,24 @@ async function waitForRuntimeTimed(cfg, opts) {
     lastProbe = p;
     if (p && p.ok) return { recovered: true, probe: p, attemptsMade: made, aborted: false, elapsedMs: monoMs() - dl.start };
     const code = (p && p.code) || 'provider_error';
+    // P69-B5: si le battement de coeur repond, le runtime est VIVANT. Qu'il
+    // soit occupe (generation) ou en chargement, il ne faut ni le declarer
+    // indisponible ni le relancer : on attend, en le disant.
+    if (code === 'runtime_offline' || code === 'no_model') {
+      let hb = { alive: false };
+      try { hb = await probeHeartbeat(cfg, { timeoutMs: Math.min(probeTimeoutMs, 1500) }); } catch (_) { hb = { alive: false }; }
+      if (hb && hb.alive) {
+        lastProbe = Object.assign({}, p, { code: 'runtime_busy', heartbeat: hb });
+        if (onProgress) {
+          const what = hb.busy
+            ? ('generation en cours' + (hb.call && hb.call.prompt_tokens ? ' (' + hb.call.prompt_tokens + ' jetons)' : ''))
+            : ('runtime vivant, phase ' + String(hb.phase || '?')); 
+          try { onProgress(made + 1, null, 'Runtime vivant mais indisponible pour l instant : ' + what +
+            ' - attente, aucune relance (ecoule : ' + Math.round((monoMs() - dl.start) / 1000) + ' s)'); } catch (_) {}
+        }
+        continue;   // on attend, on ne conclut pas
+      }
+    }
     // Seul un redemarrage merite d attendre : "aucun modele charge" est un
     // progres (le superviseur recharge), tout le reste est un verdict.
     if (code !== 'runtime_offline' && code !== 'no_model') {

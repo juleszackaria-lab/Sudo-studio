@@ -116,6 +116,9 @@ dlog("Importing flask...")
 from flask import Flask, request, jsonify, Response, stream_with_context
 import openai_compat  # P1: OpenAI API + n_ctx policy (sibling module, no cycle: stdlib only)
 import policy_gate  # P15 3b: admin allow-list gate for /reload + /download (sibling, stdlib only)
+import ram_messages   # P69-C9: messages memoire clairs (sans dependance)
+import forensics      # P69-A: faulthandler + trace d'appel avant le moteur natif
+import heartbeat      # P69-B: battement de coeur inblocable (thread separe, port 6001)
 dlog("flask imported OK")
 
 dlog("Importing flask_cors...")
@@ -175,6 +178,8 @@ class State:
     n_ctx          = None    # P1-c: active context size (None until first load)
     n_ctx_nominal  = None    # P68-B: taille demandee AVANT la politique RAM
     n_ctx_reduction = None   # P68-B: {"reduced":.., "message":..} ou None
+    n_ctx_session  = None    # P69-C8: fenetre figee pour la session
+    n_ctx_reason   = None    # P69-C8: pourquoi cette fenetre
 
 state = State()
 
@@ -1233,15 +1238,37 @@ def resolve_gguf_wanted(model_id: str):
     return DEFAULT_MODEL_HF_REPO, DEFAULT_MODEL_FILENAME
 
 
+
+def ram_critical_message(model_id, avail_gb, threshold_gb, phase="le chargement"):
+    """P69-C9: delegue au module sans dependance, avec un modele plus petit
+    propose quand le catalogue en contient un."""
+    small = None
+    try:
+        for m in sorted(gguf_catalogue(), key=lambda x: x.get("logical_size_gb", 99)):
+            if m.get("logical_size_gb", 99) < 1.0:
+                small = m.get("id")
+                break
+    except Exception:
+        small = None
+    return ram_messages.ram_critical_message(model_id, avail_gb, threshold_gb,
+                                             phase=phase, petite_alternative=small)
+
+
 def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = None):
-    # P68-B: une reduction annoncee ne doit jamais survivre a un rechargement.
-    state.n_ctx_nominal = None
-    state.n_ctx_reduction = None
     """
     Load model in background thread.
     If model is already cached locally, loads from cache (no download).
     Only downloads if not present OR force_download=True.
     """
+    # P68-B: une reduction annoncee ne doit jamais survivre a un rechargement.
+    state.n_ctx_nominal = None
+    state.n_ctx_reduction = None
+    # P69-C8: la fenetre est choisie UNE fois par session, puis conservee.
+    # Seule une demande EXPLICITE de l'utilisateur (n_ctx fourni) la change.
+    if not n_ctx and getattr(state, "n_ctx_session", None):
+        dlog("[CTX8] fenetre de session conservee : n_ctx=%d (choisie une fois)"
+             % int(state.n_ctx_session))
+        n_ctx = int(state.n_ctx_session)
     dlog(f"load_model_thread START: model_id={model_id} force_download={force_download}")
     state.loading = True
     state.error   = None
@@ -1497,10 +1524,8 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
 
                     # -- Watchdog trip check: never report success after critical RAM --
                     if _wd.tripped:
-                        _err = (f"Echec chargement {model_id} : RAM critique pendant "
-                                f"le chargement ({(_wd.trip_avail or 0):.2f} Go restants, "
-                                f"seuil {RAM_CRITICAL_MIN_GB} Go). "
-                                f"Modele decharge, aucun faux succes.")
+                        _err = ram_critical_message(model_id, _wd.trip_avail,
+                                                    RAM_CRITICAL_MIN_GB)
                         dlog(f"[RAM-WD] {_err}")
                         logger.error(f"[RAM-WD] {_err}")
                         try:
@@ -1542,6 +1567,17 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
                     state.loading    = False
                     state.device     = 'cpu'
                     state.n_ctx      = eff_n_ctx
+                    # P69-C8: la decision (valeur + raison) est figee pour la session
+                    # et exposee a l'interface : l'utilisateur voit POURQUOI.
+                    state.n_ctx_session = int(eff_n_ctx)
+                    try:
+                        state.n_ctx_reason = str(_pol) + (
+                            (" ; profil RAM : " + str(getattr(state, "ram_profile", {}).get("message", "")))
+                            if isinstance(getattr(state, "ram_profile", None), dict) else "")
+                    except Exception:
+                        state.n_ctx_reason = str(locals().get('_pol', 'defaut'))
+                    dlog("[CTX8] fenetre figee pour la session : n_ctx=%d (%s)"
+                         % (int(eff_n_ctx), str(getattr(state, "n_ctx_reason", ""))[:120]))
                     state.n_ctx_nominal = locals().get('_n_ctx_nominal', eff_n_ctx)
                     if int(state.n_ctx_nominal or eff_n_ctx) <= int(eff_n_ctx):
                         state.n_ctx_reduction = openai_compat.n_ctx_reduction_info(
@@ -1831,10 +1867,8 @@ def load_model_thread(model_id: str, force_download: bool = False, n_ctx: int = 
 
         # -- Watchdog trip check: abort instead of reporting a fake success --
         if model is not None and _wd2.tripped:
-            _err2 = (f"Echec chargement {model_id} : RAM critique pendant "
-                     f"le chargement ({(_wd2.trip_avail or 0):.2f} Go restants, "
-                     f"seuil {RAM_CRITICAL_MIN_GB} Go). "
-                     f"Modele decharge, aucun faux succes.")
+            _err2 = ram_critical_message(model_id, _wd2.trip_avail,
+                                         RAM_CRITICAL_MIN_GB)
             dlog(f"[RAM-WD] {_err2}")
             logger.error(f"[RAM-WD] {_err2}")
             try:
@@ -2020,9 +2054,19 @@ def start_model_load(model_id: str = DEFAULT_MODEL, force_download: bool = False
     running (caller must answer HTTP 409 with _current_job_status()).
     """
     if not _load_lock.acquire(blocking=False):
-        dlog(f"start_model_load REFUSED (busy): model={model_id} current={state.current_job}")
-        logger.warning(f"[LOCK] Load refused, job already running: {state.current_job}")
-        return False
+        # P69-C8: deux demandes simultanees ne doivent pas se telescoper ni
+        # s'annuler. La seconde est FUSIONNEE dans la premiere (meme job, meme
+        # fenetre), et c'est dit au journal : aucun chargement en double.
+        try:
+            cur = state.current_job or {}
+            same = (cur.get("model") == model_id)
+        except Exception:
+            same = False
+        dlog("[LOAD] demande fusionnee : un chargement est deja en cours "
+             f"(model={model_id} en_cours={(state.current_job or {}).get('model')} "
+             f"meme_modele={same})")
+        logger.info("[LOCK] Load merged into the running job (no second load)")
+        return True
     state.current_job = {
         "model":          model_id,
         "force_download": force_download,
@@ -2330,6 +2374,7 @@ def health():
             "n_ctx":              state.n_ctx,
             # P68-B: fenetre annoncee vs fenetre obtenue, jamais en silence.
             "n_ctx_nominal":      getattr(state, "n_ctx_nominal", None),
+            "n_ctx_reason":       getattr(state, "n_ctx_reason", None),
             "n_ctx_reduction":    getattr(state, "n_ctx_reduction", None),
             "real_window_ratio":  openai_compat.REAL_WINDOW_RATIO,
             "real_window_tokens": (openai_compat.real_window_tokens(state.n_ctx)
@@ -2590,6 +2635,7 @@ def models():
         "from_local_cache":     state.detected_local,
         "n_ctx":                state.n_ctx,
         "n_ctx_nominal":        getattr(state, "n_ctx_nominal", None),
+        "n_ctx_reason":         getattr(state, "n_ctx_reason", None),
         "n_ctx_reduction":      getattr(state, "n_ctx_reduction", None),
         "n_ctx_default":        openai_compat.default_n_ctx(avail),
         # P68-B: la fenetre REELLE (mesuree) et le budget d'un appel, en clair.
@@ -2951,6 +2997,38 @@ if __name__ == '__main__':
             p21_journal.session_header(logger, _facts)
     except Exception:
         pass
+
+    # P69-A: medecine legale. Active AVANT tout chargement de modele : un
+    # plantage natif pendant le chargement doit laisser une pile d'appels.
+    _fh = forensics.enable_faulthandler()
+    forensics.install_excepthook()
+    if _fh.get("ok"):
+        dlog("[FORENSICS] faulthandler actif -> " + str(_fh.get("path")))
+        logger.info("[FORENSICS] faulthandler actif -> " + str(_fh.get("path")))
+    else:
+        # Jamais muet : si la trace de crash ne peut pas s'ecrire, on le DIT.
+        dlog("[FORENSICS] faulthandler INDISPONIBLE : " + str(_fh.get("why")))
+        logger.error("[FORENSICS] faulthandler INDISPONIBLE : " + str(_fh.get("why")))
+
+    # P69-B: battement de coeur (thread separe) + etat du modele lisible.
+    def _hb_state():
+        try:
+            return {"loaded": bool(state.loaded), "loading": bool(state.loading),
+                    "download_progress": state.download_progress,
+                    "n_ctx": state.n_ctx, "model": state.model_name,
+                    "ram_free_gb": round(get_available_ram_gb(), 2),
+                    "error": state.error}
+        except Exception:
+            return {}
+    heartbeat.set_state_provider(_hb_state)
+    _hb_port = int(os.environ.get("SUDO_HB_PORT") or 6001)
+    _hb = heartbeat.start(_hb_port)
+    if _hb.get("ok"):
+        dlog("[HEARTBEAT] actif sur 127.0.0.1:%s" % _hb.get("port"))
+        logger.info("[HEARTBEAT] actif sur 127.0.0.1:%s" % _hb.get("port"))
+    else:
+        dlog("[HEARTBEAT] INDISPONIBLE : " + str(_hb.get("why")))
+        logger.error("[HEARTBEAT] INDISPONIBLE : " + str(_hb.get("why")))
 
     avail_ram = get_available_ram_gb()
     total_ram = get_total_ram_gb()

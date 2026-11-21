@@ -165,7 +165,7 @@ class RuntimePanel {
         let modelsInfo = null;
         try {
             const rm = await axios.get('http://127.0.0.1:6000/models', { timeout: 3000 });
-            if (rm && rm.data) modelsInfo = { n_ctx: rm.data.n_ctx ?? null, n_ctx_default: rm.data.n_ctx_default ?? null, n_ctx_nominal: rm.data.n_ctx_nominal ?? null, n_ctx_reduction: rm.data.n_ctx_reduction || null };
+            if (rm && rm.data) modelsInfo = { n_ctx: rm.data.n_ctx ?? null, n_ctx_default: rm.data.n_ctx_default ?? null, n_ctx_nominal: rm.data.n_ctx_nominal ?? null, n_ctx_reduction: rm.data.n_ctx_reduction || null, n_ctx_reason: rm.data.n_ctx_reason || null };
         } catch (e) { /* ignore */ }
         try {
             const n = modelsInfo ? parseInt(modelsInfo.n_ctx, 10) : NaN;
@@ -914,6 +914,12 @@ window.addEventListener('message', function(ev) {
             if (nctxCur) {
                 var mi = msg.modelsInfo || {};
                 nctxCur.textContent = (mi.n_ctx ? ('actif: ' + mi.n_ctx) : '') + (mi.n_ctx_default ? (' (defaut: ' + mi.n_ctx_default + ')') : '');
+                // P69-C8: la fenetre est choisie UNE fois par session : on
+                // affiche aussi POURQUOI (raison donnee par le runtime).
+                if (mi.n_ctx_reason) {
+                    nctxCur.title = 'Fenetre choisie pour la session : ' + mi.n_ctx_reason;
+                    nctxCur.textContent += ' \u00b7 ' + mi.n_ctx_reason;
+                }
             }
             // P68-B: la fenetre obtenue n'est pas celle annoncee -> le dire.
             var ctxBanner = document.getElementById('ctxReducedBanner');

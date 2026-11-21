@@ -94,11 +94,28 @@ function resolveStateFile() {
   return path.join(os.homedir(), '.sudo_studio', 'models', 'model_state.json');
 }
 
+// P69-B4: le journal du superviseur etait ecrit dans <exe>/../logs, c'est-a-dire
+// "C:\\Program Files\\logs" une fois installe — dossier NON inscriptible sans
+// elevation, et toutes les erreurs etaient avalees : le journal etait muet.
+// Il suit desormais le dossier de logs UNIQUE du produit (P33), exactement
+// comme backend/server.js et techLog.js.
+function resolveLogDir() {
+  const env = process.env.SUDO_STUDIO_LOGS;
+  if (env) return env;
+  if (typeof process.pkg !== 'undefined') {
+    if (process.platform === 'win32') {
+      return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'),
+        'SudoStudio', 'logs');
+    }
+    const base = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
+    return path.join(base, 'sudo-studio', 'logs');
+  }
+  return path.join(__dirname, '..', '..', 'logs');
+}
+
 function resolveAuditPath() {
-  const dir = (typeof process.pkg !== 'undefined')
-    ? path.join(path.dirname(process.execPath), '..', 'logs')
-    : path.join(__dirname, '..', '..', 'logs');
-  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) { /* ignore */ }
+  const dir = resolveLogDir();
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) { /* signale plus bas */ }
   return path.join(dir, 'runtime-supervisor.log');
 }
 
@@ -113,6 +130,14 @@ class RuntimeSupervisor {
   constructor(opts) {
     opts = opts || {};
     this.runtimeUrl = opts.runtimeUrl || 'http://127.0.0.1:6000';
+    // P69-B5: battement de coeur (port separe) : distingue OCCUPE de MORT.
+    this.heartbeatUrl = opts.heartbeatUrl ||
+      (process.env.SUDO_HB_URL || 'http://127.0.0.1:' + (process.env.SUDO_HB_PORT || 6001));
+    this.crashLogPath = opts.crashLogPath || path.join(resolveLogDir(), 'runtime_crash.log');
+    this.lastCallPath = opts.lastCallPath || path.join(resolveLogDir(), 'last_call.json');
+    this.child = null;
+    this.childExit = null;   // {code, signal, atIso}
+    this.lastBusyAt = 0;
     this.runtimeExePath = opts.runtimeExePath !== undefined ? opts.runtimeExePath : resolveRuntimeExe();
     this.stateFilePath = opts.stateFilePath || resolveStateFile();
     this.auditPath = opts.auditPath || resolveAuditPath();
@@ -153,7 +178,17 @@ class RuntimeSupervisor {
 
   audit(msg) {
     const line = new Date(this.now()).toISOString() + ' ' + msg + '\n';
-    try { fs.appendFileSync(this.auditPath, line); } catch (_) { /* ignore */ }
+    try {
+      fs.appendFileSync(this.auditPath, line);
+    } catch (e) {
+      // P69-B4: un journal muet n'est pas un journal. On crie (console + tech).
+      const why = 'audit write FAILED (' + this.auditPath + '): ' + ((e && e.message) || String(e));
+      if (!this._auditWarned) {
+        this._auditWarned = true;
+        this.log('[SUPERVISOR][ERREUR] ' + why);
+        this.tlog('error', 'supervisor audit write failed', { path: this.auditPath, why });
+      }
+    }
     this.log('[SUPERVISOR] ' + msg);
   }
 
@@ -212,8 +247,35 @@ class RuntimeSupervisor {
     this.restartAttempts = this.restartAttempts.filter((t) => t > cutoff);
   }
 
+  // P69-B5: le battement de coeur repond meme pendant une generation. Il est
+  // la seule source qui distingue "occupe" de "mort".
+  async probeHeartbeat(timeoutMs) {
+    try {
+      const r = await this.httpGet(this.heartbeatUrl + '/hb', timeoutMs || 1500);
+      if (r && r.status === 200 && r.data && r.data.alive) return { alive: true, data: r.data };
+      return { alive: false, data: (r && r.data) || null, why: 'status ' + (r && r.status) };
+    } catch (e) {
+      return { alive: false, data: null, why: ((e && e.code) ? e.code + ' ' : '') + ((e && e.message) || String(e)) };
+    }
+  }
+
   async pollTick() {
     if (!this.running || this.restarting) return;
+    // 1) le battement de coeur : vivant, meme si la generation occupe tout ?
+    const hb = await this.probeHeartbeat();
+    if (hb.alive) {
+      if (hb.data && hb.data.busy) {
+        // OCCUPE : ce n'est pas une panne. On ne relance JAMAIS un runtime vivant.
+        this.lastBusyAt = this.now();
+        this.lastBusy = { phase: hb.data.phase, call: hb.data.call || null, at: new Date(this.now()).toISOString() };
+        this.consecutiveFailures = 0;
+        this.lastOk = true;
+        this.lastError = null;
+        this.everHealthy = true;
+        return;
+      }
+      // Vivant et libre : on confirme quand meme /health (etat du modele).
+    }
     try {
       const h = await this.httpGet(this.runtimeUrl + '/health', 3000);
       if (h && h.status === 200) {
@@ -232,13 +294,62 @@ class RuntimeSupervisor {
       this.lastError = ((e && e.code) ? e.code + ' ' : '') + ((e && e.message) || String(e));
       if (this.consecutiveFailures >= this.failThreshold) {
         const n = this.consecutiveFailures;
-        const reason = (e && e.code === 'ECONNREFUSED')
-          ? 'health refused x' + n + ' (process likely exited)'
-          : 'health failing x' + n + ' (' + this.lastError + ')';
+        let reason;
+        if (hb.alive) {
+          // Le battement de coeur repond mais /health non : processus vivant,
+          // serveur principal bloque. C'est un blocage, pas une mort.
+          reason = 'heartbeat alive but /health failing x' + n + ' (' + this.lastError + ')';
+        } else if (e && e.code === 'ECONNREFUSED') {
+          reason = 'health refused x' + n + ' (process exited: ' + this.describeExit() + ')';
+        } else {
+          reason = 'health failing x' + n + ' (' + this.lastError + ')';
+        }
         this.tlog('warn', 'runtime unhealthy (stop detected)', { reason, consecutiveFailures: n, lastError: this.lastError });
         await this.maybeRestart(reason);
       }
     }
+  }
+
+  // P69-A1: ce que le parent sait de la mort de l'enfant.
+  describeExit() {
+    if (!this.childExit) return 'code inconnu (processus lance hors superviseur)';
+    const x = this.childExit;
+    let s2 = 'exit=' + (x.code === null || x.code === undefined ? 'null' : x.code);
+    if (x.signal) s2 += ' signal=' + x.signal;
+    if (typeof x.code === 'number') {
+      s2 += ' (0x' + (x.code >>> 0).toString(16).toUpperCase() + ')';
+      if ((x.code >>> 0) === 0xC0000005) s2 += ' ACCESS_VIOLATION';
+      if ((x.code >>> 0) === 0xC0000409) s2 += ' STACK_BUFFER_OVERRUN';
+      if ((x.code >>> 0) === 0xC000001D) s2 += ' ILLEGAL_INSTRUCTION';
+    }
+    return s2;
+  }
+
+  // Le dernier appel laisse par le runtime (last_call.json) : la preuve de ce
+  // qui tournait au moment du plantage.
+  readLastCall() {
+    try { return JSON.parse(fs.readFileSync(this.lastCallPath, 'utf8')); } catch (_) { return null; }
+  }
+
+  // Dernieres lignes du fichier de crash natif (faulthandler).
+  tailCrashLog(maxLines) {
+    try {
+      const txt = fs.readFileSync(this.crashLogPath, 'utf8');
+      const lines = txt.trim().split(/\r?\n/);
+      return lines.slice(-(maxLines || 12));
+    } catch (_) { return null; }
+  }
+
+  crashContext() {
+    let ramFreeMB = null;
+    try { ramFreeMB = Math.round(os.freemem() / (1024 * 1024)); } catch (_) {}
+    return {
+      exit: this.describeExit(),
+      childExit: this.childExit,
+      ramFreeMB,
+      lastCall: this.readLastCall(),
+      crashTail: this.tailCrashLog(12),
+    };
   }
 
   async maybeRestart(reason, opts) {
@@ -272,6 +383,16 @@ class RuntimeSupervisor {
     // P62-B3: la CAUSE est journalisee avec la RAM libre et le temps depuis
     // la derniere requete (une veille ressemble a un long silence).
     const dg = this.diag({ attempt: attemptNo });
+    // P69-A1: la medecine legale avant toute relance (code de sortie, RAM,
+    // appel en cours, fin du fichier de crash). Aucun secret, aucun jeton.
+    const cx = this.crashContext();
+    const cxLine = 'crash ctx: ' + cx.exit + ' ram_free_mb=' + cx.ramFreeMB +
+      ' last_call=' + (cx.lastCall ? JSON.stringify(cx.lastCall) : 'aucun');
+    this.audit(cxLine);
+    this.tlog('error', 'crash context', {
+      exit: cx.exit, ramLibreMo: cx.ramFreeMB, dernierAppel: cx.lastCall || null,
+      finDuFichierDeCrash: cx.crashTail || null,
+    });
     this.audit('RESTART attempt#' + attemptNo + ' in window, backoff=' + backoff +
       'ms, reason=' + reason + ' ram_free_mb=' + dg.ramFreeMB +
       ' since_last_req_s=' + dg.sinceLastRequestS);
@@ -289,7 +410,22 @@ class RuntimeSupervisor {
       if (!this.exeExists()) {
         detail = 'exe not found: ' + this.runtimeExePath;
       } else {
-        this.spawnFn(this.runtimeExePath);
+        const t0 = this.now();
+        const child = this.spawnFn(this.runtimeExePath);
+        this.childExit = null;
+        if (child && typeof child.on === 'function') {
+          this.child = child;
+          child.on('exit', (code, signal) => {
+            this.childExit = { code, signal, atIso: new Date(this.now()).toISOString(),
+              uptimeMs: this.now() - t0 };
+            this.audit('CHILD EXIT ' + this.describeExit() + ' afterMs=' + (this.now() - t0) +
+              ' last_call=' + (this.readLastCall() ? 'present' : 'none'));
+            this.tlog('error', 'runtime child exited', {
+              exit: this.describeExit(), code, signal, uptimeMs: this.now() - t0,
+              dernierAppel: this.readLastCall() || null,
+            });
+          });
+        }
         spawnOk = true;
         const healthy = await this.waitHealthy(this.waitHealthyMs);
         if (!healthy) {
@@ -303,6 +439,7 @@ class RuntimeSupervisor {
       detail = 'exception: ' + ((e && e.message) || String(e));
       exitCode = 'error';
     }
+    const restartMs = this.now() - nowTs;
     if (ok) {
       this.consecutiveFailures = 0;
       this.consecutiveRestarts = 0;
@@ -319,12 +456,12 @@ class RuntimeSupervisor {
     this.restarts.push(rec);
     if (this.restarts.length > 20) this.restarts = this.restarts.slice(-20);
     this.audit('RESTART done ok=' + ok + ' at=' + rec.atHHMM +
-      ' reason=' + reason + ' detail=' + detail);
+      ' reason=' + reason + ' detail=' + detail + ' duration_ms=' + restartMs);
     const dg2 = this.diag();
-    this.tlog(ok ? 'info' : 'error', 'restart done', { ok, reason, detail,
+    this.tlog(ok ? 'info' : 'error', 'restart done', { ok, reason, detail, dureeMs: restartMs,
       ramLibreMo: dg2.ramFreeMB, secondesDepuisDerniereRequete: dg2.sinceLastRequestS,
       killResult: killResult === null || killResult === undefined ? null : String(killResult).slice(0, 200),
-      spawnOk, exitCode });
+      spawnOk, exitCode, codeDeSortie: this.describeExit() });
     this.restarting = false;
     return { action: 'restarted', ok, detail };
   }
@@ -381,6 +518,9 @@ class RuntimeSupervisor {
       exePath: this.runtimeExePath,
       exeFound: this.exeExists(),
       healthy: this.lastOk === true,
+      busy: this.lastBusy || null,
+      childExit: this.childExit,
+      heartbeatUrl: this.heartbeatUrl,
       consecutiveFailures: this.consecutiveFailures,
       everHealthy: this.everHealthy,
       graceActive: (nowTs - this.startedAt) < this.graceMs,
@@ -416,5 +556,6 @@ module.exports = {
   resolveRuntimeExe,
   resolveStateFile,
   resolveAuditPath,
+  resolveLogDir,
   toHHMM,
 };

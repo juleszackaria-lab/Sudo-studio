@@ -94,6 +94,14 @@ async function testRetryModule(mod, label) {
 // ---------------------------------------------------------------- supervisor
 function refusedErr() { const e = new Error('connect ECONNREFUSED 127.0.0.1:6000'); e.code = 'ECONNREFUSED'; return e; }
 
+// P69-B: le superviseur sonde d'abord le battement de coeur (port separe).
+// Ces scenarios testent le cycle /health : on declare un battement MUET, sinon
+// les sequences simulees seraient consommees par la sonde /hb.
+function noHeartbeat(get) {
+  return (url, t) => (String(url).indexOf('/hb') !== -1 ? Promise.reject(refusedErr()) : get(url, t));
+}
+function deadHeartbeatGet(getImpl) { return noHeartbeat(getImpl); }
+
 async function testSupervisor() {
   // -- A. backoff 2/5/10 + cap 5/10min, restart never heals, clock fake --
   let fakeNow = 1000000;
@@ -104,7 +112,7 @@ async function testSupervisor() {
     pollMs: 5, failThreshold: 3, graceMs: 0, waitHealthyMs: 1,
     runtimeExePath: path.join(os.tmpdir(), 'p1-fake-runtime.exe'),
     auditPath: path.join(os.tmpdir(), 'p1-audit.log'),
-    httpGet: async () => { throw refusedErr(); },
+    httpGet: noHeartbeat(async () => { throw refusedErr(); }),
     httpPost: async () => ({ status: 200, data: {} }),
     spawnFn: (p) => { spawns.push(p); },
     killFn: async (img) => { kills.push(img); },
@@ -122,7 +130,11 @@ async function testSupervisor() {
   check('sup: backoff 2/5/10/10/10', JSON.stringify(firstSleeps) === JSON.stringify([2000, 5000, 10000, 10000, 10000]), firstSleeps);
   check('sup: cap suppressed', s.lastSuppressed && s.lastSuppressed.reason.indexOf('cap reached') !== -1, s.lastSuppressed);
   check('sup: restarts recorded x5', s.restarts.length === 5 && s.restarts[0].ok === false);
-  check('sup: reason names exit suspicion', s.restarts[0].reason.indexOf('likely exited') !== -1, s.restarts[0].reason);
+  // P69-A1: la raison nomme desormais le code de sortie quand le superviseur
+  // a lance le processus lui-meme ; ici il ne l'a pas lance, et le dit.
+  check('sup: reason names exit suspicion',
+    /process exited/.test(s.restarts[0].reason) &&
+    /code inconnu|exit=/.test(s.restarts[0].reason), s.restarts[0].reason);
   const st = s.status();
   check('sup: status lastRestart HH:MM', /^\d\d:\d\d$/.test(st.lastRestart.atHHMM), st.lastRestart);
   check('sup: status window count', st.restartsInWindow === 5 && st.maxRestarts === 5);
@@ -135,7 +147,7 @@ async function testSupervisor() {
   let spawnsB = 0;
   const g = new RuntimeSupervisor({
     failThreshold: 2, graceMs: 60000,
-    httpGet: async () => { throw refusedErr(); },
+    httpGet: noHeartbeat(async () => { throw refusedErr(); }),
     spawnFn: () => { spawnsB++; }, killFn: async () => {},
     sleep: async (ms) => { nowB += ms; }, now: () => nowB, log: () => {},
     auditPath: path.join(os.tmpdir(), 'p1-audit-b.log'),
@@ -150,11 +162,11 @@ async function testSupervisor() {
   const c = new RuntimeSupervisor({
     failThreshold: 3, graceMs: 0, waitHealthyMs: 5000,
     runtimeExePath: path.join(os.tmpdir(), 'p1-fake-runtime.exe'),
-    httpGet: async (url) => {
+    httpGet: noHeartbeat(async (url) => {
       const step = seq.shift() || 'ok-health-loaded';
       if (step === 'fail') throw refusedErr();
       return { status: 200, data: { model: { loaded: true, name: 'M1' } } };
-    },
+    }),
     httpPost: async () => ({ status: 200, data: {} }),
     spawnFn: () => {}, killFn: async () => {},
     sleep: async (ms) => { nowC += ms; }, now: () => nowC, log: () => {},
@@ -171,7 +183,7 @@ async function testSupervisor() {
   fs.writeFileSync(statePath, JSON.stringify({ model_id: 'Saved/Model-GGUF', n_ctx: 2048 }));
   let posted = null;
   const d = new RuntimeSupervisor({
-    httpGet: async () => ({ status: 200, data: { model: { loaded: false } } }),
+    httpGet: noHeartbeat(async () => ({ status: 200, data: { model: { loaded: false } } })),
     httpPost: async (url, body) => { posted = { url, body }; return { status: 200, data: { status: 'reloading' } }; },
     log: () => {}, stateFilePath: statePath, auditPath: path.join(os.tmpdir(), 'p1-audit-d.log'),
   });
@@ -182,7 +194,7 @@ async function testSupervisor() {
   // -- E. exe missing -> clean failed record, no throw --
   const e = new RuntimeSupervisor({
     graceMs: 0, runtimeExePath: path.join(os.tmpdir(), 'p1-does-not-exist.exe'),
-    httpGet: async () => { throw refusedErr(); },
+    httpGet: noHeartbeat(async () => { throw refusedErr(); }),
     spawnFn: () => { throw new Error('must not spawn'); }, killFn: async () => {},
     sleep: async () => {}, now: () => 0, log: () => {},
     auditPath: path.join(os.tmpdir(), 'p1-audit-e.log'),

@@ -718,9 +718,11 @@ def register_openai_routes(app, ctx):
                     headers={"Cache-Control": "no-cache",
                              "X-Accel-Buffering": "no"})
             try:
-                out = llm.create_chat_completion(
+                out = _traced("chat", lambda: llm.create_chat_completion(
                     messages=messages, temperature=temperature,
-                    max_tokens=max_tokens, stop=stop, **sampling)
+                    max_tokens=max_tokens, stop=stop, **sampling),
+                    prompt_chars=sum(len(str((m or {}).get("content") or "")) for m in messages),
+                    max_tokens=max_tokens)
             except Exception as e:
                 return _openai_500("inference failed: %s: %s" % (
                     type(e).__name__, e))
@@ -739,9 +741,10 @@ def register_openai_routes(app, ctx):
                 headers={"Cache-Control": "no-cache",
                          "X-Accel-Buffering": "no"})
         try:
-            out = llm.create_completion(
+            out = _traced("chatml", lambda: llm.create_completion(
                 prompt=prompt, temperature=temperature,
-                max_tokens=max_tokens, stop=stop, **sampling)
+                max_tokens=max_tokens, stop=stop, **sampling),
+                prompt_chars=len(prompt), max_tokens=max_tokens)
         except Exception as e:
             return _openai_500("inference failed: %s: %s" % (
                 type(e).__name__, e))
@@ -817,6 +820,56 @@ def register_openai_routes(app, ctx):
             ensure_ascii=True) + "\n\n")
         yield "data: [DONE]\n\n"
 
+    def _traced(kind, fn, prompt_chars=None, prompt_tokens=None, max_tokens=None):
+        """P69-A: toute entree dans le moteur natif est tracee AVANT et APRES.
+        Une seule ligne "begin" suffit a identifier l'appel qui tue le processus."""
+        cid = None
+        try:
+            import forensics as _fx
+            cid = _fx.call_begin(kind, prompt_tokens=(prompt_tokens if prompt_tokens is not None
+                                                      else int((prompt_chars or 0) / 4)),
+                                 grammar=None, n_ctx=_n_ctx_now(), max_tokens=max_tokens,
+                                 model=_model_id())
+            dlog("[CALL] begin id=%s kind=%s prompt_tokens=%s n_ctx=%s max_tokens=%s"
+                 % (cid, kind, (prompt_tokens if prompt_tokens is not None
+                                else int((prompt_chars or 0) / 4)), _n_ctx_now(), max_tokens))
+        except Exception as _fe:
+            dlog("[CALL] trace indisponible : %s" % _fe)
+        try:
+            out = fn()
+        except BaseException as _e:
+            try:
+                import forensics as _fx2
+                _fx2.call_end(cid, ok=False, error=_e)
+                dlog("[CALL] end id=%s KO %s" % (cid, str(_e)[:120]))
+            except Exception:
+                pass
+            raise
+        try:
+            import forensics as _fx3
+            _fx3.call_end(cid, ok=True)
+            dlog("[CALL] end id=%s OK" % (cid,))
+        except Exception:
+            pass
+        return out
+
+    def _prompt_tokens_est(msgs):
+        """Estimation du nombre de jetons du prompt (comptage exact impossible
+        sans tokeniseur ici ; c'est une trace, pas une facture)."""
+        try:
+            n = 0
+            for m in msgs or []:
+                n += len(str((m or {}).get("content") or ""))
+            return int(n / 4)
+        except Exception:
+            return None
+
+    def _n_ctx_now():
+        try:
+            return getattr(state, "n_ctx", None)
+        except Exception:
+            return None
+
     def _chat_with_tools(llm, messages, tools, temperature, max_tokens,
                          stop, stream, sampling):
         """Tool path: JSON grammar (GBNF) + ONE retry on invalid JSON."""
@@ -842,7 +895,41 @@ def register_openai_routes(app, ctx):
             dlog("[GRAMMAR] construction impossible : %s" % _e)
 
         def _attempt(msgs, max_tok=None):
+            # P69-A: trace AVANT le moteur natif (identifiant, jetons, grammaire,
+            # n_ctx). Si le processus meurt ici, last_call.json reste sur le
+            # disque et le parent sait exactement quel appel a tue le runtime.
             _mt = int(max_tok) if max_tok else max_tokens
+            _cid = None
+            try:
+                import forensics as _fx
+                _cid = _fx.call_begin("tools+grammaire" if _gram is not None else "tools",
+                                      prompt_tokens=_prompt_tokens_est(msgs),
+                                      grammar=(_gram is not None), n_ctx=_n_ctx_now(),
+                                      max_tokens=_mt, model=_model_id())
+                dlog("[CALL] begin id=%s kind=%s prompt_tokens=%s grammar=%s n_ctx=%s max_tokens=%s"
+                     % (_cid, "tools+grammaire" if _gram is not None else "tools",
+                        _prompt_tokens_est(msgs), (_gram is not None), _n_ctx_now(), _mt))
+            except Exception as _fe:
+                dlog("[CALL] trace indisponible : %s" % _fe)
+            try:
+                _out = _attempt_inner(msgs, _mt)
+            except BaseException as _e:
+                try:
+                    import forensics as _fx2
+                    _fx2.call_end(_cid, ok=False, error=_e)
+                    dlog("[CALL] end id=%s KO %s" % (_cid, str(_e)[:120]))
+                except Exception:
+                    pass
+                raise
+            try:
+                import forensics as _fx3
+                _fx3.call_end(_cid, ok=True)
+                dlog("[CALL] end id=%s OK" % (_cid,))
+            except Exception:
+                pass
+            return _out
+
+        def _attempt_inner(msgs, _mt):
             if _gram is not None:
                 try:
                     return llm.create_chat_completion(

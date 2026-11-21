@@ -403,3 +403,57 @@ jobs:
             p68-results/
             p68-results-context.txt
           if-no-files-found: warn
+
+  p69-runtime:
+    name: P69 - survie du runtime (300 appels + plantage injecte)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache du modele GGUF
+        uses: actions/cache@v4
+        with:
+          path: ~/p67-model
+          key: p67-qwen25-coder-1.5b-q4km-v1
+
+      - name: Telecharger le modele (si absent du cache)
+        run: |
+          mkdir -p ~/p67-model
+          F=~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+          if [ ! -s "$F" ]; then
+            curl -sL -o "$F" "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+          fi
+          sha256sum "$F"
+
+      - name: Installer les dependances du vrai serveur
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask flask-cors psutil requests huggingface_hub
+          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+      - name: Rendre le modele visible du runtime (detection locale)
+        run: |
+          mkdir -p ~/.sudo_studio/models
+          cp ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf ~/.sudo_studio/models/
+
+      - name: Serie de 300 appels + plantage injecte
+        run: |
+          mkdir -p p69-results
+          python3 scripts/ci/p69-crash-bench.py --out p69-results --calls 300 \
+            2>&1 | tee p69-results/p69-crash-console.txt
+
+      - name: Artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p69-runtime
+          path: |
+            p69-results/
+            p69-logs/
+          if-no-files-found: warn
