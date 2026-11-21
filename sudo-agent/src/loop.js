@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { probeProvider, streamChat, chatOnce, waitForRuntime, runtimeDeadline } = require('./providers');
+const { probeProvider, streamChat, chatOnce, waitForRuntime, runtimeDeadline, countTokens } = require('./providers');
 const { classifyAction } = require('./intent');
 const smallpath = require('./smallpath'); // P67-B4: actions deterministes + protocole texte
 const { executeTool, toOpenAISchema, ensureSeriesCheckpoint, saveRunSidecar } = require('./tools');
@@ -1701,8 +1701,37 @@ async function toolsTurn(base, session, toolsCtx) {
 
   // P26-c: compress history past 75% of the context size. Returns
   // { ok:true } or { ok:false, reason } (honest stop, never silent loss).
+  // P68-B: le budget se calcule sur un comptage REEL quand le runtime est la.
+  // Un petit modele ne doit pas etre juge "sature" (ni compresse) sur une
+  // estimation fausse de 50 %. Hors ligne, on retombe sur l'estimation
+  // calibree par la mesure, et on le DIT dans le journal.
+  const countTokensFor = async (msgs) => {
+    const est = profiles.estimateTokensCalibrated(msgs, schemaChars);
+    if (!provider || provider.type !== 'local' || !provider.baseUrl) {
+      return { tokens: est, source: 'estimation (hors ligne)' };
+    }
+    try {
+      const text = (msgs || []).map((m) => {
+        let c = String((m && m.content) || '');
+        if (m && Array.isArray(m.tool_calls)) {
+          c += '\n' + m.tool_calls.map((t) => String((t && t.function && t.function.arguments) || '')).join('\n');
+        }
+        return c;
+      }).join('\n');
+      const r = await countTokens(provider, text + ' '.repeat(Math.max(0, schemaChars || 0)));
+      if (r && Number.isFinite(r.tokens) && r.tokens > 0) {
+        return { tokens: r.tokens, source: 'comptage runtime' };
+      }
+      return { tokens: est, source: 'estimation (' + String((r && r.source) || 'runtime muet') + ')' };
+    } catch (_) {
+      return { tokens: est, source: 'estimation (echec du comptage)' };
+    }
+  };
+
   const maybeCompress = async () => {
-    const est = profiles.estimateTokens(modelMessages(), schemaChars);
+    const counted = await countTokensFor(modelMessages());
+    const est = counted.tokens;
+    try { journal('info', 'jetons du tour', { jetons: est, source: counted.source, ctx: ctxTokens }); } catch (_) {}
     // P61-16: 70 % maximum de n_ctx par appel (au-dela on compresse).
     if (est <= ctxTokens * CTX_BUDGET) return { ok: true, compressed: false };
     // P61-16: l'overhead fixe seul peut depasser le budget. Ce n'est pas un
@@ -1717,7 +1746,7 @@ async function toolsTurn(base, session, toolsCtx) {
       //  - entre 70 % et 100 %, l'overhead fixe explique le depassement et la
       //    surface d'outils vient d'etre reduite : le tour CONTINUE (bloquer
       //    ici punirait la taille du contrat d'outils, pas l'historique).
-      const estR = profiles.estimateTokens(modelMessages(), schemaChars);
+      const estR = (await countTokensFor(modelMessages())).tokens;
       if (estR > ctxTokens) {
         return { ok: false, reason: 'contexte sature (' + estR + ' tokens estimes pour ' + ctxTokens + ', historique trop court pour compresser).' };
       }
@@ -1758,7 +1787,7 @@ async function toolsTurn(base, session, toolsCtx) {
     store.setMessages(sessionId, compressMod.spliceHistory(summary, stored, 4));
     journal('info', 'contexte compresse (methode)', { methode: how });
     journal('info', 'contexte compresse', { before: stored.length, summaryChars: summary.length });
-    const est2 = profiles.estimateTokens(modelMessages(), schemaChars);
+    const est2 = (await countTokensFor(modelMessages())).tokens;
     if (est2 > ctxTokens * CTX_BUDGET) {
       // P61-16: si le depassement vient de l'overhead FIXE (instructions +
       // schemas d'outils), on ne bloque pas le tour : on le journalise, en

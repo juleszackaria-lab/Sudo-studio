@@ -114,10 +114,77 @@ check('H4e le bandeau nomme les deux tailles et la raison',
     /Contexte r\\u00e9duit : ' \+ red\.nominal \+ ' \\u2192 ' \+ red\.effective/.test(panel),
     'texte du bandeau introuvable');
 
-// ---------------------------------------------------------------- verdict
-console.log('\nP68-B contexte: ' + pass + ' checks passed' + (fails.length ? ', ' + fails.length + ' FAILED' : ' (all green)'));
-if (fails.length) {
-    for (const f of fails) console.log('  - ' + f);
-    process.exit(1);
+// ---------------------------------------------------------------- H5/H6/H7
+// Le comptage REEL : le runtime compte, l'agent ne devine plus.
+const http = require('http');
+const providers = require(path.join(ROOT, 'sudo-agent', 'src', 'providers.js'));
+const profiles = require(path.join(ROOT, 'sudo-agent', 'src', 'profiles.js'));
+
+async function avecFauxRuntime(handler, fn) {
+    const srv = http.createServer((req, res) => handler(req, res));
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const port = srv.address().port;
+    try { return await fn(port); } finally { await new Promise((r) => srv.close(r)); }
 }
-process.exit(0);
+
+(async () => {
+    // H5: la route existe cote runtime
+    check('H5 le runtime expose POST /tokenize', /@app\.route\('\/tokenize', methods=\['POST'\]\)/.test(serverSrc));
+    check('H5b sans modele charge : 503 explicite, jamais un 500 muet',
+        /aucun modele charge : impossible de compter/.test(serverSrc));
+
+    // H6: l'agent prefere le comptage du runtime a son estimation
+    const r1 = await avecFauxRuntime((req, res) => {
+        let raw = '';
+        req.on('data', (c) => { raw += c; });
+        req.on('end', () => {
+            const body = JSON.parse(raw || '{}');
+            // le faux tokeniseur renvoie un compte lie a la taille du texte
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ tokens: Math.ceil(String(body.text || '').length / 2) }));
+        });
+    }, (port) => providers.countTokens({ type: 'local', baseUrl: 'http://127.0.0.1:' + port }, 'abcdefghij'));
+    check('H6 le comptage du runtime est utilise tel quel',
+        r1 && r1.tokens === 5 && r1.source === 'comptage runtime', JSON.stringify(r1));
+
+    // H6b: runtime muet -> pas d'exception, l'appelant peut estimer
+    const r2 = await avecFauxRuntime((req, res) => {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'aucun modele charge' }));
+    }, (port) => providers.countTokens({ type: 'local', baseUrl: 'http://127.0.0.1:' + port }, 'x'));
+    check('H6b un refus du runtime ne casse rien (tokens=null)', r2 && r2.tokens === null, JSON.stringify(r2));
+
+    const r3 = await providers.countTokens({ type: 'local', baseUrl: 'http://127.0.0.1:1' }, 'x');
+    check('H6c runtime injoignable : tokens=null, aucune exception', r3 && r3.tokens === null, JSON.stringify(r3));
+
+    // H7: l'estimation de repli est celle qui a ete MESUREE, sans marge fixe
+    const court = [{ role: 'user', content: 'bonjour' }];
+    const estLegacy = profiles.estimateTokens(court, 0);
+    const estCal = profiles.estimateTokensCalibrated(court, 0);
+    check('H7 estimateTokensCalibrated existe', typeof profiles.estimateTokensCalibrated === 'function');
+    check('H7b la marge fixe de 64 jetons a disparu du repli mesure',
+        estCal < estLegacy && estCal === Math.ceil((5 + 32) / 4), estLegacy + ' vs ' + estCal);
+    const long = [{ role: 'user', content: 'x'.repeat(4000) }];
+    check('H7c sur un prompt long le repli suit chars/4',
+        profiles.estimateTokensCalibrated(long, 0) === Math.ceil((4000 + 32) / 4),
+        String(profiles.estimateTokensCalibrated(long, 0)));
+
+    // H8: la boucle de l'agent s'en sert pour decider de compresser
+    const loopSrc = fs.readFileSync(path.join(ROOT, 'sudo-agent', 'src', 'loop.js'), 'utf8');
+    check('H8 le budget du tour utilise le comptage runtime quand il existe',
+        /countTokens\(provider/.test(loopSrc) && /comptage runtime/.test(loopSrc));
+    check('H8b la source du chiffre est journalisee (aucun chiffre anonyme)',
+        /'jetons du tour'/.test(loopSrc) && /source: counted\.source/.test(loopSrc));
+
+    // ---------------------------------------------------------------- verdict
+    fin();
+})();
+
+function fin() {
+    console.log('\nP68-B contexte: ' + pass + ' checks passed' + (fails.length ? ', ' + fails.length + ' FAILED' : ' (all green)'));
+    if (fails.length) {
+        for (const f of fails) console.log('  - ' + f);
+        process.exit(1);
+    }
+    process.exit(0);
+}

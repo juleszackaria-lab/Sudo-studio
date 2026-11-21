@@ -103,6 +103,26 @@ function estimateTokens(messages, schemaChars) {
   return Math.ceil(chars / 4) + 64;
 }
 
+// P68-B: estimation CALIBREE par la mesure (banc p68-context, run 4495736859x).
+// L'ancienne formule `ceil(chars/4)+64` se trompait de 54 % en moyenne sur
+// 17 prompts reels, la marge fixe de 64 jetons pesant surtout sur les consignes
+// courtes. La meilleure formule simple mesuree est `ceil(chars/4)` sans marge
+// globale (15,7 % d'erreur moyenne) ; elle sert de REPLI hors ligne. Quand le
+// runtime repond, on ne l'utilise pas : on lui demande le comptage exact
+// (providers.countTokens -> POST /tokenize).
+function estimateTokensCalibrated(messages, schemaChars) {
+  let chars = 0;
+  for (const m of messages || []) {
+    chars += 32;
+    if (m && typeof m.content === 'string') chars += m.content.length;
+    if (m && Array.isArray(m.tool_calls)) {
+      for (const c of m.tool_calls) chars += String((c && c.function && c.function.arguments) || '').length + 32;
+    }
+  }
+  chars += schemaChars || 0;
+  return Math.max(1, Math.ceil(chars / 4));
+}
+
 // P43-3: per-part budget table (chars/4 each, ceil). Pure function.
 // parts: { system, tools, map, history, results } in CHARS.
 function tokenBudget(parts) {
@@ -118,4 +138,4 @@ function tokenBudget(parts) {
   return b;
 }
 
-module.exports = { FULL_TOOLS, SMALL_TOOLS, TERSE, parseParamsB, selectProfile, profileTools, maxIters, chunkNote, resolveCtxTokens, estimateTokens, tokenBudget };
+module.exports = { FULL_TOOLS, SMALL_TOOLS, TERSE, parseParamsB, selectProfile, profileTools, maxIters, chunkNote, resolveCtxTokens, estimateTokens, estimateTokensCalibrated, tokenBudget };

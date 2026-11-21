@@ -211,7 +211,51 @@ function streamChat(cfg, messages, opts) {
 
 module.exports = {
   monoMs,
-  runtimeDeadline, normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime, samplingPayload };
+  runtimeDeadline, normalizeConfig, probeProvider, streamChat, chatOnce, joinUrl, waitForRuntime,
+  samplingPayload, countTokens };
+
+// P68-B: comptage REEL des jetons par le runtime local (POST /tokenize).
+// Resout { tokens, source:'comptage runtime' } ou { tokens:null } : jamais
+// d'exception (l'appelant retombe sur son estimation). Timeout court : un
+// comptage qui traine ne doit pas retarder un tour.
+function countTokens(cfg, text, opts) {
+  opts = opts || {};
+  return new Promise((resolve) => {
+    let url = null;
+    try { url = new URL(joinUrl(cfg && cfg.baseUrl, '/tokenize')); } catch (_) {
+      resolve({ tokens: null, source: 'indisponible' });
+      return;
+    }
+    const body = JSON.stringify({ text: String(text === undefined ? '' : text) });
+    const lib = pickLib(url);
+    let req = null;
+    const finish = (res) => { try { resolve(res); } catch (_) {} };
+    try {
+      req = lib.request({ hostname: url.hostname, port: url.port || 80, path: url.pathname,
+        method: 'POST', timeout: opts.timeoutMs || 4000,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+      (res) => {
+        let raw = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { raw += c; });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(raw);
+            if (res.statusCode >= 200 && res.statusCode < 300 && Number.isFinite(data.tokens)) {
+              finish({ tokens: Number(data.tokens), source: 'comptage runtime' });
+            } else {
+              finish({ tokens: null, source: 'refus runtime (' + res.statusCode + ')' });
+            }
+          } catch (_) { finish({ tokens: null, source: 'reponse illisible' }); }
+        });
+      });
+      req.on('timeout', () => { try { req.destroy(); } catch (_) {} finish({ tokens: null, source: 'delai' }); });
+      req.on('error', () => finish({ tokens: null, source: 'runtime injoignable' }));
+      req.write(body);
+      req.end();
+    } catch (_) { finish({ tokens: null, source: 'erreur transport' }); }
+  });
+}
 
 // Non-streaming chat, optional tools (P25). opts: { model, messages, tools?,
 // toolChoice?, temperature?, topP?, topK?, repeatPenalty?, maxTokens?,

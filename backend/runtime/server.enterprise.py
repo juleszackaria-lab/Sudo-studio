@@ -2289,6 +2289,29 @@ openai_compat.register_openai_routes(app, {
 })
 
 
+@app.route('/tokenize', methods=['POST'])
+def tokenize_text():
+    """P68-B: le comptage REEL des jetons, par le tokeniseur du modele charge.
+
+    L'agent estime (chars/4) ; ce n'est qu'une approximation. Quand le runtime
+    repond, il n'a plus besoin d'estimer : il demande. Aucun modele charge ->
+    503 explicite (l'appelant retombe alors sur son estimation, jamais muet).
+    """
+    data = request.get_json(silent=True) or {}
+    text = data.get('text')
+    if text is None:
+        return jsonify({"error": "champ 'text' manquant"}), 400
+    if (not state.loaded or state.model is None) or not hasattr(state.model, 'tokenize'):
+        return jsonify({"error": "aucun modele charge : impossible de compter",
+                        "tokens": None}), 503
+    try:
+        ids = state.model.tokenize(str(text).encode('utf-8'))
+    except Exception as e:  # jamais un 500 muet
+        return jsonify({"error": str(e)[:160], "tokens": None}), 500
+    return jsonify({"tokens": len(ids), "source": "tokenizer du modele",
+                    "model": state.model_name or DEFAULT_MODEL})
+
+
 @app.route('/health', methods=['GET'])
 def health():
     avail_ram = get_available_ram_gb()
