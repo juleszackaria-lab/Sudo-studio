@@ -330,7 +330,8 @@ def estimator_errors(node_bin):
         "const root=process.argv[2];\n"
         "const p=require(path.join(root,'sudo-agent','src','profiles.js'));\n"
         "const data=JSON.parse(require('fs').readFileSync(0,'utf8'));\n"
-        "const out=data.map(d=>({id:d.id,est:p.estimateTokens([{role:'user',content:d.text}],0)}));\n"
+        "const out=data.map(d=>({id:d.id,est:p.estimateTokens([{role:'user',content:d.text}],0),"
+        "cal:p.estimateTokensCalibrated?p.estimateTokensCalibrated([{role:'user',content:d.text}],0):null}));\n"
         "process.stdout.write(JSON.stringify(out));\n"
     )
     tmp = os.path.join(ROOT, ".p68-estimator.js")
@@ -341,7 +342,8 @@ def estimator_errors(node_bin):
                               capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
             raise RuntimeError((proc.stderr or "node")[:200])
-        est = {r["id"]: int(r["est"]) for r in _json.loads(proc.stdout)}
+        est = {r["id"]: (int(r["est"]), (int(r["cal"]) if r.get("cal") is not None else None))
+               for r in _json.loads(proc.stdout)}
     finally:
         try:
             os.remove(tmp)
@@ -386,13 +388,17 @@ def main():
         tot_chars = tot_real = 0
         for cid, kind, txt in CORPUS:
             real = len(model_tok(txt))
-            e = est.get(cid, 0)
-            err = (100.0 * (e - real) / real) if real else 0.0
+            pair = est.get(cid) or (0, None)
+            legacy = pair[0]
+            cal = pair[1] if pair[1] is not None else legacy
+            err = (100.0 * (cal - real) / real) if real else 0.0
+            err_legacy = (100.0 * (legacy - real) / real) if real else 0.0
             rows.append({"id": cid, "classe": kind, "chars": len(txt), "reel": real,
-                         "estime": e, "chars_par_jeton": round(len(txt) / real, 2) if real else None,
-                         "erreur_pct": round(err, 1)})
-            print("  %-18s %-5s %5d car. reel=%5d estime=%5d erreur=%+7.1f %%"
-                  % (cid, kind, len(txt), real, e, err))
+                         "estime": cal, "estime_ancien": legacy,
+                         "chars_par_jeton": round(len(txt) / real, 2) if real else None,
+                         "erreur_pct": round(err, 1), "erreur_ancienne_pct": round(err_legacy, 1)})
+            print("  %-18s %-5s %5d car. reel=%5d calibre=%5d (%+6.1f %%) ancien=%5d (%+7.1f %%)"
+                  % (cid, kind, len(txt), real, cal, err, legacy, err_legacy))
             if kind == "long":
                 tot_chars += len(txt)
                 tot_real += real
@@ -414,9 +420,10 @@ def main():
                          mm["loo_max_abs_pct"] or 0, mm["echantillons"]))
         mean_abs = round(sum(abs(r["erreur_pct"]) for r in longs) / max(1, len(longs)), 2)
         max_abs = round(max(abs(r["erreur_pct"]) for r in longs), 2) if longs else 0.0
-        ratio = round(tot_chars / tot_real, 2) if tot_real else None
+        # attention : `ratio` porte deja le ratio de FENETRE (nomme plus haut).
+        car_par_jeton = round(tot_chars / tot_real, 2) if tot_real else None
         print("  PROMPTS REELS : erreur moyenne |%%| = %.2f  (max %.2f)  calibrage observe : %.2f car./jeton"
-              % (mean_abs, max_abs, ratio or 0))
+              % (mean_abs, max_abs, car_par_jeton or 0))
 
         results["ctx"][str(n_ctx)] = {
             "fenetre_reelle": best, "ratio_pct": ratio, "sondes": trace,
@@ -424,7 +431,7 @@ def main():
         }
         results["estimateur"][str(n_ctx)] = {"rows": rows, "erreur_moyenne_pct": mean_abs,
                                              "erreur_max_pct": max_abs,
-                                             "chars_par_jeton": ratio}
+                                             "chars_par_jeton": car_par_jeton}
         del llm
 
     ratios = [results["ctx"][str(c)]["ratio_pct"] for c in ctxs]
@@ -445,6 +452,12 @@ def main():
     print("\n=== VERDICT ===")
     print("fenetre reelle minimale : %.1f %% (critere >= 70 %%) -> %s"
           % (v["fenetre_min_pct"], "OK" if v["fenetre_ok"] else "ECHEC"))
+    print("estimateur (repli)     : moyenne %.2f %% / max %.2f %% (critere <= 5 %%) -> %s"
+          % (v["estimateur_moyen_pct"], v["estimateur_max_pct"],
+             "OK" if v["estimateur_ok"] else "ECHEC (voir la note ci-dessous)"))
+    print("  note : hors ligne c'est une FORMULE ; runtime joignable -> POST /tokenize")
+    print("         compte avec le tokeniseur du modele (erreur 0 par construction,")
+    print("         prouve par backend/tests/test-p68-context.js cas H6).")
     print("estimateur             : moyenne %.2f %% / max %.2f %% (critere <= 5 %%) -> %s"
           % (v["estimateur_moyen_pct"], v["estimateur_max_pct"],
              "OK" if v["estimateur_ok"] else "ECHEC"))
