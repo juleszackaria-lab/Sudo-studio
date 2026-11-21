@@ -389,6 +389,7 @@ jobs:
 
       - name: Mesure - fenetre reelle, memoire, estimateur de jetons
         run: |
+          set -o pipefail
           python3 scripts/ci/p68-context-bench.py \
             --model ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
             --out p68-results --ctx 2048,4096,8192 | tee p68-results-context.txt

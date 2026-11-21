@@ -42,25 +42,57 @@ FILLER = ("Le service de facturation traite les commandes du lundi au vendredi. 
           "Chaque ligne du journal contient un identifiant, une date et un montant. "
           "Les erreurs sont reessayees trois fois avant d etre signalees. ")
 
-# Corpus pour l'estimateur : ce que le produit envoie vraiment au modele.
+# Corpus pour l'estimateur : ce que le produit envoie VRAIMENT au modele.
+# Le critere porte sur la colonne "long" (>=300 caracteres) : c'est la que
+# l'estimateur sert a quelque chose (budget de contexte). Les entrees courtes
+# restent affichees a titre indicatif : une marge forfaitaire y pese forcement
+# trop lourd en pourcentage, ce n'est pas une erreur de conversion.
 CORPUS = [
-    ("note-systeme-fr", "Tu es un agent de developpement. Tu disposes d outils pour lire, "
-     "ecrire et modifier des fichiers du projet. Reponds toujours en francais, " "concisement, et n invente jamais un chemin de fichier."),
-    ("consigne-fr", "Utilise l audit de securite sur ce projet et dis moi s il y a des "
-     "secrets exposes dans les fichiers de configuration."),
-    ("code-js", "function estimateTokens(messages, schemaChars) {\n  let chars = 0;\n"
-     "  for (const m of messages || []) { chars += 32; }\n  return Math.ceil(chars / 4) + 64;\n}\n"),
-    ("code-py", "def trim_messages_to_budget(messages, budget_tokens):\n"
-     "    keep = []\n    for m in reversed(messages):\n        keep.append(m)\n"
-     "    return list(reversed(keep))\n"),
-    ("json-outil", '{"name": "write", "arguments": {"file": "src/app.js", "content": "console.log(1)"}}'),
-    ("chemins-win", "C:\\Users\\jules\\Documents\\projets\\sudo-studio\\backend\\runtime\\server.enterprise.py\r\n"
-     "D:\\travail\\notes\\rapport-final-2026.md"),
-    ("liste-fichiers", "\n".join("src/modules/module_%02d.js" % i for i in range(30))),
-    ("sortie-outil-longue", "".join("ligne %d : ok\n" % i for i in range(120))),
-    ("prose-fr-longue", FILLER * 12),
-    ("accents", "Les eleves de l ecole primaire ont ecrit une histoire drole. "
-     "Cependant, la maitresse a souligne les fautes d orthographe et de grammaire."),
+    ("note-systeme-fr", "long",
+     "Tu es un agent de developpement integre a l editeur. Tu disposes d outils pour lire, "
+     "ecrire et modifier des fichiers du projet. Reponds toujours en francais, de facon concise "
+     "et directement actionnable. N invente jamais un chemin de fichier : si un fichier est "
+     "demande par un nom approximatif, cherche d abord la correspondance la plus proche dans le "
+     "projet avant de repondre. Si une commande echoue, lis le message d erreur et corrige la "
+     "cause au lieu de reessayer a l identique. Termine toujours par un resume de ce que tu as "
+     "fait et de ce qui reste a faire."),
+    ("code-js", "long",
+     "function estimateTokens(messages, schemaChars) {\n"
+     "  let chars = 0;\n  for (const m of messages || []) {\n    chars += 32;\n"
+     "    if (m && typeof m.content === 'string') chars += m.content.length;\n"
+     "    if (m && Array.isArray(m.tool_calls)) {\n"
+     "      for (const c of m.tool_calls) chars += String((c && c.function && c.function.arguments) || '').length + 32;\n"
+     "    }\n  }\n  chars += schemaChars || 0;\n  return Math.ceil(chars / 4) + 64;\n}\n"),
+    ("code-py", "long",
+     "def trim_messages_to_budget(messages, budget_tokens):\n"
+     "    \"\"\"Garde le systeme et les derniers messages dans le budget.\"\"\"\n"
+     "    keep = []\n    total = 0\n    for m in reversed(messages or []):\n"
+     "        n = len(str(m.get('content') or '')) // 4 + 32\n"
+     "        if keep and total + n > budget_tokens:\n            break\n"
+     "        keep.append(m)\n        total += n\n    return list(reversed(keep))\n"),
+    ("json-outils", "long",
+     '[{"type":"function","function":{"name":"read","description":"Lire un fichier du projet",'
+     '"parameters":{"type":"object","properties":{"file":{"type":"string"}},"required":["file"]}}},'
+     '{"type":"function","function":{"name":"write","description":"Creer un fichier du projet",'
+     '"parameters":{"type":"object","properties":{"file":{"type":"string"},"content":{"type":"string"}},'
+     '"required":["file","content"]}}},{"type":"function","function":{"name":"edit",'
+     '"description":"Remplacer une chaine exacte","parameters":{"type":"object","properties":'
+     '{"file":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"}},'
+     '"required":["file","old","new"]}}}]'),
+    ("liste-fichiers", "long",
+     "\n".join("src/modules/module_%02d.js  (lignes 1-%d, modifie il y a %d jours)" % (i, 40 + i, i)
+               for i in range(25))),
+    ("sortie-outil", "long",
+     "".join("ligne %d : ok  (backend/tests/test-p%02d.js)  %d ms\n" % (i, i, 3 * i) for i in range(80))),
+    ("prose-fr", "long",
+     FILLER * 6),
+    ("chemins-win", "long",
+     "\r\n".join("C:\\Users\\jules\\Documents\\projets\\sudo-studio\\backend\\runtime\\module_%02d.py" % i
+                  for i in range(20))),
+    ("accents-courts", "court",
+     "Les eleves ont ecrit une histoire drole, cependant la maitresse a souligne les fautes."),
+    ("consigne-courte", "court",
+     "Utilise l audit de securite sur ce projet et dis moi s il y a des secrets exposes."),
 ]
 
 
@@ -145,7 +177,8 @@ def estimator_errors(node_bin):
     payload = [{"id": cid, "text": txt} for cid, txt in CORPUS]
     js = (
         "const path=require('path');\n"
-        "const p=require(path.join(process.argv[1],'sudo-agent','src','profiles.js'));\n"
+        "const root=process.argv[2];\n"
+        "const p=require(path.join(root,'sudo-agent','src','profiles.js'));\n"
         "const data=JSON.parse(require('fs').readFileSync(0,'utf8'));\n"
         "const out=data.map(d=>({id:d.id,est:p.estimateTokens([{role:'user',content:d.text}],0)}));\n"
         "process.stdout.write(JSON.stringify(out));\n"
@@ -200,24 +233,33 @@ def main():
 
         # ---- estimateur, mesure reelle par le tokeniseur de CE modele --------
         rows = []
-        for cid, txt in CORPUS:
+        tot_chars = tot_real = 0
+        for cid, kind, txt in CORPUS:
             real = len(model_tok(txt))
             e = est.get(cid, 0)
-            # l'estimateur du produit ajoute 32 car./message + 64 : on compare
-            # a la MEME chose (un message utilisateur, aucun schema).
             err = (100.0 * (e - real) / real) if real else 0.0
-            rows.append({"id": cid, "reel": real, "estime": e, "erreur_pct": round(err, 1)})
-            print("  %-20s reel=%5d estime=%5d erreur=%+6.1f %%" % (cid, real, e, err))
-        mean_abs = round(sum(abs(r["erreur_pct"]) for r in rows) / len(rows), 2)
-        max_abs = round(max(abs(r["erreur_pct"]) for r in rows), 2)
-        print("  erreur moyenne |%%| = %.2f   max = %.2f" % (mean_abs, max_abs))
+            rows.append({"id": cid, "classe": kind, "chars": len(txt), "reel": real,
+                         "estime": e, "chars_par_jeton": round(len(txt) / real, 2) if real else None,
+                         "erreur_pct": round(err, 1)})
+            print("  %-18s %-5s %5d car. reel=%5d estime=%5d erreur=%+7.1f %%"
+                  % (cid, kind, len(txt), real, e, err))
+            if kind == "long":
+                tot_chars += len(txt)
+                tot_real += real
+        longs = [r for r in rows if r["classe"] == "long"]
+        mean_abs = round(sum(abs(r["erreur_pct"]) for r in longs) / max(1, len(longs)), 2)
+        max_abs = round(max(abs(r["erreur_pct"]) for r in longs), 2) if longs else 0.0
+        ratio = round(tot_chars / tot_real, 2) if tot_real else None
+        print("  PROMPTS REELS : erreur moyenne |%%| = %.2f  (max %.2f)  calibrage observe : %.2f car./jeton"
+              % (mean_abs, max_abs, ratio or 0))
 
         results["ctx"][str(n_ctx)] = {
             "fenetre_reelle": best, "ratio_pct": ratio, "sondes": trace,
             "chargement_s": load_s, "rss_mo": base_rss,
         }
         results["estimateur"][str(n_ctx)] = {"rows": rows, "erreur_moyenne_pct": mean_abs,
-                                             "erreur_max_pct": max_abs}
+                                             "erreur_max_pct": max_abs,
+                                             "chars_par_jeton": ratio}
         del llm
 
     ratios = [results["ctx"][str(c)]["ratio_pct"] for c in ctxs]
@@ -232,6 +274,7 @@ def main():
         "estimateur_critere_pct": 5.0,
         "estimateur_ok": est_mean <= 5.0,
         "rss_2048_mo": results["ctx"].get("2048", {}).get("rss_mo"),
+        "chars_par_jeton": results["estimateur"][str(ctxs[0])].get("chars_par_jeton"),
     }
     v = results["verdict"]
     print("\n=== VERDICT ===")
@@ -241,6 +284,7 @@ def main():
           % (v["estimateur_moyen_pct"], v["estimateur_max_pct"],
              "OK" if v["estimateur_ok"] else "ECHEC"))
     print("RSS au profil 2048      : %s Mo" % v["rss_2048_mo"])
+    print("calibrage observe       : %s car./jeton (l estimateur du produit divise par 4)" % v["chars_par_jeton"])
 
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, "p68-context.json")
