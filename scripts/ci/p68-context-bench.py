@@ -171,10 +171,40 @@ def real_window(llm, model_tok, n_ctx):
     return best, trace
 
 
+def candidate_errors(rows):
+    """Compare plusieurs formules chars->jetons sur les MEMES mesures reelles.
+
+    L'estimateur du produit est `ceil((chars + 32) / 4) + 64`. La marge fixe de
+    64 jetons est confortable sur un prompt long et absurde sur une consigne
+    courte. On cherche donc, sur les prompts REELS, le couple (diviseur, marge)
+    le plus juste : c'est ce couple qui sera ecrit dans le produit.
+    """
+    import math
+    longs = [r for r in rows if r["classe"] == "long" and r["reel"]]
+    out = []
+    cands = [("actuel: /4 +64", 4.0, 64),
+             ("/3.4 +16", 3.4, 16), ("/3.6 +16", 3.6, 16), ("/3.8 +16", 3.8, 16),
+             ("/3.4 +0", 3.4, 0), ("/3.5 +0", 3.5, 0), ("/3.6 +0", 3.6, 0),
+             ("/3.7 +0", 3.7, 0), ("/3.8 +0", 3.8, 0), ("/3.9 +0", 3.9, 0),
+             ("/4.0 +0", 4.0, 0), ("/3.6 +8", 3.6, 8)]
+    for label, div, margin in cands:
+        errs = []
+        for r in longs:
+            est = math.ceil((r["chars"] + 32) / div) + margin
+            errs.append(100.0 * (est - r["reel"]) / r["reel"])
+        mean = round(sum(abs(e) for e in errs) / max(1, len(errs)), 2)
+        mx = round(max(abs(e) for e in errs), 2) if errs else 0.0
+        bias = round(sum(errs) / max(1, len(errs)), 2)
+        out.append({"formule": label, "moyenne_abs_pct": mean, "max_abs_pct": mx,
+                    "biais_pct": bias})
+    out.sort(key=lambda r: r["moyenne_abs_pct"])
+    return out
+
+
 def estimator_errors(node_bin):
     """Erreur de l'estimateur du produit : renvoie (rows, moyenne, max)."""
     import json as _json
-    payload = [{"id": cid, "text": txt} for cid, txt in CORPUS]
+    payload = [{"id": cid, "text": txt} for cid, _kind, txt in CORPUS]
     js = (
         "const path=require('path');\n"
         "const root=process.argv[2];\n"
@@ -247,6 +277,14 @@ def main():
                 tot_chars += len(txt)
                 tot_real += real
         longs = [r for r in rows if r["classe"] == "long"]
+        cands = candidate_errors(rows) if "est_cands" not in results else results["est_cands"]
+        if "est_cands" not in results:
+            results["est_cands"] = cands
+            print("  formules candidates (sur les prompts reels) :")
+            for c in cands:
+                print("    %-16s moyenne |%%|=%6.2f  max=%6.2f  biais=%+6.2f"
+                      % (c["formule"], c["moyenne_abs_pct"], c["max_abs_pct"], c["biais_pct"]))
+            print("    -> retenue : %s" % cands[0]["formule"])
         mean_abs = round(sum(abs(r["erreur_pct"]) for r in longs) / max(1, len(longs)), 2)
         max_abs = round(max(abs(r["erreur_pct"]) for r in longs), 2) if longs else 0.0
         ratio = round(tot_chars / tot_real, 2) if tot_real else None
