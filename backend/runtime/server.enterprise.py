@@ -2984,7 +2984,27 @@ if __name__ == '__main__':
                         help='Start without downloading model (mock mode only)')
     parser.add_argument('--force-download',    action='store_true',
                         help='Force re-download even if model is already cached')
+    # P69-C7 : mode "front". L'API et le moteur sont alors dans DEUX processus :
+    # un plantage natif du moteur ne peut plus emporter l'API.
+    parser.add_argument('--front',             action='store_true',
+                        help="sert l'API et fait tourner le moteur dans un processus enfant")
+    parser.add_argument('--engine-port',       type=int, default=None,
+                        help='port du moteur enfant (mode --front)')
     args = parser.parse_args()
+
+    if getattr(args, 'front', False):
+        try:
+            _here = os.path.dirname(os.path.abspath(__file__))
+            if _here not in sys.path:
+                sys.path.insert(0, _here)
+            import api_front
+        except Exception as _e:
+            print('[FRONT] impossible de charger api_front : %s' % _e, flush=True)
+            sys.exit(3)
+        api_front.run_front(port=args.port, host=args.host,
+                            engine_port=args.engine_port,
+                            model=(args.model if args.model != DEFAULT_MODEL else None))
+        sys.exit(0)
 
     # P33(b): P21 session header FIRST (nothing reaches the journal before
     # this point: all earlier output is dlog/print, and every logger.* call
@@ -3023,6 +3043,11 @@ if __name__ == '__main__':
     heartbeat.set_state_provider(_hb_state)
     _hb_port = int(os.environ.get("SUDO_HB_PORT") or 6001)
     _hb = heartbeat.start(_hb_port)
+    # P69-B6: le battement dit a quelle API il appartient (port reel de Flask).
+    try:
+        heartbeat.set_runtime_port(args.port)
+    except Exception:
+        pass
     if _hb.get("ok"):
         dlog("[HEARTBEAT] actif sur 127.0.0.1:%s" % _hb.get("port"))
         logger.info("[HEARTBEAT] actif sur 127.0.0.1:%s" % _hb.get("port"))

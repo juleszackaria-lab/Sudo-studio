@@ -468,3 +468,57 @@ jobs:
             p69-results/
             p69-logs/
           if-no-files-found: warn
+
+  p69-isolation:
+    name: P69 - l API survit au plantage du moteur (vrai modele)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache du modele GGUF
+        uses: actions/cache@v4
+        with:
+          path: ~/p67-model
+          key: p67-qwen25-coder-1.5b-q4km-v1
+
+      - name: Telecharger le modele (si absent du cache)
+        run: |
+          mkdir -p ~/p67-model
+          F=~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+          if [ ! -s "$F" ]; then
+            curl -sL -o "$F" "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+          fi
+          sha256sum "$F"
+
+      - name: Installer le vrai serveur
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask flask-cors psutil requests huggingface_hub
+          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+      - name: Front + moteur REEL, puis on tue le moteur
+        run: |
+          set -o pipefail
+          python3 scripts/ci/p69-isolation-bench.py \
+            --model ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
+            --out p69-results | tee p69-results-isolation.txt
+
+      - name: Suite locale (faux moteur)
+        run: node backend/tests/test-p69-engine-isolation.js
+
+      - name: Artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p69-isolation
+          path: |
+            p69-results/
+            p69-results-isolation.txt
+            p69-logs/
+          if-no-files-found: warn

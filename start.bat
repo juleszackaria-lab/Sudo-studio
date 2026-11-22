@@ -214,7 +214,15 @@ for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":6000 " ^| findstr "LISTENIN
 )
 
 :: Launch runtime.exe in a minimized window
-start "SudoRuntime" /MIN "%APP%runtime.exe"
+:: P69-C7: --front = le moteur tourne dans un processus ENFANT. Un plantage
+:: natif de llama.cpp ne peut plus emporter l'API (elle repond 503 et relance).
+:: SUDO_API_FRONT=0 restaure l'ancien mode mono-processus.
+if not defined SUDO_API_FRONT set "SUDO_API_FRONT=1"
+if "%SUDO_API_FRONT%"=="1" (
+  start "SudoRuntime" /MIN "%APP%runtime.exe" --front
+) else (
+  start "SudoRuntime" /MIN "%APP%runtime.exe"
+)
 echo [PHASE 2] runtime.exe launched >> "%LOG_FILE%"
 echo   [LAUNCHED] runtime.exe -> port %RUNTIME_PORT%
 echo.

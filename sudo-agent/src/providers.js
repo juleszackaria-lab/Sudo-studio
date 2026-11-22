@@ -366,6 +366,14 @@ function runtimeDeadline(budgetMs) {
 // Resout {alive, busy, phase, call} ; jamais d'exception.
 function probeHeartbeat(cfg, opts) {
   opts = opts || {};
+  // P69-B6: a quel runtime appartenir ? Si l'appelant connait le port de
+  // l'API, un battement qui en annonce un AUTRE n'est pas le notre : un
+  // processus oublie sur 6001 ne doit jamais faire passer un mort pour vivant.
+  let wantPort = null;
+  try {
+    if (cfg && cfg.baseUrl) wantPort = Number(new URL(String(cfg.baseUrl)).port) || null;
+    else if (cfg && cfg.port) wantPort = Number(cfg.port) || null;
+  } catch (_) { wantPort = null; }
   return new Promise((resolve) => {
     let base = String((cfg && cfg.hbUrl) || process.env.SUDO_HB_URL ||
       ('http://127.0.0.1:' + (process.env.SUDO_HB_PORT || 6001)));
@@ -384,9 +392,13 @@ function probeHeartbeat(cfg, opts) {
         res.on('end', () => {
           try {
             const d = JSON.parse(raw);
-            finish({ alive: res.statusCode === 200 && d.alive === true,
+            const theirs = Number(d.runtime_port);
+            const other = Number.isFinite(theirs) && theirs > 0 && wantPort && theirs !== wantPort;
+            finish({ alive: res.statusCode === 200 && d.alive === true && !other,
               busy: !!d.busy, phase: d.phase || null, call: d.call || null,
-              model: d.model || null, status: res.statusCode });
+              model: d.model || null, status: res.statusCode,
+              runtime_port: Number.isFinite(theirs) ? theirs : null,
+              why: other ? ('battement d\'un autre runtime (port ' + theirs + ', attendu ' + wantPort + ')') : null });
           } catch (_) { finish({ alive: false, why: 'reponse illisible' }); }
         });
       });

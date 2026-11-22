@@ -143,6 +143,27 @@ time.sleep(30)
     delete process.env.SUDO_STUDIO_LOGS;
 
     process.env.SUDO_STUDIO_LOGS = tmpLogs;
+    // ---- K2e : un battement ETRANGER ne rend pas un mort vivant ---------
+    // Cas reellement rencontre : un battement oublie sur 6001 faisait passer
+    // un runtime mort pour vivant (les suites P24/P62 sont devenues rouges).
+    {
+        const providers = require(path.join(ROOT, 'sudo-agent', 'src', 'providers.js'));
+        const foreignPort = await new Promise((res) => {
+            const srv = http.createServer((rq, rs) => {
+                rs.setHeader('Content-Type', 'application/json');
+                rs.end(JSON.stringify({ alive: true, busy: true, phase: 'generation', runtime_port: 9999 }));
+            });
+            srv.listen(0, '127.0.0.1', () => res(srv.address().port));
+        });
+        const oldHb = process.env.SUDO_HB_URL;
+        process.env.SUDO_HB_URL = 'http://127.0.0.1:' + foreignPort;
+        const hb = await providers.probeHeartbeat({ type: 'local', baseUrl: 'http://127.0.0.1:4321' }, { timeoutMs: 2000 });
+        if (oldHb === undefined) delete process.env.SUDO_HB_URL; else process.env.SUDO_HB_URL = oldHb;
+        check('K2e un battement d un AUTRE runtime ne compte pas comme le notre',
+            hb && hb.alive === false && /autre runtime/.test(String(hb.why || '')),
+            JSON.stringify(hb));
+    }
+
     check('K3 le journal du superviseur suit le dossier de logs unique (P33)',
         resolveLogDir() === tmpLogs && resolveAuditPath() === path.join(tmpLogs, 'runtime-supervisor.log'),
         resolveLogDir() + ' / ' + resolveAuditPath());

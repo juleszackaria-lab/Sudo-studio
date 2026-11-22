@@ -35,6 +35,25 @@ _T0 = time.time()
 
 
 _STATE_PROVIDER = None
+_RUNTIME_PORT = None       # port de l'API a laquelle ce battement appartient
+
+
+def set_runtime_port(port):
+    """P69-B6: un battement doit dire A QUEL runtime il appartient.
+
+    Sans cela, un battement oublie sur 6001 (ancien processus, autre produit)
+    fait passer un runtime MORT pour vivant. C'est exactement l'erreur qu'on
+    veut rendre impossible.
+    """
+    global _RUNTIME_PORT
+    try:
+        _RUNTIME_PORT = int(port)
+    except (TypeError, ValueError):
+        _RUNTIME_PORT = None
+
+
+def runtime_port():
+    return _RUNTIME_PORT
 
 
 def set_state_provider(fn):
@@ -101,6 +120,7 @@ class _Handler(BaseHTTPRequestHandler):
             "calls_failed": snap.get("calls_failed"),
             "last_error": snap.get("last_error"),
             "last_call_ms": snap.get("last_call_ms"),
+            "runtime_port": _RUNTIME_PORT,
             "model": extra,
             "crashed_call": None if busy else _pending_call(),
         }
