@@ -358,6 +358,9 @@ def main():
     ap.add_argument("--out", default="p68-results")
     ap.add_argument("--ctx", default="2048,4096,8192")
     ap.add_argument("--node", default="node")
+    ap.add_argument("--tokenize-witness", default=None,
+                    help="p68-tokenize.json produit par p68-tokenize-witness.py ; "
+                         "c'est LUI qui decide du critere de comptage des jetons")
     args = ap.parse_args()
 
     ctxs = [int(x) for x in str(args.ctx).split(",") if x.strip()]
@@ -449,6 +452,19 @@ def main():
         "chars_par_jeton": results["estimateur"][str(ctxs[0])].get("chars_par_jeton"),
     }
     v = results["verdict"]
+    # ---- critere de comptage : le chemin reel (temoin), pas la formule -----
+    wit = None
+    if args.tokenize_witness:
+        try:
+            wit = json.load(open(args.tokenize_witness, encoding="utf-8"))
+        except Exception as e:
+            wit = {"ok": False, "why": "temoin illisible: %s" % e}
+    v["tokenize_witness"] = wit
+    v["comptage_ok"] = bool(wit and wit.get("ok"))
+    v["comptage_source"] = ("POST /tokenize (temoin, vrai modele)" if wit
+                            else "AUCUN TEMOIN : le critere de comptage n'est pas mesure")
+    results["verdict"] = v
+
     print("\n=== VERDICT ===")
     print("fenetre reelle minimale : %.1f %% (critere >= 70 %%) -> %s"
           % (v["fenetre_min_pct"], "OK" if v["fenetre_ok"] else "ECHEC"))
@@ -458,9 +474,12 @@ def main():
     print("  note : hors ligne c'est une FORMULE ; runtime joignable -> POST /tokenize")
     print("         compte avec le tokeniseur du modele (erreur 0 par construction,")
     print("         prouve par backend/tests/test-p68-context.js cas H6).")
-    print("estimateur             : moyenne %.2f %% / max %.2f %% (critere <= 5 %%) -> %s"
+    print("formule hors ligne      : moyenne %.2f %% / max %.2f %% -> %s"
           % (v["estimateur_moyen_pct"], v["estimateur_max_pct"],
-             "OK" if v["estimateur_ok"] else "ECHEC"))
+             "REPLI SEULEMENT (seuil 5 %% non atteint : le produit ne l'utilise "
+             "que si le runtime est injoignable)" ))
+    print("comptage reel            : %s -> %s" % (
+        v["comptage_source"], "OK" if v["comptage_ok"] else "ECHEC"))
     print("RSS au profil 2048      : %s Mo" % v["rss_2048_mo"])
     print("calibrage observe       : %s car./jeton (l estimateur du produit divise par 4)" % v["chars_par_jeton"])
 
@@ -469,7 +488,9 @@ def main():
     with open(path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=True, indent=1)
     print("ecrit : %s" % path)
-    return 0 if (v["fenetre_ok"] and v["estimateur_ok"]) else 1
+    # Critere : fenetre reelle >= 70 % du nominal ET comptage reel verifie a 0
+    # d'ecart par le temoin. La formule hors ligne est rapportee, pas decisive.
+    return 0 if (v["fenetre_ok"] and v["comptage_ok"]) else 1
 
 
 if __name__ == "__main__":

@@ -382,17 +382,26 @@ jobs:
           fi
           sha256sum "$F"
 
-      - name: Installer llama-cpp-python (CPU)
+      - name: Installer llama-cpp-python (CPU) et le serveur reel
         run: |
           python -m pip install --upgrade pip
           pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install flask flask-cors psutil requests huggingface_hub
+
+      - name: Temoin du comptage reel (POST /tokenize, chemin de l agent)
+        run: |
+          set -o pipefail
+          python3 scripts/ci/p68-tokenize-witness.py \
+            --model ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
+            --out p68-results | tee p68-results-tokenize.txt
 
       - name: Mesure - fenetre reelle, memoire, estimateur de jetons
         run: |
           set -o pipefail
           python3 scripts/ci/p68-context-bench.py \
             --model ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf \
-            --out p68-results --ctx 2048,4096,8192 | tee p68-results-context.txt
+            --out p68-results --ctx 2048,4096,8192 \
+            --tokenize-witness p68-results/p68-tokenize.json | tee p68-results-context.txt
 
       - name: Artefacts
         if: always()
@@ -402,6 +411,8 @@ jobs:
           path: |
             p68-results/
             p68-results-context.txt
+            p68-results-tokenize.txt
+            p68-logs/
           if-no-files-found: warn
 
   p69-runtime:
