@@ -36,6 +36,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # P69-C7 : le harnais d'isolation lance un front Python (Flask). Sans
+      # cette etape, la suite sortirait en "SKIP" et ce serait un faux vert.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Installer Flask (harnais d isolation du moteur)
+        run: python -m pip install --quiet flask flask-cors requests
+
       - name: Install backend deps
         working-directory: backend
         run: npm ci --no-audit --no-fund

@@ -68,6 +68,15 @@ async function waitUp(port, timeoutMs) {
 }
 
 (async () => {
+  // Le front est du Python : sans Flask il ne peut pas demarrer. On le DIT
+  // (jamais un silence) et le job CI installe Flask pour que ce cas ne se
+  // produise pas.
+  const hasFlask = spawnSync(process.env.PYTHON_BIN || 'python3', ['-c', 'import flask'], { encoding: 'utf8' });
+  if (hasFlask.status !== 0) {
+    console.log('SKIP test-p69-engine-isolation.js - Flask absent : le front ne peut pas demarrer.');
+    console.log('         Installation : python3 -m pip install flask requests');
+    process.exit(0);
+  }
   const tmpLogs = fs.mkdtempSync(path.join(os.tmpdir(), 'p69-iso-'));
   const apiPort = await freePort();
   const enginePort = await freePort();

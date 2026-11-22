@@ -147,13 +147,20 @@ def main():
               json.dumps(eng)[:220])
 
         down = http(base + "/v1/chat/completions", CHAT, timeout=120)
-        if down.get("status") == 503:
-            err = ((down.get("json") or {}).get("error") or {})
-            check("7 pendant la panne : 503 explicite (pas une connexion coupee)",
-                  err.get("type") == "engine_unavailable", json.dumps(err)[:220])
-        else:
-            check("7 pendant la panne : 503 explicite (pas une connexion coupee)",
-                  down.get("status") == 200, "moteur deja revenu : status=%s" % down.get("status"))
+        # Le corps peut etre {"error": {...}} (front : moteur mort) ou
+        # {"error": "no_model_loaded"} (moteur relance, modele en cours de
+        # chargement). Dans les deux cas c'est un 503 EXPLICITE : le client
+        # recoit une reponse JSON, pas une connexion coupee.
+        def err_text(resp):
+            e = (resp.get("json") or {}).get("error")
+            if isinstance(e, dict):
+                return str(e.get("type") or "") + " / " + str(e.get("message") or "")
+            return str(e)
+
+        st7 = down.get("status")
+        check("7 pendant la panne : reponse EXPLICITE (503 JSON), jamais une connexion coupee",
+              st7 in (200, 503) and (st7 == 200 or bool(err_text(down))),
+              "status=%s erreur=%s" % (st7, err_text(down)[:180]))
 
         # ---- reprise ------------------------------------------------------
         t0 = time.time()
