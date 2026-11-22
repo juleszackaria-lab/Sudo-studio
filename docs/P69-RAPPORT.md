@@ -329,6 +329,7 @@ Runs CI (workflow `00-test-suite.yml`, déclenchés à la main) :
 | `44962358926` | `7c927b6` | 7 jobs, **tous verts** (premier passage P69 : 300 appels, 0 mort) |
 | `44966308802` | `0797b17` | P69 vert (120 appels), P68-context rouge (critère mal posé) |
 | `44966352600` | `23a225f` | **7 jobs, tous verts**, dont `p68-context` |
+| `44968840021` | `d298ee8` (**tête finale, avec ce rapport**) | **7 jobs, tous verts** : P67, P68-grammaire, P68-contexte, P69-runtime, 49 suites, agent bench, PowerShell |
 
 Tests locaux : **68 suites, 3 échecs antérieurs** (`test-p29-packaging`,
 `test-p30-backend`, `test-p33-runtime-logs` — réseau/ports/MSVC, présents sur un
