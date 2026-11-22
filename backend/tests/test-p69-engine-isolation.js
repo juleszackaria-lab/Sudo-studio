@@ -180,6 +180,52 @@ async function waitUp(port, timeoutMs) {
   check('I13 la mort et la relance sont ecrites dans runtime-front.log',
     /MOTEUR MORT/.test(hasLog) && /RELANCE/.test(hasLog), (hasLog || '(aucun journal)').slice(-200));
 
+  // ---- I14 : pas de SECOND moteur sur le meme port (orage de relances) --
+  {
+    const dupPort = apiPort;   // ce port est deja servi par `front`
+    const dup = spawn(process.env.PYTHON_BIN || 'python3',
+      [path.join(RUNTIME, 'api_front.py'), '--port', String(dupPort),
+       '--engine-port', String(await freePort())], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let dupOut = '';
+    dup.stdout.on('data', (c) => { dupOut += c; });
+    dup.stderr.on('data', (c) => { dupOut += c; });
+    const exited = await new Promise((res) => {
+      const t = setTimeout(() => res(false), 25000);
+      dup.on('exit', () => { clearTimeout(t); res(true); });
+    });
+    check('I14 un second front sur un port deja servi refuse de demarrer (aucun second moteur)',
+      exited && /deja en service|deja un runtime/i.test(dupOut),
+      (dupOut || '(rien)').slice(-160));
+    try { dup.kill('SIGKILL'); } catch (_) {}
+  }
+
+  // ---- I15 : moteur casse -> relances SUSPENDUES, et c'est dit ----------
+  {
+    const badPort = await freePort();
+    const badEngine = await freePort();
+    const bad = spawn(process.env.PYTHON_BIN || 'python3',
+      [path.join(RUNTIME, 'api_front.py'), '--port', String(badPort),
+       '--engine-port', String(badEngine)],
+      { env: Object.assign({}, env, { SUDO_ENGINE_CMD: path.join(__dirname, '_broken_engine.py') }),
+        stdio: ['ignore', 'pipe', 'pipe'] });
+    await waitUp(badPort, 25000);
+    let seen = null;
+    const t0b = Date.now();
+    while (Date.now() - t0b < 30000) {
+      const r = await req(badPort, 'GET', '/engine', undefined, 5000);
+      if (r.json && r.json.restart_suspended === true) { seen = r.json; break; }
+      await sleep(1000);
+    }
+    check('I15 un moteur qui meurt immediatement suspend les relances, avec la raison',
+      !!seen && /immediatement/.test(String(seen.suspend_reason || '')),
+      JSON.stringify(seen));
+    const hbBad = await req(badPort, 'GET', '/health', undefined, 5000);
+    check('I15b l API repond toujours et dit que le moteur est absent',
+      hbBad.status === 200 && hbBad.json && hbBad.json.engine && hbBad.json.engine.alive === false,
+      JSON.stringify(hbBad.json && hbBad.json.engine));
+    try { bad.kill('SIGKILL'); } catch (_) {}
+  }
+
   try { front.kill('SIGKILL'); } catch (_) {}
   try { raw.kill('SIGKILL'); } catch (_) {}
 

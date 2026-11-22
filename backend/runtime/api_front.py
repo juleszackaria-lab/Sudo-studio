@@ -203,12 +203,25 @@ def engine_status():
             "last_exit_name": _STATE.get("last_exit_name") or (describe_exit(last) if last is not None else ""),
             "last_dead_at": _STATE.get("last_dead_at"),
             "spawn_ms": _STATE.get("spawn_ms"),
+            "restart_suspended": bool(_STATE.get("restart_suspended", False)),
+            "suspend_reason": _STATE.get("suspend_reason"),
             "since_start_s": (round(time.time() - _STATE["last_started_at"], 1)
                               if _STATE.get("last_started_at") else None)}
 
 
-def watch(restart_delay_s=1.0, max_restarts=50, window_s=600):
-    """Surveille le moteur : note la mort, la nomme, le relance. Tracant."""
+def watch(restart_delay_s=1.0, max_restarts=50, window_s=600, rapid_limit=5):
+    """Surveille le moteur : note la mort, la nomme, le relance. Tracant.
+
+    Deux protections apprises a la duree :
+      * temporisation CROISSANTE (1, 2, 4, 8, 16, 30 s) : on ne relance pas
+        en boucle serree ;
+      * si le moteur meurt plusieurs fois en moins de 5 s (port deja pris,
+        binaire casse, dependance manquante), on ARRETE les relances et on le
+        dit. Un orage de relances affame la machine au lieu de reparer quoi
+        que ce soit.
+    """
+    rapid = 0
+    delay = restart_delay_s
     while not _STATE.get("stop"):
         time.sleep(1.0)
         p = _STATE.get("proc")
@@ -222,11 +235,21 @@ def watch(restart_delay_s=1.0, max_restarts=50, window_s=600):
         _STATE["last_exit"] = code
         _STATE["last_exit_name"] = describe_exit(code)
         _STATE["last_dead_at"] = time.time()
-        _log("MOTEUR MORT : %s" % _STATE["last_exit_name"])
+        life = (time.time() - (_STATE.get("last_started_at") or time.time()))
+        _log("MOTEUR MORT : %s (apres %.1f s de vie)" % (_STATE["last_exit_name"], life))
+        rapid = rapid + 1 if life < 5.0 else 0
+        if rapid >= rapid_limit:
+            _STATE["restart_suspended"] = True
+            _STATE["suspend_reason"] = ("le moteur meurt immediatement (%d fois de suite en "
+                                        "moins de 5 s) : port deja pris, binaire casse ou "
+                                        "dependance manquante" % rapid)
+            _log("RELANCE SUSPENDUE : " + _STATE["suspend_reason"])
+            continue
         if _STATE.get("restarts", 0) >= max_restarts:
             _log("plafond de relances atteint (%d) : plus de relance automatique" % max_restarts)
             continue
-        time.sleep(restart_delay_s)
+        time.sleep(delay)
+        delay = min(30.0, delay * 2)
         with _LOCK:
             _STATE["restarts"] = _STATE.get("restarts", 0) + 1
         _log("RELANCE du moteur (%d)" % _STATE["restarts"])
@@ -367,10 +390,33 @@ def make_app():
     return app
 
 
+def already_running(port, timeout=1.5):
+    """P69-C7: un runtime repond-il DEJA sur ce port ?
+
+    Cas reel : start.bat lance une seconde fois (lancement cache, relance
+    manuelle). Sans ce garde, un deuxieme front demarrait, son moteur ne
+    pouvait pas prendre le port, et le veilleur le relancait toutes les
+    secondes - un orage de relances qui affamait la machine.
+    """
+    try:
+        r = requests.get("http://127.0.0.1:%s/health" % port, timeout=timeout)
+        if r.status_code != 200:
+            return False
+        d = r.json()
+        return isinstance(d, dict) and ("model" in d or "engine" in d)
+    except Exception:
+        return False
+
+
 def run_front(port=6000, host="127.0.0.1", engine_port=None, model=None,
               wait=True, restart_delay_s=1.0):
     """Point d'entree : lance le moteur, puis sert l'API. Ne rend jamais la main."""
     os.environ["SUDO_API_FRONT"] = "1"
+    if already_running(port):
+        _log("un runtime repond deja sur le port %s : pas de second moteur, "
+             "ce processus s'arrete (c'est voulu)" % port)
+        print("[FRONT] runtime deja en service sur le port %s : rien a faire" % port, flush=True)
+        return 0
     t = threading.Thread(target=watch, kwargs={"restart_delay_s": restart_delay_s},
                          daemon=True)
     r = start_engine(engine_port, model=model, wait=wait)
