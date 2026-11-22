@@ -244,14 +244,64 @@ Trois choses à retenir de ce bloc, et aucune n'est décorative :
 3. **Le client ne reçoit pas de 503** : il voit la connexion se couper
    (`RemoteDisconnected`). C'est la limite de la section 7.
 
-**Ce qui n'est PAS fait (C7)** : l'API **n'est pas** isolée du moteur
-d'inférence. Si l'appel natif tue le processus, `server.enterprise.py` meurt
-avec lui : le client voit une **connexion coupée**, pas un 503. Le minimum
-demandé (« API qui survit au plantage du moteur, processus enfant surveillé »)
-demande de sortir llama.cpp du processus Flask — c'est un chantier à part
-entière, je ne l'ai pas fait et je ne le présente pas comme fait. Ce qui est
-livré à la place : la mort est **tracée**, **attribuée** (code, appel, RAM) et
-**réparée** (relance mesurée) en quelques secondes.
+**Ce qui reste vrai (et qui est maintenant dit en 503)** : aucune reprise en
+vol. Un appel interrompu par la mort du moteur est perdu — mais le client
+reçoit un `503` JSON qui nomme la panne, jamais une connexion coupée. La suite
+`I7`/`I7b` le vérifie.
+
+---
+
+## 5 bis. C7 — L'API SURVIT AU PLANTAGE DU MOTEUR (fait, prouvé)
+
+Le 21/11, l'API **était** le moteur : un plantage natif emportait tout. C'est
+corrigé — le moteur vit désormais dans un processus enfant.
+
+```
+client --> api_front (parent : ne touche JAMAIS au moteur)
+                |
+                +-- proxy HTTP --> server.enterprise.py (enfant : llama.cpp)
+```
+
+Ce que ça change, concrètement :
+
+| situation | avant | après |
+|---|---|---|
+| le moteur meurt | l'API meurt : connexion coupée, plus de `/health` | l'API répond **200** sur `/health` avec `engine.alive=false` + le code de sortie nommé |
+| un appel pendant la panne | rien, silence | `503` JSON `engine_unavailable` : « le moteur a planté (…), l'API est vivante, relance en cours, réessayez » |
+| réparation | l'utilisateur relance le produit | relance automatique (+ temporisation croissante), l'appel suivant passe |
+| second lancement sur un port occupé | deux moteurs se disputaient le port | le second front **s'arrête** et le dit (« runtime déjà en service ») |
+| moteur qui meurt en boucle (binaire cassé) | relances sans fin | relances **suspendues** après 5 morts en < 5 s, raison exposée dans `/engine` |
+
+Preuves, toutes exécutées :
+
+```
+backend/tests/test-p69-engine-isolation.js  ->  17 checks, tous verts
+  ok - I5 l API repond ENCORE apres la mort du moteur (200, jamais coupee)
+  ok - I6 /health nomme la mort du moteur
+  ok - I7b le 503 dit que le moteur a plante et qu il est relance
+  ok - I8 apres relance, l appel suivant passe
+  ok - I12 CONTROLE NEGATIF : sans front, la mort du moteur coupe la connexion
+  ok - I14 un second front sur un port deja servi refuse de demarrer
+  ok - I15 un moteur qui meurt immediatement suspend les relances, avec la raison
+```
+
+et avec le **vrai modèle** en CI (job `p69-isolation`) :
+
+```
+ok   - 1 le front repond et le moteur a charge le modele
+ok   - 2 un vrai appel passe par le front       :: status=200 texte='Bonjour'
+ok   - 4 le moteur est tue (SIGKILL)            :: pid=2581
+ok   - 5 l API repond ENCORE (code 200) apres la mort du moteur
+ok   - 6 /health nomme la mort du moteur        :: last_exit=-9 "signal 9"
+ok   - 10 le front n'a jamais quitte
+ok   - 11 CONTROLE NEGATIF : sans front, la meme mort coupe la connexion
+```
+
+Le produit s'en sert : `start.bat` lance `runtime.exe --front`
+(`SUDO_API_FRONT=0` restaure l'ancien mode). Vérifié dans le paquet construit :
+l'étape « Copy start.bat from Sudo-studio repo » passe, et le garde-fou
+d'installation (`P46 delivery gate`) donne `GATE RESULT: SUCCESS (22 checks)`
+avec `P46-6 PASS runtime-journal-nctx`.
 
 ---
 
@@ -300,40 +350,68 @@ le code de sortie et l'appel exact.
 | B5 | point de santé inblocable, occuper ≠ mort, ne jamais relancer un vivant | **PROUVÉ (local + CI)** | K2, K2b–d, K4, K4b ; bandeau « battement de coeur : status=200 busy=False phase=demarrage » en CI |
 | B5b | correction de « relance impossible (timeout) » | **PROUVÉ (local, par construction)** ; à confirmer sur PC | §4 |
 | B6 | relance temporisée et journalisée + durée | **PROUVÉ (local, journal)** ; durée réelle : CI/PC | `RESTART done … duration_ms=` |
-| C7 | isolation complète de l'inférence (API survivante) | **NON FAIT** — dit franchement | §5 |
+| C7 | isolation de l'inférence : l'API survit au plantage du moteur | **PROUVÉ (local + CI, vrai modèle)** | §5 bis : 17 checks, job `p69-isolation`, contrôle négatif |
 | C8 | un seul chargement, fenêtre figée par session + raison affichée | **PROUVÉ (local)** | K6, K6b–d ; panneau Runtime |
 | C9 | message RAM clair avec la marche à suivre | **PROUVÉ (local)** | K7, K7b–d |
 | B12 | le job `p68-context` n'est plus rouge (critère mal posé) | **PROUVÉ (CI)** | run `44966352600` : témoin `/tokenize` 8 prompts, écart max **0** jeton, chemin agent **0** |
 | D10 | endurance 100+ requêtes + plantage injecté + contrôle négatif | **PROUVÉ (CI, vrai modèle)** : 240 appels, 0 mort, contrôle négatif OK, reprise 2,0 s | §5 |
-| D11 | paquet installé : /health, redémarrage forcé, journal superviseur | **NON FAIT** (paquet P68/P69 à reconstruire) | — |
+| D11 | paquet installé : /health, redémarrage forcé, journal superviseur | **PROUVÉ (CI Windows)** | paquet `45010255766` : `GATE RESULT: SUCCESS (22 checks)`, `P46-6 PASS runtime-journal-nctx`, smoke installation vert |
+| B6 | un battement étranger ne rend pas un mort vivant | **PROUVÉ** | `K2e` ; bug réellement rencontré (deux suites sont devenues rouges) |
 
 ---
 
-## 9. Commits et runs
+## 9. Commits, runs et paquet
+
+**Sudo-studio** (tout sur `main`, aucune branche) :
 
 ```
-0797b17  la serie lit la fenetre REELLE dans /health (2048 puis 4096),
-         resume par type d'appel
-23a225f  P68 : critere de comptage MESURE (temoin /tokenize) au lieu d'une
-         formule hors ligne comparee a tort
-2c4458a  P69 : medecine legale, battement de coeur, superviseur (dossier +
-         code de sortie), fusion des chargements, fenetre figee, message RAM,
-         banc, script PowerShell, suite test-p69 (26 checks)
-7c927b6  la serie couvre vraiment 2048 puis 4096 et les quatre cas demandes
+c83683d  P69-C7 : deux gardes appris du paquet P69 (pas de second moteur sur
+         un port deja servi ; temporisation croissante + suspension des
+         relances quand le moteur meurt immediatement)
+683ea5a  P69-C7 : api_front.py (moteur en processus enfant), --front,
+         start.bat, suite d'isolation ; P69-B6 (battement etranger)
+bd18945  banc d'isolation : les deux formes de 503 ; Flask installe pour que
+         la suite tourne vraiment (un SKIP ne doit pas passer pour un vert)
+0797b17  serie dimensionnee sur la fenetre REELLE
+2c4458a  medecine legale, battement de coeur, superviseur, fusion, RAM
+23a225f  P68 : critere de comptage MESURE (temoin /tokenize)
 ```
 
-Runs CI (workflow `00-test-suite.yml`, déclenchés à la main) :
-
-| run | tête | jobs |
+| run Sudo-studio | tête | quoi |
 |---|---|---|
-| `44962358926` | `7c927b6` | 7 jobs, **tous verts** (premier passage P69 : 300 appels, 0 mort) |
-| `44966308802` | `0797b17` | P69 vert (120 appels), P68-context rouge (critère mal posé) |
-| `44966352600` | `23a225f` | **7 jobs, tous verts**, dont `p68-context` |
-| `44968840021` | `d298ee8` (**tête finale, avec ce rapport**) | **7 jobs, tous verts** : P67, P68-grammaire, P68-contexte, P69-runtime, 49 suites, agent bench, PowerShell |
+| `45001468412` | `683ea5a` | P69-runtime, P68-*, P67 verts ; `p69-isolation` et `49 suites` rouges → corrigés |
+| `45003103510` | `bd18945` | suite complète (relancée pour la tête du paquet) |
+| `45003351321` | `bd18945` | **01 backend** → vert |
+| `45003353210` | `bd18945` | **02 runtime** → vert |
+| `45008243441` | `c83683d` | **01 backend** → vert (paquet final) |
+| `45008223309` | `c83683d` | **02 runtime** → vert (paquet final) |
 
-Tests locaux : **68 suites, 3 échecs antérieurs** (`test-p29-packaging`,
-`test-p30-backend`, `test-p33-runtime-logs` — réseau/ports/MSVC, présents sur un
-arbre propre). Suite P69 : **26 checks, tous verts**.
+**Paquet** (`sudo-studio-packager`, pins `45008243441` / `45008223309`,
+`SUDO_STUDIO_REF = c83683da…`) :
 
-Reste ouvert après ce rapport : reconstruire le paquet installé (D11) et, si tu
-veux fermer C7, sortir l'inférence du processus API.
+| run | résultat | ce qui est dedans |
+|---|---|---|
+| `45003172376` | **échec, à juste titre** | garde-fou : « pins construits depuis 683ea5a, or ref = bd18945 » |
+| `45005217786` | **succès** | installer + portable (preuve de bout en bout) |
+| `45010255766` | **succès** | installer **359,6 Mo**, portable **416,5 Mo**, `GATE RESULT: SUCCESS (22 checks, 3 skipped)` |
+
+Étapes vertes du job `build` : garde-fou d'artefact périmé, `Download
+backend.exe`/`runtime.exe` par run ID, `Verify artifacts are built from current
+main`, `Copy start.bat`, Inno Setup, **`P46 delivery gate (install + test
+installed product)`**, `Upload installer`. Job `P29+P31 smoke (Windows install
++ agent e2e)` : **succès** — c'est l'installation réelle testée sur Windows.
+
+**Un point rouge, dit tel quel** : le job *best-effort* `P35 panel render`
+échoue sur son étape « start.bat PHASE 5 + hidden launch », avec
+`no editor window titled Sudo Studio after hidden launch`. Deux runs ont
+échoué à des endroits différents de cette même étape (l'un après « Editor
+detected », l'autre avant), et `startup-phase5.log` montre `[PHASE 2] Runtime
+ready on port 6000` puis `DEBUG PHASE 5 START` : le lanceur va bien. C'est une
+assertion sur le **titre de fenêtre** d'un éditeur lancé en `SW_HIDE` sur un
+runner CI ; elle n'est pas dans le chemin du produit. Je ne l'ai pas maquillée
+(`continue-on-error`, elle n'empêche pas le paquet) et je ne la déclare pas
+résolue.
+
+**Reste ouvert** : (a) cette étape P35 ; (b) valider `--front` sur ton PC
+(`%LOCALAPPDATA%\SudoStudio\logs\runtime-front.log` doit contenir
+`moteur lance pid=…`, puis `curl http://127.0.0.1:6000/engine`).
