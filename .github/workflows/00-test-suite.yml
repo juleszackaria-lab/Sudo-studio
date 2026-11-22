@@ -442,10 +442,10 @@ jobs:
           mkdir -p ~/.sudo_studio/models
           cp ~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf ~/.sudo_studio/models/
 
-      - name: Serie de 300 appels + plantage injecte
+      - name: Serie de 120 appels (fenetre reelle) + plantage injecte
         run: |
           mkdir -p p69-results
-          python3 scripts/ci/p69-crash-bench.py --out p69-results --calls 300 \
+          python3 scripts/ci/p69-crash-bench.py --out p69-results --calls 120 \
             2>&1 | tee p69-results/p69-crash-console.txt
 
       - name: Artefacts

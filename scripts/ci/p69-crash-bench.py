@@ -146,6 +146,19 @@ class Runtime:
     def alive(self):
         return self.proc is not None and self.proc.poll() is None
 
+    def real_n_ctx(self, default=None):
+        """Fenetre REELLEMENT active, lue dans /health (jamais devinee)."""
+        try:
+            h = http(self.base() + "/health", timeout=10)
+            j = h.get("json") or {}
+            m = j.get("model") or {}
+            for v in (m.get("n_ctx"), j.get("n_ctx"), (j.get("n_ctx_session"))):
+                if isinstance(v, int) and v > 0:
+                    return v
+        except Exception:
+            pass
+        return default
+
     def wait_model(self, timeout=420):
         """Attend que le modele soit charge (etat lu dans /health)."""
         t0 = time.time()
@@ -223,15 +236,25 @@ def run_series(rt, calls, out_dir):
     rows = []
     deaths = []
     lat = []
-    n_ctx = 2048
+    # On force d'abord 2048 : la serie doit couvrir 2048 PUIS 4096, et la
+    # taille des prompts est calculee sur la fenetre REELLE (lue dans /health),
+    # jamais sur une valeur supposee.
+    try:
+        http(rt.base() + "/reload", {"model": rt.model, "n_ctx": 2048}, timeout=60)
+        rt.wait_model(timeout=300)
+    except Exception as e:
+        print("[AVERTISSEMENT] passage a 2048 impossible : %s" % e)
+    n_ctx = rt.real_n_ctx(default=2048)
+    print("[FENETRE] n_ctx reel au depart : %s" % n_ctx)
     for i in range(1, calls + 1):
         # point 2 du prompt : la serie couvre n_ctx 2048 PUIS 4096.
         if i == (calls // 2) + 1:
             r = http(rt.base() + "/reload", {"model": rt.model, "n_ctx": 4096}, timeout=60)
             print("[BASCULE] n_ctx 2048 -> 4096 : %s" % json.dumps(r)[:200])
             w = rt.wait_model(timeout=300)
-            print("[BASCULE] rechargement : %s" % json.dumps(w))
-            n_ctx = 4096
+            n_ctx = rt.real_n_ctx(default=4096)
+            print("[BASCULE] rechargement : %s | fenetre reelle = %s"
+                  % (json.dumps(w), n_ctx))
         kind, payload = call_plan(i, n_ctx)
         t0 = time.time()
         r = http(rt.base() + "/v1/chat/completions", payload, timeout=300)
@@ -382,6 +405,18 @@ def main():
                  json.dumps(d.get("last_call")) if d.get("last_call") else "aucun"))
     if not deaths:
         print("  aucune mort : sur cette machine et ce modele, la serie n'a pas reproduit le plantage.")
+    # resume par type d'appel : c'est la que se voit un cas qui echoue
+    for kind in ("chat", "tools", "pres", "depasse"):
+        sel = [r for r in rows if r.get("kind") == kind]
+        if not sel:
+            continue
+        codes = {}
+        for r in sel:
+            codes[str(r.get("status"))] = codes.get(str(r.get("status")), 0) + 1
+        lat_k = sorted([r["ms"] for r in sel if r.get("ms")])
+        med = lat_k[len(lat_k) // 2] if lat_k else 0
+        print("  %-8s n=%-4d codes=%-28s mediane=%6d ms"
+              % (kind, len(sel), json.dumps(codes), med))
 
     inj = None
     if not args.skip_injection:
