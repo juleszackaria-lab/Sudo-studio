@@ -417,6 +417,13 @@ async function runTurn(opts) {
     return { status: 'error', code, error };
   };
 
+  // P70 : dans runTurn, il n'y a pas de `journal` (il vit dans toolsTurn).
+  // Petit adaptateur pour ne pas rejouer le bug de portee P70.
+  const jr = (level, msg, meta) => {
+    if (!log) return;
+    try { (level === 'warn' ? log.warn : log.info).call(log, msg, meta, corr); } catch (_) {}
+  };
+
   if (!store || !runs) return fail('internal', 'moteur agent indisponible.');
   if (!provider || typeof provider !== 'object') return fail('bad_config', 'provider non configure.');
   const session = store.get(sessionId);
@@ -424,6 +431,151 @@ async function runTurn(opts) {
   if (typeof prompt !== 'string' || !prompt.trim()) return fail('bad_request', 'prompt vide.');
   if (prompt.length > MAX_PROMPT) return fail('bad_request', 'prompt trop long.');
   if (runs.has(sessionId)) return fail('busy', 'un tour est deja en cours sur cette session.');
+
+  // P70-F (bug V5) : le PATH de l'agent est relu A CHAQUE TOUR - registre
+  // machine + utilisateur sous Windows - puis donne aux commandes enfants.
+  // Un PATH herite du processus et perime, c'est exactement ce qui faisait
+  // apparaitre absents=node,npm,git,python... On journalise ce qu'on a trouve.
+  try {
+    const p70env = require('./p70/env');
+    const env70 = p70env.resolveTools(['node', 'npm', 'git', 'python', 'python3', 'pip', 'where']);
+    p70env.setChildPath(env70.path);
+    jr('info', p70env.journalLine(env70));
+  } catch (e) {
+    jr('warn', 'p70 env indisponible : ' + (e && e.message));
+  }
+
+  // P70-B5/B8 : chemin RAPIDE SANS MODELE pour les operations de base
+  // (supprimer, lire, lister, creer, renommer, deplacer, copier). Il passe
+  // AVANT la sonde du fournisseur : ces taches ne doivent dependre ni du
+  // modele ni du runtime. Chaque tour journalise le temps et "0 appel modele".
+  //
+  // Une suppression exige l'accord de l'operateur : la question est posee par
+  // le mecanisme d'approbation du MOTEUR (pauseForApproval), pas par un second
+  // systeme d'accord. La trace du tour (meta.lastRun.calls) est ecrite comme
+  // pour un tour ordinaire : les noms d'outils sont donc journalises.
+  // Porte explicite : le chemin rapide sans modele est ACTIVE PAR LE PRODUIT
+  // (SUDO_P70_FASTPATH=1 dans les scripts de demarrage) et par ses tests. Un
+  // moteur nu garde le comportement historique : indispensable pour que les
+  // suites P52/P61/P63 continuent de tester la boucle modele telle quelle.
+  const p70On = String(process.env.SUDO_P70_FASTPATH || '0') === '1';
+  if (!p70On) jr('info', 'p70 chemin rapide desactive (SUDO_P70_FASTPATH!=1)');
+  try {
+    if (!p70On) throw { p70off: true };
+    const p70fast = require('./p70/fast');
+    const p70timing = require('./p70/timing');
+    let root70 = null;
+    try { root70 = fs.realpathSync(session.projectRoot); } catch (_) { root70 = session.projectRoot || null; }
+    if (root70) {
+      const hasWaiter = !!(opts.toolsCtx && opts.toolsCtx.waiters);
+      let fr = p70fast.tryHandle({
+        prompt: prompt, root: root70, home: homeOf(opts.toolsCtx), sessionId: sessionId,
+        approve: !!opts.approve, confirmProtected: !!opts.confirmProtected,
+        engineApproval: hasWaiter,
+      });
+
+      // Un tour du chemin rapide laisse la meme trace qu'un autre tour.
+      const finish70 = (status70, text70, code70, calls70, extra70) => {
+        extra70 = extra70 || {};
+        const t70 = extra70.timing || null;
+        if (log) {
+          try { log.info('p70 tour sans modele', { session: sessionId, statut: status70,
+            modelCalls: 0, t: t70 }, corr); } catch (_) {}
+          try { log.info(p70timing.line(t70), { session: sessionId }, corr); } catch (_) {}
+          try { log.info('outils du tour', { session: sessionId,
+            noms: (calls70 || []).map((c) => c.tool + '/' + c.code) }, corr); } catch (_) {}
+        }
+        try { onEvent({ type: 'turn.start', turnId: corr, model: '(sans modele)' }); } catch (_) {}
+        store.append(sessionId, { role: 'user', content: prompt });
+        store.append(sessionId, { role: 'assistant', content: text70 });
+        try { onEvent({ type: 'message.start', role: 'assistant' }); } catch (_) {}
+        try { onEvent({ type: 'message.done', text: text70, aborted: false }); } catch (_) {}
+        const runStatus70 = status70 === 'TERMINE' ? 'TERMINE' : (status70 === 'ECHEC' ? 'ECHEC' : 'PARTIEL');
+        try {
+          onEvent({ type: 'turn.done', turnId: corr,
+            messageCount: (store.get(sessionId) || { messages: [] }).messages.length,
+            model: '(sans modele)', aborted: status70 === 'ANNULE', status: runStatus70,
+            reason: code70, filesModified: [], stopReason: code70,
+            declaredDone: runStatus70 === 'TERMINE', toolCalls: (calls70 || []).length,
+            unresolvedErrors: [], modelCalls: 0, p70: extra70.p70 || null });
+        } catch (_) {}
+        try {
+          store.update(sessionId, (st) => {
+            if (!st.meta) st.meta = {};
+            st.meta.lastRun = { at: new Date().toISOString(), status: runStatus70, reason: code70,
+              stopReason: code70, mode: 'sans modele', profile: 'p70',
+              filesModified: [], modelCalls: 0, calls: calls70 || [] };
+          });
+        } catch (_) {}
+        return { status: 'done', model: '(sans modele)', runStatus: runStatus70,
+          code: code70, text: text70, modelCalls: 0 };
+      };
+      const callsOfFacts = (facts) => {
+        const out = [];
+        for (const f of (facts && facts.deleted) || []) out.push({ tool: 'delete', target: f, ok: true, code: 'ok' });
+        for (const f of (facts && facts.created) || []) out.push({ tool: 'write', target: f, ok: true, code: 'ok' });
+        for (const f of (facts && facts.modified) || []) out.push({ tool: 'write', target: f, ok: true, code: 'ok' });
+        return out;
+      };
+
+      if (fr && fr.handled && fr.needsEngineApproval) {
+        const run70 = { id: corr, sessionId, aborted: false, calls: [],
+          startedAt: new Date().toISOString() };
+        try { runs.set(sessionId, run70); } catch (_) {}
+        let verdict = null;
+        try {
+          verdict = await pauseForApproval({ toolsCtx: opts.toolsCtx || {}, sessionId,
+            runEntry: run70, onEvent, turnId: corr, journal: jr, request: fr.request,
+            fullArgs: fr.hold && fr.hold.plan });
+        } catch (e) {
+          jr('warn', 'p70 approbation indisponible : ' + (e && e.message));
+          verdict = { legacy: true };
+        }
+        try { runs.delete(sessionId); } catch (_) {}
+
+        if (verdict && verdict.aborted) {
+          return finish70('ANNULE', 'Tour abandonne pendant l attente d approbation : aucune modification.',
+            'p70_abandonne', []);
+        }
+        if (verdict && verdict.legacy) {
+          // Aucun operateur joignable : on s'arrete honnetement, sans rien faire.
+          run70.calls.push({ tool: fr.request.tool, target: fr.request.pattern && fr.request.pattern.text,
+            ok: false, code: 'need_approval' });
+          return finish70('PARTIEL', fr.text + ' Aucune modification n a ete faite : personne ne peut approuver ici.',
+            'p70_approval_requise', run70.calls, { p70: fr });
+        }
+        if (verdict && verdict.decision === 'deny') {
+          run70.calls.push({ tool: fr.request.tool, target: fr.request.pattern && fr.request.pattern.text,
+            ok: false, code: 'denied' });
+          jr('warn', 'approbation refusee, tour arrete', { tool: fr.request.tool });
+          const cible = (fr.request.pattern && fr.request.pattern.text) || '?';
+          return finish70('PARTIEL',
+            'REFUS : l operation "' + fr.request.tool + '" sur "' + cible + '" a ete refusee par l operateur. ' +
+            'Aucune modification n a ete faite.', 'approval_denied (refus operateur)', run70.calls);
+        }
+        // Approuve : on execute, puis on VERIFIE sur le disque.
+        const ex = p70fast.executeApproved(fr.hold, { sessionId: sessionId });
+        const calls = callsOfFacts(ex.facts || {});
+        if (!calls.length) calls.push({ tool: fr.request.tool, target: fr.request.pattern && fr.request.pattern.text,
+          ok: ex.status === 'TERMINE', code: ex.status === 'TERMINE' ? 'ok' : 'echec' });
+        const code = ex.status === 'TERMINE' ? 'p70_approuve_execute' : ('p70_approuve_' + ex.status.toLowerCase());
+        return finish70(ex.status, ex.text, code, calls, { timing: ex.timing, p70: ex });
+      }
+
+      if (fr && fr.handled) {
+        const calls = callsOfFacts(fr.facts || {});
+        if (!calls.length && fr.toolCall) calls.push(fr.toolCall);
+        if (!calls.length && Array.isArray(fr.steps)) {
+          for (const st of fr.steps) if (st && st.toolCall) calls.push(st.toolCall);
+        }
+        if (!calls.length && fr.steps) for (const st of fr.steps) for (const c of callsOfFacts(st.facts || {})) calls.push(c);
+        return finish70(fr.status, fr.text, 'p70_fast', calls, { timing: fr.timing, p70: fr });
+      }
+    }
+  } catch (e) {
+    if (e && e.p70off) { /* porte fermee : on continue sur la boucle historique */ }
+    else if (log) { try { log.warn('p70 chemin rapide indisponible', { error: String((e && e.message) || e).slice(0, 160) }, corr); } catch (_) {} }
+  }
 
   const runtimeWait = opts.runtimeWait || null;
   let probe = opts.preProbe && typeof opts.preProbe === 'object' ? opts.preProbe : null;
@@ -963,6 +1115,38 @@ function unresolvedErrors(calls) {
 // P53-3: ECHEC only when NOTHING could be done. Real modifications plus
 // standing tool errors, or an impossible/failed verification, are a PARTIEL
 // with the file list and the honest reason.
+/**
+ * P70-D12 : les FAITS d'un tour, lus sur le disque (jamais dits par le modele).
+ * Un fichier supprime n'est un fait que s'il n'existe plus.
+ */
+function p70FactsOfRun(run, root) {
+  const out = { deleted: [], created: [], modified: [], commands: [] };
+  let files = [];
+  try { files = Array.isArray(run && run.filesModified) ? run.filesModified : []; } catch (_) { files = []; }
+  for (const raw of files) {
+    if (typeof raw !== 'string' || raw.length < 2) continue;
+    const mark = raw.charAt(0);
+    const rel = (mark === '+' || mark === '~' || mark === '-') ? raw.slice(1) : raw;
+    let exists = false;
+    try { exists = require('fs').existsSync(require('path').join(root || process.cwd(), rel)); } catch (_) {}
+    if (mark === '-' && !exists) out.deleted.push(rel);
+    else if (mark === '+' && exists) out.created.push(rel);
+    else if (exists) out.modified.push(rel);
+  }
+  try {
+    for (const c of (run && Array.isArray(run.calls) ? run.calls : [])) {
+      if (c && c.tool === 'bash' && c.ok) out.commands.push({ command: String(c.target || '').slice(0, 120), code: 0 });
+      if (c && c.tool === 'delete' && c.ok && out.deleted.indexOf(String(c.target || '')) === -1) {
+        const rel = String(c.target || '');
+        let exists = true;
+        try { exists = require('fs').existsSync(require('path').join(root || process.cwd(), rel)); } catch (_) {}
+        if (rel && !exists) out.deleted.push(rel);
+      }
+    }
+  } catch (_) {}
+  return out;
+}
+
 function computeRunStatus(declared, calls, extra) {
   const unresolved = unresolvedErrors(calls);
   const ex = extra || {};
@@ -2195,6 +2379,7 @@ async function toolsTurn(base, session, toolsCtx) {
   }
   let declared = false;
   let finalText = '';
+  let p70Contradiction = null;   // P70-D12 : contradiction modele / disque du tour
   // P61-9: distingue un texte ECRIT PAR LE MODELE (reponse declaree ou
   // reponse de secours) d'un texte ECRIT PAR L'AGENT (constat de statut). Le
   // second porte toujours fait/reste ; le premier est stocke tel quel, le
@@ -2590,7 +2775,7 @@ async function toolsTurn(base, session, toolsCtx) {
         const freeText = String(reply.text || '').trim();
         const salvaged = rawArgText ? '' : (salvageReadableText(first.argsText)
           || (first.parseError ? salvageReadableText(reply.text) : ''));
-        const argText = rawArgText || freeText || salvaged;
+        let argText = rawArgText || freeText || salvaged;
         if (salvaged && !rawArgText) {
           answerSalvaged = true;
           journal('info', 'resume extrait d un appel illisible', { tool: first.name, chars: argText.length });
@@ -2625,6 +2810,25 @@ async function toolsTurn(base, session, toolsCtx) {
           closeExtrasF();
           if (vF === 'stop') break; else continue;
         }
+        // P70-D12 : le texte de fin est une PAROLE du modele. On le confronte
+        // aux faits du disque AVANT de l'afficher. Une contradiction ne se
+        // masque pas : elle s'affiche et le tour passe en ECHEC.
+        try {
+          const p70v = require('./p70/verified');
+          const facts70 = p70FactsOfRun(run, root);
+          const chk = p70v.verifyClaims(argText, facts70);
+          if (!chk.ok) {
+            p70Contradiction = chk;
+            argText = argText + (argText ? '\n\n' : '') + chk.message;
+            journal('error', 'contradiction modele / disque', { message: chk.message.slice(0, 220) });
+          } else if (facts70.deleted.length || facts70.created.length || facts70.modified.length) {
+            const bits = [];
+            if (facts70.deleted.length) bits.push(facts70.deleted.length + ' supprime(s) : ' + facts70.deleted.slice(0, 5).join(', '));
+            if (facts70.created.length) bits.push(facts70.created.length + ' cree(s) : ' + facts70.created.slice(0, 5).join(', '));
+            if (facts70.modified.length) bits.push(facts70.modified.length + ' modifie(s) : ' + facts70.modified.slice(0, 5).join(', '));
+            argText = argText + (argText ? '\n\n' : '') + 'Verifie sur le disque : ' + bits.join(' ; ') + '.';
+          }
+        } catch (_) {}
         finishIntercept(true, 'final', argText || 'fin.');
         closeExtrasF();
         declared = true;
@@ -3267,6 +3471,13 @@ async function toolsTurn(base, session, toolsCtx) {
   // Honest status (P25-g + P26 stops).
   const filesModified = currentFilesModified();
   let verdict = computeRunStatus(declared, run.calls, { files: currentFilesModified(), verifyNote, lang: convLang });
+  // P70-D12 : une contradiction constatee ne peut pas finir en TERMINE.
+  if (p70Contradiction) {
+    verdict = Object.assign({}, verdict, {
+      status: 'ECHEC',
+      reason: 'contradiction modele / disque : ' + String(p70Contradiction.message || '').slice(0, 200),
+    });
+  }
   const strongVerdict = orchVerdict || jobVerdict; // P52/P56: per-step report wins (honest).
   if (strongVerdict) verdict = strongVerdict;
   if (!declared && stopReason && stopReason !== 'verify_failed') {

@@ -182,6 +182,9 @@ echo "  Logs backend     : logs/backend.log (PID: $BACKEND_PID)"
 echo "  Logs runtime     : logs/runtime.log (PID: $RUNTIME_PID)"
 echo "============================================================"
 echo ""
+# P70 : operations de base (supprimer, lire, creer, renommer) sans modele.
+export SUDO_P70_FASTPATH="${SUDO_P70_FASTPATH:-1}"
+
 echo "Ouvrez VSCodium pour utiliser Sudo Studio."
 echo "Appuyez sur Ctrl+C pour arrêter tous les services."
 echo ""

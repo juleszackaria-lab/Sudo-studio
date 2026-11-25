@@ -706,7 +706,14 @@ async function hBash(ctx, args, resolved) {
   const dflt = isControlCommand(command) ? controlTimeout() : BASH_DEFAULT_TIMEOUT;
   const timeoutMs = Math.min(BASH_MAX_TIMEOUT, Math.max(1000, asked || dflt));
   const mod = p8();
-  const env = mod ? mod.filterSpawnEnv(process.env).env : filterEnvFallback(process.env);
+  let env = mod ? mod.filterSpawnEnv(process.env).env : filterEnvFallback(process.env);
+  // P70-F (bug V5) : PATH relu a chaque tour (registre machine + utilisateur),
+  // pas le PATH herite du processus. Voir p70/env.js et loop.js.
+  try {
+    const p70env = require('./p70/env');
+    const cp = p70env.childPathNow();
+    if (cp) env = Object.assign({}, env, { PATH: cp, Path: cp });
+  } catch (_) { /* on garde l'environnement filtre */ }
   const l2 = l2status();
   const shell = shellFor(command);
   const t0 = Date.now();

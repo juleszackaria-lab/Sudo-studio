@@ -56,6 +56,38 @@ function fold(s) {
     .replace(/[\u00f1]/g, 'n');
 }
 
+// P70-C11 : une OPERATION SUR FICHIER ne doit jamais etre routee vers un
+// domaine plateforme (security, analysis...) : c'est un travail sur disque,
+// deterministe. On ne prend que les verbes qui AGISSENT sur une cible ; les
+// verbes de lecture ("regarde", "affiche") restent au routeur pour ne pas
+// casser l'audit/l'analyse.
+const FILE_ACTION_RE = /\b(supprime\w*|efface\w*|enleve\w*|retire\w*|delete|remove|renomme\w*|rename|deplace\w*|move|copie\w*|copy|mkdir|cree\s+(?:un\s+)?(?:fichier|dossier|file|folder))\b/;
+// Lecture/liste : operation de fichier SEULEMENT si la cible est explicite
+// (un chemin, ou un nom avec extension). "regarde les journaux" n'est pas
+// une lecture de fichier : cela reste une demande a comprendre.
+const FILE_READ_RE = /\b(lis|lire|lisez|affiche\w*|montre\w*|read|show|cat|liste\w*|list)\b/;
+const EXPLICIT_TARGET = /["'`][^"'`]+["'`]|[A-Za-z0-9._\-]+[\/\\][^\s"'`)]+|[A-Za-z0-9_\-]+\.[A-Za-z0-9]{1,6}\b/;
+const SPLIT_RE = /\s*(?:;|,\s*puis|\s+puis\s+|\s+ensuite\s+|,\s*then\s+|\s+then\s+|\s+and\s+then\s+)\s*/i;
+
+function fileOpPart(text) {
+  const t = String(text || '');
+  const ft = fold(t);
+  // Seules les operations qui MODIFIENT le disque retirent la main au routeur
+  // par domaine : une lecture/liste n'a aucun effet de bord, le moteur la gere
+  // tres bien (resolution de casse, cible introuvable, liste guidee).
+  if (!FILE_ACTION_RE.test(ft)) return null;
+  // une cible explicite (chemin, guillemets, ou nom apres le verbe)
+  const quoted = t.match(/["'`]([^"'`]+)["'`]/);
+  const pathy = t.match(/(?:^|[\s"'`(])([A-Za-z0-9._\-]+[\/\\][^\s"'`)]+)/);
+  return { target: (quoted && quoted[1]) || (pathy && pathy[1]) || null, text: t.trim() };
+}
+
+/** Consigne composee ? Renvoie les sous-consignes, sinon null. */
+function splitComposed(prompt) {
+  const parts = String(prompt || '').split(SPLIT_RE).map((s) => s.trim()).filter((s) => s.length > 1);
+  return parts.length > 1 ? parts.slice(0, 4) : null;
+}
+
 // Returns { domain|null, scores, tools, prefetch, hits }.
 // domain is null when nothing matches: the turn keeps the full tool surface.
 function route(prompt) {
@@ -77,14 +109,32 @@ function route(prompt) {
     const s = scores[domain] || 0;
     if (s > bestScore) { best = domain; bestScore = s; }
   }
-  const tools = best ? DOMAIN_TOOLS[best].slice(0, MAX_EXPOSED) : [];
+  // P70-C11 : si la consigne commence par une operation sur fichier, le
+  // domaine plateforme ne s'applique PAS a ce tour (l'audit viendra apres,
+  // comme sous-tache separee).
+  const parts = splitComposed(prompt);
+  const subtasks = parts ? parts.map((p_) => {
+    const fp = fileOpPart(p_);
+    if (fp) return { kind: 'file-op', text: p_, target: fp.target, domain: null, tools: [] };
+    const r = route(p_);
+    return { kind: 'platform', text: p_, domain: r.domain, tools: r.tools };
+  }) : null;
+  const firstFileOp = fileOpPart(String(prompt || '').split(SPLIT_RE)[0]);
+  const tools = (firstFileOp || (subtasks && subtasks[0] && subtasks[0].kind === 'file-op'))
+    ? [] : (best ? DOMAIN_TOOLS[best].slice(0, MAX_EXPOSED) : []);
+  const effectiveDomain = (firstFileOp || (subtasks && subtasks[0] && subtasks[0].kind === 'file-op')) ? null : best;
   return {
-    domain: best,
+    domain: effectiveDomain,
+    fileOp: firstFileOp ? true : null,
+    subtasks,
     scores,
     hits,
     tools,
     prefetch: best ? DOMAIN_PREFETCH[best] : null,
-    reason: best ? ('mots-cles ' + best + ' score ' + bestScore) : 'aucun domaine detecte',
+    reason: (firstFileOp || (subtasks && subtasks[0] && subtasks[0].kind === 'file-op'))
+      ? ('operation sur fichier detectee -> aucun domaine plateforme' +
+         (subtasks ? ' (' + subtasks.length + ' sous-taches)' : ''))
+      : (best ? ('mots-cles ' + best + ' score ' + bestScore) : 'aucun domaine detecte'),
   };
 }
 
@@ -96,4 +146,4 @@ function wantsFix(prompt) {
   return /\b(faill\w*|vulnerab\w*|securit\w*|security|audit\w*|devops|pipeline|erreurs?|bugs?)\b/.test(t);
 }
 
-module.exports = { route, wantsFix, MAX_EXPOSED, DOMAIN_TOOLS, DOMAIN_PREFETCH, fold };
+module.exports = { route, wantsFix, MAX_EXPOSED, DOMAIN_TOOLS, DOMAIN_PREFETCH, fold, fileOpPart, splitComposed };

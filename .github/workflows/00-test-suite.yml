@@ -15,6 +15,8 @@ on:
     branches: [main]
     paths:
       - 'backend/**'
+      - 'sudo-agent/**'
+      - 'scripts/ci/**'
       - 'sudo-ai-extension/**'
       - '.github/workflows/00-test-suite.yml'
 
@@ -530,4 +532,88 @@ jobs:
             p69-results/
             p69-results-isolation.txt
             p69-logs/
+          if-no-files-found: warn
+
+  # P70 : le chemin rapide SANS MODELE. Preuve attendue : 0 appel modele,
+  # disque verifie, approbation respectee. Aucune de ces suites n'a besoin
+  # d'un modele : elles tournent sur un faux fournisseur, donc elles prouvent
+  # le MOTEUR (mention "PROUVE EN CI (moteur seul)").
+  p70-fastpath:
+    name: P70 chemin rapide (0 appel modele)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Installer les dependances du moteur
+        run: |
+          if [ -f sudo-agent/package.json ]; then npm --prefix sudo-agent install --no-audit --no-fund; fi
+          if [ -f backend/package.json ]; then npm --prefix backend install --no-audit --no-fund; fi
+
+      - name: Suites P70 (parseur, chemins, disque, approbation, verification)
+        env:
+          SUDO_P70_FASTPATH: "1"
+        run: |
+          set -o pipefail
+          node backend/tests/test-p70-fastpath.js | tee p70-suite-1.txt
+          node backend/tests/test-p70-surface.js | tee p70-suite-2.txt
+          node backend/tests/test-p70-verified-env.js | tee p70-suite-3.txt
+          node backend/tests/test-p70-integration.js | tee p70-suite-4.txt
+
+      - name: Rejeu T1 a T10 (0 appel modele)
+        run: |
+          set -o pipefail
+          node scripts/ci/p70-replay.js --json | tee p70-replay.txt
+
+      - name: Non-regression des suites historiques
+        run: |
+          set -o pipefail
+          node backend/tests/test-p59-platform.js | tee p70-regression-p59.txt
+          node backend/tests/test-p62-refus-boucle.js | tee p70-regression-p62.txt
+          node backend/tests/test-p63-agent.js | tee p70-regression-p63.txt
+
+      - name: Artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p70-fastpath
+          path: |
+            p70-*.txt
+            p70-replay.json
+          if-no-files-found: warn
+
+  # P70-F (bug V5) : sous Windows, le PATH de l'agent doit venir du registre
+  # (machine + utilisateur) et non d'un environnement herite/perime. Le
+  # controle negatif est joue aussi : PATH vide => node absent.
+  p70-windows-path:
+    name: P70 PATH Windows (registre + controle negatif)
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Resolution du PATH (moteur)
+        env:
+          SUDO_P70_FASTPATH: "1"
+        run: node backend/tests/test-p70-verified-env.js
+
+      - name: Script agent-p70 (T1 a T10 + PATH de l agent)
+        shell: powershell
+        run: powershell -ExecutionPolicy Bypass -File scripts/ci/agent-p70.ps1
+
+      - name: Artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p70-windows-path
+          path: |
+            p70-replay.txt
           if-no-files-found: warn
