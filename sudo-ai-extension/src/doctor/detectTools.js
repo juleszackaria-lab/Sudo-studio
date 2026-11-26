@@ -70,18 +70,29 @@ async function machinePath(run) {
   }
   const ps = '[Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")';
   const r = await run('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { timeoutMs: DEFAULT_TIMEOUT });
-  let value = String(r.stdout || '').trim();
-  if (r.code !== 0 || !value) {
+  let registry = String(r.stdout || '').trim();
+  if (r.code !== 0 || !registry) {
     const r2 = await run('reg', ['query', 'HKCU\\Environment', '/v', 'Path'], { timeoutMs: DEFAULT_TIMEOUT });
     const m = /Path\s+REG_\w+\s+(.+)/i.exec(String(r2.stdout || ''));
-    value = m ? m[1].trim() : (process.env.PATH || '');
-    src.fallback = 'reg query HKCU + environnement du processus';
+    registry = m ? m[1].trim() : '';
+    src.fallback = 'reg query HKCU';
   } else {
     src.fallback = null;
   }
+  // P71 : registre D ABORD (frais, c est la correction de V5), puis le PATH du
+  // processus en complement. Certains environnements (postes de CI, dossiers
+  // d outils injectes au demarrage) n ecrivent PAS le registre : sans ce
+  // complement, un outil parfaitement utilisable etait annonce "hors du PATH"
+  // (faux positif vu dans la fumee du paquet, P36-DOCTOR-TOOLS).
+  const merged = [];
+  for (const p2 of splitPath(registry).concat(splitPath(process.env.PATH || process.env.Path || ''))) {
+    if (merged.indexOf(p2) === -1) merged.push(p2);
+  }
   src.registry = true;
-  src.entries = splitPath(value).length;
-  return { value, sources: src };
+  src.registryEntries = splitPath(registry).length;
+  src.processEntries = splitPath(process.env.PATH || process.env.Path || '').length;
+  src.entries = merged.length;
+  return { value: merged.join(';'), sources: src };
 }
 
 async function whichSyncLike(name, pathValue, run, timeoutMs) {

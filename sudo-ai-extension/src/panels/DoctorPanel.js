@@ -112,8 +112,11 @@ class DoctorPanel {
                 });
             }
             results.push({ name: 'PATH (source)', status: 'info',
-                value: (det.sources && det.sources.registry ? 'registre machine + utilisateur' : 'environnement du processus') +
-                    ' · ' + String((det.path || '').split(process.platform === 'win32' ? ';' : ':').length) + ' entrees' });
+                value: (det.sources && det.sources.registry
+                    ? 'registre machine + utilisateur (' + (det.sources.registryEntries || 0) + ') + processus (' + (det.sources.processEntries || 0) + ')'
+                    : 'environnement du processus') +
+                    ' · ' + String((det.path || '').split(process.platform === 'win32' ? ';' : ':').length) + ' entrees',
+                    details: { sources: JSON.stringify(det.sources || {}) } });
         }
 
         // Backend check

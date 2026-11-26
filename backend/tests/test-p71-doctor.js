@@ -85,6 +85,26 @@ async function main() {
       res.missing.indexOf('node') !== -1 && !res.found.node, JSON.stringify(res.missing));
   }
 
+  // ---- C3b : le PATH du processus complete le registre (faux positif P36)
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'p71-proc-'));
+    const exe = path.join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+    fs.writeFileSync(exe, '');
+    if (process.platform !== 'win32') {
+      // Comme sur un runner de CI : l outil est dans le PATH du PROCESSUS,
+      // pas dans le registre. Il doit etre trouve SANS etre dit hors PATH.
+      const savedPath = process.env.PATH;
+      process.env.PATH = dir + (process.platform === 'win32' ? ';' : ':') + savedPath;
+      const run = fakeRun({ 'which node': { code: 0, stdout: exe + '\n', stderr: '' } });
+      const res = await dt.detect(['node'], { run, timeoutMs: 15000 });
+      process.env.PATH = savedPath;
+      check('C3b un outil present dans le PATH du processus est trouve et N EST PAS dit hors PATH',
+        res.found.node === exe && res.outsidePath.length === 0, JSON.stringify({ f: res.found, o: res.outsidePath }));
+    } else {
+      check('C3b (Windows uniquement) verifie par le job p70-windows-path', true);
+    }
+  }
+
   // ---- C4 : reparation du PATH utilisateur, sans admin
   {
     const det = { found: { npm: 'C:\\Program Files\\nodejs\\npm.cmd' }, outsidePath: ['npm'], missing: [] };
