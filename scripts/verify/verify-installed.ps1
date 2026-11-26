@@ -382,6 +382,24 @@ try {
             throw 'SKIP:runtime not running (start the app or the gate first)'
         }
         $wantCtx = 4096
+        # P71 : ne JAMAIS demander le rechargement pendant le PREMIER chargement
+        # (premier demarrage = telechargement du modele). Un /reload envoye a ce
+        # moment-la repond 200 mais le chargement en cours gagne, avec sa propre
+        # valeur par defaut (8192) : le gate lisait alors "real n_ctx=8192 !=
+        # requested 4096" alors que le rechargement n'avait jamais eu lieu.
+        $deadline0 = (Get-Date).AddSeconds($ModelTimeoutSec)
+        while ((Get-Date) -lt $deadline0) {
+            try {
+                $m0 = Invoke-RestMethod 'http://127.0.0.1:6000/models' -TimeoutSec 10
+                if ($m0.loaded -and $m0.n_ctx) { break }
+            } catch {}
+            Start-Sleep -Seconds 5
+        }
+        $jtBefore = Get-Content $jr -Raw
+        # On compte les chargements QUI ONT REPONDU a notre demande (requested=4096),
+        # quelle que soit la valeur retenue : si le runtime renvoie 8192 pour une
+        # demande de 4096, c est un VRAI echec (pas un SKIP).
+        $beforeCount = ([regex]::Matches($jtBefore, '\[GGUF\] n_ctx=\d+ \(requested=4096')).Count
         try {
             $rl = Invoke-RestMethod 'http://127.0.0.1:6000/reload' -Method Post -Body (@{ n_ctx = $wantCtx } | ConvertTo-Json) -ContentType 'application/json' -TimeoutSec 30
         } catch {
@@ -390,17 +408,26 @@ try {
             if ($code -eq 409) { throw 'SKIP:another model load already in progress (409)' }
             throw ('reload refused: ' + (Short $_.Exception.Message 150))
         }
+        # On attend un NOUVEAU chargement (ligne [GGUF] n_ctx=4096 requested=4096
+        # de plus dans le journal), pas seulement un /models deja rempli par le
+        # chargement precedent.
         $got = $null
+        $lastGguf = ''
         $deadline = (Get-Date).AddSeconds($ModelTimeoutSec)
         while ((Get-Date) -lt $deadline) {
-            Start-Sleep -Seconds 15
+            Start-Sleep -Seconds 10
+            $jtNow = Get-Content $jr -Raw
+            $nowCount = ([regex]::Matches($jtNow, '\[GGUF\] n_ctx=\d+ \(requested=4096')).Count
+            $gg = [regex]::Matches($jtNow, '\[GGUF\] n_ctx=\d+ \(requested=[^)]*\)')
+            if ($gg.Count -gt 0) { $lastGguf = $gg[$gg.Count - 1].Value }
+            if ($nowCount -le $beforeCount) { continue }
             try { $m = Invoke-RestMethod 'http://127.0.0.1:6000/models' -TimeoutSec 10 } catch { continue }
             if ($m.loaded -and $m.n_ctx) { $got = $m; break }
         }
         if (-not $got) {
             $ds = ''
             try { $ds = Short ((Invoke-RestMethod 'http://127.0.0.1:6000/models/download-status' -TimeoutSec 10) | ConvertTo-Json -Compress) 120 } catch {}
-            throw ('SKIP:model not loaded within ' + $ModelTimeoutSec + 's (network? ' + $ds + ')')
+            throw ('SKIP:no load answered /reload ' + $wantCtx + ' within ' + $ModelTimeoutSec + 's (last journal: ' + (Short $lastGguf 80) + ' ; network? ' + $ds + ')')
         }
         if ([int]$got.n_ctx -ne $wantCtx) { throw ("real n_ctx={0} != requested {1}" -f $got.n_ctx, $wantCtx) }
         $jt2 = Get-Content $jr -Raw
