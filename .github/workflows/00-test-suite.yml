@@ -233,10 +233,10 @@ jobs:
       - name: Installer le moteur d'inference (llama-cpp-python CPU)
         run: |
           python -m pip install --upgrade pip
-          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install "llama-cpp-python[server]==0.3.9" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
           # llama_cpp.server importe uvicorn/fastapi : sans eux le job mourait
           # sur ModuleNotFoundError (run 45795741109, job 139825792386).
-          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings uvicorn fastapi sse-starlette pydantic-settings requests huggingface_hub
+          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings starlette_context python-dotenv pyyaml uvicorn fastapi sse-starlette pydantic-settings requests huggingface_hub
           python -c "import llama_cpp; print('llama_cpp', llama_cpp.__version__)"
 
       - name: "Demarrer le runtime du produit (repli sur serveur llama-cpp)"
@@ -329,7 +329,7 @@ jobs:
       - name: Installer llama-cpp-python (CPU)
         run: |
           python -m pip install --upgrade pip
-          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install "llama-cpp-python[server]==0.3.9" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       - name: Temoin - grammaire du depot (corrigee)
         run: |
@@ -398,8 +398,8 @@ jobs:
       - name: Installer llama-cpp-python (CPU) et le serveur reel
         run: |
           python -m pip install --upgrade pip
-          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings requests huggingface_hub
+          pip install "llama-cpp-python[server]==0.3.9" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings starlette_context python-dotenv pyyaml requests huggingface_hub
 
       - name: Temoin du comptage reel (POST /tokenize, chemin de l agent)
         run: |
@@ -458,8 +458,8 @@ jobs:
       - name: Installer les dependances du vrai serveur
         run: |
           python -m pip install --upgrade pip
-          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings requests huggingface_hub
-          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings starlette_context python-dotenv pyyaml requests huggingface_hub
+          pip install "llama-cpp-python[server]==0.3.9" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       - name: Rendre le modele visible du runtime (detection locale)
         run: |
@@ -512,8 +512,8 @@ jobs:
       - name: Installer le vrai serveur
         run: |
           python -m pip install --upgrade pip
-          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings requests huggingface_hub
-          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings starlette_context python-dotenv pyyaml requests huggingface_hub
+          pip install "llama-cpp-python[server]==0.3.9" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       - name: Front + moteur REEL, puis on tue le moteur
         run: |
@@ -690,8 +690,8 @@ jobs:
       - name: Installer le moteur d'inference (llama-cpp-python CPU)
         run: |
           python -m pip install --upgrade pip
-          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
-          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings
+          pip install "llama-cpp-python[server]==0.3.9" --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install flask flask-cors psutil uvicorn fastapi sse-starlette pydantic-settings starlette_context python-dotenv pyyaml
 
       - name: Demarrer le runtime avec n_ctx = ${{ matrix.nctx }}
         run: |
