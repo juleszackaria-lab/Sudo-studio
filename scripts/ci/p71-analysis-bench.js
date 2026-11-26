@@ -55,10 +55,31 @@ function fixture() {
   return dir;
 }
 
+// HTTP via node:http (et non fetch/undici) : ca marche aussi dans les
+// environnements ou fetch est restreint, et on maitrise le delai.
+const http = require('http');
+function request(method, p, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const data = body == null ? null : Buffer.from(JSON.stringify(body));
+    const req = http.request(BASE + p, {
+      method, headers: data ? { 'content-type': 'application/json', 'content-length': data.length } : {},
+      timeout: timeoutMs || 600000,
+    }, (res) => {
+      let raw = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { raw += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body: raw }));
+    });
+    req.on('timeout', () => { req.destroy(new Error('timeout')); });
+    req.on('error', reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
 async function getJson(p) {
-  const r = await fetch(BASE + p);
-  if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + p);
-  return r.json();
+  const r = await request('GET', p, null, 10000);
+  if (r.status >= 300) throw new Error('HTTP ' + r.status + ' ' + p);
+  try { return JSON.parse(r.body); } catch (_) { return {}; }
 }
 
 async function main() {
@@ -104,15 +125,10 @@ async function main() {
   const t1 = Date.now();
   let reply = '', usage = {}, timings = {}, engine = null, err = null, httpStatus = 0;
   async function tryCall(name, url, body, parse) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 10 * 60 * 1000);
-    const r = await fetch(BASE + url, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body), signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (!r.ok) return { ok: false, status: r.status };
-    const data = await r.json();
+    const r = await request('POST', url, body, 10 * 60 * 1000);
+    if (r.status >= 300) return { ok: false, status: r.status };
+    let data = {};
+    try { data = JSON.parse(r.body); } catch (_) { data = {}; }
     return Object.assign({ ok: true, status: r.status, engine: name }, parse(data));
   }
   try {
@@ -144,6 +160,16 @@ async function main() {
     if (/fetch failed|ECONNREFUSED|abort/i.test(err)) httpStatus = 0;
   }
   const totalMs = Date.now() - t1;
+  const promptTokensReal = Number(usage.prompt_tokens) || Number(timings.prompt_n) || 0;
+  const genTokens = Number(usage.completion_tokens) || Number(timings.predicted_n) || 0;
+  const tokPerSec = Number(timings.predicted_per_second)
+    ? +Number(timings.predicted_per_second).toFixed(2)
+    : (genTokens && totalMs ? +(genTokens / (totalMs / 1000)).toFixed(2) : 0);
+  const promptReadMs = Number(timings.prompt_ms) || 0;
+  const promptTokPerSec = Number(timings.prompt_per_second) || 0;
+  // Jetons du prompt : la valeur du runtime si elle existe, sinon l estimation
+  // (annoncee comme telle dans la sortie).
+  const promptTokens = promptTokensReal || compact.estimatedTokens;
   const budget = ai.deadlineMs({ promptTokens, maxOutTokens, tokPerSec: tokPerSec || 12 });
   const verdict = err ? (promptTokens > 0.7 * (windowTokens || 2048) ? 'H1'
     : (totalMs >= OLD_TIMEOUT_MS ? 'H2' : 'H3'))

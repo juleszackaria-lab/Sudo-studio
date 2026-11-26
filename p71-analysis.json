@@ -1,0 +1,58 @@
+{
+  "at": "2026-11-26T11:40:18.314Z",
+  "host": {
+    "platform": "linux",
+    "cpus": 2,
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.60GHz"
+  },
+  "deterministic": {
+    "ms": 6,
+    "items": 9,
+    "ids": [
+      "test-script",
+      "readme",
+      "env-example",
+      "todos",
+      "lock-node",
+      "no-tests",
+      "gitignore",
+      "no-ci",
+      "no-docker"
+    ]
+  },
+  "window": {
+    "tokens": 2048,
+    "declaredBy": "ligne de commande",
+    "raw": {}
+  },
+  "prompt": {
+    "estimatedTokens": 57,
+    "chars": 346,
+    "maxTokensAllowed": 1433,
+    "ratioUsed": 0.7
+  },
+  "ai": {
+    "ok": false,
+    "error": "fetch failed",
+    "engine": null,
+    "totalMs": 2,
+    "promptTokens": 57,
+    "promptTokensSource": "estimation",
+    "promptReadMs": 0,
+    "promptTokPerSec": 0,
+    "genTokens": 0,
+    "tokPerSec": 0,
+    "replyChars": 0,
+    "deadlineMs": 39417,
+    "oldTimeoutMs": 60000,
+    "oldTimeoutWouldFail": false,
+    "newDeadlineWouldWaitEnough": true,
+    "classifyIfTimeout": {
+      "code": "other",
+      "message": "Echec de l enrichissement : fetch failed",
+      "action": "Les recommandations deterministes restent affichees ; relancez plus tard."
+    }
+  },
+  "verdict": "H3",
+  "journal": "analysis_ai prompt_tokens=57 window=2048 ratio=0.70 max_out=320 deadline_ms=39417 duration_ms=2 tok_per_s=0 issue=echec"
+}
