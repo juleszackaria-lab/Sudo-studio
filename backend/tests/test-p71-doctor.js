@@ -178,6 +178,25 @@ async function main() {
       JSON.stringify({ asked, code: okRun.code }));
   }
 
+  // ---- C3c : le cas EXACT du runner Windows (where npm renvoie 2 entrees,
+  // la premiere SANS extension et non executable sous Windows). Regression
+  // vue dans la fumee du paquet : tool-npm=panel=ok:C:\...\node\20.20.2\ au
+  // lieu de la version.
+  {
+    const dir = 'C:\\hostedtoolcache\\windows\\node\\20.20.2';
+    const run = fakeRun({
+      'where npm': { code: 0, stdout: dir + '\\npm\r\n' + dir + '\\npm.cmd\r\n', stderr: '' },
+      [dir + '\\npm.cmd --version']: { code: 0, stdout: '10.8.2\r\n', stderr: '' },
+      [dir + '\\npm --version']: { code: 1, stdout: '', stderr: 'not executable' },
+    });
+    const res = await dt.detect(['npm'], { run, timeoutMs: 5000, pathValue: dir, platform: 'win32' });
+    const d = res.details[0];
+    check('C3c npm : le candidat .cmd est prefere au fichier sans extension',
+      res.found.npm === dir + '\\npm.cmd', 'resolu=' + res.found.npm);
+    check('C3c npm : la VERSION est lue (plus de chemin affiche a la place)',
+      d.version === '10.8.2', 'version=' + d.version);
+  }
+
   // ---- C5 : sur un vrai Windows (job p70-windows-path), node/npm/git
   // installes et utilisables ne doivent JAMAIS etre dits "hors du PATH".
   if (process.platform === 'win32') {

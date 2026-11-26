@@ -111,17 +111,34 @@ async function machinePath(run) {
   return { value: merged.join(';'), sources: src };
 }
 
-async function whichSyncLike(name, pathValue, run, timeoutMs) {
-  const cmd = process.platform === 'win32' ? 'where' : 'which';
-  const r = await run(cmd, [name], { timeoutMs: timeoutMs || DEFAULT_TIMEOUT, env: { PATH: pathValue, Path: pathValue } });
-  const first = String(r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)[0];
-  if (r.code === 0 && first) return { path: first, command: cmd + ' ' + name, stdout: String(r.stdout || '').slice(0, 400), stderr: r.stderr };
-  return { path: null, command: cmd + ' ' + name, stdout: String(r.stdout || '').slice(0, 400), stderr: r.stderr };
+// P71-W3 : sur Windows `where npm` renvoie DEUX entrees, et la premiere est le
+// fichier `npm` SANS extension (le script shell livre avec Node). Il ne
+// s execute pas sous Windows : la version restait vide et le Doctor affichait
+// le chemin. On garde donc TOUTES les entrees, on prefere les executables
+// (.exe/.cmd/.bat) et on retient le premier candidat dont `--version` repond.
+const EXT_RANK = { '.exe': 0, '.cmd': 1, '.bat': 2, '': 9 };
+function rankByExt(p2) {
+  const ext = (path.extname(String(p2 || '')) || '').toLowerCase();
+  return Object.prototype.hasOwnProperty.call(EXT_RANK, ext) ? EXT_RANK[ext] : 5;
+}
+function orderCandidates(paths) {
+  return paths.slice().sort((a, b) => rankByExt(a) - rankByExt(b));
 }
 
-function knownCandidate(name, pathValue) {
+async function whichSyncLike(name, pathValue, run, timeoutMs, platform) {
+  const pf = platform || process.platform;
+  const cmd = pf === 'win32' ? 'where' : 'which';
+  const r = await run(cmd, [name], { timeoutMs: timeoutMs || DEFAULT_TIMEOUT, env: { PATH: pathValue, Path: pathValue } });
+  const lines = String(r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const first = lines.length ? lines[0] : null;
+  const paths = (r.code === 0 && lines.length) ? orderCandidates(lines) : [];
+  if (r.code === 0 && first) return { path: first, paths, command: cmd + ' ' + name, stdout: String(r.stdout || '').slice(0, 400), stderr: r.stderr };
+  return { path: null, paths: [], command: cmd + ' ' + name, stdout: String(r.stdout || '').slice(0, 400), stderr: r.stderr };
+}
+
+function knownCandidate(name, pathValue, platform) {
   const dirs = KNOWN_DIRS[name.replace(/\.exe$/i, '')] || [];
-  const exts = process.platform === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
+  const exts = (platform || process.platform) === 'win32' ? ['.exe', '.cmd', '.bat', ''] : [''];
   for (const d of dirs) {
     if (!d) continue;
     for (const e of exts) {
@@ -137,6 +154,7 @@ async function detect(names, opts) {
   opts = opts || {};
   const run = opts.run || defaultRun;
   const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT;
+  const platform = opts.platform || process.platform;
   const mp = opts.pathValue
     ? { value: opts.pathValue, sources: { fourni: true, entries: splitPath(opts.pathValue).length } }
     : await machinePath(run);
@@ -145,22 +163,25 @@ async function detect(names, opts) {
   const missing = [];
   const outsidePath = [];
   for (const name of names) {
-    const w = await whichSyncLike(name, mp.value, run, timeoutMs);
-    let resolved = w.path;
+    const w = await whichSyncLike(name, mp.value, run, timeoutMs, platform);
+    let candidates = (w.paths && w.paths.length) ? w.paths.slice() : (w.path ? [w.path] : []);
     let how = 'where';
-    if (!resolved) {
-      const cand = knownCandidate(name, mp.value);
-      if (cand) { resolved = cand; how = 'dossier connu'; }
+    if (!candidates.length) {
+      const cand = knownCandidate(name, mp.value, platform);
+      if (cand) { candidates = [cand]; how = 'dossier connu'; }
     }
-    // P71 : la VERSION doit venir de l outil resolu (meme valeur qu un
-    // `node --version` independant) ; le chemin reste dans les details.
+    // P71-W3 : on essaie les candidats DANS L ORDRE (executables d abord) et on
+    // garde celui qui repond vraiment a `--version`. Un candidat muet ne fait
+    // plus perdre la version (ni la ligne outil).
+    let resolved = candidates.length ? candidates[0] : null;
     let version = null;
-    if (resolved) {
+    for (const cand of candidates) {
       try {
-        const vr = await run(resolved, ['--version'], { timeoutMs: timeoutMs });
+        const vr = await run(cand, ['--version'], { timeoutMs: timeoutMs });
         const out = String(vr.stdout || '') || String(vr.stderr || '');
-        version = out.trim().split(/\r?\n/)[0] || null;
-      } catch (_) { version = null; }
+        const v = out.trim().split(/\r?\n/)[0] || null;
+        if (v) { resolved = cand; version = v; break; }
+      } catch (_) { /* candidat suivant */ }
     }
     const entry = { name, resolved, version, how, command: w.command, stdout: w.stdout, stderr: w.stderr,
       pathUsed: mp.value };
