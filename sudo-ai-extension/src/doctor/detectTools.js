@@ -40,8 +40,14 @@ const KNOWN_DIRS = {
 
 /** Execute une commande ; injectable pour les tests. */
 function defaultRun(cmd, args, opts) {
+  opts = opts || {};
+  const opt = { timeout: opts.timeoutMs || DEFAULT_TIMEOUT, windowsHide: true };
+  // P71-W3 : env et shell doivent VRAIMENT atteindre execFile (avant, ils
+  // etaient ignores : le PATH du registre n etait pas utilise par `where`).
+  if (opts.env) opt.env = opts.env;
+  if (opts.shell) opt.shell = true;
   return new Promise((resolve) => {
-    execFile(cmd, args || [], { timeout: (opts && opts.timeoutMs) || DEFAULT_TIMEOUT, windowsHide: true },
+    execFile(cmd, args || [], opt,
       (err, stdout, stderr) => {
         resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
           stdout: String(stdout || ''), stderr: String(stderr || ''), error: err ? String(err.message || err) : null });
@@ -196,28 +202,32 @@ async function detect(names, opts) {
     // plus perdre la version (ni la ligne outil).
     let resolved = candidates.length ? candidates[0] : null;
     let version = null;
+    const attempts = [];
     for (const cand of candidates) {
+      let vr = null;
       try {
-        // P71-W3 : sous Windows, Node REFUSE de lancer un .cmd/.bat directement
-        // (EINVAL depuis la correction de la CVE de 2024). npm est un .cmd :
-        // sans passer par cmd.exe, il n y a jamais de version. On passe donc
-        // par le shell pour les scripts batch.
+        // P71-W3 : sous Windows, Node REFUSE de lancer un .cmd/.bat
+        // directement (EINVAL, restriction CVE de 2024). npm est un .cmd :
+        // sans shell, il n y a jamais de version. On passe donc par le shell
+        // pour les scripts batch (execFile gere les guillemets).
         const batch = /\.(cmd|bat)$/i.test(cand);
-        const shellExe = process.env.COMSPEC || 'cmd.exe';
-        const vr = batch
-          ? await run(shellExe, ['/d', '/c', '"' + cand + '" --version'], { timeoutMs: timeoutMs })
+        vr = batch
+          ? await run('"' + cand + '" --version', [], { timeoutMs: timeoutMs, shell: true })
           : await run(cand, ['--version'], { timeoutMs: timeoutMs });
-        // Seul un appel REUSSI compte : un message d erreur (ex. "not
-        // executable") n est pas une version.
-        if (vr && vr.code === 0) {
-          const out = String(vr.stdout || '') || String(vr.stderr || '');
-          const v = out.trim().split(/\r?\n/)[0] || null;
-          if (v) { resolved = cand; version = v; break; }
-        }
-      } catch (_) { /* candidat suivant */ }
+      } catch (e) {
+        attempts.push({ cand, code: 'throw', out: String((e && e.message) || e).slice(0, 160) });
+        continue;
+      }
+      attempts.push({ cand, code: vr && vr.code, out: (String((vr && vr.stdout) || '') || String((vr && vr.stderr) || '')).trim().slice(0, 160) });
+      // Seul un appel REUSSI compte : un message d erreur n est pas une version.
+      if (vr && vr.code === 0) {
+        const out = String(vr.stdout || '') || String(vr.stderr || '');
+        const v = out.trim().split(/\r?\n/)[0] || null;
+        if (v) { resolved = cand; version = v; break; }
+      }
     }
     const entry = { name, resolved, version, how, command: w.command, stdout: w.stdout, stderr: w.stderr,
-      pathUsed: mp.value };
+      attempts: attempts, pathUsed: mp.value };
     if (resolved) {
       found[name] = resolved;
       if (mp.value && !inPath(path.dirname(resolved), mp.value)) outsidePath.push(name);

@@ -36,9 +36,10 @@ function check(name, cond, detail) {
 // Un faux PC Windows : le PATH ne contient PAS nodejs, mais le dossier existe.
 function fakeRun(map) {
   return async (cmd, args) => {
-    const key = (cmd + ' ' + (args || []).join(' ')).trim();
+    const key = (String(cmd) + ' ' + (args || []).join(' ')).replace(/"/g, '').replace(/\s+/g, ' ').trim();
     for (const k of Object.keys(map)) {
-      if (key.startsWith(k)) return map[k];
+      const kk = k.replace(/"/g, '').replace(/\s+/g, ' ').trim();
+      if (key.startsWith(kk)) return map[k];
     }
     return { code: 1, stdout: '', stderr: 'not found' };
   };
@@ -187,8 +188,7 @@ async function main() {
     const run = fakeRun({
       'where npm': { code: 0, stdout: dir + '\\npm\r\n' + dir + '\\npm.cmd\r\n', stderr: '' },
       [dir + '\\npm --version']: { code: 1, stdout: '', stderr: 'not executable' },
-      'cmd.exe /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
-      'cmd /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
+      [dir + '\\npm.cmd --version']: { code: 0, stdout: '10.8.2\r\n', stderr: '' },
     });
     const res = await dt.detect(['npm'], { run, timeoutMs: 5000, pathValue: dir, platform: 'win32' });
     const d = res.details[0];
@@ -206,8 +206,7 @@ async function main() {
     const run = fakeRun({
       'where npm': { code: 0, stdout: dir + '\\npm\r\n', stderr: '' },
       [dir + '\\npm --version']: { code: 1, stdout: '', stderr: 'not executable' },
-      'cmd.exe /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
-      'cmd /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
+      [dir + '\\npm.cmd --version']: { code: 0, stdout: '10.8.2\r\n', stderr: '' },
     });
     const res = await dt.detect(['npm'], { run, timeoutMs: 5000, pathValue: dir, platform: 'win32' });
     const d = res.details[0];
@@ -226,9 +225,13 @@ async function main() {
       real.outsidePath.length === 0, 'hors_path=' + real.outsidePath.join(',') + ' | source=' + JSON.stringify(real.sources));
     // C5c : la fumee du paquet compare la VALEUR du panneau a `npm --version`.
     // Une version vide fait echouer le gate : on l exige ici, sur vrai Windows.
-    const noVer = real.details.filter((x) => x.resolved && !x.version).map((x) => x.name);
+    const noVer = real.details.filter((x) => x.resolved && !x.version);
+    // Diagnostic exploitable : quelle commande a servi et ce qu elle a rendu.
+    const diag = noVer.map((x) => x.name + ' resolved=' + x.resolved +
+      ' | where=' + JSON.stringify(String(x.stdout || '').trim().slice(0, 200)) +
+      ' | essais=' + JSON.stringify((x.attempts || []).map((a) => [a.cand, a.code, a.out]))).join(' || ');
     check('C5c Windows reel : chaque outil trouve a une VERSION lue (jamais un chemin)',
-      noVer.length === 0, 'sans version=' + noVer.join(','));
+      noVer.length === 0, 'sans version=' + noVer.map((x) => x.name).join(',') + ' :: ' + diag);
   } else {
     check('C5 (Windows uniquement) joue par le job p70-windows-path', true);
   }
