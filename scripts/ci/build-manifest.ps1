@@ -54,7 +54,37 @@ function Run-Info([string]$runId, [string]$what) {
     } catch { Deny ("API lookup of {0} run {1} failed: {2}" -f $what, $runId, $_.Exception.Message) }
     if ($r.conclusion -ne 'success') { Deny ("{0} run {1} conclusion is '{2}', not success" -f $what, $runId, $r.conclusion) }
     if ($r.head_sha -ne $SudoStudioCommit) {
-        Deny ("{0} run {1} built commit {2}, expected {3} (re-dispatch 01/02 after the last merge)" -f $what, $runId, $r.head_sha, $SudoStudioCommit)
+        # P71 (optimisation demandee) : un artefact peut etre plus ancien que la
+        # reference SI aucun fichier source de SON composant n a change entre le
+        # commit du run et la reference. Preuve affichee ; dans le doute (API
+        # muette, diff trop gros) on refuse comme avant.
+        #   backend : backend/** sauf backend/runtime/** et backend/tests/**
+        #             (les tests ne sont pas embarques dans backend.exe)
+        #   runtime : backend/runtime/**
+        $cmp = $null
+        try {
+            $cmp = Invoke-RestMethod -Uri ("https://api.github.com/repos/{0}/compare/{1}...{2}" -f $Repo, $r.head_sha, $SudoStudioCommit) -Headers $headers
+        } catch {
+            Deny ("{0} run {1} built commit {2}, expected {3}, et la comparaison est impossible ({4})" -f $what, $runId, $r.head_sha, $SudoStudioCommit, $_.Exception.Message)
+        }
+        $files = @()
+        if ($cmp.files) { $files = @($cmp.files | ForEach-Object { $_.filename }) }
+        if ($files.Count -ge 300) {
+            Deny ("{0} : diff trop gros ({1}) pour prouver l absence de changement -- re-dispatch 01/02" -f $what, $cmp.total_commits)
+        }
+        $relevant = @()
+        foreach ($f in $files) {
+            if ($what -eq 'backend') {
+                if ($f -like 'backend/runtime/*') { continue }
+                if ($f -like 'backend/*' -and $f -notlike 'backend/tests/*') { $relevant += $f }
+            } else {
+                if ($f -like 'backend/runtime/*') { $relevant += $f }
+            }
+        }
+        if ($relevant.Count -gt 0) {
+            Deny ("{0} run {1} built commit {2}, mais {3} fichier(s) source ont change depuis (ex. {4}) -- re-dispatch 01/02" -f $what, $runId, $r.head_sha, $relevant.Count, $relevant[0])
+        }
+        Write-Host ("[MANIFEST] {0}: run {1} (commit {2}) est ANTERIEUR a {3} mais aucun fichier source du composant n a change ({4} fichiers compares) -- accepte" -f $what, $runId, $r.head_sha, $SudoStudioCommit, $files.Count)
     }
     Write-Host ("[MANIFEST] {0}: run {1} commit {2} date {3}" -f $what, $runId, $r.head_sha, $r.created_at)
     return $r
