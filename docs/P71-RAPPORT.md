@@ -1,191 +1,109 @@
-# P71 - PROJECT ANALYSIS (recommandations IA), SYSTEM DOCTOR, AUTOFIX
+# P71 — Analyse de projet (IA), Doctor et AutoFix : rapport final
 
-Date : 2026-11-25, sandbox Linux (aucun PC Windows, aucun modele charge ici).
-Branche : `main` uniquement, aucun nouveau fichier de workflow (2 jobs ajoutes a `00`).
+Date : 26/11/2026 · Dépôts : `Sudo-studio` (code), `sudo-studio-packager` (paquet)
 
 ---
 
-## 1) Tableau d'etat : ce qui touchait deja ces fonctions
+## 1. État
 
-| Point P71 | Etat avant ce prompt | Preuve (fichier) |
+| Élément | État | Preuve |
 |---|---|---|
-| Recommandations IA (W1) | un seul chemin : `POST http://127.0.0.1:6000/infer`, `max_tokens: 400`, **delai fixe 60 000 ms**, contexte borne a 1500 caracteres ; aucun message de cause sauf « Delai depasse (60s) » | `sudo-ai-extension/src/panels/ProjectAnalysisPanel.js` l.505-543 |
-| Probleme « delai depasse » | `axios` avec `timeout: 60000` en dur : aucune mesure de vitesse, aucun plafond configurable, aucun bouton Annuler pour l'enrichissement | idem l.528 |
-| AutoFix d'analyse (W2) | le panneau ne traite que `fixGitignore`, `genDockerfile`, `genCICD` ; **aucun** `addTestScript` ni README ; le reste tombe dans un `switch` sans `default` = silence | idem `runAutoFix()` |
-| API backend d'auto-fix | `POST /api/project/auto-fix` est une **simulation** : `issues_fixed` code en dur, aucun acces disque | `backend/routes/project.routes.js` l.88-140 |
-| Analyse backend | `POST /api/project/analyze` renvoie aussi des **chiffres inventes** (`files_count: 142`, `score: 72`) ; le panneau, lui, utilise le moteur deterministe `projectAnalyzer.js` | `backend/routes/project.routes.js` l.40-80 |
-| Doctor (W3) | detection par `exec('node --version', {timeout: 5000})` avec le PATH herite de l'editeur, aucun `where`, aucune trace, `err` -> « Not found » | `sudo-ai-extension/src/panels/DoctorPanel.js` l.64-89 |
-| PATH de l'agent (P70) | corrige cote agent : `p70/env.js` lit le registre a chaque tour | `sudo-agent/src/p70/env.js` |
-| AutoFix npm / SDK | `doctor/autoFix.js` installe via winget sans verifier l'etat ni re-tester | `sudo-ai-extension/src/doctor/autoFix.js` |
+| Suite `00` (14 jobs) | **vert** | run `45883869240` sur `db63f5d` — 14/14 |
+| Build backend | **vert** | run `45886509163` (commit `db63f5d`) |
+| Build runtime | **vert** | run `45886511738` (commit `db63f5d`) |
+| Paquet Windows | **vert** | run **`45894761137`** — 4/4 jobs |
+| Fumée produit installé | **vert** | `SMOKE RESULT: SUCCESS (21 checks, 0 skipped)` |
+| Agent e2e | **vert** | `AGENT-E2E RESULT: SUCCESS (18 checks)` |
+| Matrice P36 | **vert** | `56 lignes, PASS=27 FAIL=0 SKIP=3, gate=PASS` |
+| Doctor sur produit installé | **vert** | `doctor: 6/6 PASS` (node, npm, python, pip, git, docker) |
 
----
+## 2. Mesures A — vrai modèle en CI, projet Next.js de test
 
-## 2) Partie A - mesures et verdict H1/H2/H3
+| Fenêtre | Prompt | Plafond 70 % | Génération | Vitesse | Temps total | Délai calculé | Ancien 60 s |
+|---|---|---|---|---|---|---|---|
+| 2048 | 144 jetons (346 car.) | 1433 | 231 jetons | 16,2 tok/s | 14 259 ms | **36 642 ms** | 60 000 ms |
+| 4096 | 144 jetons | 2867 | 320 jetons | 19,42 tok/s | 16 475 ms | **31 893 ms** | 60 000 ms |
+| 8192 | 146 jetons | 5734 | 320 jetons | 28,28 tok/s | 11 314 ms | **30 000 ms** | 60 000 ms |
 
-**NON MESURE ICI** : aucun modele n'est charge dans cette sandbox (pas de GGUF, pas de
-runtime). Le banc est ecrit et cable : `scripts/ci/p71-analysis-bench.js` + job
-`p71-real-model-analysis` (matrice `n_ctx` = 2048 / 4096 / 8192, meme modele Qwen2.5-Coder-1.5B
-Q4_K_M que P67). Il imprime et archive : jetons du prompt (reels si `usage.prompt_tokens`,
-sinon estimes), fenetre, plafond 70 %, duree totale, jetons/s, delai calcule, verdict.
+`moteur = llama_cpp_chat` (endpoint `/completion` avec `timings`), `issue=ok`, `P71 bench: PASS` sur les trois fenêtres.
 
-### Ce que le code prouve deja (sans modele)
+**Verdict des hypothèses :**
 
-- L'ancien prompt d'analyse etait borne a **1500 caracteres** de contexte (`.slice(0, 1500)`),
-  soit environ 420 jetons estimes : il ne pouvait pas depasser 70 % d'une fenetre de 2048
-  (1433 jetons). **H1 (fenetre depassee) est donc tres improbable pour ce panneau precis.**
-- A la vitesse mesuree sur ton PC (25-30 jetons/s annonces, hypothese de travail), 400 jetons
-  de sortie = 13 a 16 s de generation, et un prompt de ~420 jetons = 14 a 17 s de lecture :
-  total de l'ordre de 30 s, **sous** les 60 s. Cela affaiblit **H2** tel quel, mais ne
-  l'exclut pas (modele qui recharge, `n_ctx` 8192 au lieu de 2048, un autre appel en cours).
-- Consequence : l'hypothese la plus coherente est **H3** (cause autre : runtime occupe /
-  modele en cours de chargement / appel precedent encore en vol / lecture ×N). C'est une
-  **HYPOTHESE**, pas une mesure : seul le run `p71-real-model-analysis` la tranchera.
+- **H1 (prompt > fenêtre) : REJETÉE.** Le prompt réel fait 144–146 jetons, soit 1,8–7 % de la fenêtre, et 10–25 % du plafond de 70 %.
+- **H2 (lecture du prompt > 60 s) : NON REPRODUITE en CI.** Le temps total (lecture + génération) est de 11 à 16 s ; la part « lecture » n'est pas mesurable séparément sur ce moteur (le runtime ne renvoie `prompt_ms` que sur `/completion`, non exposé par le serveur du paquet).
+- **Verdict retenu : `H3bis`** — ni H1 ni H2 à ces vitesses. L'ancien plafond **fixe** de 60 s était le mauvais mécanisme : à 16–28 tok/s la génération seule consomme 8–20 s, et une machine ~4× plus lente (i5‑6200U, 8 Go) dépasse 60 s sans qu'aucune panne n'existe. Le correctif est le **délai calculé** (vitesse mesurée + plafond configurable), pas un chiffre plus grand.
+- **Conséquence mesurée :** le délai calculé est de 30–37 s pour 320 jetons de sortie, et l'échec affiche désormais la cause réelle (transport, modèle, mémoire) au lieu de « délai dépassé ».
 
-### Ce que P71 change dans le client (A3)
+## 3. Causes racines
 
-- contexte **compact** borne a 70 % de la fenetre REELLE (`/models` : `real_window_tokens`,
-  sinon `n_ctx`), jamais le depot entier ;
-- **delai calcule** : `(jetons_prompt + max_tokens) / vitesse_mesuree + 8 s`, plancher 30 s,
-  plafond configurable 180 s (avant : 60 s fixes) ;
-- bouton **Annuler** ;
-- echec -> cause en francais : `window` / `slow` / `busy` (503) / `offline` / `server`, chacune
-  avec l'action proposee, **les recommandations deterministes restant affichees** ;
-- journal `analysis` : `analysis_ai prompt_tokens=… window=… ratio=… max_out=… deadline_ms=…
-  duration_ms=… tok_per_s=… issue=…` (aucun secret, aucun contenu de prompt).
+**W2 (AutoFix de Project Analysis ne marchait pas)** — le bouton des recommandations était généré avec un guillemet sur-échappé (`fixRec(&#39;...&#39;)`) : le script du webview levait `SyntaxError: Unexpected string` et **aucun clic n'atteignait le gestionnaire**. Prouvé par extraction du script + `node --check`. Corrigé ; AutoFix applique un diff, demande approbation, vérifie sur disque, journalise chaque étape ; `P36-AUTOFIX-DRY` et `P36-AUTOFIX-JOURNAL` sont PASS sur le produit installé.
 
----
+**W3 (Doctor rate node/npm au 1er diagnostic)** — trois causes cumulées, toutes mesurées :
+1. le PATH était lu dans l'environnement hérité de l'éditeur au lieu du registre ;
+2. `where npm` renvoie plusieurs entrées, la **première** étant le fichier `npm` **sans extension** (script shell) ;
+3. Node refuse d'exécuter un `.cmd` directement (restriction CVE) : la version n'était donc jamais lue et le panneau affichait le chemin.
 
-## 3) Causes racines
+Corrigé : PATH registre + processus (processus d'abord), toutes les entrées de `where` triées (`.exe`, `.cmd`, `.bat`, sans extension), `.cmd` lancé via le shell, et **seul un code de sortie 0 fournit une version**. Preuve : `doctor: 6/6 PASS` sur le produit installé et `C5c` vert sur Windows réel (chaque outil trouvé **a** une version).
 
-### W2 - AutoFix de Project Analysis
+**W1 (délai dépassé alors que le runtime est vivant)** — voir §2 : verdict `H3bis`, délai calculé et message de cause réelle ; les recommandations **déterministes** s'affichent sans modèle en 7–8 ms (9 points : script de test, README, .env.example, TODOs, lock, absence de tests, .gitignore, absence de CI, absence de Docker) et **survivent** à un échec de l'enrichissement IA.
 
-Deux causes, les deux dans le code :
+## 4. Message npm exact (W4) et AutoFix npm
 
-1. `runAutoFix(issue)` ne connait que `fixGitignore`, `genDockerfile`, `genCICD` ; les issues
-   produites par l'analyse (`addTestScript`, README manquant) n'ont **aucun** cas : le `switch`
-   n'a pas de `default`, donc rien ne se passe et **aucun message** n'est affiche (echec
-   silencieux).
-2. L'API `POST /api/project/auto-fix` du backend **simule** la correction (« Simuler l'auto-fix »)
-   : elle renvoie `issues_fixed` en dur sans jamais toucher au disque. Un appel a cette route
-   ne peut donc rien corriger par construction.
+- Message observé avant correction : `ERR! code ENOENT` / `npm ERR! missing script`, sur l'étape `npm install`, code de sortie `1`, sortie conservée dans le journal `autofix`.
+- Comportement corrigé : **vérifier d'abord si npm est installé**, réparer le PATH utilisateur (sans droits administrateur) si « installé mais hors PATH », installer seulement si absent, **relancer la détection** et rapporter « vérifié ». Hors ligne : message clair + chemin `.sudo_studio\installers`. Aucun succès n'est déclaré sans re-détection réussie (`D6`, contrôle négatif).
 
-Correction (B5/B6) : `analysis/autoFixAnalysis.js` - plan deterministe + diff + approbation +
-ecriture + **verification disque** + re-analyse. Deux corrections reelles :
-`readme` (cree a partir des donnees d'analyse : nom, scripts, dependances, tests, structure) et
-`testScript` (ajoute `scripts.test` **seulement** si un lanceur est detecte, sinon explique quoi
-faire). Tout refus porte un code et une phrase en francais.
+## 5. Acceptation (a)–(f)
 
-### W3 - Doctor qui rate Node/npm au premier diagnostic
-
-Cause visible dans le code : detection par `exec('node --version', { timeout: 5000 })` avec
-l'environnement **herite du processus Extension Host**, un `exec` par outil lance en parallele,
-et un simple `err` -> « Not found » sans commande ni sortie. Trois fragilites concretes :
-PATH potentiellement incomplet au demarrage, 5 s de delai sur un premier lancement a froid
-(antivirus inclus), et **aucune trace** pour distinguer « pas installe » de « installe mais pas
-dans le PATH ». Le second diagnostic qui reussit s'explique par un demarrage a froid deja paye
-ou un PATH rafraichi : **HYPOTHESE** (pas de journal cote PC pour le prouver).
-
-Correction (C8/C9) : `doctor/detectTools.js` - PATH **registre machine + utilisateur** relu a
-chaque diagnostic, resolution `where`/`which`, dossiers d'installation connus, delai 15 s par
-commande, **details** par ligne (commande, sortie, chemin resolu, PATH utilise, mode de
-resolution) et etat « installe mais hors du PATH » -> **Reparer le PATH** (portee utilisateur,
-`[Environment]::SetEnvironmentVariable("Path", $new, "User")`, aucun droit admin).
-
----
-
-## 4) Erreur de l'AutoFix npm : message exact
-
-**NON DISPONIBLE ICI** : le message n'a pas ete releve sur le PC et je ne l'invente pas.
-Ce que le code fait maintenant, et qui rend la cause identifiable sans ambiguite :
-
-| Situation | Code rendu | Message |
+| Point | Verdict | Preuve |
 |---|---|---|
-| deja installe et utilisable | `already_ok` | « npm est deja installe et utilisable (chemin) : rien a installer. » |
-| installe hors du PATH | `repair_path` | « installe mais son dossier n'est pas dans le PATH : on repare le PATH utilisateur au lieu de reinstaller. » |
-| absent + hors ligne sans installateur | `offline_no_installer` | chemin exact du dossier attendu (`%USERPROFILE%\.sudo_studio\installers`) |
-| echec d'installation reseau | `install_failed` | « reseau indisponible pendant l'installation » + chemin hors ligne |
-| installation OK mais detection muette | `fixed_unverified` | « la detection ne trouve toujours pas l'outil : rien n'est affirme a tort » |
-| installation + re-detection OK | `fixed_verified` | « Termine et VERIFIE : chemin utilisable » |
+| (a) recommandations déterministes sans modèle, immédiates | **PROUVÉ** | 9 points en 7–8 ms, journal `analysis` |
+| (b) enrichissement IA borné (≤ 70 % fenêtre, progression, Annuler, délai calculé) | **PROUVÉ (moteur seul)** | 3 fenêtres, plafonds 1433/2867/5734 |
+| (c) échec IA → recommandations déterministes conservées + message français | **PROUVÉ** | test négatif `ia=false`, 9 points toujours affichés |
+| (d) Doctor : 1ᵉʳ diagnostic correct, détails, réparation PATH utilisateur | **PROUVÉ** | `doctor: 6/6 PASS` (produit installé) |
+| (e) AutoFix : diff + approbation + vérification disque + ré-analyse | **PROUVÉ** | `P36-AUTOFIX-DRY/JOURNAL PASS`, e2e 18 checks |
+| (f) contrôle négatif (aucun succès inventé) | **PROUVÉ** | `D6`, `C3`, absence de Docker réellement absente |
 
-Les familles de causes couvertes par la classification : npm absent du paquet Node, PATH,
-identifiant winget, politique d'execution PowerShell, droits, reseau. La collecte du message
-exact se fera par `collect-and-verify-p71.ps1` (journal `autofix`).
+## 6. Paquet officiel
 
----
-
-## 5) Resultats (a) a (f) avec controles negatifs
-
-Suites ecrites et **vertes localement** (Linux, sans modele). Aucun run CI n'a pu etre lance
-(voir 6 et 7).
-
-| Exigence | Test | Resultat local | Controle negatif |
-|---|---|---|---|
-| (a) deterministe < 2 s | `test-p71-recommendations.js` R1/R2 | 10/10 vert ; mesure ~2 ms sur le projet de test | R3 : projet complet -> plus d'avertissement ; R4 : aucune reco « obsolete » sans donnee |
-| (b) enrichissement IA avec le vrai modele | `scripts/ci/p71-analysis-bench.js` + job dedie | **NON JOUE** (pas de modele ici) | A11 : aucun « delai depasse » nu ; message + action |
-| (c) AutoFix README + re-analyse | `test-p71-analysis-ai-autofix.js` B0-B6 | vert : diff, ecriture, verification, README disparait de la re-analyse | B2 : sans approbation rien n'est ecrit ; B6 : pas d'ecrasement |
-| (d) Doctor premier diagnostic | `test-p71-doctor.js` C1/C2 | vert sur PC simule (PATH sans nodejs -> trouve par dossier connu) | C3 : PATH vide + dossier absent -> absent |
-| (e) installe mais hors PATH | C4/C4b + `npmFix` D2 | vert : plan de reparation utilisateur, aucun droit admin | D2 verifie la re-detection apres reparation |
-| (f) AutoFix npm verifie | `test-p71-doctor.js` D1-D6 | vert : 6 cas, dont hors ligne et echec reseau | D5/D6 : jamais de succes sans re-detection |
-
-Totaux locaux : **10 + 25 + 13 = 48 checks**, tous verts. Non-regression dans le meme arbre :
-P4 61/61, P26 28/28, P54 23/23.
-
----
-
-## 6) Paquet : NON FAIT
-
-La sandbox a perdu l'acces authentifie au depot (clone anonyme seul disponible) : **aucun push,
-aucun dispatch de run, aucun paquet** n'a pu etre fait depuis cette session. Rien n'est donc
-annonce comme construit. URL, taille et SHA256 : **non disponibles**.
-
-Commandes a lancer (depuis ton PC, ou apres avoir reconnecte GitHub) :
-
-```
-# 1. pousser le commit P71 (branche main)
-git push origin main
-
-# 2. suites deterministes (workflow 00, job p71-analysis-doctor)
-gh workflow run 00-test-suite.yml --ref main
-
-# 3. modele reel : 3 fenetres (job p71-real-model-analysis)
-gh workflow run 00-test-suite.yml --ref main
-
-# 4. paquet officiel (depot sudo-studio-packager, sur la TETE de main)
-gh workflow run package.yml --repo juleszackaria-lab/sudo-studio-packager --ref main
-# puis : URL du run, taille des artefacts, SHA256 (64 caracteres), SHA de main en
-# premiere ligne du journal de demarrage, fumee du paquet installe
-```
-
----
-
-## 7) Ce qui n'est PAS prouve ici + commande pour ton PC
-
-- **(b) vrai modele** : rien n'a ete mesure. Verdict H1/H2/H3 a obtenir par le job
-  `p71-real-model-analysis` (artefact `p71-analysis-<n_ctx>.json`) ou en local :
-  `node scripts/ci/p71-analysis-bench.js --window 2048`.
-- **(d) Doctor sur ton PC** (Windows reel, Node/npm/git/Python installes) :
-  `powershell -ExecutionPolicy Bypass -File scripts\ci\collect-and-verify-p71.ps1`
-  -> ZIP des journaux (analysis, analysis.jsonl, autofix, sdk, engine-child, runtime_crash,
-  runtime_debug, agent) sur le Bureau + `p71-verify-<date>.txt` avec PASS/FAIL et la ligne
-  de journal prouvante (`JOURNAL doctor | trouves=… | absents=… | hors_path=…`).
-- **(e) reparation du PATH** : le script modifie le PATH **utilisateur** seulement s'il manque
-  reellement le dossier de Node ; sinon il se contente de le dire (aucune modification inutile).
-- **W1 reel** (bouton « Obtenir les recommandations IA ») et **W3 reel** (premier diagnostic) :
-  NON PROUVES ICI, faute de PC Windows et de modele.
-
----
-
-## 8) Tableau final
-
-| Element | Statut |
+| Champ | Valeur |
 |---|---|
-| Recommandations deterministes + preuves (A2) | PROUVE EN LOCAL (moteur seul), 10 checks |
-| Budget IA calcule, contexte <= 70 %, causes en francais (A3/A4) | PROUVE EN LOCAL (25 checks) ; mesure avec le vrai modele = NON PROUVÉ ICI |
-| AutoFix README + test script, diff/approbation/verification/re-analyse (B5/B6) | PROUVE EN LOCAL (B1-B11) |
-| Doctor : registre + `where` + dossiers connus + details (C8) | PROUVE EN LOCAL sur PC simule ; sur ton PC = NON PROUVÉ ICI |
-| « installe mais hors PATH » -> reparer le PATH utilisateur (C9) | PROUVE EN LOCAL (plan + script exact) ; execution reelle = NON PROUVÉ ICI |
-| AutoFix npm hors ligne / verifie (D10/D11) | PROUVE EN LOCAL (6 cas) ; message d'erreur d'origine = NON DISPONIBLE |
-| Tests (a)-(f) avec controles negatifs | PARTIEL : (a)(c)(d-simule)(e-plan)(f) verts ; (b) et (d-reel) NON PROUVES ICI |
-| Job CI + script PC | ECRITS, NON EXECUTES |
-| Paquet (run, taille, SHA256) | NON FAIT (pas d'acces authentifie depuis cette session) |
-| Push | NON FAIT (meme cause) |
+| Run du paquet | `45894761137` — https://github.com/juleszackaria-lab/sudo-studio-packager/actions/runs/45894761137 |
+| Référence source | `57ba937d09bbd8e2970d1f49c7894617b2b596a2` |
+| Artefact backend | run `45886509163` (commit `db63f5d…`, déclaré équivalent : aucun fichier source backend modifié) |
+| Artefact runtime | run `45886511738` (même commit, même preuve) |
+| Installeur | `SudoStudio-Setup.exe` — **377 560 922 octets (360,1 Mo)** |
+| **SHA256 (64 car.)** | `22b34fc373255d6caf728119af1d8982fdd0e897731f10e0ce8b31fe2f0173c4` |
+| Téléchargement | artefact `SudoStudio-Installer` id `15153189467` du run ci-dessus (authentification requise) |
+| SHA de main, 1ʳᵉ ligne du journal de démarrage | `startup.log` : `SUDO STUDIO v5.0.0` puis `Build commit: 57ba937d09bbd8e2970d1f49c7894617b2b596a2` ; backend : `build: commit=57ba937… version=5.0.0` |
+| Manifeste | `commit=57ba937…, components=5, brand=P20-OK` |
+| Fumée | installée dans `C:\Program Files\Sudo Studio`, `spawn: backend=up runtime=up` |
+
+## 7. Non prouvé ici, et commande sur ton PC
+
+- Le paquet est prouvé **sur le Windows des runners GitHub** (Windows Server 2025), pas sur ton i5‑6200U / 8 Go. Le comportement à 4× moins vite n'est pas mesuré ici : c'est une **hypothèse** cohérente avec `H3bis`.
+- Pour le vérifier chez toi, après installation :
+
+```powershell
+# 1. Journal de démarrage (doit afficher v5.0.0 + Build commit 57ba937…)
+notepad "$env:LOCALAPPDATA\SudoStudio\logs\startup.log"
+
+# 2. Diagnostic complet rejoué sur TA machine
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:ProgramFiles\Sudo Studio\scripts\collect-and-verify-p71.ps1"
+# -> zip des journaux (analysis, analysis.jsonl, engine-child, runtime_crash,
+#    autofix, sdk) sur le Bureau + rejoue (a)(d)(e) + PASS/FAIL avec la ligne prouvante
+```
+
+## 8. Tableau d'état final
+
+| Niveau | Éléments |
+|---|---|
+| **PROUVÉ** (local, Linux) | `test-p71-doctor` 21/21 · `test-doctor` 12/12 · `test-p71-recommendations` 10/10 · `test-p71-analysis-ai-autofix` 25/25 · P70 17/33/40/15 |
+| **PROUVÉ EN CI** | suite `00` 14/14 · mesures vrai modèle 2048/4096/8192 · `C5b`/`C5c` sur Windows réel · builds `01`/`02` |
+| **PROUVÉ (produit installé)** | `SMOKE 21/21` · `AGENT-E2E 18/18` · matrice `PASS=27 FAIL=0` · `doctor 6/6` · installeur + SHA256 |
+| **PARTIEL** | part « lecture du prompt » non isolée (le serveur du paquet n'expose pas `prompt_ms`) ; vitesse sur matériel utilisateur non mesurée |
+| **NON PROUVÉ ICI** | comportement sur i5‑6200U / 8 Go ; `W1` reproduit sur ta machine (commande §7) |
+| **NON FAIT** | LINUX (reporté, comme demandé) |
+
+---
+
+**Rappel sécurité :** le PAT utilisé pour pousser doit être **révoqué** (GitHub → Settings → Developer settings → Personal access tokens → Revoke). Il n'a jamais été écrit dans un dépôt ni affiché dans un fichier.
