@@ -95,35 +95,63 @@ async function main() {
     maxTokensAllowed: compact.maxTokens, ratioUsed: compact.ratioUsed };
 
   // ---- appel reel, chronometre
+  // Trois moteurs possibles selon ce qui a demarre dans le job :
+  //   /completion            -> llama_cpp.server : donne les TIMINGS (lecture du
+  //                             prompt et generation separees : indispensable
+  //                             pour trancher H1 vs H2) ;
+  //   /v1/chat/completions  -> llama_cpp.server en mode OpenAI ;
+  //   /infer                -> runtime du produit.
   const t1 = Date.now();
-  let reply = '', usage = {}, err = null;
-  try {
+  let reply = '', usage = {}, timings = {}, engine = null, err = null, httpStatus = 0;
+  async function tryCall(name, url, body, parse) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 10 * 60 * 1000);
-    const r = await fetch(BASE + '/infer', {
+    const r = await fetch(BASE + url, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ message: prompt, max_tokens: maxOutTokens }),
-      signal: ctrl.signal,
+      body: JSON.stringify(body), signal: ctrl.signal,
     });
     clearTimeout(timer);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) return { ok: false, status: r.status };
     const data = await r.json();
-    reply = String(data.reply || '');
-    usage = data.usage || {};
-  } catch (e) { err = String((e && e.message) || e); }
+    return Object.assign({ ok: true, status: r.status, engine: name }, parse(data));
+  }
+  try {
+    const attempts = [
+      ['llama_cpp_completion', '/completion', { prompt, n_predict: maxOutTokens, temperature: 0 },
+        (d) => ({ reply: String(d.content || ''), timings: d.timings || {}, usage: d.usage || {} })],
+      ['llama_cpp_chat', '/v1/chat/completions',
+        { messages: [{ role: 'user', content: prompt }], max_tokens: maxOutTokens, temperature: 0 },
+        (d) => ({ reply: String((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || ''),
+          usage: d.usage || {} })],
+      ['runtime_infer', '/infer', { message: prompt, max_tokens: maxOutTokens },
+        (d) => ({ reply: String(d.reply || ''), usage: d.usage || {} })],
+    ];
+    const failures = [];
+    for (const [name, url, body, parse] of attempts) {
+      const out = await tryCall(name, url, body, parse);
+      if (out.ok) {
+        engine = name; reply = out.reply || ''; usage = out.usage || {}; timings = out.timings || {};
+        break;
+      }
+      httpStatus = out.status;
+      failures.push(name + ':HTTP' + out.status);
+    }
+    if (!engine) err = 'aucun moteur n a repondu (' + failures.join(', ') + ')';
+  } catch (e) {
+    err = String((e && e.message) || e);
+    // Un echec de transport (fetch failed / ECONNREFUSED) n'est PAS une mesure :
+    // on le dit, et le banc sort en echec (jamais un vert sur une panne).
+    if (/fetch failed|ECONNREFUSED|abort/i.test(err)) httpStatus = 0;
+  }
   const totalMs = Date.now() - t1;
-  const promptTokensReal = Number(usage.prompt_tokens) || 0;
-  const promptTokens = promptTokensReal || compact.estimatedTokens;
-  const genTokens = Number(usage.completion_tokens) || 0;
-  const tokPerSec = genTokens && totalMs ? +(genTokens / (totalMs / 1000)).toFixed(2) : 0;
-
   const budget = ai.deadlineMs({ promptTokens, maxOutTokens, tokPerSec: tokPerSec || 12 });
   const verdict = err ? (promptTokens > 0.7 * (windowTokens || 2048) ? 'H1'
     : (totalMs >= OLD_TIMEOUT_MS ? 'H2' : 'H3'))
     : (promptTokens > 0.7 * (windowTokens || 2048) ? 'H1' : (totalMs >= OLD_TIMEOUT_MS ? 'H2' : 'H3bis'));
 
-  result.ai = { ok: !err, error: err, totalMs, promptTokens, promptTokensSource: promptTokensReal ? 'runtime' : 'estimation',
-    genTokens, tokPerSec, replyChars: reply.length, deadlineMs: budget.ms,
+  result.ai = { ok: !err, error: err, engine, totalMs, promptTokens,
+    promptTokensSource: promptTokensReal ? 'runtime' : 'estimation',
+    promptReadMs, promptTokPerSec, genTokens, tokPerSec, replyChars: reply.length, deadlineMs: budget.ms,
     oldTimeoutMs: OLD_TIMEOUT_MS, oldTimeoutWouldFail: totalMs >= OLD_TIMEOUT_MS,
     newDeadlineWouldWaitEnough: budget.ms >= totalMs,
     classifyIfTimeout: err ? ai.classify({ message: err, code: /abort/i.test(err) ? 'ECONNABORTED' : '' },
@@ -136,7 +164,9 @@ async function main() {
     'fenetre        : ' + (windowTokens || '?') + ' jetons (' + result.window.declaredBy + ')',
     'prompt         : ' + promptTokens + ' jetons (' + result.ai.promptTokensSource + '), ' + prompt.length + ' caracteres',
     'plafond P71    : ' + compact.maxTokens + ' jetons (70 % de la fenetre)',
+    'moteur         : ' + (engine || 'aucun'),
     'temps total    : ' + totalMs + ' ms',
+    'lecture prompt : ' + promptReadMs + ' ms (' + (promptTokPerSec || '?') + ' jetons/s)',
     'generation     : ' + genTokens + ' jetons, ' + (tokPerSec || '?') + ' jetons/s',
     'delai calcule  : ' + budget.ms + ' ms (ancien delai fixe : ' + OLD_TIMEOUT_MS + ' ms)',
     'echec          : ' + (err || 'aucun'),
@@ -150,7 +180,9 @@ async function main() {
 
   // Critere honnete : le deterministe doit passer, et si l'appel echoue il doit
   // y avoir une CAUSE classee (jamais un "delai depasse" nu).
-  const aiOk = result.ai.ok || (result.ai.classifyIfTimeout && result.ai.classifyIfTimeout.code);
+  const transportError = err && /fetch failed|ECONNREFUSED|abort|aucun moteur/i.test(err);
+  const aiOk = !transportError && (result.ai.ok ||
+    (httpStatus >= 400 && result.ai.classifyIfTimeout && result.ai.classifyIfTimeout.code));
   if (!A_OK || !aiOk) {
     console.log('P71 bench: FAIL (deterministe=' + A_OK + ', ia=' + !!aiOk + ')');
     process.exit(1);
