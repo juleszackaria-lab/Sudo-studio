@@ -368,8 +368,13 @@ async function tMarkersExtension() {
 async function tMarkersP43d() {
   const pa = src('sudo-ai-extension/src/panels/ProjectAnalysisPanel.js');
   assert(pa.indexOf('http://127.0.0.1:6000/infer') !== -1, 'single /infer call');
-  assert(pa.indexOf('max_tokens: 400') !== -1, 'bounded reply');
-  assert(pa.indexOf('timeout: 60000') !== -1, '60s deadline');
+  // P71 : le defi de W1 etait justement le delai FIXE de 60 s. Le marqueur
+  // verifie maintenant la borne de sortie et le delai CALCULE (aiBudget), pas
+  // un 60000 en dur qui ne doit plus exister.
+  assert(pa.indexOf('maxOutTokens') !== -1, 'bounded reply');
+  assert(pa.indexOf("require('../analysis/aiBudget')") !== -1, 'computed deadline (aiBudget)');
+  assert(pa.indexOf('timeout: budget.ms') !== -1, 'deadline applique au client');
+  assert(pa.indexOf('timeout: 60000') === -1, 'plus de delai fixe de 60 s');
   assert(pa.indexOf('_aiContextFromAnalysis') !== -1, 'deterministic context');
   assert(pa.indexOf('aiRecommendations') !== -1 && pa.indexOf('aiError') !== -1, 'states shown');
   assert(pa.indexOf('this._aiRunning = false') !== -1, 'never stuck');

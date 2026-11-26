@@ -901,7 +901,7 @@ function renderRecommendations(rec) {
     }
     const color = { error: '#f44336', warn: '#ff9800', info: '#4a9eff' };
     box.innerHTML = items.map(function (it) {
-        const b = it.fixId ? ' <button class="btn btn-sm" onclick="fixRec(\'' + it.fixId + '\')">AutoFix</button>' : '';
+        const b = it.fixId ? ' <button class="btn btn-sm" onclick="fixRec(&#39;' + it.fixId + '&#39;)">AutoFix</button>' : '';
         return '<div style="border-left:3px solid ' + (color[it.level] || '#888') + ';padding:6px 10px;margin-bottom:6px">' +
             '<div style="font-weight:600">' + esc(it.title) + b + '</div>' +
             '<div>' + esc(it.detail || '') + '</div>' +

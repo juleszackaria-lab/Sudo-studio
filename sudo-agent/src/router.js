@@ -58,7 +58,7 @@ function fold(s) {
 
 // P70-C11 : une OPERATION SUR FICHIER ne doit jamais etre routee vers un
 // domaine plateforme (security, analysis...) : c'est un travail sur disque,
-// deterministe. On ne prend que les verbes qui AGISSENT sur une cible ; les
+// deterministe. On ne prend que les verbes d action sur une cible ; les
 // verbes de lecture ("regarde", "affiche") restent au routeur pour ne pas
 // casser l'audit/l'analyse.
 const FILE_ACTION_RE = /\b(supprime\w*|efface\w*|enleve\w*|retire\w*|delete|remove|renomme\w*|rename|deplace\w*|move|copie\w*|copy|mkdir|cree\s+(?:un\s+)?(?:fichier|dossier|file|folder))\b/;

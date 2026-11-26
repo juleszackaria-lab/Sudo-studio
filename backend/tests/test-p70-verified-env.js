@@ -73,9 +73,16 @@ check('V7a les outils presents sont resolus avec leur chemin COMPLET',
   line.slice(0, 180));
 check('V7b la ligne de journal nomme les absents et la source du PATH',
   /absents=/.test(line) || res.missing.length === 0, line.slice(0, 220));
-const resBad = env.resolveTools(['node', 'git'], { pathValue: '/nonexistent-dir-p70' });
-check('V7c CONTROLE NEGATIF : avec un PATH vide, node et git sont ABSENTS',
-  resBad.missing.indexOf('node') !== -1, 'absents=' + resBad.missing.join(','));
+// P70-F, controle negatif valable sur Linux ET Windows : avec un PATH qui ne
+// contient rien, un outil INCONNU doit rester absent (aucune invention), et si
+// node est retrouve ce ne peut etre que par un dossier d installation connu -
+// jamais par le PATH. C'est exactement la garantie de p70/env.js.
+const resBad = env.resolveTools(['node', 'git', 'p70-outil-inexistant'], { pathValue: '/nonexistent-dir-p70' });
+check('V7c CONTROLE NEGATIF : PATH vide -> un outil inexistant reste ABSENT',
+  resBad.missing.indexOf('p70-outil-inexistant') !== -1, 'absents=' + resBad.missing.join(','));
+check('V7d CONTROLE NEGATIF : avec ce PATH, node/git ne viennent jamais du PATH',
+  ['node', 'git'].every((n) => !resBad.found[n] || resBad.found[n].indexOf('nonexistent-dir-p70') === -1),
+  JSON.stringify(resBad.found));
 
 // chronometrage
 const t = timing.start();
