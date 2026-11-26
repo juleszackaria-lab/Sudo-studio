@@ -186,8 +186,9 @@ async function main() {
     const dir = 'C:\\hostedtoolcache\\windows\\node\\20.20.2';
     const run = fakeRun({
       'where npm': { code: 0, stdout: dir + '\\npm\r\n' + dir + '\\npm.cmd\r\n', stderr: '' },
-      [dir + '\\npm.cmd --version']: { code: 0, stdout: '10.8.2\r\n', stderr: '' },
       [dir + '\\npm --version']: { code: 1, stdout: '', stderr: 'not executable' },
+      'cmd.exe /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
+      'cmd /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
     });
     const res = await dt.detect(['npm'], { run, timeoutMs: 5000, pathValue: dir, platform: 'win32' });
     const d = res.details[0];
@@ -204,8 +205,9 @@ async function main() {
     const dir = 'C:\\hostedtoolcache\\windows\\node\\20.20.2';
     const run = fakeRun({
       'where npm': { code: 0, stdout: dir + '\\npm\r\n', stderr: '' },
-      [dir + '\\npm.cmd --version']: { code: 0, stdout: '10.8.2\r\n', stderr: '' },
       [dir + '\\npm --version']: { code: 1, stdout: '', stderr: 'not executable' },
+      'cmd.exe /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
+      'cmd /d /c': { code: 0, stdout: '10.8.2\r\n', stderr: '' },
     });
     const res = await dt.detect(['npm'], { run, timeoutMs: 5000, pathValue: dir, platform: 'win32' });
     const d = res.details[0];

@@ -198,7 +198,15 @@ async function detect(names, opts) {
     let version = null;
     for (const cand of candidates) {
       try {
-        const vr = await run(cand, ['--version'], { timeoutMs: timeoutMs });
+        // P71-W3 : sous Windows, Node REFUSE de lancer un .cmd/.bat directement
+        // (EINVAL depuis la correction de la CVE de 2024). npm est un .cmd :
+        // sans passer par cmd.exe, il n y a jamais de version. On passe donc
+        // par le shell pour les scripts batch.
+        const batch = /\.(cmd|bat)$/i.test(cand);
+        const shellExe = process.env.COMSPEC || 'cmd.exe';
+        const vr = batch
+          ? await run(shellExe, ['/d', '/c', '"' + cand + '" --version'], { timeoutMs: timeoutMs })
+          : await run(cand, ['--version'], { timeoutMs: timeoutMs });
         // Seul un appel REUSSI compte : un message d erreur (ex. "not
         // executable") n est pas une version.
         if (vr && vr.code === 0) {
