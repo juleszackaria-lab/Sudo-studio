@@ -14,6 +14,10 @@ const { exec, spawnSync } = require('child_process');
 // P9: deterministic analysis engine + shared audit (ASCII additions only).
 const analyzer = require('../analysis/projectAnalyzer');
 const { appendAudit } = require('../utils/auditLog');
+// P71 : recommandations deterministes (sans modele), budget IA calcule, AutoFix verifie.
+const p71rec = require('../analysis/recommendations');
+const p71ai = require('../analysis/aiBudget');
+const p71fix = require('../analysis/autoFixAnalysis');
 
 class ProjectAnalysisPanel {
     static currentPanel = undefined;
@@ -71,6 +75,9 @@ class ProjectAnalysisPanel {
             case 'aiSummary':      await this.aiSummary(); break;
             case 'genAgents':      await this.genAgents(); break;
             case 'confirmAgents':  await this.confirmAgents(); break;
+            case 'cancelAi':       this.cancelAi(); break;
+            case 'autofixAnalysis': await this.autoFixAnalysis(msg.fixId); break;
+            case 'autofixApply':   await this.applyAutoFix(!!msg.approve); break;
         }
     }
 
@@ -325,7 +332,21 @@ class ProjectAnalysisPanel {
             result.issues.push({ level: 'error', area: 'Analyse', msg: `Erreur: ${e.message}`, fix: null });
         }
 
-        this.panel.webview.postMessage({ type: 'analysisResult', result, analysis });
+        // P71-A2 : les recommandations deterministes s affichent TOUT DE SUITE,
+        // sans modele, avec leur preuve. Le modele n est qu un enrichissement.
+        let recommendations = null;
+        try {
+            const t0 = Date.now();
+            recommendations = p71rec.build(analysis, { root });
+            recommendations.durationMs = Date.now() - t0;
+            try {
+                noteJournal('analysis', { step: 'recommendations_deterministic',
+                    items: recommendations.items.length, durationMs: recommendations.durationMs });
+            } catch (_) {}
+        } catch (e) {
+            try { noteJournal('analysis', { step: 'recommendations_error', error: String(e && e.message).slice(0, 160) }); } catch (_) {}
+        }
+        this.panel.webview.postMessage({ type: 'analysisResult', result, analysis, recommendations });
     }
 
     // P9: _countFiles removed (superseded by the deterministic analyzer).
@@ -505,14 +526,15 @@ class ProjectAnalysisPanel {
     async aiRecommendations() {
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) return;
-        // P39-f: one run at a time (double clicks do not stack requests).
         if (this._aiRunning) return;
         this._aiRunning = true;
+        this._aiCancel = { cancelled: false };
+        const cancel = this._aiCancel;
 
         this._safePost({ type: 'aiLoading' });
+        const t0 = Date.now();
+        let info = { issue: 'ok' };
         try {
-            // P39-f: same context as the panel: run the deterministic
-            // analysis first when it is missing.
             if (!this._lastAnalysis && !this._analyzing) {
                 try { await this.analyzeProject(); } catch (_) {}
             }
@@ -521,31 +543,124 @@ class ProjectAnalysisPanel {
                     text: 'Analyse deterministe indisponible : ouvrez un dossier et relancez l\u2019analyse.' });
                 return;
             }
-            const ctx = this._aiContextFromAnalysis(this._lastAnalysis);
+
+            // Fenetre REELLE du runtime (jamais une valeur inventee).
+            let windowTokens = 2048;
+            let tokPerSec = 12;
+            try {
+                const rm = await axios.get('http://127.0.0.1:6000/models', { timeout: 3000 });
+                const md = (rm && rm.data) || {};
+                const real = Number(md.real_window_tokens) || Number(md.n_ctx);
+                if (Number.isFinite(real) && real > 0) windowTokens = real;
+                const measured = Number(md.tok_per_s) || Number(md.decode_tok_s);
+                if (Number.isFinite(measured) && measured > 0) tokPerSec = measured;
+            } catch (_) { /* runtime injoignable : le POST ci-dessous dira pourquoi */ }
+
+            const compact = p71ai.compactContext(this._lastAnalysis, { windowTokens });
+            const maxOutTokens = 320;
+            const budget = p71ai.deadlineMs({ promptTokens: compact.estimatedTokens, maxOutTokens, tokPerSec });
+            info = { windowTokens, promptTokens: compact.estimatedTokens, ratioUsed: compact.ratioUsed,
+                maxOutTokens, deadlineMs: budget.ms, tokPerSec };
+
+            const prompt = 'Analyse ce projet et donne 5 recommandations concretes (qualite, securite, maintenabilite). ' +
+                'Sois concis et actionnable.\nContexte deterministe :\n' + compact.context;
             const r = await axios.post('http://127.0.0.1:6000/infer', {
-                message: 'Analyse ce projet et donne 5 recommandations concretes pour ameliorer la qualite, securite et maintenabilite. Soit concis et actionnable.\nContexte deterministe :\n' + (ctx || '(vide)'),
-                max_tokens: 400
-            }, { timeout: 60000 });
-            const text = r && r.data ? String(r.data.reply || '') : '';
+                message: prompt, max_tokens: maxOutTokens,
+            }, { timeout: budget.ms });
+            if (cancel.cancelled) {
+                this._safePost({ type: 'aiError', text: 'Enrichissement annule : les recommandations deterministes restent affichees.' });
+                info.issue = 'annule';
+                return;
+            }
+            const data = (r && r.data) || {};
+            const text = String(data.reply || '');
+            const usage = data.usage || {};
+            if (Number.isFinite(Number(usage.prompt_tokens)) && Number(usage.prompt_tokens) > 0) {
+                info.promptTokens = Number(usage.prompt_tokens);
+            }
+            if (Number.isFinite(Number(usage.completion_tokens)) && Number(usage.completion_tokens) > 0) {
+                info.maxOutTokens = Number(usage.completion_tokens);
+            }
             if (!text.trim()) {
-                this._safePost({ type: 'aiError', text: 'Reponse vide du runtime : rechargez le modele et reessayez.' });
+                info.issue = 'reponse_vide';
+                this._safePost({ type: 'aiError',
+                    text: 'Reponse vide du runtime (le modele n a rien produit). Rechargez le modele ou relancez ; ' +
+                        'les recommandations deterministes restent affichees.' });
                 return;
             }
             this._safePost({ type: 'aiRecommendations', text });
         } catch (e) {
-            // TASK 4a: runtime up but no model loaded (503 no_model_loaded).
-            // P39-f: distinct timeout state, never stuck on "en cours".
-            const status = e && e.response ? e.response.status : 0;
-            const code = e ? e.code : '';
-            let text;
-            if (status === 503) text = 'Aucun modele charge - ouvrez Runtime & Models pour charger un modele';
-            else if (code === 'ECONNABORTED' || /timeout/i.test(String((e && e.message) || ''))) text = 'Delai depasse (60s) : le runtime n\u2019a pas repondu. Reessayez ou rechargez le modele.';
-            else if (code === 'ECONNREFUSED') text = 'Runtime IA injoignable (connexion refusee) : demarrez le runtime.';
-            else text = 'Runtime IA non disponible (' + String(code || ('HTTP ' + status) || 'erreur').slice(0, 60) + ')';
-            this._safePost({ type: 'aiError', text });
+            const c = p71ai.classify(e, Object.assign({}, info, { deadlineMs: info.deadlineMs }));
+            info.issue = c.code;
+            this._safePost({ type: 'aiError', text: c.message + ' ' + c.action });
         } finally {
+            info.durationMs = Date.now() - t0;
+            try {
+                noteJournal('analysis', { step: 'ai_enrichment', line: p71ai.journalLine(info) });
+            } catch (_) {}
             this._aiRunning = false;
+            this._aiCancel = null;
         }
+    }
+
+    cancelAi() {
+        if (this._aiCancel) {
+            this._aiCancel.cancelled = true;
+            this._safePost({ type: 'aiError', text: 'Enrichissement annule a votre demande. Les recommandations deterministes restent affichees.' });
+        }
+    }
+
+    // ---------------------------------------------------------------- P71-B
+    // AutoFix de Project Analysis : plan deterministe -> diff -> approbation ->
+    // ecriture -> verification disque -> re-analyse.
+    async autoFixAnalysis(fixId) {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            this._safePost({ type: 'autofixDone', ok: false,
+                message: 'Aucun projet ouvert : impossible de corriger.' });
+            return;
+        }
+        const root = folder.uri.fsPath;
+        try {
+            const plan = p71fix.plan(fixId, this._lastAnalysis || { root, name: path.basename(root) }, { root });
+            if (!plan.ok) {
+                try { noteJournal('autofix', { step: 'plan_refused', fixId, code: plan.code }); } catch (_) {}
+                this._safePost({ type: 'autofixDone', ok: false, message: plan.message, code: plan.code });
+                return;
+            }
+            this._pendingFix = plan;
+            this._safePost({ type: 'autofixPlan', fixId, file: plan.file, diff: plan.diff,
+                message: plan.message });
+        } catch (e) {
+            this._safePost({ type: 'autofixDone', ok: false,
+                message: 'AutoFix impossible : ' + String((e && e.message) || e).slice(0, 160) });
+        }
+    }
+
+    async applyAutoFix(yes) {
+        const plan = this._pendingFix;
+        if (!plan) {
+            this._safePost({ type: 'autofixDone', ok: false, message: 'Aucune correction en attente.' });
+            return;
+        }
+        this._pendingFix = null;
+        if (!yes) {
+            this._safePost({ type: 'autofixDone', ok: false, message: 'Correction annulee : le disque n a pas ete touche.' });
+            return;
+        }
+        const out = p71fix.apply(plan, { approve: true });
+        try { noteJournal('autofix', { step: 'apply', fixId: plan.fixId, code: out.code }); } catch (_) {}
+        this._safePost({ type: 'autofixDone', ok: !!out.ok, message: out.message, code: out.code });
+        if (!out.ok) return;
+        // Re-analyse : l avertissement doit avoir disparu, sinon on le dit.
+        try {
+            await this.analyzeProject();
+            const after = this._lastAnalysis || {};
+            if (plan.fixId === 'readme' && !p71fix.verifyGone('readme', after)) {
+                this._safePost({ type: 'autofixDone', ok: false,
+                    message: 'README.md a ete ecrit mais la re-analyse ne le voit toujours pas : verifiez le chemin du projet.' });
+            }
+        } catch (_) { /* la re-analyse echouee ne change pas le resultat de l ecriture */ }
     }
 
     async openFile(file) {
@@ -738,9 +853,17 @@ ${guardSnippet()}
 
         <!-- AI Recommendations -->
         <div class="card">
-            <div class="card-title">🤖 Recommandations IA</div>
-            <div style="font-size:12px;color:var(--vscode-descriptionForeground);margin-bottom:8px">Analyse IA nécessite le runtime (port 6000)</div>
+            <div class="card-title">Recommandations (sans modele)</div>
+            <div style="font-size:12px;color:var(--vscode-descriptionForeground);margin-bottom:8px">
+                Calculees a partir de l'analyse : chaque point cite sa preuve. Disponibles immediatement.
+            </div>
+            <div id="detBox" style="font-size:12px"></div>
+            <div class="card-title" style="margin-top:12px">🤖 Enrichissement IA (facultatif)</div>
+            <div style="font-size:12px;color:var(--vscode-descriptionForeground);margin-bottom:8px">
+                Utilise le runtime (port 6000), dans la fenetre reelle du modele, avec un delai calcule.
+            </div>
             <button class="btn btn-sm" onclick="aiRec()">🤖 Obtenir les recommandations IA</button>
+            <button class="btn btn-sm" onclick="aiCancel()">Annuler</button>
             <div id="aiBox"></div>
         </div>
     </div>
@@ -762,6 +885,31 @@ ${guardSnippet()}
 const vscode = acquireVsCodeApi();
 function reanalyze() { vscode.postMessage({type:'reanalyze'}); }
 function aiRec()     { vscode.postMessage({type:'aiRecommend'}); }
+function aiCancel()  { vscode.postMessage({type:'cancelAi'}); }
+function fixRec(id)  { vscode.postMessage({type:'autofixAnalysis', fixId:id}); }
+function fixDecision(yes) {
+    document.getElementById('fixBox').innerHTML = '';
+    vscode.postMessage({type:'autofixApply', approve: !!yes});
+}
+function renderRecommendations(rec) {
+    const box = document.getElementById('detBox');
+    if (!box) return;
+    const items = (rec && rec.items) || [];
+    if (!items.length) {
+        box.innerHTML = '<div style="color:var(--vscode-descriptionForeground)">Aucun point bloquant detecte.</div>';
+        return;
+    }
+    const color = { error: '#f44336', warn: '#ff9800', info: '#4a9eff' };
+    box.innerHTML = items.map(function (it) {
+        const b = it.fixId ? ' <button class="btn btn-sm" onclick="fixRec(\'' + it.fixId + '\')">AutoFix</button>' : '';
+        return '<div style="border-left:3px solid ' + (color[it.level] || '#888') + ';padding:6px 10px;margin-bottom:6px">' +
+            '<div style="font-weight:600">' + esc(it.title) + b + '</div>' +
+            '<div>' + esc(it.detail || '') + '</div>' +
+            '<div style="color:var(--vscode-descriptionForeground);font-size:11px">Preuve : ' + esc(it.proof || '') + '</div>' +
+            '</div>';
+    }).join('') + '<div style="color:var(--vscode-descriptionForeground);font-size:11px">' +
+        items.length + ' point(s) · calcule en ' + ((rec && rec.durationMs) || 0) + ' ms, sans modele</div>';
+}
 function exportJson() { vscode.postMessage({type:'exportJson'}); }
 function aiSummary() { vscode.postMessage({type:'aiSummary'}); }
 function genAgents() { vscode.postMessage({type:'genAgents'}); }
@@ -809,6 +957,7 @@ window.addEventListener('message', ev => {
         case 'analysisResult':
             renderResult(m.result);
             renderAnalysis(m.analysis);
+            renderRecommendations(m.recommendations);
             break;
         case 'progress': {
             const p = m.progress || {};
@@ -854,6 +1003,18 @@ window.addEventListener('message', ev => {
         case 'aiError':
             document.getElementById('aiBox').className='show';
             document.getElementById('aiBox').textContent='❌ '+m.text;
+            break;
+        case 'autofixPlan':
+            document.getElementById('aiBox').className='show';
+            document.getElementById('aiBox').innerHTML =
+                '<div><b>' + esc(m.message) + '</b></div>' +
+                '<pre style="max-height:220px;overflow:auto;font-size:11px">' + esc(m.diff || '') + '</pre>' +
+                '<div id="fixBox"><button class="btn btn-sm" onclick="fixDecision(true)">Appliquer</button> ' +
+                '<button class="btn btn-sm" onclick="fixDecision(false)">Annuler</button></div>';
+            break;
+        case 'autofixDone':
+            document.getElementById('aiBox').className='show';
+            document.getElementById('aiBox').textContent = (m.ok ? 'OK : ' : 'A VERIFIER : ') + (m.message || '');
             break;
     }
 });

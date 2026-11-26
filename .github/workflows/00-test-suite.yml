@@ -617,3 +617,104 @@ jobs:
           path: |
             p70-replay.txt
           if-no-files-found: warn
+
+  # P71 : recommandations deterministes (< 2 s), budget IA calcule, AutoFix
+  # verifie, Doctor (registre + where + details), AutoFix npm honnete.
+  # Aucune de ces suites n'a besoin d'un modele : PROUVE EN CI (moteur seul).
+  p71-analysis-doctor:
+    name: P71 analyse deterministe + Doctor + AutoFix
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Suites P71 (avec controles negatifs)
+        run: |
+          set -o pipefail
+          node backend/tests/test-p71-recommendations.js | tee p71-rec.txt
+          node backend/tests/test-p71-analysis-ai-autofix.js | tee p71-ai-autofix.txt
+          node backend/tests/test-p71-doctor.js | tee p71-doctor.txt
+
+      - name: Artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p71-analysis-doctor
+          path: p71-*.txt
+          if-no-files-found: warn
+
+  # P71-A1 : le VRAI modele, sur la meme machine que P67, avec trois fenetres.
+  # On mesure la taille du prompt, le temps et le delai ; le verdict H1/H2/H3
+  # est calcule a partir de ces chiffres (jamais affirme).
+  p71-real-model-analysis:
+    name: P71 modele reel - fenetre ${{ matrix.nctx }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        nctx: [2048, 4096, 8192]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache du modele GGUF
+        uses: actions/cache@v4
+        with:
+          path: ~/p67-model
+          key: p67-qwen25-coder-1.5b-q4km-v1
+
+      - name: Telecharger le modele (si absent du cache)
+        run: |
+          mkdir -p ~/p67-model
+          F=~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+          if [ ! -s "$F" ]; then
+            curl -sL -o "$F" "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf"
+          fi
+          ls -l "$F" && sha256sum "$F"
+
+      - name: Installer le moteur d'inference (llama-cpp-python CPU)
+        run: |
+          python -m pip install --upgrade pip
+          pip install llama-cpp-python==0.3.9 --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+          pip install flask flask-cors psutil
+
+      - name: Demarrer le runtime avec n_ctx = ${{ matrix.nctx }}
+        run: |
+          F=~/p67-model/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf
+          (python -m llama_cpp.server --model "$F" --n_ctx ${{ matrix.nctx }} --host 127.0.0.1 --port 6000 > runtime.log 2>&1 &)
+          ok=0
+          for i in $(seq 1 72); do
+            if curl -sf http://127.0.0.1:6000/v1/models 2>/dev/null | grep -q '"id"'; then ok=1; break; fi
+            sleep 5
+          done
+          tail -20 runtime.log || true
+          if [ "$ok" != "1" ]; then echo "modele non charge"; exit 1; fi
+
+      - name: Banc d'analyse (prompt, temps, delai, verdict H1/H2/H3)
+        run: |
+          set -o pipefail
+          node scripts/ci/p71-analysis-bench.js --window ${{ matrix.nctx }}             --out p71-analysis-${{ matrix.nctx }}.json | tee p71-analysis-${{ matrix.nctx }}.txt
+
+      - name: Artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p71-real-model-${{ matrix.nctx }}
+          path: |
+            p71-analysis-${{ matrix.nctx }}.json
+            p71-analysis-${{ matrix.nctx }}.txt
+            runtime.log
+          if-no-files-found: warn

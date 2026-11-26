@@ -10,6 +10,9 @@ const axios  = require('axios');
 const { exec } = require('child_process');
 const os = require('os');
 const { fixAll, fixOne, isKnownTool } = require('../doctor/autoFix');
+// P71-C8 : UNE seule fonction de detection, partagee (registre + where + details).
+const detectTools = require('../doctor/detectTools');
+const npmFix = require('../doctor/npmFix');
 const { appendAudit } = require('../utils/auditLog');
 const { sharedLog } = require('../utils/techLog'); // P21-g: NOOP until extension activation enables it
 
@@ -52,6 +55,7 @@ class DoctorPanel {
             case 'autoFix':       await this.autoFix(msg.issue); break;
             case 'autoFixAll':    await this.autoFixAll(); break;
             case 'installSDK':    await this.installSDK(msg.sdk); break;
+            case 'repairPath':    await this.repairPath(msg.dir); break;
         }
     }
 
@@ -62,31 +66,55 @@ class DoctorPanel {
     }
 
     async _gatherDiagnostics() {
-        const checks = [];
-
-        // Helper
-        const check = (name, cmd) => new Promise(resolve => {
-            exec(cmd, { timeout: 5000 }, (err, stdout) => {
-                if (!err && stdout.trim()) {
-                    resolve({ name, status: 'ok', value: stdout.trim().split('\n')[0] });
-                } else {
-                    resolve({ name, status: 'error', value: 'Not found' });
-                }
-            });
-        });
-
+        const results = [];
         const isWin = process.platform === 'win32';
 
-        checks.push(
-            check('Node.js',     isWin ? 'node --version' : 'node --version'),
-            check('npm',         isWin ? 'npm --version' : 'npm --version'),
-            check('Python',      isWin ? 'python --version 2>&1' : 'python3 --version'),
-            check('pip',         isWin ? 'pip --version' : 'pip3 --version'),
-            check('Git',         'git --version'),
-            check('Docker',      'docker --version')
-        );
-
-        const results = await Promise.all(checks);
+        // P71-C8/C9 : le PREMIER diagnostic doit etre juste. On ne se fie plus a
+        // un `node --version` lance avec le PATH herite de l editeur, avec 5 s
+        // de delai et un simple "Not found" : on relit le PATH du registre, on
+        // resout par `where`, on garde les DETAILS (commande, sortie, chemin).
+        let det = null;
+        try {
+            det = await detectTools.detect(['node', 'npm', 'git', 'python', 'python3', 'pip', 'docker'],
+                { timeoutMs: 15000 });
+        } catch (e) {
+            results.push({ name: 'Detection des outils', status: 'error',
+                value: 'Detection impossible : ' + String((e && e.message) || e).slice(0, 120) });
+        }
+        if (det) {
+            try { noteJournal('doctor', { step: 'detect', line: detectTools.journalLine(det) }); } catch (_) {}
+            const LABELS = { node: 'Node.js', npm: 'npm', git: 'Git', python: 'Python', python3: 'Python 3', pip: 'pip', docker: 'Docker' };
+            const seen = new Set();
+            for (const d of det.details) {
+                const label = LABELS[d.name] || d.name;
+                if (seen.has(label)) continue;           // python/python3 : une seule ligne
+                seen.add(label);
+                const outside = det.outsidePath.indexOf(d.name) !== -1;
+                const status = d.resolved ? (outside ? 'warn' : 'ok') : 'error';
+                const value = d.resolved
+                    ? (outside
+                        ? 'Installe mais hors du PATH : ' + d.resolved
+                        : 'Trouve : ' + d.resolved)
+                    : 'Absent (recherche : ' + d.command + ')';
+                results.push({
+                    name: label,
+                    status,
+                    value,
+                    // P71-C9 : installe mais hors PATH -> reparer le PATH, pas reinstaller.
+                    fix: d.resolved ? (outside ? 'repairPath' : null) : (d.name === 'npm' || d.name === 'node' ? 'npm' : d.name),
+                    details: {
+                        commande: d.command,
+                        sortie: String(d.stdout || '').trim().slice(0, 300) || '(vide)',
+                        chemin: d.resolved || '(non trouve)',
+                        pathUtilise: String(d.pathUsed || '').slice(0, 600),
+                        resolution: d.how,
+                    },
+                });
+            }
+            results.push({ name: 'PATH (source)', status: 'info',
+                value: (det.sources && det.sources.registry ? 'registre machine + utilisateur' : 'environnement du processus') +
+                    ' · ' + String((det.path || '').split(process.platform === 'win32' ? ';' : ':').length) + ' entrees' });
+        }
 
         // Backend check
         try {
@@ -222,9 +250,55 @@ class DoctorPanel {
         return row;
     }
 
+    /**
+     * P71-D10 : AutoFix npm/Node = reparer le PATH si deja installe, installer
+     * seulement si necessaire, puis RE-DETECTER et ne dire "termine" que si la
+     * verification passe.
+     */
+    async _autoFixNpm() {
+        const det = await detectTools.detect(['node', 'npm'], { timeoutMs: 15000 });
+        const plan = npmFix.planFix({ name: 'npm', detect: det, offline: this._offline, installersDir: this._installersDir() });
+        try { noteJournal('autofix', { step: 'npm_plan', code: plan.code }); } catch (_) {}
+        const out = await npmFix.runFix(plan, {
+            exec: (cmd, args) => new Promise((resolve) => {
+                exec([cmd].concat(args || []).join(' '), { timeout: 15 * 60 * 1000 }, (err, stdout, stderr) => {
+                    resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0,
+                        stdout: String(stdout || ''), stderr: String(stderr || '') });
+                });
+            }),
+            repairPath: (dir) => detectTools.applyPathRepair(detectTools.planPathRepair(dir)),
+            redetect: () => detectTools.detect(['node', 'npm'], { timeoutMs: 15000 }),
+            log: (line) => { try { noteJournal('autofix', { line }); } catch (_) {} },
+        });
+        return { status: out.ok ? 'fixed' : 'manual', msg: out.message, raw: out };
+    }
+
+    _installersDir() {
+        try {
+            const home = require('os').homedir();
+            return require('path').join(home, '.sudo_studio', 'installers');
+        } catch (_) { return '.sudo_studio/installers'; }
+    }
+
+    async repairPath(dir) {
+        const plan = detectTools.planPathRepair(dir);
+        const r = await detectTools.applyPathRepair(plan);
+        vscode.window.showInformationMessage('PATH : ' + r.message);
+        this.panel.webview.postMessage({ type: 'fixDone', issue: 'repairPath', ok: !!r.ok, message: r.message });
+        if (r.ok) await this.runDiagnostic();
+    }
+
     async autoFix(issue) {
         this.panel.webview.postMessage({ type: 'fixStarted', issue });
         let row;
+        if (issue === 'npm' || issue === 'node') {
+            const out = await this._autoFixNpm();
+            row = out;
+            const msg0 = out.msg;
+            vscode.window.showInformationMessage('AutoFix: ' + msg0);
+            this.panel.webview.postMessage({ type: 'fixDone', issue, message: msg0, ok: out.status === 'fixed', row });
+            return;
+        }
         if (isKnownTool(issue)) {
             const out = await fixOne(issue, this._engineDeps((p) => {
                 try { this.panel.webview.postMessage({ type: 'fixProgress', ...p, scope: 'one' }); }
