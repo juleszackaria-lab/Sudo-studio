@@ -607,6 +607,9 @@ jobs:
           SUDO_P70_FASTPATH: "1"
         run: node backend/tests/test-p70-verified-env.js
 
+      - name: Doctor sur Windows reel (C5 : aucun faux positif hors PATH)
+        run: node backend/tests/test-p71-doctor.js
+
       - name: Script agent-p70 (T1 a T10 + PATH de l agent)
         shell: powershell
         run: powershell -ExecutionPolicy Bypass -File scripts/ci/agent-p70.ps1

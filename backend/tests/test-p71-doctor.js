@@ -178,6 +178,18 @@ async function main() {
       JSON.stringify({ asked, code: okRun.code }));
   }
 
+  // ---- C5 : sur un vrai Windows (job p70-windows-path), node/npm/git
+  // installes et utilisables ne doivent JAMAIS etre dits "hors du PATH".
+  if (process.platform === 'win32') {
+    const real = await dt.detect(['node', 'npm', 'git'], { timeoutMs: 20000 });
+    check('C5 Windows reel : node, npm et git sont trouves',
+      !!real.found.node && !!real.found.npm && !!real.found.git, JSON.stringify(real.found));
+    check('C5b Windows reel : aucun faux positif "hors du PATH"',
+      real.outsidePath.length === 0, 'hors_path=' + real.outsidePath.join(',') + ' | source=' + JSON.stringify(real.sources));
+  } else {
+    check('C5 (Windows uniquement) joue par le job p70-windows-path', true);
+  }
+
   console.log('');
   if (!fails.length) { console.log('P71 doctor + autofix npm: ' + pass + ' checks passed (all green)'); process.exit(0); }
   console.log('P71 doctor + autofix npm: ' + pass + ' checks passed, ' + fails.length + ' FAILED');

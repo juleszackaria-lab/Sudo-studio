@@ -49,6 +49,22 @@ function defaultRun(cmd, args, opts) {
   });
 }
 
+/** Deux dossiers designent-ils le meme emplacement ? (Windows : casse et
+ *  separateur final ignores ; sinon comparaison directe). */
+function sameDir(a, b) {
+  if (!a || !b) return false;
+  let x = path.normalize(String(a));
+  let y = path.normalize(String(b));
+  x = x.replace(/[\\/]+$/, '');
+  y = y.replace(/[\\/]+$/, '');
+  if (process.platform === 'win32') { x = x.toLowerCase(); y = y.toLowerCase(); }
+  return x === y;
+}
+
+function inPath(dir, pathValue) {
+  return splitPath(pathValue).some((e) => sameDir(e, dir));
+}
+
 function splitPath(v) {
   const sep = process.platform === 'win32' ? ';' : ':';
   return String(v || '').split(sep).map((s) => s.trim()).filter(Boolean);
@@ -140,7 +156,7 @@ async function detect(names, opts) {
       pathUsed: mp.value };
     if (resolved) {
       found[name] = resolved;
-      if (mp.value && mp.value.indexOf(path.dirname(resolved)) === -1) outsidePath.push(name);
+      if (mp.value && !inPath(path.dirname(resolved), mp.value)) outsidePath.push(name);
     } else {
       missing.push(name);
     }
