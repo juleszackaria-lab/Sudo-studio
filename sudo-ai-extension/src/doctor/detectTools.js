@@ -106,8 +106,14 @@ async function machinePath(run) {
   // d outils injectes au demarrage) n ecrivent PAS le registre : sans ce
   // complement, un outil parfaitement utilisable etait annonce "hors du PATH"
   // (faux positif vu dans la fumee du paquet, P36-DOCTOR-TOOLS).
+  // ORDRE (P71, vu dans la fumee du paquet) : le PATH du PROCESSUS d abord,
+  // puis le registre en complement. Les deux sont relus a chaque diagnostic.
+  // Inverser faisait resoudre un AUTRE node que celui de l environnement
+  // courant (panneau v22.23.5 / shell v20.20.2) : le produit doit utiliser les
+  // outils de son environnement, et le registre sert seulement a retrouver un
+  // outil installe apres le demarrage (la correction de V5).
   const merged = [];
-  for (const p2 of splitPath(registry).concat(splitPath(process.env.PATH || process.env.Path || ''))) {
+  for (const p2 of splitPath(process.env.PATH || process.env.Path || '').concat(splitPath(registry))) {
     if (merged.indexOf(p2) === -1) merged.push(p2);
   }
   src.registry = true;

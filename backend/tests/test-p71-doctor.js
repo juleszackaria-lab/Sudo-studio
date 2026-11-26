@@ -179,6 +179,28 @@ async function main() {
       JSON.stringify({ asked, code: okRun.code }));
   }
 
+  // ---- C3e : l ORDRE compte. Le PATH du processus passe AVANT le registre,
+  // sinon le produit resout un autre node que celui de son environnement
+  // (panneau v22.23.5 / shell v20.20.2 dans la fumee du paquet). Le registre
+  // reste present en complement (outil installe apres le demarrage).
+  {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'p71-order-'));
+    const exe = path.join(dir, process.platform === 'win32' ? 'node.exe' : 'node');
+    fs.writeFileSync(exe, '');
+    const run = fakeRun({ 'where node': { code: 0, stdout: exe + '\n', stderr: '' },
+      'which node': { code: 0, stdout: exe + '\n', stderr: '' } });
+    const savedPath = process.env.PATH;
+    process.env.PATH = dir + (process.platform === 'win32' ? ';' : ':') + savedPath;
+    const res = await dt.detect(['node'], { run, timeoutMs: 5000 });
+    process.env.PATH = savedPath;
+    const entries = dt.splitPath(res.path);
+    check('C3e le dossier du processus est en tete du PATH utilise',
+      dt.splitPath(dir).length === 1 ? entries[0].replace(/[\\/]+$/, '') === dir.replace(/[\\/]+$/, '') : true,
+      'tete=' + entries[0] + ' attendu=' + dir);
+    check('C3e le registre reste present en complement du PATH du processus',
+      entries.length >= 2, 'entrees=' + entries.length);
+  }
+
   // ---- C3c : le cas EXACT du runner Windows (where npm renvoie 2 entrees,
   // la premiere SANS extension et non executable sous Windows). Regression
   // vue dans la fumee du paquet : tool-npm=panel=ok:C:\...\node\20.20.2\ au
