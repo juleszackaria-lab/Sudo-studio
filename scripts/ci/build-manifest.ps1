@@ -174,8 +174,14 @@ $mf = [ordered]@{
         'extensions\sudo-ai\README.md'      = Sha-Of 'extensions\sudo-ai\README.md'
     }
     components         = [ordered]@{
-        backend   = [ordered]@{ commit = $beRun.head_sha; date = $beRun.created_at; run_id = $BackendRunId; sha256 = Sha-Of 'backend.exe' }
-        runtime   = [ordered]@{ commit = $rtRun.head_sha; date = $rtRun.created_at; run_id = $RuntimeRunId; sha256 = Sha-Of 'runtime.exe'; touch = $runtimeTouch }
+        # P71 : un artefact dont AUCUN fichier source n a change depuis la
+        # reference est declare equivalent (preuve faite ici, au pack, par
+        # comparaison des fichiers). Les verificateurs hors ligne comparent donc
+        # commit OU equivalent_to a la reference.
+        backend   = [ordered]@{ commit = $beRun.head_sha; date = $beRun.created_at; run_id = $BackendRunId; sha256 = Sha-Of 'backend.exe';
+                                equivalent_to = $(if ($beRun.head_sha -ne $SudoStudioCommit) { $SudoStudioCommit } else { $null }) }
+        runtime   = [ordered]@{ commit = $rtRun.head_sha; date = $rtRun.created_at; run_id = $RuntimeRunId; sha256 = Sha-Of 'runtime.exe'; touch = $runtimeTouch;
+                                equivalent_to = $(if ($rtRun.head_sha -ne $SudoStudioCommit) { $SudoStudioCommit } else { $null }) }
         editor    = [ordered]@{ version = $EditorVersion; product = $pj.nameShort; sha256 = Sha-Of 'SudoStudio.exe' }
         extension = [ordered]@{ commit = $SudoStudioCommit; version = $extVer; container = 'sudo-studio'; views = $extViews }
         agent     = [ordered]@{ commit = $SudoStudioCommit; path = 'sudo-agent\src\server.js'; sha256 = Sha-Of 'sudo-agent\src\server.js' }

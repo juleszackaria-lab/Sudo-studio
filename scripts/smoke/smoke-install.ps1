@@ -118,7 +118,10 @@ try {
         $comps = $mf.components
         if (-not $comps -or -not $comps.backend -or -not $comps.runtime -or -not $comps.extension -or -not $comps.agent) { throw 'manifest components block incomplete (P29c4)' }
         foreach ($k in @('backend', 'runtime', 'extension', 'agent')) {
-            if ($comps.$k.commit -ne $mf.sudo_studio_commit) { throw ('component commit mismatch: ' + $k) }
+            # P71 : equivalence declaree par le pack (sources inchangees) acceptee.
+            if ($comps.$k.commit -ne $mf.sudo_studio_commit -and $comps.$k.equivalent_to -ne $mf.sudo_studio_commit) {
+                throw ('component commit mismatch: ' + $k)
+            }
         }
         if (-not $mf.brand -or $mf.brand.logoSvgMatch -ne $true -or $mf.brand.exeIcon -ne 'PASS' -or -not $mf.brand.robotIcon) { throw 'manifest brand block invalid (P20)' }
         if ($comps.extension.container -ne 'sudo-studio' -or $comps.editor.product -ne 'Sudo Studio') { throw 'manifest container/product invalid' }

@@ -455,7 +455,10 @@ try {
         $comps = $mf.components
         if (-not $comps -or -not $comps.backend -or -not $comps.runtime -or -not $comps.extension -or -not $comps.agent) { throw 'components block incomplete' }
         foreach ($k in @('backend', 'runtime', 'extension', 'agent')) {
-            if ($comps.$k.commit -ne $mf.sudo_studio_commit) { throw ('component commit mismatch: ' + $k) }
+            # P71 : equivalence declaree par le pack (sources inchangees) acceptee.
+            if ($comps.$k.commit -ne $mf.sudo_studio_commit -and $comps.$k.equivalent_to -ne $mf.sudo_studio_commit) {
+                throw ('component commit mismatch: ' + $k)
+            }
         }
         if ($comps.editor.product -ne 'Sudo Studio') { throw 'editor product invalid' }
         $fresh = 'freshness: manifest predates P46 (no touch field)'

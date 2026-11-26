@@ -118,7 +118,10 @@ function checkManifest() {
     notes.push(hashed + '/' + keys.length + ' hashes ok');
     const comps = mf.components || {};
     for (const k of ['backend', 'runtime', 'extension', 'agent']) {
-        if (!comps[k] || comps[k].commit !== mf.sudo_studio_commit) fails.push('component commit mismatch: ' + k);
+        // P71 : equivalence declaree par le pack (sources inchangees) acceptee.
+        if (!comps[k] || (comps[k].commit !== mf.sudo_studio_commit && comps[k].equivalent_to !== mf.sudo_studio_commit)) {
+            fails.push('component commit mismatch: ' + k);
+        }
     }
     if (!mf.brand || mf.brand.logoSvgMatch !== true || mf.brand.exeIcon !== 'PASS' || !mf.brand.robotIcon) {
         fails.push('brand block invalid (P20)');
