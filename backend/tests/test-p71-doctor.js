@@ -197,6 +197,23 @@ async function main() {
       d.version === '10.8.2', 'version=' + d.version);
   }
 
+  // ---- C3d : `where npm` ne rend QU UNE entree, sans extension (PATHEXT
+  // absent de l environnement lance) : le fichier ne s execute pas, on doit
+  // essayer npm.cmd du meme dossier et lire la version.
+  {
+    const dir = 'C:\\hostedtoolcache\\windows\\node\\20.20.2';
+    const run = fakeRun({
+      'where npm': { code: 0, stdout: dir + '\\npm\r\n', stderr: '' },
+      [dir + '\\npm.cmd --version']: { code: 0, stdout: '10.8.2\r\n', stderr: '' },
+      [dir + '\\npm --version']: { code: 1, stdout: '', stderr: 'not executable' },
+    });
+    const res = await dt.detect(['npm'], { run, timeoutMs: 5000, pathValue: dir, platform: 'win32' });
+    const d = res.details[0];
+    check('C3d npm : variante .cmd du meme dossier essayee quand where ne rend qu un nom',
+      res.found.npm === dir + '\\npm.cmd', 'resolu=' + res.found.npm);
+    check('C3d npm : version lue malgre une seule entree de where', d.version === '10.8.2', 'version=' + d.version);
+  }
+
   // ---- C5 : sur un vrai Windows (job p70-windows-path), node/npm/git
   // installes et utilisables ne doivent JAMAIS etre dits "hors du PATH".
   if (process.platform === 'win32') {
@@ -205,6 +222,11 @@ async function main() {
       !!real.found.node && !!real.found.npm && !!real.found.git, JSON.stringify(real.found));
     check('C5b Windows reel : aucun faux positif "hors du PATH"',
       real.outsidePath.length === 0, 'hors_path=' + real.outsidePath.join(',') + ' | source=' + JSON.stringify(real.sources));
+    // C5c : la fumee du paquet compare la VALEUR du panneau a `npm --version`.
+    // Une version vide fait echouer le gate : on l exige ici, sur vrai Windows.
+    const noVer = real.details.filter((x) => x.resolved && !x.version).map((x) => x.name);
+    check('C5c Windows reel : chaque outil trouve a une VERSION lue (jamais un chemin)',
+      noVer.length === 0, 'sans version=' + noVer.join(','));
   } else {
     check('C5 (Windows uniquement) joue par le job p70-windows-path', true);
   }

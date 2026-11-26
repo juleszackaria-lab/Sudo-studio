@@ -117,8 +117,14 @@ async function machinePath(run) {
 // le chemin. On garde donc TOUTES les entrees, on prefere les executables
 // (.exe/.cmd/.bat) et on retient le premier candidat dont `--version` repond.
 const EXT_RANK = { '.exe': 0, '.cmd': 1, '.bat': 2, '': 9 };
+// On n utilise PAS path.extname : il depend de la plateforme (sur POSIX, un
+// chemin Windows "C:\\...\\20.20.2\\npm" est vu avec une extension ".2\\npm").
+function exeExt(p2) {
+  const m = /\.([A-Za-z0-9]+)$/.exec(String(p2 || ''));
+  return m ? ('.' + m[1].toLowerCase()) : '';
+}
 function rankByExt(p2) {
-  const ext = (path.extname(String(p2 || '')) || '').toLowerCase();
+  const ext = exeExt(p2);
   return Object.prototype.hasOwnProperty.call(EXT_RANK, ext) ? EXT_RANK[ext] : 5;
 }
 function orderCandidates(paths) {
@@ -128,7 +134,12 @@ function orderCandidates(paths) {
 async function whichSyncLike(name, pathValue, run, timeoutMs, platform) {
   const pf = platform || process.platform;
   const cmd = pf === 'win32' ? 'where' : 'which';
-  const r = await run(cmd, [name], { timeoutMs: timeoutMs || DEFAULT_TIMEOUT, env: { PATH: pathValue, Path: pathValue } });
+  // P71-W3 : on remplace PATH, mais on GARDE le reste de l environnement.
+  // Sans PATHEXT, `where npm` ne rend que le fichier `npm` sans extension
+  // (script shell, non executable) : la version restait vide et le Doctor
+  // affichait le chemin au lieu de 10.8.2.
+  const env = Object.assign({}, process.env, { PATH: pathValue, Path: pathValue });
+  const r = await run(cmd, [name], { timeoutMs: timeoutMs || DEFAULT_TIMEOUT, env: env });
   const lines = String(r.stdout || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const first = lines.length ? lines[0] : null;
   const paths = (r.code === 0 && lines.length) ? orderCandidates(lines) : [];
@@ -165,6 +176,16 @@ async function detect(names, opts) {
   for (const name of names) {
     const w = await whichSyncLike(name, mp.value, run, timeoutMs, platform);
     let candidates = (w.paths && w.paths.length) ? w.paths.slice() : (w.path ? [w.path] : []);
+    // `where` peut ne rendre qu un nom SANS extension (PATHEXT absent). On
+    // ajoute alors les variantes executables Windows dans le meme dossier.
+    if (platform === 'win32' && candidates.length) {
+      const extra = [];
+      for (const c of candidates) {
+        if (EXT_RANK.hasOwnProperty(exeExt(c)) && exeExt(c) !== '') continue;
+        for (const e of ['.cmd', '.exe', '.bat']) extra.push(c + e);
+      }
+      candidates = candidates.concat(extra);
+    }
     let how = 'where';
     if (!candidates.length) {
       const cand = knownCandidate(name, mp.value, platform);
@@ -178,9 +199,13 @@ async function detect(names, opts) {
     for (const cand of candidates) {
       try {
         const vr = await run(cand, ['--version'], { timeoutMs: timeoutMs });
-        const out = String(vr.stdout || '') || String(vr.stderr || '');
-        const v = out.trim().split(/\r?\n/)[0] || null;
-        if (v) { resolved = cand; version = v; break; }
+        // Seul un appel REUSSI compte : un message d erreur (ex. "not
+        // executable") n est pas une version.
+        if (vr && vr.code === 0) {
+          const out = String(vr.stdout || '') || String(vr.stderr || '');
+          const v = out.trim().split(/\r?\n/)[0] || null;
+          if (v) { resolved = cand; version = v; break; }
+        }
       } catch (_) { /* candidat suivant */ }
     }
     const entry = { name, resolved, version, how, command: w.command, stdout: w.stdout, stderr: w.stderr,
