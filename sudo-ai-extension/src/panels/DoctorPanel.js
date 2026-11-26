@@ -91,10 +91,15 @@ class DoctorPanel {
                 seen.add(label);
                 const outside = det.outsidePath.indexOf(d.name) !== -1;
                 const status = d.resolved ? (outside ? 'warn' : 'ok') : 'error';
+                // P71-C8 : la valeur affichee reste la VERSION, exactement ce
+                // que `node --version` imprime (le chemin va dans les details).
+                // Le smoke du paquet compare cette valeur a une commande shell
+                // independante : "Trouve : C:\..." ne pouvait pas correspondre.
+                const ver = d.version || '';
                 const value = d.resolved
                     ? (outside
-                        ? 'Installe mais hors du PATH : ' + d.resolved
-                        : 'Trouve : ' + d.resolved)
+                        ? (ver || d.resolved) + ' (installe mais hors du PATH : ' + d.resolved + ')'
+                        : (ver || d.resolved))
                     : 'Absent (recherche : ' + d.command + ')';
                 results.push({
                     name: label,
@@ -105,6 +110,7 @@ class DoctorPanel {
                     details: {
                         commande: d.command,
                         sortie: String(d.stdout || '').trim().slice(0, 300) || '(vide)',
+                        version: d.version || '(non lue)',
                         chemin: d.resolved || '(non trouve)',
                         pathUtilise: String(d.pathUsed || '').slice(0, 600),
                         resolution: d.how,

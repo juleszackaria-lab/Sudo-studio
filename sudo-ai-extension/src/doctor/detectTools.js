@@ -152,7 +152,17 @@ async function detect(names, opts) {
       const cand = knownCandidate(name, mp.value);
       if (cand) { resolved = cand; how = 'dossier connu'; }
     }
-    const entry = { name, resolved, how, command: w.command, stdout: w.stdout, stderr: w.stderr,
+    // P71 : la VERSION doit venir de l outil resolu (meme valeur qu un
+    // `node --version` independant) ; le chemin reste dans les details.
+    let version = null;
+    if (resolved) {
+      try {
+        const vr = await run(resolved, ['--version'], { timeoutMs: timeoutMs });
+        const out = String(vr.stdout || '') || String(vr.stderr || '');
+        version = out.trim().split(/\r?\n/)[0] || null;
+      } catch (_) { version = null; }
+    }
+    const entry = { name, resolved, version, how, command: w.command, stdout: w.stdout, stderr: w.stderr,
       pathUsed: mp.value };
     if (resolved) {
       found[name] = resolved;
